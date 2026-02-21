@@ -504,11 +504,12 @@ function handleDisqualify(p) {
     if (String(data[i][13]) === String(p.sessionCode) && String(data[i][1]) === String(p.idNumber)) {
       sheet.getRange(i + 1, 18).setValue(true);  // פסול? — column R (18)
       sheet.getRange(i + 1, 8).setValue('פסול');
+      SpreadsheetApp.flush();
       return jsonResponse({ status: 'ok' });
     }
   }
   // Result not in תוצאות yet — examinee is still active/in_exam
-  // Create a disqualified result and update ממתינים
+  // Update ממתינים status + create disqualified result
   var pendSheet = getSheet('ממתינים');
   var pendData = pendSheet.getDataRange().getValues();
   var name = '', phone = '', license = '', language = 'he', site = '', classroom = '', examinerName = '';
@@ -537,9 +538,10 @@ function handleDisqualify(p) {
   sheet.appendRow([
     todayStr(), p.idNumber, name, phone, license,
     '0/30', '0%', 'פסול', '', examinerName,
-    site, classroom, language, p.sessionCode,
+    site, classroom, language, String(p.sessionCode),
     attemptNum, '', false, true, ''
   ]);
+  SpreadsheetApp.flush();
   return jsonResponse({ status: 'ok' });
 }
 
