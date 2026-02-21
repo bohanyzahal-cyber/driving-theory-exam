@@ -272,12 +272,8 @@
       <p class="muted" style="margin:0 0 4px;">קוד הסשן — הודע לנבחנים:</p>
       <div class="session-code-display" id="sessionCodeDisplay">------</div>
       <div id="qrSection" style="display:none; margin-top:12px;">
-        <div id="qrLocalWarning" style="display:none; background:#fef3c7; border:1px solid #f59e0b; border-radius:8px; padding:8px 12px; margin-bottom:8px; font-size:12px; color:#92400e;">
-          ⚠️ הקובץ רץ מקובץ מקומי (file://) — QR לא יעבוד בטלפון.<br>
-          <b>פתרון:</b> הפעל את <code>start_server.bat</code> ופתח את הדף דרך הכתובת שיוצג שם.
-        </div>
         <p class="muted" style="margin:0 0 8px; font-size:13px;">או: סרקו את הברקוד עם הטלפון</p>
-        <canvas id="qrCanvas" style="margin:0 auto; display:block; border-radius:12px; border:3px solid #e2e8f0;"></canvas>
+        <img id="qrImage" style="display:block; margin:0 auto; width:200px; height:200px; border-radius:12px; border:3px solid #e2e8f0;" alt="QR Code">
         <div style="margin-top:8px;">
           <input type="text" id="examineeUrlInput" style="width:100%; max-width:400px; padding:8px 12px; border:1px solid #cbd5e1; border-radius:8px; font-size:12px; text-align:center; direction:ltr; color:#64748b;" readonly>
           <button onclick="copyExamineeUrl()" style="margin-top:4px; font-size:12px; padding:4px 14px; background:#64748b;">העתק קישור</button>
@@ -1226,57 +1222,19 @@
   function showQR(code) {
     var url = getExamineeUrl(code);
     var section = document.getElementById('qrSection');
-    var canvas = document.getElementById('qrCanvas');
+    var qrImg = document.getElementById('qrImage');
     var urlInput = document.getElementById('examineeUrlInput');
-    var localWarn = document.getElementById('qrLocalWarning');
     urlInput.value = url;
 
-    // Show warning if running from file://
-    if (window.location.protocol === 'file:' && !EXAMINEE_OVERRIDE_URL) {
-      localWarn.style.display = 'block';
-    } else {
-      localWarn.style.display = 'none';
-    }
-
-    function renderQR() {
-      // Generate QR using the CDN library
-      if (window.QRCode) {
-        QRCode.toCanvas(canvas, url, {
-          width: 200,
-          margin: 2,
-          color: { dark: '#0f172a', light: '#ffffff' }
-        }, function(err) {
-          if (err) { console.log('[QR] Error:', err); section.style.display = 'none'; return; }
-          section.style.display = 'block';
-        });
-      } else {
-        // Fallback: use an external QR API (works even without CDN)
-        var img = new Image();
-        img.crossOrigin = 'anonymous';
-        img.onload = function() {
-          canvas.width = 200; canvas.height = 200;
-          var ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0, 200, 200);
-          section.style.display = 'block';
-        };
-        img.onerror = function() { section.style.display = 'none'; };
-        img.src = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(url);
-      }
-    }
-
-    // If QR library not loaded yet, wait for it (CDN loads after main script)
-    if (!window.QRCode) {
-      var attempts = 0;
-      var waitForLib = setInterval(function() {
-        attempts++;
-        if (window.QRCode || attempts > 20) {
-          clearInterval(waitForLib);
-          renderQR();
-        }
-      }, 150);
-    } else {
-      renderQR();
-    }
+    // Simple: use Google Charts API to generate QR image (no CDN needed)
+    qrImg.src = 'https://chart.googleapis.com/chart?cht=qr&chs=300x300&chl=' + encodeURIComponent(url) + '&choe=UTF-8';
+    qrImg.onload = function() { section.style.display = 'block'; };
+    qrImg.onerror = function() {
+      // Fallback to qrserver API
+      qrImg.src = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=' + encodeURIComponent(url);
+      qrImg.onload = function() { section.style.display = 'block'; };
+      qrImg.onerror = function() { section.style.display = 'none'; };
+    };
   }
 
   window.copyExamineeUrl = function() {
@@ -1291,7 +1249,5 @@
 
 })();
 </script>
-<!-- QR Code library (qrcode.min.js from CDN, ~33KB) -->
-<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
 </body>
 </html>
