@@ -608,7 +608,6 @@
         showScreen('screenDashboard');
         startDashboardPolling();
         startCountdown();
-        showQR(sessionCode);
       } else {
         errEl.textContent = data.message || 'שגיאה ביצירת סשן';
         errEl.style.display = 'block';
@@ -634,6 +633,11 @@
     document.getElementById('modalLicense').value = currentLicense;
     document.getElementById('modalLanguage').value = currentLanguage;
     document.getElementById('modalAudio').value = currentAudioMode;
+
+    // Show QR code (always refresh when dashboard renders)
+    if (sessionCode && /^\d{6}$/.test(sessionCode)) {
+      showQR(sessionCode);
+    }
   }
 
   function startDashboardPolling() {
@@ -1191,7 +1195,6 @@
       showScreen('screenDashboard');
       startDashboardPolling();
       startCountdown();
-      showQR(sessionCode);
     } else {
       // Session expired — go to setup screen with examiner logged in
       document.getElementById('topbarInfo').textContent = examinerData.name;
