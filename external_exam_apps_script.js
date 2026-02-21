@@ -497,22 +497,10 @@ function handleExaminerDashboard(p) {
 }
 
 function handleDisqualify(p) {
-  var sheet = getSheet('תוצאות');
-  var data = sheet.getDataRange().getValues();
-  // Try to find existing result
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][13]) === String(p.sessionCode) && String(data[i][1]) === String(p.idNumber)) {
-      sheet.getRange(i + 1, 18).setValue(true);  // פסול? — column R (18)
-      sheet.getRange(i + 1, 8).setValue('פסול');
-      SpreadsheetApp.flush();
-      return jsonResponse({ status: 'ok' });
-    }
-  }
-  // Result not in תוצאות yet — examinee is still active/in_exam
-  // Update ממתינים status + create disqualified result
+  // ALWAYS remove from ממתינים first (so examinee leaves "active" list)
   var pendSheet = getSheet('ממתינים');
   var pendData = pendSheet.getDataRange().getValues();
-  var name = '', phone = '', license = '', language = 'he', site = '', classroom = '', examinerName = '';
+  var name = '', phone = '';
   for (var j = pendData.length - 1; j >= 1; j--) {
     if (String(pendData[j][0]) === String(p.sessionCode) && String(pendData[j][1]) === String(p.idNumber)) {
       name = pendData[j][2] || '';
@@ -521,9 +509,23 @@ function handleDisqualify(p) {
       break;
     }
   }
-  // Get session info for license/site/etc
+
+  // Check if result already exists in תוצאות
+  var sheet = getSheet('תוצאות');
+  var data = sheet.getDataRange().getValues();
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][13]) === String(p.sessionCode) && String(data[i][1]) === String(p.idNumber)) {
+      sheet.getRange(i + 1, 18).setValue(true);  // פסול? — column R (18)
+      sheet.getRange(i + 1, 8).setValue('פסול');
+      SpreadsheetApp.flush();
+      return jsonResponse({ status: 'ok' });
+    }
+  }
+
+  // No result yet — create disqualified result
   var sesSheet = getSheet('סשנים');
   var sesData = sesSheet.getDataRange().getValues();
+  var license = '', language = 'he', site = '', classroom = '', examinerName = '';
   for (var s = 1; s < sesData.length; s++) {
     if (String(sesData[s][0]).trim() === String(p.sessionCode).trim()) {
       examinerName = sesData[s][2] || '';
