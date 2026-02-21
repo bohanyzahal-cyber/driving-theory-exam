@@ -221,6 +221,8 @@ function doPost(e) {
       return handleSubmitResult(data);
     } else if (action === 'submitFailOnClose') {
       return handleSubmitFailOnClose(data);
+    } else if (action === 'submitWrongAnswers') {
+      return handleSubmitWrongAnswersBulk(data);
     } else {
       return jsonResponse({ status: 'error', message: 'Unknown POST action: ' + action });
     }
@@ -717,6 +719,29 @@ function handleSubmitWrongAnswers(p) {
         sheet.getRange(i + 1, 16).setValue(existing + chunk);
       }
       return jsonResponse({ status: 'ok' });
+    }
+  }
+  return jsonResponse({ status: 'error', message: 'Result row not found for wrong answers' });
+}
+
+function handleSubmitWrongAnswersBulk(data) {
+  // Receive ALL wrong answers in a single POST and write to result row
+  var sheet = getSheet('תוצאות');
+  var rows = sheet.getDataRange().getValues();
+  for (var i = rows.length - 1; i >= 1; i--) {
+    if (String(rows[i][13]) === String(data.sessionCode) && String(rows[i][1]) === String(data.idNumber)) {
+      var wrongDetails = '';
+      if (data.wrongAnswers && data.wrongAnswers.length > 0) {
+        for (var w = 0; w < data.wrongAnswers.length; w++) {
+          var item = data.wrongAnswers[w];
+          wrongDetails += 'שאלה: ' + item.question + '\n';
+          wrongDetails += 'תשובת הנבחן: ' + item.yourAnswer + '\n';
+          wrongDetails += 'תשובה נכונה: ' + item.correctAnswer + '\n\n';
+        }
+      }
+      sheet.getRange(i + 1, 16).setValue(wrongDetails);
+      SpreadsheetApp.flush();
+      return jsonResponse({ status: 'ok', count: data.wrongAnswers ? data.wrongAnswers.length : 0 });
     }
   }
   return jsonResponse({ status: 'error', message: 'Result row not found for wrong answers' });

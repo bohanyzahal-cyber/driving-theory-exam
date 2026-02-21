@@ -670,6 +670,7 @@
     }
 
     setupBeforeUnload();
+    setupTabSwitchDetection();
     startTimer();
     renderQuestion();
   }
@@ -722,6 +723,53 @@
         return e.returnValue;
       }
     });
+  }
+
+  // ========== Tab-switch detection — auto disqualify ==========
+  var tabSwitchCount = 0;
+  var TAB_SWITCH_LIMIT = 1; // פסילה אחרי יציאה אחת מהמסך
+
+  function setupTabSwitchDetection() {
+    document.addEventListener('visibilitychange', onTabSwitch);
+  }
+
+  function onTabSwitch() {
+    if (!examInProgress || examSubmitted) return;
+    if (document.visibilityState === 'hidden') {
+      tabSwitchCount++;
+      if (tabSwitchCount >= TAB_SWITCH_LIMIT) {
+        // Disqualify immediately
+        document.removeEventListener('visibilitychange', onTabSwitch);
+        stopSpeaking();
+        stopTimer();
+        examInProgress = false;
+        examSubmitted = true;
+
+        // Send disqualification to server
+        var params = {
+          action: 'disqualify',
+          sessionCode: sessionCode,
+          idNumber: examineeData.idNumber
+        };
+        var qs = [];
+        for (var k in params) {
+          if (params.hasOwnProperty(k)) qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
+        }
+        try { fetch(API_URL + '?' + qs.join('&'), { keepalive: true }); } catch(ex) {}
+
+        // Show disqualification screen
+        clearExamineeState();
+        var examArea = document.getElementById('examArea');
+        examArea.innerHTML =
+          '<div style="text-align:center; padding:40px 20px;">' +
+            '<div style="font-size:60px; margin-bottom:16px;">⛔</div>' +
+            '<h2 style="color:#dc2626; margin:0 0 12px;">המבחן נפסל</h2>' +
+            '<p style="color:#64748b; font-size:15px;">זוהה מעבר למסך אחר או אפליקציה אחרת.</p>' +
+            '<p style="color:#64748b; font-size:15px;">אין לצאת ממסך המבחן במהלך המבחן.</p>' +
+            '<p style="color:#94a3b8; font-size:13px; margin-top:20px;">פנה לבוחן לקבלת הנחיות.</p>' +
+          '</div>';
+      }
+    }
   }
 
   function getElapsedTimeStr() {
@@ -1507,35 +1555,18 @@
 
   function sendWrongAnswers(wrongData) {
     if (!wrongData || wrongData.length === 0) return;
-    // Send each wrong answer individually to avoid URL length limits with Hebrew text
-    console.log('[WRONG] Sending ' + wrongData.length + ' wrong answers one-by-one');
-    var sent = 0;
-    function sendNext() {
-      if (sent >= wrongData.length) {
-        console.log('[WRONG] All ' + wrongData.length + ' wrong answers sent');
-        return;
-      }
-      var w = wrongData[sent];
-      var idx = sent;
-      sent++;
-      apiGet({
-        action: 'submitWrongAnswers',
-        sessionCode: sessionCode,
-        idNumber: examineeData.idNumber,
-        question: w.question,
-        yourAnswer: w.yourAnswer,
-        correctAnswer: w.correctAnswer,
-        itemIndex: idx,
-        totalItems: wrongData.length
-      }).then(function(data) {
-        console.log('[WRONG] Item ' + idx + ' response:', JSON.stringify(data));
-        sendNext();
-      }).catch(function(err) {
-        console.log('[WRONG] Item ' + idx + ' error:', err);
-        sendNext(); // continue even on error
-      });
-    }
-    sendNext();
+    // Send ALL wrong answers in a single POST (no URL length limits)
+    console.log('[WRONG] Sending ' + wrongData.length + ' wrong answers via POST');
+    apiPost({
+      action: 'submitWrongAnswers',
+      sessionCode: sessionCode,
+      idNumber: examineeData.idNumber,
+      wrongAnswers: wrongData
+    }).then(function() {
+      console.log('[WRONG] POST sent successfully');
+    }).catch(function(err) {
+      console.log('[WRONG] POST error:', err);
+    });
   }
 
   function submitWithRetry(payload, retries, wrongData) {
