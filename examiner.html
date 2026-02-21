@@ -1181,6 +1181,20 @@
     } catch(e) {}
   }
 
+  // ========== QR Code for examinee access ==========
+  var EXAMINEE_OVERRIDE_URL = 'https://bohanyzahal-cyber.github.io/driving-theory-exam/examinee.html';
+
+  var EXAMINEE_BASE_URL = (function() {
+    if (EXAMINEE_OVERRIDE_URL) return EXAMINEE_OVERRIDE_URL;
+    var loc = window.location;
+    var path = loc.pathname.substring(0, loc.pathname.lastIndexOf('/') + 1);
+    return loc.protocol + '//' + loc.host + path + 'examinee.html';
+  })();
+
+  function getExamineeUrl(code) {
+    return EXAMINEE_BASE_URL + '?code=' + code;
+  }
+
   // ========== Auto-restore on page load ==========
   if (loadState()) {
     // We have a saved session — check if it's still valid
@@ -1200,23 +1214,6 @@
       showScreen('screenSetup');
       fetchSites();
     }
-  }
-
-  // ========== QR Code for examinee access ==========
-  // אם הקובץ רץ מקומית (file://) — הברקוד לא יעבוד בטלפון.
-  // פתרון 1: הפעל start_server.bat ופתח דרך http://
-  // פתרון 2: העלה ל-GitHub Pages ושנה את השורה הבאה:
-  var EXAMINEE_OVERRIDE_URL = 'https://bohanyzahal-cyber.github.io/driving-theory-exam/examinee.html';
-
-  var EXAMINEE_BASE_URL = (function() {
-    if (EXAMINEE_OVERRIDE_URL) return EXAMINEE_OVERRIDE_URL;
-    var loc = window.location;
-    var path = loc.pathname.substring(0, loc.pathname.lastIndexOf('/') + 1);
-    return loc.protocol + '//' + loc.host + path + 'examinee.html';
-  })();
-
-  function getExamineeUrl(code) {
-    return EXAMINEE_BASE_URL + '?code=' + code;
   }
 
   function showQR(code) {
