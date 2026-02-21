@@ -1223,7 +1223,7 @@
     return EXAMINEE_BASE_URL + '?code=' + code;
   }
 
-  window.showQR = function showQR(code) {
+  function showQR(code) {
     var url = getExamineeUrl(code);
     var section = document.getElementById('qrSection');
     var canvas = document.getElementById('qrCanvas');
