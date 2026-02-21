@@ -293,6 +293,7 @@
         <div class="spinner"></div>
         <h2>ממתין לאישור הבוחן...</h2>
         <p class="muted">הבוחן יאשר את הכניסה שלך. אנא המתן.</p>
+        <div id="approvalError" class="info-banner error" style="display:none; margin-top:12px;"></div>
       </div>
     </div>
     <!-- Phase B: instructions -->
@@ -439,7 +440,16 @@
       if (params.hasOwnProperty(k)) qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
     }
     qs.push('_t=' + Date.now());
-    return fetch(API_URL + '?' + qs.join('&'), { cache: 'no-store' }).then(function(r) { return r.json(); });
+    return fetch(API_URL + '?' + qs.join('&'), { cache: 'no-store' }).then(function(r) {
+      return r.text().then(function(txt) {
+        try {
+          return JSON.parse(txt);
+        } catch(e) {
+          console.log('[API] Failed to parse JSON. Response:', txt.substring(0, 300));
+          throw new Error('Invalid JSON response from server');
+        }
+      });
+    });
   }
 
   function apiPost(data) {
@@ -552,32 +562,62 @@
   });
 
   // ========== Screen 3: Waiting + Instructions ==========
+  var approvalFailCount = 0;
+
+  function doCheckApproval() {
+    apiGet({
+      action: 'checkApproval',
+      sessionCode: sessionCode,
+      idNumber: examineeData.idNumber
+    }).then(function(data) {
+      approvalFailCount = 0; // reset on success
+      console.log('[APPROVAL] Response:', JSON.stringify(data));
+      // Hide error banner on success
+      var errBanner = document.getElementById('approvalError');
+      if (errBanner) errBanner.style.display = 'none';
+
+      if (data.status === 'ok') {
+        if (data.approval === 'approved') {
+          clearInterval(approvalInterval); approvalInterval = null;
+          showInstructions();
+        } else if (data.approval === 'rejected') {
+          clearInterval(approvalInterval); approvalInterval = null;
+          document.getElementById('waitingPhase').style.display = 'none';
+          document.getElementById('rejectedMsg').style.display = 'block';
+        }
+        // else still 'waiting' — continue polling
+      } else {
+        console.log('[APPROVAL] Non-ok status:', data.message);
+        // If registration not found, show helpful message
+        approvalFailCount++;
+        if (approvalFailCount >= 3) {
+          showApprovalError('בעיית תקשורת. נסה לרענן את הדף.');
+        }
+      }
+    }).catch(function(err) {
+      approvalFailCount++;
+      console.log('[APPROVAL] Error (fail #' + approvalFailCount + '):', err);
+      if (approvalFailCount >= 3) {
+        showApprovalError('בעיית תקשורת עם השרת. נסה לרענן את הדף.');
+      }
+    });
+  }
+
+  function showApprovalError(msg) {
+    var errBanner = document.getElementById('approvalError');
+    if (errBanner) {
+      errBanner.textContent = msg;
+      errBanner.style.display = 'block';
+    }
+  }
+
   function startApprovalPolling() {
     console.log('[APPROVAL] Starting polling for session=' + sessionCode + ' id=' + examineeData.idNumber);
-    approvalInterval = setInterval(function() {
-      apiGet({
-        action: 'checkApproval',
-        sessionCode: sessionCode,
-        idNumber: examineeData.idNumber
-      }).then(function(data) {
-        console.log('[APPROVAL] Response:', JSON.stringify(data));
-        if (data.status === 'ok') {
-          if (data.approval === 'approved') {
-            clearInterval(approvalInterval); approvalInterval = null;
-            showInstructions();
-          } else if (data.approval === 'rejected') {
-            clearInterval(approvalInterval); approvalInterval = null;
-            document.getElementById('waitingPhase').style.display = 'none';
-            document.getElementById('rejectedMsg').style.display = 'block';
-          }
-          // else still 'waiting' — continue polling
-        } else {
-          console.log('[APPROVAL] Non-ok status:', data.message);
-        }
-      }).catch(function(err) {
-        console.log('[APPROVAL] Error:', err);
-      });
-    }, 5000);
+    approvalFailCount = 0;
+    // Immediate first check — don't wait 5 seconds
+    doCheckApproval();
+    // Then poll every 5 seconds
+    approvalInterval = setInterval(doCheckApproval, 5000);
   }
 
   // Load translation file dynamically if needed
