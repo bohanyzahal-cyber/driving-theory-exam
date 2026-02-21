@@ -726,8 +726,7 @@
   }
 
   // ========== Tab-switch detection — auto disqualify ==========
-  var tabSwitchCount = 0;
-  var TAB_SWITCH_LIMIT = 1; // פסילה אחרי יציאה אחת מהמסך
+  var tabSwitchTriggered = false;
 
   function setupTabSwitchDetection() {
     document.addEventListener('visibilitychange', onTabSwitch);
@@ -735,40 +734,43 @@
 
   function onTabSwitch() {
     if (!examInProgress || examSubmitted) return;
+
     if (document.visibilityState === 'hidden') {
-      tabSwitchCount++;
-      if (tabSwitchCount >= TAB_SWITCH_LIMIT) {
-        // Disqualify immediately
-        document.removeEventListener('visibilitychange', onTabSwitch);
-        stopSpeaking();
-        stopTimer();
-        examInProgress = false;
-        examSubmitted = true;
+      // Mark for disqualification — will execute when user returns
+      tabSwitchTriggered = true;
+    }
 
-        // Send disqualification to server
-        var params = {
-          action: 'disqualify',
-          sessionCode: sessionCode,
-          idNumber: examineeData.idNumber
-        };
-        var qs = [];
-        for (var k in params) {
-          if (params.hasOwnProperty(k)) qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
-        }
-        try { fetch(API_URL + '?' + qs.join('&'), { keepalive: true }); } catch(ex) {}
+    if (document.visibilityState === 'visible' && tabSwitchTriggered) {
+      // User came back — disqualify now (fetch works reliably when tab is visible)
+      tabSwitchTriggered = false;
+      document.removeEventListener('visibilitychange', onTabSwitch);
+      stopSpeaking();
+      stopTimer();
+      examInProgress = false;
+      examSubmitted = true;
 
-        // Show disqualification screen
-        clearExamineeState();
-        var examArea = document.getElementById('examArea');
-        examArea.innerHTML =
-          '<div style="text-align:center; padding:40px 20px;">' +
-            '<div style="font-size:60px; margin-bottom:16px;">⛔</div>' +
-            '<h2 style="color:#dc2626; margin:0 0 12px;">המבחן נפסל</h2>' +
-            '<p style="color:#64748b; font-size:15px;">זוהה מעבר למסך אחר או אפליקציה אחרת.</p>' +
-            '<p style="color:#64748b; font-size:15px;">אין לצאת ממסך המבחן במהלך המבחן.</p>' +
-            '<p style="color:#94a3b8; font-size:13px; margin-top:20px;">פנה לבוחן לקבלת הנחיות.</p>' +
-          '</div>';
-      }
+      // Send disqualification to server (reliable — tab is visible)
+      apiGet({
+        action: 'disqualify',
+        sessionCode: sessionCode,
+        idNumber: examineeData.idNumber
+      }).then(function(data) {
+        console.log('[DQ] Disqualify response:', JSON.stringify(data));
+      }).catch(function(err) {
+        console.log('[DQ] Disqualify error:', err);
+      });
+
+      // Show disqualification screen
+      clearExamineeState();
+      var examArea = document.getElementById('examArea');
+      examArea.innerHTML =
+        '<div style="text-align:center; padding:40px 20px;">' +
+          '<div style="font-size:60px; margin-bottom:16px;">⛔</div>' +
+          '<h2 style="color:#dc2626; margin:0 0 12px;">המבחן נפסל</h2>' +
+          '<p style="color:#64748b; font-size:15px;">זוהה מעבר למסך אחר או אפליקציה אחרת.</p>' +
+          '<p style="color:#64748b; font-size:15px;">אין לצאת ממסך המבחן במהלך המבחן.</p>' +
+          '<p style="color:#94a3b8; font-size:13px; margin-top:20px;">פנה לבוחן לקבלת הנחיות.</p>' +
+        '</div>';
     }
   }
 
