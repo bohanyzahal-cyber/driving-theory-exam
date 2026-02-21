@@ -1,0 +1,1629 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>מבחן תאוריה חיצוני</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, 'Segoe UI', Arial, sans-serif;
+      margin: 0; background: #f0f4f8; color: #1e293b; line-height: 1.5;
+      -webkit-user-select: none; user-select: none;
+      -webkit-touch-callout: none;
+    }
+    a { color: inherit; }
+
+    .topbar {
+      display: flex; gap: 12px; align-items: center; justify-content: space-between;
+      padding: 14px 20px; background: linear-gradient(135deg, #1a73e8, #0d47a1);
+      color: white; position: sticky; top: 0; z-index: 100; flex-wrap: wrap;
+    }
+    .topbar h1 { margin: 0; font-size: 1.3em; }
+    .topbar .sub { font-size: 0.75em; opacity: 0.85; }
+
+    .container { max-width: 860px; margin: 0 auto; padding: 20px 16px; }
+
+    .card {
+      background: white; border: 1px solid #e2e8f0; border-radius: 16px;
+      padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .card h2 { margin: 0 0 6px; font-size: 1.3em; color: #0f172a; }
+    .muted { opacity: 0.7; font-size: 14px; }
+
+    label { display: grid; gap: 6px; font-size: 14px; font-weight: 600; }
+    select, input[type="text"], input[type="tel"], input[type="password"] {
+      background: #f8fafc; color: #1e293b; border: 1px solid #cbd5e1;
+      border-radius: 10px; padding: 10px 12px; font-size: 16px; width: 100%;
+      -webkit-user-select: text; user-select: text;
+    }
+
+    button {
+      background: #1a73e8; border: none; color: white; padding: 10px 16px;
+      border-radius: 10px; cursor: pointer; font-size: 15px; font-weight: 700;
+      transition: all 0.15s;
+    }
+    button:hover { filter: brightness(1.1); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .screen { display: none; }
+    .screen.active { display: block; }
+
+    .form-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px; margin: 14px 0;
+    }
+    .required::after { content: ' *'; color: #ef4444; }
+    .form-error { color: #ef4444; font-size: 13px; margin-top: 4px; display: none; }
+
+    .code-input {
+      font-size: 2.5rem; font-weight: 900; text-align: center; letter-spacing: 12px;
+      padding: 16px; direction: ltr; max-width: 320px; margin: 0 auto; display: block;
+    }
+
+    .info-banner {
+      background: #eff6ff; border: 1px solid #93c5fd; border-radius: 10px;
+      padding: 10px 14px; font-size: 13px; color: #1e40af; margin: 8px 0;
+    }
+    .info-banner.warn { background: #fffbeb; border-color: #fcd34d; color: #92400e; }
+    .info-banner.success { background: #dcfce7; border-color: #86efac; color: #166534; }
+    .info-banner.error { background: #fef2f2; border-color: #fca5a5; color: #991b1b; }
+
+    /* Spinner */
+    .spinner-wrap { text-align: center; padding: 40px 20px; }
+    .spinner {
+      width: 48px; height: 48px; border: 5px solid #e2e8f0; border-top-color: #1a73e8;
+      border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 16px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Instructions */
+    .instruction-list { list-style: none; padding: 0; margin: 16px 0; }
+    .instruction-list li {
+      padding: 10px 14px; margin-bottom: 8px; border-radius: 10px;
+      background: #f8fafc; border: 1px solid #e2e8f0; font-size: 14px; font-weight: 600;
+    }
+    .instruction-list li .icon { margin-left: 8px; }
+    .session-info-box {
+      background: #0f172a; color: #f8fafc; border-radius: 12px; padding: 14px 18px;
+      margin: 12px 0; font-size: 14px;
+    }
+    .session-info-box .label { color: #94a3b8; font-size: 12px; }
+    .session-info-box .value { font-weight: 700; font-size: 16px; }
+
+    .btn-start-exam {
+      display: block; width: 100%; padding: 16px; font-size: 18px; font-weight: 800;
+      background: linear-gradient(135deg, #16a34a, #15803d); border-radius: 12px;
+      color: white; border: none; cursor: pointer; margin-top: 16px;
+    }
+    .btn-start-exam:hover { filter: brightness(1.1); }
+
+    /* Exam styles */
+    .settings-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px; margin: 14px 0;
+    }
+    .btn-audio {
+      display: inline-flex; align-items: center; gap: 8px; padding: 12px 20px;
+      border-radius: 12px; font-size: 16px; font-weight: 800; cursor: pointer;
+      border: none; transition: all 0.2s;
+    }
+    .btn-speak {
+      background: linear-gradient(135deg, #1a73e8, #1557b0); color: white; font-size: 18px;
+    }
+    .btn-speak:hover { background: linear-gradient(135deg, #1557b0, #0d47a1); }
+    .btn-speak.speaking {
+      background: linear-gradient(135deg, #f59e0b, #d97706); animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.03); } }
+    .btn-stop { background: #ef4444; color: white; }
+    .btn-stop:hover { background: #dc2626; }
+
+    .speed-control {
+      display: flex; align-items: center; gap: 8px; margin: 10px 0; padding: 10px 14px;
+      background: #eef2ff; border-radius: 10px; border: 1px solid #c7d2fe;
+    }
+    .speed-control label { margin: 0; font-size: 14px; white-space: nowrap; display: inline; }
+    .speed-control input[type="range"] { flex: 1; min-width: 120px; }
+    .speed-val { font-weight: 800; min-width: 40px; text-align: center; }
+
+    .question-audio-card {
+      background: #f8fafc; border-radius: 14px; padding: 1.2rem 1.4rem;
+      border: 1px solid #e2e8f0; margin-top: 1rem;
+    }
+    .q-number { font-size: 13px; color: #64748b; margin-bottom: 6px; }
+    .q-text { font-size: 1.15rem; font-weight: 700; line-height: 1.6; margin-bottom: 16px; color: #0f172a; }
+    .q-image {
+      display: block; max-width: 100%; max-height: 320px; border-radius: 10px;
+      border: 2px solid #e2e8f0; margin: 10px auto 16px; object-fit: contain; background: #fff;
+    }
+    .answers-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+    .answer-audio-btn {
+      width: 100%; text-align: right; padding: 14px 16px; border-radius: 12px;
+      border: 2px solid #e2e8f0; background: white; color: #1e293b;
+      font-size: 15px; font-weight: 600; cursor: pointer; transition: all 0.15s; line-height: 1.5;
+    }
+    .answer-audio-btn:hover:not(:disabled):not(.selected) { background: #eef2ff; border-color: #1a73e8; }
+    .answer-audio-btn:disabled { cursor: not-allowed; opacity: 0.7; }
+    .answer-audio-btn.selected { background: #dbeafe; border-color: #3b82f6; }
+    .answer-audio-btn .ans-prefix {
+      display: inline-block; width: 26px; height: 26px; line-height: 26px;
+      text-align: center; border-radius: 50%; background: #e2e8f0;
+      color: #475569; font-size: 13px; font-weight: 800; margin-left: 10px;
+    }
+    .listen-btn {
+      padding: 4px 6px; font-size: 13px; min-width: 32px; width: 32px; height: 32px;
+      border-radius: 8px; border: 1px solid #cbd5e1; background: #f1f5f9;
+      cursor: pointer; flex-shrink: 0; align-self: center;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .listen-btn:hover { background: #e2e8f0; }
+    .exam-progress { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
+    .progress-bar { flex: 1; height: 8px; background: #e2e8f0; border-radius: 999px; overflow: hidden; }
+    .progress-fill { height: 100%; background: #1a73e8; border-radius: 999px; transition: width 0.3s; }
+    .progress-text { font-size: 13px; font-weight: 700; color: #64748b; white-space: nowrap; }
+    .timer-bar {
+      display: flex; align-items: center; gap: 10px; padding: 8px 14px;
+      background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; margin-bottom: 8px;
+    }
+    .timer-bar .timer-icon { font-size: 18px; }
+    .timer-bar .timer-text { font-size: 15px; font-weight: 700; color: #1e293b; direction: ltr; }
+    .timer-bar.warn-time .timer-text { color: #dc2626; }
+    .timer-bar.warn-time { border-color: #fca5a5; background: #fef2f2; }
+
+    /* Question map */
+    .q-map {
+      display: flex; flex-wrap: wrap; gap: 4px; justify-content: center;
+      padding: 8px 10px; background: #f8fafc; border-radius: 10px;
+      border: 1px solid #e2e8f0; margin-bottom: 8px;
+    }
+    .q-map-btn {
+      width: 32px; height: 32px; border-radius: 6px; border: 2px solid #e2e8f0;
+      background: white; color: #64748b; font-size: 12px; font-weight: 700;
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+      transition: all 0.15s; padding: 0;
+    }
+    .q-map-btn.answered { background: #dcfce7; border-color: #86efac; color: #166534; }
+    .q-map-btn.current { background: #dbeafe; border-color: #3b82f6; color: #1e40af; }
+    .q-map-btn.unanswered { background: white; border-color: #e2e8f0; color: #94a3b8; }
+
+    /* Navigation buttons */
+    .nav-row {
+      display: flex; justify-content: space-between; align-items: center; gap: 8px;
+      margin-top: 16px; padding-top: 12px; border-top: 1px solid #e2e8f0;
+    }
+    .nav-btn {
+      padding: 10px 20px; border-radius: 10px; font-size: 15px; font-weight: 700;
+      cursor: pointer; border: none; color: white; min-width: 100px;
+    }
+    .nav-prev { background: #64748b; }
+    .nav-prev:hover { background: #475569; }
+    .nav-next { background: #1a73e8; }
+    .nav-next:hover { background: #1557b0; }
+    .nav-review { background: linear-gradient(135deg, #f59e0b, #d97706); }
+    .nav-review:hover { filter: brightness(1.1); }
+    .nav-finish { background: linear-gradient(135deg, #16a34a, #15803d); font-size: 17px; }
+    .nav-finish:hover { filter: brightness(1.1); }
+
+    /* Review screen */
+    .review-grid {
+      display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px;
+      margin: 20px 0;
+    }
+    .review-cell {
+      aspect-ratio: 1; border-radius: 10px; display: flex; align-items: center;
+      justify-content: center; font-size: 16px; font-weight: 800; cursor: pointer;
+      border: 2px solid transparent; transition: all 0.15s;
+    }
+    .review-cell.done { background: #dcfce7; border-color: #86efac; color: #166534; }
+    .review-cell.not-done { background: #fef2f2; border-color: #fca5a5; color: #991b1b; }
+    .review-cell:hover { filter: brightness(0.95); transform: scale(1.05); }
+
+    .exam-done {
+      text-align: center; padding: 60px 20px;
+      background: #f8fafc; border-radius: 14px; border: 1px solid #e2e8f0; margin-top: 1rem;
+    }
+    .exam-done h2 { font-size: 1.8em; margin-bottom: 16px; color: #0f172a; }
+    .exam-done p { font-size: 1.1em; color: #475569; margin: 8px 0; }
+
+    footer {
+      text-align: center; padding: 20px; font-size: 13px; color: #94a3b8;
+      border-top: 1px solid #e2e8f0; margin-top: 30px;
+    }
+  </style>
+</head>
+<body>
+
+<header class="topbar">
+  <div>
+    <h1>מבחן תאוריה חיצוני</h1>
+    <div class="sub" id="topbarSub">הכנס קוד סשן כדי להתחיל</div>
+  </div>
+</header>
+
+<main class="container">
+
+  <!-- ===== Screen 1: Session Code ===== -->
+  <section class="card screen active" id="screenCode">
+    <h2>הכנס קוד סשן</h2>
+    <p class="muted">קבל את הקוד מהבוחן שלך</p>
+    <div style="margin:20px 0;">
+      <input type="text" id="sessionCodeInput" class="code-input" maxlength="6" inputmode="numeric" pattern="[0-9]*" placeholder="------" autocomplete="off">
+    </div>
+    <div class="form-error" id="codeError" style="text-align:center;">קוד לא תקין</div>
+    <div class="info-banner error" id="codeApiError" style="display:none;"></div>
+    <button id="codeSubmitBtn" style="display:block; width:100%; padding:14px; font-size:17px; margin-top:12px;">המשך</button>
+  </section>
+
+  <!-- ===== Screen 2: Identification ===== -->
+  <section class="card screen" id="screenIdForm">
+    <h2>הזדהות נבחן</h2>
+    <p class="muted">יש למלא את כל השדות</p>
+    <div class="form-grid">
+      <label>
+        <span class="required">תעודת זהות</span>
+        <input type="text" id="idNumber" placeholder="123456789" maxlength="9" inputmode="numeric" pattern="[0-9]*" autocomplete="off">
+        <div class="form-error" id="idError">יש להזין 9 ספרות</div>
+      </label>
+      <label>
+        <span class="required">שם פרטי</span>
+        <input type="text" id="firstName" placeholder="ישראל" autocomplete="off">
+        <div class="form-error" id="firstNameError">שדה חובה</div>
+      </label>
+      <label>
+        <span class="required">שם משפחה</span>
+        <input type="text" id="lastName" placeholder="ישראלי" autocomplete="off">
+        <div class="form-error" id="lastNameError">שדה חובה</div>
+      </label>
+      <label>
+        <span class="required">מספר טלפון</span>
+        <input type="tel" id="phoneNumber" placeholder="050-1234567" maxlength="11" inputmode="tel" autocomplete="off">
+        <div class="form-error" id="phoneError">יש להזין מספר טלפון תקין</div>
+      </label>
+    </div>
+    <div class="info-banner error" id="registerError" style="display:none;"></div>
+    <button id="registerBtn" style="display:block; width:100%; padding:14px; font-size:17px; margin-top:12px;">הירשם למבחן</button>
+  </section>
+
+  <!-- ===== Screen 3: Waiting + Instructions ===== -->
+  <section class="card screen" id="screenInstructions">
+    <!-- Phase A: waiting -->
+    <div id="waitingPhase">
+      <div class="spinner-wrap">
+        <div class="spinner"></div>
+        <h2>ממתין לאישור הבוחן...</h2>
+        <p class="muted">הבוחן יאשר את הכניסה שלך. אנא המתן.</p>
+      </div>
+    </div>
+    <!-- Phase B: instructions -->
+    <div id="instructionsPhase" style="display:none;">
+      <h2>הוראות לפני המבחן</h2>
+      <ul class="instruction-list">
+        <li><span class="icon">&#x1F4DD;</span> המבחן כולל 30 שאלות. יש לענות נכון על לפחות 26 כדי לעבור.</li>
+        <li><span class="icon">&#x23F1;</span> זמן המבחן: 40 דקות.</li>
+        <li><span class="icon">&#x1F6AB;</span> <strong>אסור לסגור את הדפדפן</strong> במהלך המבחן. סגירה = נכשל אוטומטית.</li>
+        <li><span class="icon">&#x1F6AB;</span> אסור להעתיק, לצלם מסך או להשתמש בחומר עזר.</li>
+        <li><span class="icon">&#x1F504;</span> ניתן לחזור לשאלות קודמות ולשנות תשובות. יש ללחוץ "סיים מבחן" בסוף.</li>
+        <li><span class="icon">&#x1F4E9;</span> התוצאות יימסרו לך ע"י הבוחן, ולא יוצגו על המסך.</li>
+      </ul>
+      <div id="audioModeNotice" style="display:none;" class="info-banner">המבחן כולל הקראה בקול. ודא שהרמקול/אוזניות פעילים.</div>
+      <div class="session-info-box">
+        <div style="display:flex; gap:20px; flex-wrap:wrap;">
+          <div><span class="label">דרגת רישיון:</span><br><span class="value" id="infoLicense"></span></div>
+          <div><span class="label">שפה:</span><br><span class="value" id="infoLanguage"></span></div>
+          <div><span class="label">אתר:</span><br><span class="value" id="infoSite"></span></div>
+        </div>
+      </div>
+      <button class="btn-start-exam" id="startExamBtn">התחל מבחן</button>
+    </div>
+    <div class="info-banner error" id="rejectedMsg" style="display:none;">הבוחן דחה את הכניסה שלך. פנה לבוחן.</div>
+  </section>
+
+  <!-- ===== Screen 4: Exam ===== -->
+  <div class="screen" id="screenExam">
+    <div id="examArea"></div>
+  </div>
+
+  <!-- ===== Screen 5: Done ===== -->
+  <section class="card screen" id="screenDone">
+    <div class="exam-done">
+      <h2>המבחן הסתיים</h2>
+      <p>תודה, <strong id="doneNameDisplay"></strong>.</p>
+      <p>התוצאות יימסרו לך ע"י הבוחן.</p>
+      <p class="muted">ניתן לפנות את המקום.</p>
+      <div id="doneTimeUpMsg" style="display:none;"></div>
+    </div>
+  </section>
+
+</main>
+
+<footer>מבחן תאוריה חיצוני</footer>
+
+<script src="questions.js"></script>
+<script>
+(function() {
+  'use strict';
+
+  // ========== Anti-cheat ==========
+  document.addEventListener('contextmenu', function(e) { e.preventDefault(); }, true);
+  document.addEventListener('copy', function(e) { e.preventDefault(); }, true);
+  document.addEventListener('cut', function(e) { e.preventDefault(); }, true);
+  document.addEventListener('selectstart', function(e) {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+    e.preventDefault();
+  }, true);
+
+  // ========== CONFIG ==========
+  // *** שנה את ה-URL הזה ל-URL של ה-Apps Script החדש ***
+  var API_URL = 'https://script.google.com/macros/s/AKfycbz_Lqn1Y_8iai6FmHV7V1xJlF4UCWc0rR8CkpKS37BqfZxelKvwQSIY4Y-KYghH0VSCBA/exec';
+
+  var TOTAL_QUESTIONS = 30;
+  var PASS_SCORE = 26;
+  var EXAM_TIME_MINUTES = 40;
+  var ANSWER_LABELS = ['\u05d0', '\u05d1', '\u05d2', '\u05d3'];
+
+  var EXAM_STRUCTURE = {
+    'B':  { '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA': 7, '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1': 7, '\u05D7\u05D5\u05E7': 7, '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD': 9 },
+    '1':  { '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA': 5, '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1': 5, '\u05D7\u05D5\u05E7': 6, '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD': 6, '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9': 8 },
+    'C1': { '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA': 5, '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1': 5, '\u05D7\u05D5\u05E7': 5, '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD': 5, '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9': 10 },
+    'C':  { '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA': 5, '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1': 4, '\u05D7\u05D5\u05E7': 3, '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD': 4, '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9': 14 },
+    'D':  { '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA': 4, '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1': 2, '\u05D7\u05D5\u05E7': 5, '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD': 4, '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9': 15 }
+  };
+
+  var LICENSE_LABELS = { 'B': 'B (פרטי)', '1': '1 (טרקטור)', 'C1': 'C1 (משא קל)', 'C': 'C/E (משא כבד)', 'D': 'D (ציבורי)' };
+  var LANG_LABELS = { 'he': 'עברית', 'ru': 'רוסית', 'en': 'אנגלית', 'ar': 'ערבית', 'fr': 'צרפתית', 'es': 'ספרדית' };
+
+  // ========== State ==========
+  var sessionCode = '';
+  var sessionData = {};
+  var examineeData = { idNumber: '', fullName: '', phone: '' };
+  var activeQuestions = [];
+  var currentIndex = 0;
+  var userAnswers = [];
+  var shuffledOrders = [];  // stores {order: [], correctIdx: N} per question
+  var timerInterval = null;
+  var timeRemaining = EXAM_TIME_MINUTES * 60;
+  var examStartTime = null;
+  var examInProgress = false;
+  var examSubmitted = false;
+  var approvalInterval = null;
+
+  // TTS state
+  var speechRate = 0.9;
+  var voiceGender = 'female';
+  var autoReadEnabled = true;
+  var isSpeaking = false;
+  var questionParts = [], questionPartIndex = 0;
+  var currentAudio = null;
+  var audioQueue = [];
+  var ttsEngine = 'google';
+  var hebrewVoice = null;
+  var audioUnlocked = false;
+  var webspeechConfirmed = false;
+
+  // ========== Session persistence ==========
+  function saveExamineeState(screen) {
+    try {
+      sessionStorage.setItem('ext_examinee_state', JSON.stringify({
+        sessionCode: sessionCode,
+        sessionData: sessionData,
+        examineeData: examineeData,
+        screen: screen || 'screenCode'
+      }));
+    } catch(e) {}
+  }
+
+  function loadExamineeState() {
+    try {
+      var saved = sessionStorage.getItem('ext_examinee_state');
+      if (!saved) return null;
+      return JSON.parse(saved);
+    } catch(e) { return null; }
+  }
+
+  function clearExamineeState() {
+    try { sessionStorage.removeItem('ext_examinee_state'); } catch(e) {}
+  }
+
+  // ========== Screen management ==========
+  function showScreen(id) {
+    var screens = document.querySelectorAll('.screen');
+    for (var i = 0; i < screens.length; i++) screens[i].classList.remove('active');
+    document.getElementById(id).classList.add('active');
+  }
+
+  // ========== API Helper ==========
+  function apiGet(params) {
+    var qs = [];
+    for (var k in params) {
+      if (params.hasOwnProperty(k)) qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
+    }
+    qs.push('_t=' + Date.now());
+    return fetch(API_URL + '?' + qs.join('&'), { cache: 'no-store' }).then(function(r) { return r.json(); });
+  }
+
+  function apiPost(data) {
+    return fetch(API_URL, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify(data)
+    });
+  }
+
+  // ========== Screen 1: Session Code ==========
+  var codeInput = document.getElementById('sessionCodeInput');
+  var codeError = document.getElementById('codeError');
+  var codeApiError = document.getElementById('codeApiError');
+  var codeSubmitBtn = document.getElementById('codeSubmitBtn');
+
+  codeSubmitBtn.addEventListener('click', function() {
+    codeError.style.display = 'none';
+    codeApiError.style.display = 'none';
+    var code = codeInput.value.trim();
+    if (!/^\d{6}$/.test(code)) { codeError.style.display = 'block'; return; }
+
+    codeSubmitBtn.disabled = true;
+    codeSubmitBtn.textContent = 'בודק...';
+
+    apiGet({ action: 'getSessionInfo', sessionCode: code }).then(function(data) {
+      codeSubmitBtn.disabled = false;
+      codeSubmitBtn.textContent = 'המשך';
+      if (data.status === 'ok') {
+        sessionCode = code;
+        sessionData = data.session;
+        // Ensure license is string (Google Sheets may return number for "1")
+        sessionData.license = String(sessionData.license || 'B');
+        document.getElementById('topbarSub').textContent = sessionData.site + ' | ' + (LICENSE_LABELS[sessionData.license] || sessionData.license);
+        saveExamineeState('screenIdForm');
+        showScreen('screenIdForm');
+      } else {
+        codeApiError.textContent = data.message || 'קוד לא תקין';
+        codeApiError.style.display = 'block';
+      }
+    }).catch(function() {
+      codeSubmitBtn.disabled = false;
+      codeSubmitBtn.textContent = 'המשך';
+      codeApiError.textContent = 'שגיאת תקשורת. נסה שוב.';
+      codeApiError.style.display = 'block';
+    });
+  });
+
+  // ========== Screen 2: ID Form ==========
+  var registerBtn = document.getElementById('registerBtn');
+  var registerError = document.getElementById('registerError');
+
+  function validateIdForm() {
+    var valid = true;
+    var id = document.getElementById('idNumber').value.trim();
+    var idErr = document.getElementById('idError');
+    if (!/^\d{9}$/.test(id)) { idErr.style.display = 'block'; valid = false; } else { idErr.style.display = 'none'; }
+
+    var fn = document.getElementById('firstName').value.trim();
+    var fnErr = document.getElementById('firstNameError');
+    if (!fn) { fnErr.style.display = 'block'; valid = false; } else { fnErr.style.display = 'none'; }
+
+    var ln = document.getElementById('lastName').value.trim();
+    var lnErr = document.getElementById('lastNameError');
+    if (!ln) { lnErr.style.display = 'block'; valid = false; } else { lnErr.style.display = 'none'; }
+
+    var ph = document.getElementById('phoneNumber').value.trim().replace(/[^0-9]/g, '');
+    var phErr = document.getElementById('phoneError');
+    if (ph.length < 9 || ph.length > 10) { phErr.style.display = 'block'; valid = false; } else { phErr.style.display = 'none'; }
+
+    if (valid) {
+      examineeData.idNumber = id;
+      examineeData.fullName = fn + ' ' + ln;
+      examineeData.phone = document.getElementById('phoneNumber').value.trim();
+    }
+    return valid;
+  }
+
+  registerBtn.addEventListener('click', function() {
+    registerError.style.display = 'none';
+    if (!validateIdForm()) return;
+
+    registerBtn.disabled = true;
+    registerBtn.textContent = 'נרשם...';
+
+    apiGet({
+      action: 'registerExaminee',
+      sessionCode: sessionCode,
+      idNumber: examineeData.idNumber,
+      fullName: examineeData.fullName,
+      phone: examineeData.phone
+    }).then(function(data) {
+      registerBtn.disabled = false;
+      registerBtn.textContent = 'הירשם למבחן';
+      if (data.status === 'ok') {
+        saveExamineeState('screenInstructions');
+        showScreen('screenInstructions');
+        startApprovalPolling();
+      } else {
+        registerError.textContent = data.message || 'שגיאה ברישום';
+        registerError.style.display = 'block';
+      }
+    }).catch(function() {
+      registerBtn.disabled = false;
+      registerBtn.textContent = 'הירשם למבחן';
+      registerError.textContent = 'שגיאת תקשורת. נסה שוב.';
+      registerError.style.display = 'block';
+    });
+  });
+
+  // ========== Screen 3: Waiting + Instructions ==========
+  function startApprovalPolling() {
+    console.log('[APPROVAL] Starting polling for session=' + sessionCode + ' id=' + examineeData.idNumber);
+    approvalInterval = setInterval(function() {
+      apiGet({
+        action: 'checkApproval',
+        sessionCode: sessionCode,
+        idNumber: examineeData.idNumber
+      }).then(function(data) {
+        console.log('[APPROVAL] Response:', JSON.stringify(data));
+        if (data.status === 'ok') {
+          if (data.approval === 'approved') {
+            clearInterval(approvalInterval); approvalInterval = null;
+            showInstructions();
+          } else if (data.approval === 'rejected') {
+            clearInterval(approvalInterval); approvalInterval = null;
+            document.getElementById('waitingPhase').style.display = 'none';
+            document.getElementById('rejectedMsg').style.display = 'block';
+          }
+          // else still 'waiting' — continue polling
+        } else {
+          console.log('[APPROVAL] Non-ok status:', data.message);
+        }
+      }).catch(function(err) {
+        console.log('[APPROVAL] Error:', err);
+      });
+    }, 5000);
+  }
+
+  // Load translation file dynamically if needed
+  var translationLoaded = false;
+  function loadTranslationFile(lang, callback) {
+    if (lang === 'he' || lang === 'ru') {
+      // Hebrew uses base questions, Russian has separate entries in questions.js
+      translationLoaded = true;
+      if (callback) callback();
+      return;
+    }
+    var fileName = 'questions_' + lang + '.js';
+    console.log('[TRANS] Loading translation file: ' + fileName);
+    var script = document.createElement('script');
+    script.src = fileName;
+    script.onload = function() {
+      console.log('[TRANS] Loaded ' + fileName + ' successfully');
+      translationLoaded = true;
+      if (callback) callback();
+    };
+    script.onerror = function() {
+      console.log('[TRANS] ERROR loading ' + fileName + ', falling back to Hebrew');
+      translationLoaded = true; // continue without translation (will use Hebrew fallback)
+      if (callback) callback();
+    };
+    document.head.appendChild(script);
+  }
+
+  function showInstructions() {
+    document.getElementById('waitingPhase').style.display = 'none';
+    document.getElementById('instructionsPhase').style.display = 'block';
+
+    document.getElementById('infoLicense').textContent = LICENSE_LABELS[sessionData.license] || sessionData.license;
+    document.getElementById('infoLanguage').textContent = LANG_LABELS[sessionData.language] || sessionData.language;
+    document.getElementById('infoSite').textContent = sessionData.site || '';
+
+    if (sessionData.audioMode === 'on') {
+      document.getElementById('audioModeNotice').style.display = 'block';
+    }
+
+    // Pre-load translation file so it's ready when exam starts
+    loadTranslationFile(sessionData.language || 'he');
+  }
+
+  // ========== Start Exam ==========
+  function doStartExam() {
+    // Notify server that exam started
+    apiGet({ action: 'markExamStarted', sessionCode: sessionCode, idNumber: examineeData.idNumber });
+
+    // Build exam
+    var license = String(sessionData.license || 'B');
+    var language = String(sessionData.language || 'he');
+    var exam = buildExam(license, language);
+    if (exam.length < TOTAL_QUESTIONS) {
+      var qsLoaded = (typeof QUESTIONS !== 'undefined' && Array.isArray(QUESTIONS)) ? QUESTIONS.length : 0;
+      var debugPool = getFilteredQuestions(license, language);
+      var debugStr = 'מאגר כללי: ' + qsLoaded + ' שאלות\nדרגה: ' + license + ' | שפה: ' + language + ' | שאלות מסוננות: ' + debugPool.length;
+      if (debugPool.length > 0) {
+        var structure = EXAM_STRUCTURE[license] || {};
+        var byT = {};
+        for (var dt in structure) byT[dt] = 0;
+        debugPool.forEach(function(q) { var t = classifyCategory(q.category); if (byT[t] !== undefined) byT[t]++; });
+        for (var dt2 in structure) debugStr += '\n' + dt2 + ': ' + (byT[dt2]||0) + ' (צריך ' + structure[dt2] + ')';
+      }
+      document.getElementById('examArea').innerHTML = '<div class="info-banner warn">אין מספיק שאלות לדרגה שנבחרה. פנה לבוחן.</div>' +
+        '<pre style="font-size:11px;color:#64748b;margin:12px;white-space:pre-wrap;text-align:right;">' + debugStr + '</pre>';
+      showScreen('screenExam');
+      return;
+    }
+
+    activeQuestions = exam;
+    currentIndex = 0;
+    userAnswers = new Array(TOTAL_QUESTIONS);
+    for (var ui = 0; ui < TOTAL_QUESTIONS; ui++) userAnswers[ui] = null;
+    shuffledOrders = new Array(TOTAL_QUESTIONS);
+    for (var si = 0; si < TOTAL_QUESTIONS; si++) shuffledOrders[si] = null;
+    timeRemaining = EXAM_TIME_MINUTES * 60;
+    examStartTime = Date.now();
+    examInProgress = true;
+    examSubmitted = false;
+
+    showScreen('screenExam');
+
+    // Init TTS if audio mode on
+    if (sessionData.audioMode === 'on') {
+      initTTS();
+      autoReadEnabled = true;
+    } else {
+      autoReadEnabled = false;
+    }
+
+    setupBeforeUnload();
+    startTimer();
+    renderQuestion();
+  }
+
+  document.getElementById('startExamBtn').addEventListener('click', function() {
+    if (!translationLoaded) {
+      // Translation file still loading — wait for it
+      var btn = document.getElementById('startExamBtn');
+      btn.disabled = true;
+      btn.textContent = '\u05D8\u05D5\u05E2\u05DF...'; // טוען...
+      loadTranslationFile(sessionData.language || 'he', function() {
+        btn.disabled = false;
+        btn.textContent = '\u05D4\u05EA\u05D7\u05DC \u05DE\u05D1\u05D7\u05DF'; // התחל מבחן
+        doStartExam();
+      });
+    } else {
+      doStartExam();
+    }
+  });
+
+  // ========== beforeunload ==========
+  function setupBeforeUnload() {
+    window.addEventListener('beforeunload', function(e) {
+      if (examInProgress && !examSubmitted) {
+        // Send fail via GET (sendBeacon POST doesn't work with Apps Script)
+        var params = {
+          action: 'submitFailOnClose',
+          sessionCode: sessionCode,
+          idNumber: examineeData.idNumber,
+          fullName: examineeData.fullName,
+          phone: examineeData.phone,
+          license: sessionData.license,
+          language: sessionData.language,
+          examinerName: sessionData.examinerName || '',
+          site: sessionData.site || '',
+          classroom: sessionData.classroom || '',
+          answeredCount: getAnsweredCount(),
+          totalQuestions: TOTAL_QUESTIONS,
+          time: getElapsedTimeStr()
+        };
+        var qs = [];
+        for (var k in params) {
+          if (params.hasOwnProperty(k)) qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
+        }
+        var url = API_URL + '?' + qs.join('&');
+        // Use fetch with keepalive (works with GET, survives page close)
+        try { fetch(url, { keepalive: true }); } catch(ex) {}
+        e.preventDefault();
+        e.returnValue = 'סגירת הדפדפן תגרום לכישלון אוטומטי במבחן!';
+        return e.returnValue;
+      }
+    });
+  }
+
+  function getElapsedTimeStr() {
+    if (!examStartTime) return '0 דק\' 00 שנ\'';
+    var elapsed = Math.round((Date.now() - examStartTime) / 1000);
+    // Cap at exam time limit (in case timer didn't fire immediately)
+    var maxSec = EXAM_TIME_MINUTES * 60;
+    if (elapsed > maxSec) elapsed = maxSec;
+    var eM = Math.floor(elapsed / 60);
+    var eS = elapsed % 60;
+    return eM + ' דק\' ' + (eS < 10 ? '0' : '') + eS + ' שנ\'';
+  }
+
+  // ========== TTS Engine ==========
+  function unlockAudio() {
+    if (audioUnlocked) return;
+    audioUnlocked = true;
+    try {
+      var ctx = new (window.AudioContext || window.webkitAudioContext)();
+      var buf = ctx.createBuffer(1, 1, 22050);
+      var src = ctx.createBufferSource();
+      src.buffer = buf; src.connect(ctx.destination); src.start(0); ctx.resume();
+    } catch(e) {}
+  }
+  document.addEventListener('click', unlockAudio, { once: false });
+  document.addEventListener('touchstart', unlockAudio, { once: false });
+
+  // Language code to BCP47 locale mapping for Web Speech API
+  var LANG_LOCALE_MAP = {
+    'he': 'he-IL', 'ru': 'ru-RU', 'en': 'en-US', 'fr': 'fr-FR',
+    'ar': 'ar-SA', 'es': 'es-ES', 'am': 'am-ET'
+  };
+
+  function findVoiceForLang(langCode) {
+    if (!window.speechSynthesis) return null;
+    var voices = speechSynthesis.getVoices();
+    var langFull = LANG_LOCALE_MAP[langCode] || 'he-IL';
+    // Try exact locale match first
+    for (var i = 0; i < voices.length; i++) { if (voices[i].lang === langFull) return voices[i]; }
+    // Try prefix match (e.g. 'en' matches 'en-GB')
+    var langShort = langCode;
+    for (var i = 0; i < voices.length; i++) { if (voices[i].lang.substring(0, 2) === langShort) return voices[i]; }
+    return null;
+  }
+
+  function getTTSLang() {
+    var lang = getExamLang();
+    // All these languages are supported by Google TTS via Cloudflare Worker
+    if (['he', 'ru', 'en', 'fr', 'ar', 'es', 'am'].indexOf(lang) !== -1) return lang;
+    return 'he';
+  }
+
+  function getAnswerPrefix() {
+    var lang = getExamLang();
+    var prefixes = {
+      'he': '\u05EA\u05E9\u05D5\u05D1\u05D4 ',  // תשובה
+      'ru': '\u041E\u0442\u0432\u0435\u0442 ',     // Ответ
+      'en': 'Answer ',
+      'fr': 'R\u00E9ponse ',                        // Réponse
+      'ar': '\u0627\u0644\u0625\u062C\u0627\u0628\u0629 ',  // الإجابة
+      'es': 'Respuesta '
+    };
+    return prefixes[lang] || prefixes['he'];
+  }
+
+  function getAnswerLabelsForTTS() {
+    var lang = getExamLang();
+    // For non-Hebrew languages, use numeric labels 1/2/3/4 for TTS clarity
+    if (lang !== 'he') return ['1', '2', '3', '4'];
+    return ANSWER_LABELS;  // א, ב, ג, ד
+  }
+
+  function initTTS() {
+    ttsEngine = 'google';
+    if (window.speechSynthesis) {
+      hebrewVoice = findVoiceForLang(getTTSLang());
+      if (hebrewVoice) { ttsEngine = 'webspeech'; }
+      speechSynthesis.onvoiceschanged = function() {
+        if (!hebrewVoice) {
+          var v = findVoiceForLang(getTTSLang());
+          if (v) { hebrewVoice = v; ttsEngine = 'webspeech'; }
+        }
+      };
+    }
+  }
+
+  var TTS_WORKER_URL = 'https://hebrew-tts.bohanyzahal.workers.dev/';
+  function ttsUrl(t) { return TTS_WORKER_URL + '?tl=' + getTTSLang() + '&gender=' + voiceGender + '&q=' + encodeURIComponent(t); }
+
+  function splitChunks(text) {
+    var M = 190, c = [], r = (text || '').trim();
+    while (r.length > 0) {
+      if (r.length <= M) { c.push(r); break; }
+      var x = r.lastIndexOf(' ', M); if (x <= 0) x = M;
+      c.push(r.substring(0, x).trim()); r = r.substring(x).trim();
+    }
+    return c;
+  }
+
+  var audioCtx = null;
+  function getAudioCtx() {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    return audioCtx;
+  }
+
+  function playGoogleQueue(done) {
+    if (audioQueue.length === 0 || !isSpeaking) { isSpeaking = false; currentAudio = null; if (done) done(); return; }
+    var url = audioQueue.shift();
+    if (voiceGender === 'male') {
+      var ctx = getAudioCtx(); ctx.resume();
+      fetch(url).then(function(resp) { return resp.arrayBuffer(); }).then(function(buf) {
+        return ctx.decodeAudioData(buf);
+      }).then(function(audioBuf) {
+        if (!isSpeaking) { if (done) done(); return; }
+        var source = ctx.createBufferSource();
+        source.buffer = audioBuf;
+        source.playbackRate.value = speechRate * 0.85;
+        source.connect(ctx.destination);
+        currentAudio = { pause: function() { try { source.stop(); } catch(e){} } };
+        source.onended = function() { playGoogleQueue(done); };
+        source.start(0);
+      }).catch(function() { playGoogleQueue(done); });
+    } else {
+      var a = new Audio();
+      currentAudio = a;
+      a.onloadedmetadata = function() { a.playbackRate = speechRate; };
+      a.onended = function() { playGoogleQueue(done); };
+      a.onerror = function() { playGoogleQueue(done); };
+      a.src = url;
+      a.play().catch(function() { playGoogleQueue(done); });
+    }
+  }
+
+  function googleSpeak(text, onEnd) {
+    audioQueue = splitChunks(text).map(function(c) { return ttsUrl(c); });
+    playGoogleQueue(onEnd);
+  }
+
+  function webSpeechSpeak(text, onEnd) {
+    if (!window.speechSynthesis) { googleSpeak(text, onEnd); return; }
+    speechSynthesis.cancel();
+    var utter = new SpeechSynthesisUtterance(text);
+    utter.lang = LANG_LOCALE_MAP[getTTSLang()] || 'he-IL';
+    if (hebrewVoice) utter.voice = hebrewVoice;
+    utter.rate = speechRate;
+    var ended = false, started = false;
+    utter.onstart = function() { started = true; webspeechConfirmed = true; };
+    utter.onend = function() { if (!ended) { ended = true; if (onEnd) onEnd(); } };
+    utter.onerror = function() {
+      if (!ended) { ended = true; if (!webspeechConfirmed) ttsEngine = 'google'; googleSpeak(text, onEnd); }
+    };
+    speechSynthesis.speak(utter);
+    setTimeout(function() {
+      if (!started && !ended) { ended = true; speechSynthesis.cancel(); ttsEngine = 'google'; googleSpeak(text, onEnd); }
+    }, 3000);
+    var ri = setInterval(function() {
+      if (!isSpeaking || ended || !speechSynthesis.speaking) { clearInterval(ri); return; }
+      speechSynthesis.pause(); speechSynthesis.resume();
+    }, 10000);
+  }
+
+  function speak(text, onEnd) {
+    stopSpeaking();
+    if (!text || !text.trim()) { if (onEnd) onEnd(); return; }
+    isSpeaking = true; unlockAudio();
+    if (ttsEngine === 'webspeech') webSpeechSpeak(text, onEnd);
+    else googleSpeak(text, onEnd);
+  }
+
+  function stopSpeaking() {
+    isSpeaking = false; questionParts = []; questionPartIndex = 0; audioQueue = [];
+    if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+    if (window.speechSynthesis) speechSynthesis.cancel();
+  }
+
+  function speakQuestionShuffled(text, answers) {
+    stopSpeaking(); isSpeaking = true; unlockAudio();
+    var ansPrefix = getAnswerPrefix();
+    var ansLabels = getAnswerLabelsForTTS();
+    questionParts = [text];
+    for (var i = 0; i < answers.length; i++)
+      questionParts.push(ansPrefix + ansLabels[i] + '. ' + answers[i]);
+    questionPartIndex = 0;
+    (function next() {
+      if (questionPartIndex >= questionParts.length || !isSpeaking) { isSpeaking = false; return; }
+      var t = questionParts[questionPartIndex++];
+      if (ttsEngine === 'webspeech') webSpeechSpeak(t, next);
+      else { audioQueue = splitChunks(t).map(function(c) { return ttsUrl(c); }); playGoogleQueue(next); }
+    })();
+  }
+
+  // ========== Questions ==========
+  function classifyCategory(cat) {
+    var c = (cat || '').trim();
+    if (/\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9/.test(c)) return '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9';
+    if (/\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA/.test(c)) return '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA';
+    if (/\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1/.test(c)) return '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1';
+    if (/\u05D7\u05D5\u05E7/.test(c)) return '\u05D7\u05D5\u05E7';
+    if (/\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD/.test(c)) return '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD';
+    if (/\u05D6\u05DB\u05D5\u05EA \u05E7\u05D3\u05D9\u05DE\u05D4/.test(c)) return '\u05D7\u05D5\u05E7';
+    return '';
+  }
+
+  // ========== Translation helpers ==========
+  // Translation dictionaries loaded dynamically per language
+  // Format: TRANSLATIONS_XX = { questionId: { t: "text", a: ["ans1",...], c: correctIndex } }
+  var TRANSLATION_VARS = { 'en': 'TRANSLATIONS_EN', 'fr': 'TRANSLATIONS_FR', 'ar': 'TRANSLATIONS_AR', 'es': 'TRANSLATIONS_ES' };
+
+  // Get the active exam language
+  function getExamLang() {
+    return (sessionData && sessionData.language) ? sessionData.language : 'he';
+  }
+
+  // Get the translation dictionary for the current language (or null)
+  function getTransDict() {
+    var lang = getExamLang();
+    var varName = TRANSLATION_VARS[lang];
+    if (varName && window[varName]) return window[varName];
+    return null;
+  }
+
+  // Check if a question has a translation for the given language
+  function hasTranslation(q, lang) {
+    var varName = TRANSLATION_VARS[lang];
+    if (!varName || !window[varName]) return false;
+    var t = window[varName][q.id];
+    return t && t.t && t.a && t.a.length >= 2;
+  }
+
+  // Get question text for the current language
+  function getQText(q) {
+    var lang = getExamLang();
+    if (lang === 'he') return q.text;
+    if (lang === 'ru' && q.language === 'ru') return q.text;
+    var dict = getTransDict();
+    if (dict && dict[q.id]) return dict[q.id].t;
+    return q.text; // fallback to Hebrew
+  }
+
+  // Get question answers for the current language
+  function getQAnswers(q) {
+    var lang = getExamLang();
+    if (lang === 'he') return q.answers;
+    if (lang === 'ru' && q.language === 'ru') return q.answers;
+    var dict = getTransDict();
+    if (dict && dict[q.id]) return dict[q.id].a;
+    return q.answers;
+  }
+
+  // Get correct index for the current language
+  function getQCorrectIndex(q) {
+    var lang = getExamLang();
+    if (lang === 'he') return q.correctIndex;
+    if (lang === 'ru' && q.language === 'ru') return q.correctIndex;
+    var dict = getTransDict();
+    if (dict && dict[q.id] && dict[q.id].c !== undefined) return dict[q.id].c;
+    return q.correctIndex;
+  }
+
+  function getFilteredQuestions(license, language) {
+    license = String(license || '');
+    language = String(language || 'he');
+    var qs = (typeof QUESTIONS !== 'undefined') ? QUESTIONS : window.QUESTIONS;
+    if (!qs || !Array.isArray(qs)) { console.log('[EXAM DEBUG] QUESTIONS not loaded!'); return []; }
+
+    // For translated languages (en/fr/ar/es): filter Hebrew questions that have the translation
+    var filterLang = language;
+    var needTranslation = false;
+    if (language !== 'he' && language !== 'ru') {
+      filterLang = 'he';
+      needTranslation = true;
+    }
+
+    return qs.filter(function(q) {
+      if ((q.language || 'he') !== filterLang) return false;
+      if (!q.answers || q.answers.length < 2) return false;
+      // For translated languages, require the translation fields to exist
+      if (needTranslation && !hasTranslation(q, language)) return false;
+      if (license === '1') {
+        var lt = (q.licenseType || '').trim();
+        if (lt !== '' && lt !== 'N/A') return false;
+        var cat = (q.category || '');
+        if (cat.indexOf('1') === -1 && !/\u05D6\u05DB\u05D5\u05EA \u05E7\u05D3\u05D9\u05DE\u05D4/.test(cat)) return false;
+      } else if (license === 'C') {
+        var lic = (q.licenseType || '').trim();
+        if (lic !== 'C' && lic !== 'C/E' && lic !== 'C+E' && lic !== 'CE') return false;
+      } else {
+        var lic = (q.licenseType || '').trim();
+        if (lic !== license) return false;
+      }
+      return true;
+    });
+  }
+
+  function buildExam(license, language) {
+    var structure = EXAM_STRUCTURE[license];
+    if (!structure) return [];
+    var pool = getFilteredQuestions(license, language);
+    var byTopic = {};
+    for (var t in structure) byTopic[t] = [];
+    pool.forEach(function(q) {
+      var topic = classifyCategory(q.category);
+      if (byTopic[topic]) byTopic[topic].push(q);
+    });
+    var selected = [];
+    for (var topic in structure) {
+      var needed = structure[topic];
+      var available = shuffle(byTopic[topic] || []);
+      if (available.length < needed) return [];
+      for (var i = 0; i < needed; i++) selected.push(available[i]);
+    }
+    return shuffle(selected);
+  }
+
+  function shuffle(arr) {
+    var a = arr.slice();
+    for (var i = a.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)); var t = a[i]; a[i] = a[j]; a[j] = t; }
+    return a;
+  }
+
+  // ========== Timer ==========
+  // Uses real wall-clock time (Date.now) instead of counting setInterval ticks,
+  // because browsers throttle setInterval in background tabs (can slow to 1/min or stop).
+  var examDeadline = null; // timestamp when exam expires
+
+  function startTimer() {
+    examDeadline = Date.now() + EXAM_TIME_MINUTES * 60 * 1000;
+    timeRemaining = EXAM_TIME_MINUTES * 60;
+    if (timerInterval) clearInterval(timerInterval);
+    timerInterval = setInterval(function() {
+      var now = Date.now();
+      var msLeft = examDeadline - now;
+      timeRemaining = Math.max(0, Math.ceil(msLeft / 1000));
+      updateTimerDisplay();
+      if (timeRemaining <= 0) {
+        clearInterval(timerInterval); timerInterval = null;
+        stopSpeaking(); renderExamDone();
+      }
+    }, 1000);
+
+    // Also use visibilitychange to catch background tab wakeup immediately
+    document.addEventListener('visibilitychange', onVisibilityForTimer);
+  }
+
+  function onVisibilityForTimer() {
+    if (document.visibilityState !== 'visible' || !examDeadline || !examInProgress || examSubmitted) return;
+    var now = Date.now();
+    var msLeft = examDeadline - now;
+    timeRemaining = Math.max(0, Math.ceil(msLeft / 1000));
+    updateTimerDisplay();
+    if (timeRemaining <= 0) {
+      clearInterval(timerInterval); timerInterval = null;
+      stopSpeaking(); renderExamDone();
+    }
+  }
+
+  function updateTimerDisplay() {
+    var el = document.getElementById('timerDisplay');
+    if (!el) return;
+    var m = Math.floor(timeRemaining / 60);
+    var s = timeRemaining % 60;
+    el.textContent = (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+    var bar = el.closest('.timer-bar');
+    if (bar) {
+      if (timeRemaining <= 300) bar.classList.add('warn-time');
+      else bar.classList.remove('warn-time');
+    }
+  }
+
+  function stopTimer() {
+    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+    examDeadline = null;
+    document.removeEventListener('visibilitychange', onVisibilityForTimer);
+  }
+
+  // ========== Render question ==========
+  function getAnsweredCount() {
+    var c = 0;
+    for (var i = 0; i < userAnswers.length; i++) { if (userAnswers[i] !== null) c++; }
+    return c;
+  }
+
+  function renderQuestion() {
+    var q = activeQuestions[currentIndex];
+    var total = activeQuestions.length;
+    var examArea = document.getElementById('examArea');
+    examArea.innerHTML = '';
+
+    // Get translated text/answers/correctIndex for current language
+    var qText = getQText(q);
+    var qAnswers = getQAnswers(q);
+    var qCorrectIndex = getQCorrectIndex(q);
+
+    // Get or create shuffle order for this question
+    var answerOrder, shuffledAnswers, shuffledCorrectIndex;
+    if (shuffledOrders[currentIndex]) {
+      answerOrder = shuffledOrders[currentIndex].order;
+      shuffledCorrectIndex = shuffledOrders[currentIndex].correctIdx;
+      shuffledAnswers = answerOrder.map(function(idx) { return qAnswers[idx]; });
+    } else {
+      answerOrder = shuffle(qAnswers.map(function(_, i) { return i; }));
+      shuffledAnswers = answerOrder.map(function(idx) { return qAnswers[idx]; });
+      shuffledCorrectIndex = answerOrder.indexOf(qCorrectIndex);
+      shuffledOrders[currentIndex] = { order: answerOrder, correctIdx: shuffledCorrectIndex };
+    }
+
+    // Previous answer for this question (if going back)
+    var prevAnswer = userAnswers[currentIndex];
+
+    // Timer
+    var timerBar = document.createElement('div');
+    timerBar.className = 'timer-bar';
+    var m = Math.floor(timeRemaining / 60);
+    var s = timeRemaining % 60;
+    timerBar.innerHTML = '<span class="timer-icon">&#x23F1;&#xFE0F;</span><span class="timer-text" id="timerDisplay">' +
+      (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s + '</span>';
+    if (timeRemaining <= 300) timerBar.classList.add('warn-time');
+    examArea.appendChild(timerBar);
+
+    // Question map
+    var qMap = document.createElement('div');
+    qMap.className = 'q-map';
+    for (var mi = 0; mi < total; mi++) {
+      (function(qi) {
+        var mapBtn = document.createElement('button');
+        mapBtn.className = 'q-map-btn';
+        mapBtn.textContent = qi + 1;
+        if (qi === currentIndex) mapBtn.classList.add('current');
+        else if (userAnswers[qi] !== null) mapBtn.classList.add('answered');
+        else mapBtn.classList.add('unanswered');
+        mapBtn.addEventListener('click', function() {
+          stopSpeaking();
+          currentIndex = qi;
+          renderQuestion();
+        });
+        qMap.appendChild(mapBtn);
+      })(mi);
+    }
+    examArea.appendChild(qMap);
+
+    // Progress
+    var answeredSoFar = getAnsweredCount();
+    var progress = document.createElement('div');
+    progress.className = 'exam-progress';
+    var pct = Math.round((answeredSoFar / total) * 100);
+    progress.innerHTML = '<div class="progress-bar"><div class="progress-fill" style="width:' + pct + '%"></div></div><span class="progress-text">' + answeredSoFar + ' / ' + total + ' נענו</span>';
+    examArea.appendChild(progress);
+
+    // Audio settings (only if audio mode is on)
+    if (sessionData.audioMode === 'on') {
+      var examSettings = document.createElement('div');
+      examSettings.style.cssText = 'display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:8px 14px; background:#eef2ff; border-radius:10px; border:1px solid #c7d2fe; margin-bottom:8px; font-size:13px;';
+      examSettings.innerHTML =
+        '<label style="display:inline;font-size:13px;white-space:nowrap;font-weight:600;margin:0;">\u05DE\u05D4\u05D9\u05E8\u05D5\u05EA:</label>' +
+        '<input type="range" id="examSpeedRange" min="0.5" max="1.5" step="0.1" value="' + speechRate + '" style="width:100px;">' +
+        '<span id="examSpeedVal" style="font-weight:800;min-width:35px;text-align:center;">' + speechRate.toFixed(1) + 'x</span>' +
+        '<span style="margin:0 4px;color:#cbd5e1;">|</span>' +
+        '<select id="examVoiceGender" style="padding:4px 8px;border-radius:8px;border:1px solid #cbd5e1;font-size:13px;background:#fff;">' +
+        '<option value="female"' + (voiceGender === 'female' ? ' selected' : '') + '>\u05D0\u05D9\u05E9\u05D4</option>' +
+        '<option value="male"' + (voiceGender === 'male' ? ' selected' : '') + '>\u05D2\u05D1\u05E8</option>' +
+        '</select>';
+      examArea.appendChild(examSettings);
+      document.getElementById('examSpeedRange').addEventListener('input', function() {
+        speechRate = parseFloat(this.value);
+        document.getElementById('examSpeedVal').textContent = speechRate.toFixed(1) + 'x';
+      });
+      document.getElementById('examVoiceGender').addEventListener('change', function() { voiceGender = this.value; });
+    }
+
+    // Card
+    var card = document.createElement('div');
+    card.className = 'question-audio-card';
+    examArea.appendChild(card);
+
+    var meta = document.createElement('div');
+    meta.className = 'q-number';
+    meta.textContent = '\u05E9\u05D0\u05DC\u05D4 ' + (currentIndex + 1) + ' \u05DE\u05EA\u05D5\u05DA ' + total;
+    card.appendChild(meta);
+
+    // Audio buttons (only if audio mode on)
+    if (sessionData.audioMode === 'on') {
+      var audioRow = document.createElement('div');
+      audioRow.style.cssText = 'display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;';
+      var speakBtn = document.createElement('button');
+      speakBtn.className = 'btn-audio btn-speak';
+      speakBtn.innerHTML = '&#x1F50A; \u05D4\u05E7\u05E8\u05D0 \u05E9\u05D0\u05DC\u05D4';
+      speakBtn.addEventListener('click', function() {
+        speakBtn.classList.add('speaking');
+        speakQuestionShuffled(qText, shuffledAnswers);
+        var check = setInterval(function() { if (!isSpeaking) { speakBtn.classList.remove('speaking'); clearInterval(check); } }, 300);
+      });
+      audioRow.appendChild(speakBtn);
+      var stopBtn = document.createElement('button');
+      stopBtn.className = 'btn-audio btn-stop';
+      stopBtn.textContent = '\u05E2\u05E6\u05D5\u05E8';
+      stopBtn.addEventListener('click', function() { stopSpeaking(); speakBtn.classList.remove('speaking'); });
+      audioRow.appendChild(stopBtn);
+      card.appendChild(audioRow);
+    }
+
+    var qTextEl = document.createElement('div');
+    qTextEl.className = 'q-text';
+    qTextEl.textContent = qText;
+    // Set text direction for RTL languages (Arabic, Hebrew) vs LTR
+    var examLang = getExamLang();
+    if (examLang === 'ar') {
+      qTextEl.dir = 'rtl';
+    } else if (examLang !== 'he' && examLang !== 'ru') {
+      qTextEl.dir = 'ltr';
+      qTextEl.style.textAlign = 'left';
+    }
+    card.appendChild(qTextEl);
+
+    if (q.imageUrl && q.imageUrl.trim() !== '') {
+      var img = document.createElement('img');
+      img.className = 'q-image';
+      img.src = q.imageUrl;
+      img.alt = '\u05EA\u05DE\u05D5\u05E0\u05D4 \u05DC\u05E9\u05D0\u05DC\u05D4';
+      img.onerror = function() { img.style.display = 'none'; };
+      card.appendChild(img);
+    }
+
+    // Answers
+    var answerList = document.createElement('ul');
+    answerList.className = 'answers-list';
+
+    for (var idx = 0; idx < shuffledAnswers.length; idx++) {
+      (function(idx, ans) {
+        var li = document.createElement('li');
+        li.style.cssText = 'display:flex; gap:6px; align-items:stretch;';
+
+        // Listen button only if audio mode on
+        if (sessionData.audioMode === 'on') {
+          var listenBtn = document.createElement('button');
+          listenBtn.textContent = '\uD83D\uDD0A';
+          listenBtn.className = 'listen-btn';
+          listenBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            speak(getAnswerPrefix() + getAnswerLabelsForTTS()[idx] + '. ' + ans);
+          });
+          li.appendChild(listenBtn);
+        }
+
+        var btn = document.createElement('button');
+        btn.className = 'answer-audio-btn';
+        btn.style.cssText = 'flex:1; min-width:0;';
+
+        // Highlight if this was previously selected
+        if (prevAnswer !== null && prevAnswer.chosenIndex === idx) {
+          btn.classList.add('selected');
+        }
+
+        var prefix = document.createElement('span');
+        prefix.className = 'ans-prefix';
+        var displayLabels = (examLang === 'he') ? ANSWER_LABELS : ['A', 'B', 'C', 'D'];
+        prefix.textContent = displayLabels[idx];
+        var ansText = document.createElement('span');
+        ansText.className = 'ans-text';
+        ansText.textContent = ans;
+        // Set text direction for LTR/RTL based on exam language
+        if (examLang === 'ar') {
+          ansText.dir = 'rtl';
+        } else if (examLang !== 'he' && examLang !== 'ru') {
+          ansText.dir = 'ltr';
+          ansText.style.textAlign = 'left';
+        }
+        btn.appendChild(prefix);
+        btn.appendChild(ansText);
+
+        btn.addEventListener('click', function() {
+          // Deselect all
+          var allBtns = card.querySelectorAll('.answer-audio-btn');
+          for (var b = 0; b < allBtns.length; b++) allBtns[b].classList.remove('selected');
+          btn.classList.add('selected');
+
+          stopSpeaking();
+
+          // Save/update answer
+          var isCorrect = idx === shuffledCorrectIndex;
+          userAnswers[currentIndex] = {
+            question: q, chosenIndex: idx,
+            shuffledCorrectIndex: shuffledCorrectIndex,
+            shuffledAnswers: shuffledAnswers, isCorrect: isCorrect
+          };
+
+          // Update question map colors
+          var mapBtns = document.querySelectorAll('.q-map-btn');
+          if (mapBtns[currentIndex]) {
+            mapBtns[currentIndex].classList.remove('unanswered');
+            mapBtns[currentIndex].classList.add('answered');
+          }
+          // Update progress
+          var ac = getAnsweredCount();
+          var pBar = document.querySelector('.progress-fill');
+          var pText = document.querySelector('.progress-text');
+          if (pBar) pBar.style.width = Math.round((ac / total) * 100) + '%';
+          if (pText) pText.textContent = ac + ' / ' + total + ' \u05E0\u05E2\u05E0\u05D5';
+        });
+
+        li.appendChild(btn);
+        answerList.appendChild(li);
+      })(idx, shuffledAnswers[idx]);
+    }
+    card.appendChild(answerList);
+
+    // Navigation buttons
+    var navRow = document.createElement('div');
+    navRow.className = 'nav-row';
+
+    var prevBtn = document.createElement('button');
+    prevBtn.className = 'nav-btn nav-prev';
+    prevBtn.textContent = '\u2192 \u05D4\u05E7\u05D5\u05D3\u05DD';
+    prevBtn.disabled = (currentIndex === 0);
+    prevBtn.addEventListener('click', function() {
+      stopSpeaking(); currentIndex--; renderQuestion();
+    });
+    navRow.appendChild(prevBtn);
+
+    if (currentIndex < total - 1) {
+      var nextBtn = document.createElement('button');
+      nextBtn.className = 'nav-btn nav-next';
+      nextBtn.textContent = '\u05D4\u05D1\u05D0 \u2190';
+      nextBtn.addEventListener('click', function() {
+        stopSpeaking(); currentIndex++; renderQuestion();
+      });
+      navRow.appendChild(nextBtn);
+    } else {
+      var reviewBtn = document.createElement('button');
+      reviewBtn.className = 'nav-btn nav-review';
+      reviewBtn.textContent = '\u05E1\u05E7\u05D9\u05E8\u05D4 \u05D5\u05E1\u05D9\u05D5\u05DD';
+      reviewBtn.addEventListener('click', function() {
+        stopSpeaking(); renderReview();
+      });
+      navRow.appendChild(reviewBtn);
+    }
+
+    examArea.appendChild(navRow);
+
+    // Auto-read if audio mode on (only for first visit to question)
+    if (sessionData.audioMode === 'on' && autoReadEnabled && prevAnswer === null) {
+      setTimeout(function() {
+        var sb = card.querySelector('.btn-speak');
+        if (sb) sb.classList.add('speaking');
+        speakQuestionShuffled(qText, shuffledAnswers);
+        var check = setInterval(function() { if (!isSpeaking) { if (sb) sb.classList.remove('speaking'); clearInterval(check); } }, 300);
+      }, 400);
+    }
+  }
+
+  // ========== Review screen ==========
+  function renderReview() {
+    var examArea = document.getElementById('examArea');
+    examArea.innerHTML = '';
+    var total = activeQuestions.length;
+    var answeredCount = getAnsweredCount();
+    var unanswered = total - answeredCount;
+
+    // Timer
+    var timerBar = document.createElement('div');
+    timerBar.className = 'timer-bar';
+    var m = Math.floor(timeRemaining / 60);
+    var s = timeRemaining % 60;
+    timerBar.innerHTML = '<span class="timer-icon">&#x23F1;&#xFE0F;</span><span class="timer-text" id="timerDisplay">' +
+      (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s + '</span>';
+    if (timeRemaining <= 300) timerBar.classList.add('warn-time');
+    examArea.appendChild(timerBar);
+
+    var card = document.createElement('div');
+    card.className = 'question-audio-card';
+    card.innerHTML = '<h2 style="text-align:center;margin-bottom:8px;">\u05E1\u05E7\u05D9\u05E8\u05EA \u05E9\u05D0\u05DC\u05D5\u05EA</h2>' +
+      '<p style="text-align:center;color:#64748b;margin-bottom:16px;">\u05E0\u05E2\u05E0\u05D5 ' + answeredCount + ' \u05DE\u05EA\u05D5\u05DA ' + total + ' \u05E9\u05D0\u05DC\u05D5\u05EA</p>';
+
+    if (unanswered > 0) {
+      card.innerHTML += '<div class="info-banner warn" style="text-align:center;font-weight:700;">\u26A0\uFE0F \u05D9\u05E9 ' + unanswered + ' \u05E9\u05D0\u05DC\u05D5\u05EA \u05DC\u05DC\u05D0 \u05EA\u05E9\u05D5\u05D1\u05D4. \u05E9\u05D0\u05DC\u05D5\u05EA \u05DC\u05DC\u05D0 \u05EA\u05E9\u05D5\u05D1\u05D4 \u05E0\u05D7\u05E9\u05D1\u05D5\u05EA \u05E9\u05D2\u05D5\u05D9\u05D5\u05EA.</div>';
+    }
+
+    var grid = document.createElement('div');
+    grid.className = 'review-grid';
+    for (var i = 0; i < total; i++) {
+      (function(qi) {
+        var cell = document.createElement('div');
+        cell.className = 'review-cell ' + (userAnswers[qi] !== null ? 'done' : 'not-done');
+        cell.textContent = qi + 1;
+        cell.addEventListener('click', function() {
+          currentIndex = qi;
+          renderQuestion();
+        });
+        grid.appendChild(cell);
+      })(i);
+    }
+    card.appendChild(grid);
+
+    var finishBtn = document.createElement('button');
+    finishBtn.className = 'btn-start-exam';
+    finishBtn.style.cssText = 'display:block; width:100%; padding:16px; font-size:18px; font-weight:800; background:linear-gradient(135deg,#16a34a,#15803d); border-radius:12px; color:white; border:none; cursor:pointer; margin-top:16px;';
+    finishBtn.textContent = '\u05E1\u05D9\u05D9\u05DD \u05DE\u05D1\u05D7\u05DF';
+    finishBtn.addEventListener('click', function() {
+      if (unanswered > 0) {
+        if (!confirm('\u05D9\u05E9 ' + unanswered + ' \u05E9\u05D0\u05DC\u05D5\u05EA \u05DC\u05DC\u05D0 \u05EA\u05E9\u05D5\u05D1\u05D4. \u05D4\u05DF \u05D9\u05D9\u05D7\u05E9\u05D1\u05D5 \u05DB\u05E9\u05D2\u05D5\u05D9\u05D5\u05EA.\n\u05D4\u05D0\u05DD \u05DC\u05E1\u05D9\u05D9\u05DD?')) return;
+      } else {
+        if (!confirm('\u05D4\u05D0\u05DD \u05DC\u05E1\u05D9\u05D9\u05DD \u05D0\u05EA \u05D4\u05DE\u05D1\u05D7\u05DF?')) return;
+      }
+      renderExamDone();
+    });
+    card.appendChild(finishBtn);
+
+    examArea.appendChild(card);
+  }
+
+  // ========== Exam done ==========
+  function renderExamDone() {
+    stopSpeaking(); stopTimer();
+    examInProgress = false;
+    examSubmitted = true;
+
+    var correctCount = 0;
+    var answeredCount = 0;
+    for (var k = 0; k < userAnswers.length; k++) {
+      if (userAnswers[k] !== null) {
+        answeredCount++;
+        if (userAnswers[k].isCorrect) correctCount++;
+      }
+    }
+    var pct = Math.round((correctCount / TOTAL_QUESTIONS) * 100);
+    var passed = correctCount >= PASS_SCORE;
+    var timeStr = getElapsedTimeStr();
+
+    // Build wrong answers data (Hebrew question text for examiner)
+    var wrongLabels = (getExamLang() === 'he') ? ANSWER_LABELS : ['A', 'B', 'C', 'D'];
+    var wrongData = [];
+    for (var w = 0; w < userAnswers.length; w++) {
+      if (userAnswers[w] === null) {
+        // Unanswered question = wrong
+        var uq = activeQuestions[w];
+        var so = shuffledOrders[w];
+        var heCorrect = uq.answers[uq.correctIndex];
+        wrongData.push({
+          question: uq.text,
+          yourAnswer: '\u05DC\u05D0 \u05E0\u05E2\u05E0\u05EA\u05D4',
+          correctAnswer: so ? (wrongLabels[so.correctIdx] + ' - ' + heCorrect) : heCorrect
+        });
+      } else if (!userAnswers[w].isCorrect) {
+        var a = userAnswers[w];
+        wrongData.push({
+          question: a.question.text,
+          yourAnswer: wrongLabels[a.chosenIndex] + ' - ' + a.shuffledAnswers[a.chosenIndex],
+          correctAnswer: wrongLabels[a.shuffledCorrectIndex] + ' - ' + a.shuffledAnswers[a.shuffledCorrectIndex]
+        });
+      }
+    }
+
+    // Step 1: Submit basic result via GET (reliable, no body needed)
+    var payload = {
+      action: 'submitResult',
+      sessionCode: sessionCode,
+      idNumber: examineeData.idNumber,
+      fullName: examineeData.fullName,
+      phone: examineeData.phone,
+      license: sessionData.license,
+      language: sessionData.language || 'he',
+      score: correctCount,
+      total: TOTAL_QUESTIONS,
+      percent: pct,
+      passed: passed,
+      time: timeStr,
+      examinerName: sessionData.examinerName || '',
+      site: sessionData.site || '',
+      classroom: sessionData.classroom || ''
+    };
+
+    submitWithRetry(payload, 3, wrongData);
+
+    // Show done screen - NO score
+    clearExamineeState();
+    document.getElementById('doneNameDisplay').textContent = examineeData.fullName;
+    if (timeRemaining <= 0) {
+      var msg = document.getElementById('doneTimeUpMsg');
+      msg.style.display = 'block';
+      msg.innerHTML = '<p class="muted">הזמן נגמר. נענו ' + answeredCount + ' שאלות מתוך ' + TOTAL_QUESTIONS + '.</p>';
+    }
+    showScreen('screenDone');
+  }
+
+  function sendWrongAnswers(wrongData) {
+    if (!wrongData || wrongData.length === 0) return;
+    // Send each wrong answer individually to avoid URL length limits with Hebrew text
+    console.log('[WRONG] Sending ' + wrongData.length + ' wrong answers one-by-one');
+    var sent = 0;
+    function sendNext() {
+      if (sent >= wrongData.length) {
+        console.log('[WRONG] All ' + wrongData.length + ' wrong answers sent');
+        return;
+      }
+      var w = wrongData[sent];
+      var idx = sent;
+      sent++;
+      apiGet({
+        action: 'submitWrongAnswers',
+        sessionCode: sessionCode,
+        idNumber: examineeData.idNumber,
+        question: w.question,
+        yourAnswer: w.yourAnswer,
+        correctAnswer: w.correctAnswer,
+        itemIndex: idx,
+        totalItems: wrongData.length
+      }).then(function(data) {
+        console.log('[WRONG] Item ' + idx + ' response:', JSON.stringify(data));
+        sendNext();
+      }).catch(function(err) {
+        console.log('[WRONG] Item ' + idx + ' error:', err);
+        sendNext(); // continue even on error
+      });
+    }
+    sendNext();
+  }
+
+  function submitWithRetry(payload, retries, wrongData) {
+    var attemptNum = 4 - retries;
+    console.log('[SUBMIT] Sending result via GET, attempt ' + attemptNum + '/3');
+    apiGet(payload).then(function(data) {
+      console.log('[SUBMIT] Response:', JSON.stringify(data));
+      var debugEl = document.getElementById('submitDebug');
+      if (!debugEl) {
+        debugEl = document.createElement('div');
+        debugEl.id = 'submitDebug';
+        debugEl.style.cssText = 'margin:10px;padding:10px;background:#f0f0f0;border-radius:8px;font-size:12px;direction:ltr;text-align:left;';
+        var doneScreen = document.getElementById('screenDone');
+        if (doneScreen) doneScreen.appendChild(debugEl);
+      }
+      if (data.status === 'ok') {
+        debugEl.innerHTML = '<span style="color:green;">&#x2705; Result submitted successfully</span>' +
+          '<br>Session: ' + payload.sessionCode + ' | ID: ' + payload.idNumber + ' | Score: ' + payload.score + '/' + payload.total;
+        // Now send wrong answers AFTER result row exists on server
+        if (wrongData && wrongData.length > 0) {
+          sendWrongAnswers(wrongData);
+        }
+      } else {
+        debugEl.innerHTML = '<span style="color:red;">&#x274C; Server error: ' + (data.message || 'unknown') + '</span>';
+        if (retries > 1) {
+          setTimeout(function() { submitWithRetry(payload, retries - 1, wrongData); }, 3000);
+        }
+      }
+    }).catch(function(err) {
+      console.log('[SUBMIT] Network error:', err);
+      var debugEl = document.getElementById('submitDebug');
+      if (!debugEl) {
+        debugEl = document.createElement('div');
+        debugEl.id = 'submitDebug';
+        debugEl.style.cssText = 'margin:10px;padding:10px;background:#f0f0f0;border-radius:8px;font-size:12px;direction:ltr;text-align:left;';
+        var doneScreen = document.getElementById('screenDone');
+        if (doneScreen) doneScreen.appendChild(debugEl);
+      }
+      debugEl.innerHTML = '<span style="color:red;">&#x274C; Network error (attempt ' + attemptNum + '/3): ' + err + '</span>';
+      if (retries > 1) {
+        setTimeout(function() { submitWithRetry(payload, retries - 1, wrongData); }, 3000);
+      } else {
+        try { localStorage.setItem('pendingResult_' + payload.idNumber, JSON.stringify(payload)); } catch(e2) {}
+        debugEl.innerHTML += '<br>Saved to localStorage for retry.';
+      }
+    });
+  }
+
+  // ========== Auto-restore on page load ==========
+  var hasRestoredSession = false;
+  (function() {
+    var saved = loadExamineeState();
+    if (!saved || !saved.sessionCode || !saved.sessionData) return;
+    hasRestoredSession = true;
+
+    // Restore state
+    sessionCode = saved.sessionCode;
+    sessionData = saved.sessionData;
+    examineeData = saved.examineeData || { idNumber: '', fullName: '', phone: '' };
+    // Ensure license is string (Google Sheets may return number for "1")
+    if (sessionData.license) sessionData.license = String(sessionData.license);
+
+    document.getElementById('topbarSub').textContent = sessionData.site + ' | ' + (LICENSE_LABELS[sessionData.license] || sessionData.license);
+
+    if (saved.screen === 'screenInstructions' && examineeData.idNumber) {
+      // Was waiting for approval or in instructions — go back to waiting
+      showScreen('screenInstructions');
+      startApprovalPolling();
+    } else if (saved.screen === 'screenIdForm') {
+      showScreen('screenIdForm');
+    }
+    // Note: we don't restore into exam — that would be cheating-prone
+  })();
+
+  // ========== Auto-fill from URL parameter (?code=XXXXXX) ==========
+  if (!hasRestoredSession) {
+    try {
+      var params = new URLSearchParams(window.location.search);
+      var urlCode = params.get('code');
+      if (urlCode && /^\d{6}$/.test(urlCode)) {
+        codeInput.value = urlCode;
+        // Auto-submit after short delay to allow page to fully render
+        setTimeout(function() { codeSubmitBtn.click(); }, 300);
+      }
+    } catch(e) { /* URLSearchParams not supported — ignore */ }
+  }
+
+})();
+</script>
+</body>
+</html>
