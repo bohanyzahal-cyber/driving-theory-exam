@@ -1,0 +1,1294 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>לוח בוחן — מבחן חיצוני</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, 'Segoe UI', Arial, sans-serif;
+      margin: 0; background: #f0f4f8; color: #1e293b; line-height: 1.5;
+    }
+    a { color: inherit; }
+
+    .topbar {
+      display: flex; gap: 12px; align-items: center; justify-content: space-between;
+      padding: 14px 20px; background: linear-gradient(135deg, #1a73e8, #0d47a1);
+      color: white; position: sticky; top: 0; z-index: 100; flex-wrap: wrap;
+    }
+    .topbar h1 { margin: 0; font-size: 1.3em; }
+    .topbar .sub { font-size: 0.75em; opacity: 0.85; }
+    .topbar button {
+      background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.3);
+      color: white; padding: 6px 14px; border-radius: 8px; cursor: pointer; font-size: 13px;
+    }
+    .topbar button:hover { background: rgba(255,255,255,0.3); }
+
+    .container { max-width: 960px; margin: 0 auto; padding: 20px 16px; }
+
+    .card {
+      background: white; border: 1px solid #e2e8f0; border-radius: 16px;
+      padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+    .card h2 { margin: 0 0 6px; font-size: 1.3em; color: #0f172a; }
+    .card h3 { margin: 0 0 10px; font-size: 1.1em; color: #334155; }
+    .muted { opacity: 0.7; font-size: 14px; }
+
+    label { display: grid; gap: 6px; font-size: 14px; font-weight: 600; }
+    select, input[type="text"], input[type="tel"], input[type="password"] {
+      background: #f8fafc; color: #1e293b; border: 1px solid #cbd5e1;
+      border-radius: 10px; padding: 10px 12px; font-size: 16px; width: 100%;
+    }
+
+    button {
+      background: #1a73e8; border: none; color: white; padding: 10px 16px;
+      border-radius: 10px; cursor: pointer; font-size: 15px; font-weight: 700;
+      transition: all 0.15s;
+    }
+    button:hover { filter: brightness(1.1); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .screen { display: none; }
+    .screen.active { display: block; }
+
+    .form-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px; margin: 14px 0;
+    }
+    .form-error { color: #ef4444; font-size: 13px; margin-top: 4px; display: none; }
+    .info-banner {
+      background: #eff6ff; border: 1px solid #93c5fd; border-radius: 10px;
+      padding: 10px 14px; font-size: 13px; color: #1e40af; margin: 8px 0;
+    }
+    .info-banner.warn { background: #fffbeb; border-color: #fcd34d; color: #92400e; }
+    .info-banner.success { background: #dcfce7; border-color: #86efac; color: #166534; }
+    .info-banner.error { background: #fef2f2; border-color: #fca5a5; color: #991b1b; }
+
+    /* Session code display */
+    .session-code-display {
+      font-size: 3.5rem; font-weight: 900; letter-spacing: 10px; text-align: center;
+      padding: 24px; background: #0f172a; color: #f8fafc; border-radius: 16px;
+      margin: 12px 0; direction: ltr; font-family: 'Courier New', monospace;
+    }
+
+    /* Session info bar */
+    .session-bar {
+      display: flex; gap: 16px; flex-wrap: wrap; align-items: center;
+      padding: 12px 16px; background: #f8fafc; border: 1px solid #e2e8f0;
+      border-radius: 12px; margin-bottom: 16px; font-size: 14px;
+    }
+    .session-bar .item { display: flex; gap: 4px; align-items: center; }
+    .session-bar .item .lbl { color: #64748b; font-size: 12px; }
+    .session-bar .item .val { font-weight: 700; }
+    .session-bar .countdown { color: #dc2626; font-weight: 700; direction: ltr; }
+
+    /* Section headers */
+    .section-header {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 10px; gap: 8px; flex-wrap: wrap;
+    }
+    .section-header h3 { margin: 0; }
+    .badge-count {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 24px; height: 24px; background: #ef4444; color: white;
+      border-radius: 999px; font-size: 12px; font-weight: 800; padding: 0 6px;
+      animation: pulse-badge 1.5s infinite;
+    }
+    .badge-count.zero { background: #94a3b8; animation: none; }
+    @keyframes pulse-badge { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.15); } }
+
+    /* Pending/Active lists */
+    .person-list { list-style: none; padding: 0; margin: 0; }
+    .person-item {
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      padding: 10px 14px; border: 1px solid #e2e8f0; border-radius: 10px;
+      margin-bottom: 8px; background: white; flex-wrap: wrap;
+    }
+    .person-info { flex: 1; min-width: 150px; }
+    .person-name { font-weight: 700; font-size: 15px; }
+    .person-meta { font-size: 12px; color: #64748b; }
+    .person-actions { display: flex; gap: 6px; flex-shrink: 0; }
+    .btn-approve { background: #16a34a; font-size: 13px; padding: 6px 14px; }
+    .btn-approve:hover { background: #15803d; }
+    .btn-reject { background: #ef4444; font-size: 13px; padding: 6px 14px; }
+    .btn-reject:hover { background: #dc2626; }
+    .btn-disqualify { background: #64748b; font-size: 12px; padding: 4px 10px; }
+
+    /* Results table */
+    .results-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .results-table th {
+      text-align: right; padding: 8px 10px; background: #f1f5f9;
+      border-bottom: 2px solid #e2e8f0; font-weight: 700; font-size: 12px; color: #64748b;
+      white-space: nowrap;
+    }
+    .results-table td { padding: 8px 10px; border-bottom: 1px solid #f1f5f9; }
+    .results-table tr:hover td { background: #f8fafc; }
+
+    .badge-pass { background: #dcfce7; color: #166534; padding: 2px 8px; border-radius: 6px; font-weight: 700; font-size: 12px; }
+    .badge-fail { background: #fef2f2; color: #991b1b; padding: 2px 8px; border-radius: 6px; font-weight: 700; font-size: 12px; }
+    .badge-disqualified { background: #f1f5f9; color: #475569; padding: 2px 8px; border-radius: 6px; font-weight: 700; font-size: 12px; text-decoration: line-through; }
+
+    .wa-btn {
+      display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px;
+      background: #25D366; color: white; border: none; border-radius: 8px;
+      font-size: 12px; font-weight: 700; cursor: pointer; text-decoration: none;
+    }
+    .wa-btn:hover { filter: brightness(1.1); }
+
+    /* Stats bar */
+    .stats-bar {
+      display: flex; gap: 16px; flex-wrap: wrap; padding: 14px 16px;
+      background: #0f172a; border-radius: 12px; margin-top: 12px; color: #f8fafc;
+    }
+    .stat-item { text-align: center; flex: 1; min-width: 70px; }
+    .stat-item .stat-val { font-size: 1.8rem; font-weight: 900; }
+    .stat-item .stat-lbl { font-size: 11px; color: #94a3b8; }
+    .stat-pass { color: #4ade80; }
+    .stat-fail { color: #f87171; }
+
+    /* Bulk actions */
+    .bulk-actions {
+      display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; padding-top: 12px;
+      border-top: 1px solid #e2e8f0;
+    }
+
+    /* Offline banner */
+    .offline-banner {
+      display: none; position: fixed; bottom: 0; left: 0; right: 0; z-index: 200;
+      background: #fef2f2; border-top: 2px solid #ef4444; padding: 8px 16px;
+      text-align: center; font-size: 14px; color: #991b1b; font-weight: 700;
+    }
+    .offline-banner.show { display: block; }
+
+    /* Settings modal */
+    .modal-overlay {
+      display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.5); z-index: 300; align-items: center; justify-content: center;
+    }
+    .modal-overlay.show { display: flex; }
+    .modal-box {
+      background: white; border-radius: 16px; padding: 24px; max-width: 400px; width: 90%;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+    }
+    .modal-box h3 { margin: 0 0 16px; }
+
+    /* Responsive */
+    @media (max-width: 600px) {
+      .session-code-display { font-size: 2.5rem; letter-spacing: 6px; padding: 16px; }
+      .results-table { font-size: 12px; }
+      .results-table th, .results-table td { padding: 6px 4px; }
+      .stats-bar { gap: 8px; }
+      .stat-item .stat-val { font-size: 1.3rem; }
+    }
+
+    footer {
+      text-align: center; padding: 20px; font-size: 13px; color: #94a3b8;
+      border-top: 1px solid #e2e8f0; margin-top: 30px;
+    }
+  </style>
+</head>
+<body>
+
+<header class="topbar">
+  <div>
+    <h1>לוח בקרה — בוחן</h1>
+    <div class="sub" id="topbarInfo"></div>
+  </div>
+  <button id="logoutBtn" style="display:none;" onclick="logout()">התנתק</button>
+</header>
+
+<main class="container">
+
+  <!-- ===== Screen 1: Login ===== -->
+  <section class="card screen active" id="screenLogin">
+    <h2>כניסת בוחן</h2>
+    <p class="muted">הזן את פרטי ההזדהות שלך</p>
+    <div class="form-grid">
+      <label>
+        <span>תעודת זהות</span>
+        <input type="text" id="loginId" placeholder="123456789" maxlength="9" inputmode="numeric">
+      </label>
+      <label>
+        <span>סיסמה</span>
+        <input type="password" id="loginPass" placeholder="סיסמה">
+      </label>
+    </div>
+    <div class="form-error" id="loginError"></div>
+    <button id="loginBtn" style="display:block; width:100%; padding:14px; font-size:17px; margin-top:12px;">כניסה</button>
+  </section>
+
+  <!-- ===== Screen 2: Session Setup ===== -->
+  <section class="card screen" id="screenSetup">
+    <h2>פתיחת סשן חדש</h2>
+    <p class="muted" id="setupExaminerName"></p>
+    <div class="form-grid">
+      <label>
+        <span>אתר בחינה</span>
+        <select id="siteSelect"><option value="">טוען אתרים...</option></select>
+      </label>
+      <label>
+        <span>כיתה</span>
+        <select id="classroomSelect"><option value="">בחר אתר קודם</option></select>
+      </label>
+      <label>
+        <span>דרגת רישיון</span>
+        <select id="licenseSetup">
+          <option value="B">B — רכב פרטי</option>
+          <option value="1">1 — טרקטור</option>
+          <option value="C1">C1 — משא קל</option>
+          <option value="C">C+E — משא כבד / גורר</option>
+          <option value="D">D — אוטובוס / מונית</option>
+        </select>
+      </label>
+      <label>
+        <span>שפת המבחן</span>
+        <select id="languageSetup">
+          <option value="he">עברית</option>
+          <option value="ru">רוסית</option>
+          <option value="en">אנגלית</option>
+          <option value="ar">ערבית</option>
+          <option value="fr">צרפתית</option>
+          <option value="es">ספרדית</option>
+        </select>
+      </label>
+      <label>
+        <span>מצב שמע</span>
+        <select id="audioModeSetup">
+          <option value="off">כבוי</option>
+          <option value="on">פועל</option>
+        </select>
+      </label>
+    </div>
+    <div class="form-error" id="setupError"></div>
+    <button id="createSessionBtn" style="display:block; width:100%; padding:14px; font-size:17px; margin-top:12px;">פתח סשן</button>
+  </section>
+
+  <!-- ===== Screen 3: Dashboard ===== -->
+  <div class="screen" id="screenDashboard">
+
+    <!-- Session code + QR -->
+    <div class="card" style="text-align:center;">
+      <p class="muted" style="margin:0 0 4px;">קוד הסשן — הודע לנבחנים:</p>
+      <div class="session-code-display" id="sessionCodeDisplay">------</div>
+      <div id="qrSection" style="display:none; margin-top:12px;">
+        <div id="qrLocalWarning" style="display:none; background:#fef3c7; border:1px solid #f59e0b; border-radius:8px; padding:8px 12px; margin-bottom:8px; font-size:12px; color:#92400e;">
+          ⚠️ הקובץ רץ מקובץ מקומי (file://) — QR לא יעבוד בטלפון.<br>
+          <b>פתרון:</b> הפעל את <code>start_server.bat</code> ופתח את הדף דרך הכתובת שיוצג שם.
+        </div>
+        <p class="muted" style="margin:0 0 8px; font-size:13px;">או: סרקו את הברקוד עם הטלפון</p>
+        <canvas id="qrCanvas" style="margin:0 auto; display:block; border-radius:12px; border:3px solid #e2e8f0;"></canvas>
+        <div style="margin-top:8px;">
+          <input type="text" id="examineeUrlInput" style="width:100%; max-width:400px; padding:8px 12px; border:1px solid #cbd5e1; border-radius:8px; font-size:12px; text-align:center; direction:ltr; color:#64748b;" readonly>
+          <button onclick="copyExamineeUrl()" style="margin-top:4px; font-size:12px; padding:4px 14px; background:#64748b;">העתק קישור</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Session info bar -->
+    <div class="session-bar">
+      <div class="item"><span class="lbl">אתר:</span> <span class="val" id="barSite"></span></div>
+      <div class="item"><span class="lbl">כיתה:</span> <span class="val" id="barClassroom"></span></div>
+      <div class="item"><span class="lbl">דרגה:</span> <span class="val" id="barLicense"></span></div>
+      <div class="item"><span class="lbl">שפה:</span> <span class="val" id="barLanguage"></span></div>
+      <div class="item"><span class="lbl">שמע:</span> <span class="val" id="barAudio"></span></div>
+      <div class="item"><span class="lbl">תוקף:</span> <span class="countdown" id="barCountdown">--:--:--</span></div>
+      <div style="margin-right:auto;"></div>
+      <button style="font-size:13px; padding:6px 12px; background:#64748b;" onclick="openSettingsModal()">שנה הגדרות</button>
+      <button style="font-size:13px; padding:6px 12px; background:#ef4444;" onclick="confirmCloseSession()">סגור סשן</button>
+    </div>
+
+    <!-- Pending -->
+    <div class="card">
+      <div class="section-header">
+        <h3>ממתינים לאישור <span class="badge-count zero" id="pendingBadge">0</span></h3>
+      </div>
+      <ul class="person-list" id="pendingList">
+        <li class="muted" style="text-align:center; padding:20px;">אין נבחנים ממתינים</li>
+      </ul>
+    </div>
+
+    <!-- Active -->
+    <div class="card">
+      <div class="section-header">
+        <h3>במבחן כרגע <span class="badge-count zero" id="activeBadge">0</span></h3>
+      </div>
+      <ul class="person-list" id="activeList">
+        <li class="muted" style="text-align:center; padding:20px;">אין נבחנים במבחן כרגע</li>
+      </ul>
+    </div>
+
+    <!-- Results -->
+    <div class="card">
+      <div class="section-header">
+        <h3>תוצאות</h3>
+      </div>
+      <div id="resultsArea">
+        <p class="muted" style="text-align:center; padding:20px;">אין תוצאות עדיין</p>
+      </div>
+      <div class="stats-bar" id="statsBar" style="display:none;">
+        <div class="stat-item"><div class="stat-val" id="statTotal">0</div><div class="stat-lbl">סה"כ</div></div>
+        <div class="stat-item"><div class="stat-val stat-pass" id="statPass">0</div><div class="stat-lbl">עברו</div></div>
+        <div class="stat-item"><div class="stat-val stat-fail" id="statFail">0</div><div class="stat-lbl">נכשלו</div></div>
+        <div class="stat-item"><div class="stat-val" id="statRate" style="color:#60a5fa;">0%</div><div class="stat-lbl">אחוז הצלחה</div></div>
+      </div>
+      <div class="bulk-actions" id="bulkActions" style="display:none;">
+        <button class="wa-btn" style="padding:8px 16px; font-size:14px;" onclick="sendBulkToManager()">שלח סיכום למנהל אתר</button>
+        <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#1a73e8;" onclick="sendToAllExaminees()">שלח לכל הנבחנים</button>
+      </div>
+    </div>
+
+  </div>
+
+</main>
+
+<!-- Settings modal -->
+<div class="modal-overlay" id="settingsModal">
+  <div class="modal-box">
+    <h3>שנה הגדרות סשן</h3>
+    <p class="muted">שינויים יחולו על נבחנים חדשים בלבד</p>
+    <div style="display:grid; gap:12px; margin:14px 0;">
+      <label>דרגת רישיון
+        <select id="modalLicense">
+          <option value="B">B — רכב פרטי</option>
+          <option value="1">1 — טרקטור</option>
+          <option value="C1">C1 — משא קל</option>
+          <option value="C">C+E — משא כבד / גורר</option>
+          <option value="D">D — אוטובוס / מונית</option>
+        </select>
+      </label>
+      <label>שפה
+        <select id="modalLanguage">
+          <option value="he">עברית</option>
+          <option value="ru">רוסית</option>
+          <option value="en">אנגלית</option>
+          <option value="ar">ערבית</option>
+          <option value="fr">צרפתית</option>
+          <option value="es">ספרדית</option>
+        </select>
+      </label>
+      <label>מצב שמע
+        <select id="modalAudio">
+          <option value="off">כבוי</option>
+          <option value="on">פועל</option>
+        </select>
+      </label>
+    </div>
+    <div style="display:flex; gap:8px; justify-content:flex-end;">
+      <button style="background:#64748b;" onclick="closeSettingsModal()">ביטול</button>
+      <button onclick="saveSettings()">שמור</button>
+    </div>
+  </div>
+</div>
+
+<!-- Offline banner -->
+<div class="offline-banner" id="offlineBanner">אין חיבור לשרת. מנסה שוב...</div>
+
+<footer>לוח בוחן — מבחן תאוריה חיצוני</footer>
+
+<!-- Notification sound (base64 short beep) -->
+<audio id="notifSound" preload="auto" src="data:audio/wav;base64,UklGRlQGAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YTAGAACAgICAgICAgICAfn18e3p5eHd3d3h5ent8fX5/gIGCg4SFhoeIiImJiYmIh4aFhIOCgYB/fn18e3p5eHd3d3h5ent8fX5/gIGCg4SFhoeIiImJiYmIh4aFhIOCgYB/fn18e3p5eA=="></audio>
+
+<script>
+(function() {
+  'use strict';
+
+  // ========== CONFIG ==========
+  // *** שנה את ה-URL הזה ל-URL של ה-Apps Script החדש ***
+  var API_URL = 'https://script.google.com/macros/s/AKfycbz_Lqn1Y_8iai6FmHV7V1xJlF4UCWc0rR8CkpKS37BqfZxelKvwQSIY4Y-KYghH0VSCBA/exec';
+
+  var LICENSE_LABELS = { 'B': 'B (פרטי)', '1': '1 (טרקטור)', 'C1': 'C1 (משא קל)', 'C': 'C/E (משא כבד)', 'D': 'D (ציבורי)' };
+  var LANG_LABELS = { 'he': 'עברית', 'ru': 'רוסית', 'en': 'אנגלית', 'ar': 'ערבית', 'fr': 'צרפתית', 'es': 'ספרדית' };
+
+  // ========== Logo for PDF ==========
+  var logoBase64 = '';
+  (function loadLogo() {
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', 'logo_b64.txt', true);
+    xhr.onload = function() {
+      if (xhr.status === 200 && xhr.responseText) {
+        logoBase64 = 'data:image/png;base64,' + xhr.responseText.trim();
+      }
+    };
+    xhr.send();
+  })();
+
+  // ========== State ==========
+  var examinerData = null;
+  var sessionCode = '';
+  var sessionValidUntil = null;
+  var currentSite = '';
+  var currentSiteManagerPhone = '';
+  var currentClassroom = '';
+  var currentLicense = '';
+  var currentLanguage = '';
+  var currentAudioMode = '';
+  var sitesData = [];
+  var dashboardInterval = null;
+  var countdownInterval = null;
+  var failedPolls = 0;
+  var prevCompletedCount = 0;
+  var prevPendingIds = {};
+  var completedResults = [];
+
+  // ========== Session persistence ==========
+  function saveState() {
+    try {
+      sessionStorage.setItem('ext_exam_state', JSON.stringify({
+        examinerData: examinerData,
+        sessionCode: sessionCode,
+        sessionValidUntil: sessionValidUntil ? sessionValidUntil.toISOString() : null,
+        currentSite: currentSite,
+        currentSiteManagerPhone: currentSiteManagerPhone,
+        currentClassroom: currentClassroom,
+        currentLicense: currentLicense,
+        currentLanguage: currentLanguage,
+        currentAudioMode: currentAudioMode
+      }));
+    } catch(e) {}
+  }
+
+  function loadState() {
+    try {
+      var saved = sessionStorage.getItem('ext_exam_state');
+      if (!saved) return false;
+      var state = JSON.parse(saved);
+      if (!state.examinerData || !state.sessionCode) return false;
+      examinerData = state.examinerData;
+      sessionCode = state.sessionCode;
+      sessionValidUntil = state.sessionValidUntil ? new Date(state.sessionValidUntil) : null;
+      currentSite = state.currentSite || '';
+      currentSiteManagerPhone = state.currentSiteManagerPhone || '';
+      currentClassroom = state.currentClassroom || '';
+      currentLicense = state.currentLicense || '';
+      currentLanguage = state.currentLanguage || '';
+      currentAudioMode = state.currentAudioMode || '';
+      return true;
+    } catch(e) { return false; }
+  }
+
+  function clearState() {
+    try { sessionStorage.removeItem('ext_exam_state'); } catch(e) {}
+  }
+
+  // ========== Screen management ==========
+  function showScreen(id) {
+    var screens = document.querySelectorAll('.screen');
+    for (var i = 0; i < screens.length; i++) screens[i].classList.remove('active');
+    document.getElementById(id).classList.add('active');
+  }
+
+  // ========== API Helper ==========
+  function apiGet(params) {
+    var qs = [];
+    for (var k in params) {
+      if (params.hasOwnProperty(k)) qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
+    }
+    qs.push('_t=' + Date.now());
+    return fetch(API_URL + '?' + qs.join('&'), { cache: 'no-store' }).then(function(r) { return r.json(); });
+  }
+
+  // ========== Login ==========
+  document.getElementById('loginBtn').addEventListener('click', function() {
+    var id = document.getElementById('loginId').value.trim();
+    var pass = document.getElementById('loginPass').value.trim();
+    var errEl = document.getElementById('loginError');
+    errEl.style.display = 'none';
+
+    if (!/^\d{9}$/.test(id)) { errEl.textContent = 'הזן 9 ספרות ת.ז.'; errEl.style.display = 'block'; return; }
+    if (!pass) { errEl.textContent = 'הזן סיסמה'; errEl.style.display = 'block'; return; }
+
+    var btn = document.getElementById('loginBtn');
+    btn.disabled = true; btn.textContent = 'מתחבר...';
+
+    apiGet({ action: 'login', idNumber: id, password: pass }).then(function(data) {
+      btn.disabled = false; btn.textContent = 'כניסה';
+      if (data.status === 'ok') {
+        examinerData = data.examiner;
+        document.getElementById('topbarInfo').textContent = examinerData.name;
+        document.getElementById('logoutBtn').style.display = 'inline-block';
+        document.getElementById('setupExaminerName').textContent = 'שלום, ' + examinerData.name;
+        showScreen('screenSetup');
+        fetchSites();
+      } else {
+        errEl.textContent = data.message || 'שגיאת כניסה';
+        errEl.style.display = 'block';
+      }
+    }).catch(function() {
+      btn.disabled = false; btn.textContent = 'כניסה';
+      errEl.textContent = 'שגיאת תקשורת. נסה שוב.';
+      errEl.style.display = 'block';
+    });
+  });
+
+  window.logout = function() {
+    stopDashboardPolling();
+    clearState();
+    examinerData = null; sessionCode = '';
+    document.getElementById('logoutBtn').style.display = 'none';
+    document.getElementById('topbarInfo').textContent = '';
+    showScreen('screenLogin');
+  };
+
+  // ========== Fetch Sites ==========
+  function fetchSites() {
+    apiGet({ action: 'getSites' }).then(function(data) {
+      if (data.status === 'ok') {
+        sitesData = data.sites;
+        var sel = document.getElementById('siteSelect');
+        sel.innerHTML = '<option value="">— בחר אתר —</option>';
+        for (var i = 0; i < sitesData.length; i++) {
+          var opt = document.createElement('option');
+          opt.value = sitesData[i].name;
+          opt.textContent = sitesData[i].name;
+          opt.dataset.idx = i;
+          sel.appendChild(opt);
+        }
+      }
+    });
+  }
+
+  document.getElementById('siteSelect').addEventListener('change', function() {
+    var sel = this;
+    var cSel = document.getElementById('classroomSelect');
+    cSel.innerHTML = '';
+    if (!sel.value) { cSel.innerHTML = '<option value="">בחר אתר קודם</option>'; return; }
+    var idx = sel.selectedOptions[0].dataset.idx;
+    var site = sitesData[idx];
+    if (site && site.classrooms) {
+      for (var i = 0; i < site.classrooms.length; i++) {
+        var opt = document.createElement('option');
+        opt.value = site.classrooms[i];
+        opt.textContent = 'כיתה ' + site.classrooms[i];
+        cSel.appendChild(opt);
+      }
+    }
+    currentSiteManagerPhone = site ? site.managerPhone : '';
+  });
+
+  // ========== Create Session ==========
+  document.getElementById('createSessionBtn').addEventListener('click', function() {
+    var site = document.getElementById('siteSelect').value;
+    var classroom = document.getElementById('classroomSelect').value;
+    var license = document.getElementById('licenseSetup').value;
+    var language = document.getElementById('languageSetup').value;
+    var audioMode = document.getElementById('audioModeSetup').value;
+    var errEl = document.getElementById('setupError');
+    errEl.style.display = 'none';
+
+    if (!site) { errEl.textContent = 'בחר אתר'; errEl.style.display = 'block'; return; }
+    if (!classroom) { errEl.textContent = 'בחר כיתה'; errEl.style.display = 'block'; return; }
+
+    var btn = document.getElementById('createSessionBtn');
+    btn.disabled = true; btn.textContent = 'יוצר סשן...';
+
+    apiGet({
+      action: 'createSession',
+      examinerId: examinerData.id,
+      site: site, classroom: classroom,
+      license: license, language: language, audioMode: audioMode
+    }).then(function(data) {
+      btn.disabled = false; btn.textContent = 'פתח סשן';
+      if (data.status === 'ok') {
+        sessionCode = data.sessionCode;
+        sessionValidUntil = new Date(data.validUntil);
+        currentSite = site;
+        currentClassroom = classroom;
+        currentLicense = license;
+        currentLanguage = language;
+        currentAudioMode = audioMode;
+
+        // Find manager phone
+        for (var i = 0; i < sitesData.length; i++) {
+          if (sitesData[i].name === site) { currentSiteManagerPhone = sitesData[i].managerPhone || ''; break; }
+        }
+
+        saveState();
+        renderDashboard();
+        showScreen('screenDashboard');
+        startDashboardPolling();
+        startCountdown();
+        showQR(sessionCode);
+      } else {
+        errEl.textContent = data.message || 'שגיאה ביצירת סשן';
+        errEl.style.display = 'block';
+      }
+    }).catch(function() {
+      btn.disabled = false; btn.textContent = 'פתח סשן';
+      errEl.textContent = 'שגיאת תקשורת. נסה שוב.';
+      errEl.style.display = 'block';
+    });
+  });
+
+  // ========== Dashboard ==========
+  function renderDashboard() {
+    document.getElementById('sessionCodeDisplay').textContent = sessionCode;
+    document.getElementById('barSite').textContent = currentSite;
+    document.getElementById('barClassroom').textContent = currentClassroom;
+    document.getElementById('barLicense').textContent = LICENSE_LABELS[currentLicense] || currentLicense;
+    document.getElementById('barLanguage').textContent = LANG_LABELS[currentLanguage] || currentLanguage;
+    document.getElementById('barAudio').textContent = currentAudioMode === 'on' ? 'פועל' : 'כבוי';
+    document.getElementById('topbarInfo').textContent = examinerData.name + ' | ' + currentSite + ' | כיתה ' + currentClassroom;
+
+    // Init modal values
+    document.getElementById('modalLicense').value = currentLicense;
+    document.getElementById('modalLanguage').value = currentLanguage;
+    document.getElementById('modalAudio').value = currentAudioMode;
+  }
+
+  function startDashboardPolling() {
+    pollDashboard();
+    dashboardInterval = setInterval(pollDashboard, 5000);
+  }
+
+  function stopDashboardPolling() {
+    if (dashboardInterval) { clearInterval(dashboardInterval); dashboardInterval = null; }
+    if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null; }
+  }
+
+  function pollDashboard() {
+    console.log('[DASHBOARD] Polling session=' + sessionCode);
+    apiGet({ action: 'examinerDashboard', sessionCode: sessionCode }).then(function(data) {
+      failedPolls = 0;
+      document.getElementById('offlineBanner').classList.remove('show');
+      if (data.status === 'ok') {
+        console.log('[DASHBOARD] pending=' + (data.pending||[]).length + ' active=' + (data.active||[]).length + ' completed=' + (data.completed||[]).length);
+        updatePendingList(data.pending || []);
+        updateActiveList(data.active || []);
+        updateCompletedList(data.completed || []);
+      } else {
+        console.log('[DASHBOARD] Error:', data.message);
+      }
+    }).catch(function(err) {
+      failedPolls++;
+      console.log('[DASHBOARD] Network error (fails=' + failedPolls + '):', err);
+      if (failedPolls >= 3) document.getElementById('offlineBanner').classList.add('show');
+    });
+  }
+
+  // ========== Pending list ==========
+  function updatePendingList(pending) {
+    var list = document.getElementById('pendingList');
+    var badge = document.getElementById('pendingBadge');
+    badge.textContent = pending.length;
+    badge.className = 'badge-count' + (pending.length === 0 ? ' zero' : '');
+
+    // Check for new pending (play sound)
+    for (var p = 0; p < pending.length; p++) {
+      if (!prevPendingIds[pending[p].idNumber]) playNotif();
+    }
+    prevPendingIds = {};
+    for (var p = 0; p < pending.length; p++) prevPendingIds[pending[p].idNumber] = true;
+
+    if (pending.length === 0) {
+      list.innerHTML = '<li class="muted" style="text-align:center; padding:20px;">אין נבחנים ממתינים</li>';
+      return;
+    }
+    list.innerHTML = '';
+    for (var i = 0; i < pending.length; i++) {
+      (function(item) {
+        var li = document.createElement('li');
+        li.className = 'person-item';
+        var id4 = String(item.idNumber).slice(-4);
+        li.innerHTML =
+          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + '</div>' +
+          '<div class="person-meta">ת.ז. ....' + id4 + ' | ' + escHtml(item.phone) + '</div></div>' +
+          '<div class="person-actions"></div>';
+        var actions = li.querySelector('.person-actions');
+
+        var approveBtn = document.createElement('button');
+        approveBtn.className = 'btn-approve';
+        approveBtn.textContent = 'אשר';
+        approveBtn.addEventListener('click', function() {
+          approveBtn.disabled = true;
+          approveBtn.textContent = 'מאשר...';
+          apiGet({ action: 'approveExaminee', sessionCode: sessionCode, idNumber: item.idNumber }).then(function(data) {
+            if (data.status === 'ok') {
+              approveBtn.textContent = '✓ אושר';
+              pollDashboard();
+            } else {
+              alert('שגיאה באישור: ' + (data.message || 'לא ידוע'));
+              approveBtn.disabled = false;
+              approveBtn.textContent = 'אשר';
+            }
+          }).catch(function() {
+            alert('שגיאת תקשורת באישור');
+            approveBtn.disabled = false;
+            approveBtn.textContent = 'אשר';
+          });
+        });
+        actions.appendChild(approveBtn);
+
+        var rejectBtn = document.createElement('button');
+        rejectBtn.className = 'btn-reject';
+        rejectBtn.textContent = 'דחה';
+        rejectBtn.addEventListener('click', function() {
+          rejectBtn.disabled = true;
+          rejectBtn.textContent = 'דוחה...';
+          apiGet({ action: 'rejectExaminee', sessionCode: sessionCode, idNumber: item.idNumber }).then(function(data) {
+            if (data.status === 'ok') {
+              rejectBtn.textContent = '✗ נדחה';
+              pollDashboard();
+            } else {
+              alert('שגיאה בדחייה: ' + (data.message || 'לא ידוע'));
+              rejectBtn.disabled = false;
+              rejectBtn.textContent = 'דחה';
+            }
+          }).catch(function() {
+            alert('שגיאת תקשורת בדחייה');
+            rejectBtn.disabled = false;
+            rejectBtn.textContent = 'דחה';
+          });
+        });
+        actions.appendChild(rejectBtn);
+
+        list.appendChild(li);
+      })(pending[i]);
+    }
+  }
+
+  // ========== Active list ==========
+  function updateActiveList(active) {
+    var list = document.getElementById('activeList');
+    var badge = document.getElementById('activeBadge');
+    badge.textContent = active.length;
+    badge.className = 'badge-count' + (active.length === 0 ? ' zero' : '');
+
+    if (active.length === 0) {
+      list.innerHTML = '<li class="muted" style="text-align:center; padding:20px;">אין נבחנים במבחן כרגע</li>';
+      return;
+    }
+    list.innerHTML = '';
+    for (var i = 0; i < active.length; i++) {
+      (function(item) {
+        var li = document.createElement('li');
+        li.className = 'person-item';
+        var id4 = String(item.idNumber).slice(-4);
+        var elapsed = '';
+        if (item.time) {
+          var diff = Math.round((Date.now() - new Date(item.time).getTime()) / 1000);
+          if (diff < 0) diff = 0;
+          var em = Math.floor(diff / 60), es = diff % 60;
+          elapsed = em + ':' + (es < 10 ? '0' : '') + es;
+        }
+        li.innerHTML =
+          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + '</div>' +
+          '<div class="person-meta">ת.ז. ....' + id4 + (elapsed ? ' | זמן: ' + elapsed : '') + '</div></div>' +
+          '<div class="person-actions"></div>';
+        var actions = li.querySelector('.person-actions');
+        var dqBtn = document.createElement('button');
+        dqBtn.className = 'btn-disqualify';
+        dqBtn.textContent = 'פסול';
+        dqBtn.addEventListener('click', function() {
+          if (confirm('האם לפסול את ' + item.name + '?')) {
+            dqBtn.disabled = true;
+            dqBtn.textContent = 'מפסול...';
+            apiGet({ action: 'disqualify', sessionCode: sessionCode, idNumber: item.idNumber }).then(function(data) {
+              if (data.status === 'ok') {
+                alert(item.name + ' נפסל.');
+                pollDashboard();
+              } else {
+                alert('שגיאה: ' + (data.message || 'לא ידוע'));
+                dqBtn.disabled = false;
+                dqBtn.textContent = 'פסול';
+              }
+            }).catch(function() {
+              alert('שגיאת תקשורת');
+              dqBtn.disabled = false;
+              dqBtn.textContent = 'פסול';
+            });
+          }
+        });
+        actions.appendChild(dqBtn);
+        list.appendChild(li);
+      })(active[i]);
+    }
+  }
+
+  // ========== Completed list ==========
+  function updateCompletedList(completed) {
+    var area = document.getElementById('resultsArea');
+
+    // Play notification for new results
+    if (completed.length > prevCompletedCount && prevCompletedCount > 0) {
+      playNotif();
+    }
+    prevCompletedCount = completed.length;
+    completedResults = completed;
+
+    if (completed.length === 0) {
+      area.innerHTML = '<p class="muted" style="text-align:center; padding:20px;">אין תוצאות עדיין</p>';
+      document.getElementById('statsBar').style.display = 'none';
+      document.getElementById('bulkActions').style.display = 'none';
+      return;
+    }
+
+    var html = '<div style="overflow-x:auto;"><table class="results-table"><thead><tr>' +
+      '<th>#</th><th>שם</th><th>ת.ז.</th><th>ניסיון</th><th>ציון</th><th>תוצאה</th><th>זמן</th><th>פעולות</th>' +
+      '</tr></thead><tbody>';
+
+    var passCount = 0, failCount = 0, dqCount = 0;
+    for (var i = 0; i < completed.length; i++) {
+      var r = completed[i];
+      var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === 'פסול';
+      var isPassed = !isDQ && (r.passed === 'עבר' || r.passed === true);
+      var badgeClass = isDQ ? 'badge-disqualified' : (isPassed ? 'badge-pass' : 'badge-fail');
+      var badgeText = isDQ ? 'פסול' : (isPassed ? 'עבר' : 'נכשל');
+      var id4 = String(r.idNumber).slice(-4);
+
+      if (isDQ) dqCount++;
+      else if (isPassed) passCount++;
+      else failCount++;
+
+      // Build WA link directly
+      var phone = formatPhone(r.phone);
+      var passTextWA = isDQ ? '\u05E4\u05E1\u05D5\u05DC' : (isPassed ? '\u05E2\u05D1\u05E8' : '\u05E0\u05DB\u05E9\u05DC');
+      var shortMsg = '\u05E9\u05DC\u05D5\u05DD ' + r.name + ', \u05EA\u05D5\u05E6\u05D0\u05EA \u05D4\u05DE\u05D1\u05D7\u05DF: ' + passTextWA + ' (' + (r.score || '') + ')';
+      var waUrl = phone ? ('https://wa.me/' + phone + '?text=' + encodeURIComponent(shortMsg)) : '#';
+
+      html += '<tr>' +
+        '<td>' + (i + 1) + '</td>' +
+        '<td>' + escHtml(r.name) + '</td>' +
+        '<td>....' + id4 + '</td>' +
+        '<td>' + (r.attempt || 1) + '</td>' +
+        '<td>' + escHtml(String(r.score || '')) + '</td>' +
+        '<td><span class="' + badgeClass + '">' + badgeText + '</span></td>' +
+        '<td>' + escHtml(formatTime(r.time)) + '</td>' +
+        '<td style="white-space:nowrap;">' +
+          '<button class="wa-btn" style="background:#ef4444;margin-left:4px;" onclick="openExamineePDF(' + i + ')">\u{1F4C4} PDF</button>' +
+          '<a href="' + waUrl + '" target="_blank" class="wa-btn" onclick="markSentWA(' + i + ')" style="margin-left:4px;">\u{1F4F1} WA</a>' +
+          (!isDQ ? ' <button class="btn-disqualify" onclick="disqualifyResult(' + i + ')">\u05E4\u05E1\u05D5\u05DC</button>' : '') +
+        '</td></tr>';
+    }
+    html += '</tbody></table></div>';
+    area.innerHTML = html;
+
+    // Stats
+    var total = completed.length;
+    var validTotal = passCount + failCount;
+    document.getElementById('statTotal').textContent = total;
+    document.getElementById('statPass').textContent = passCount;
+    document.getElementById('statFail').textContent = failCount;
+    document.getElementById('statRate').textContent = validTotal > 0 ? Math.round((passCount / validTotal) * 100) + '%' : '0%';
+    document.getElementById('statsBar').style.display = 'flex';
+    document.getElementById('bulkActions').style.display = 'flex';
+  }
+
+  // ========== Formatting helpers ==========
+  function formatPhone(phone) {
+    phone = String(phone || '').replace(/[^0-9]/g, '');
+    if (phone.charAt(0) === '0') phone = '972' + phone.substring(1);
+    return phone;
+  }
+
+  // Google Sheets returns dates as ISO strings like "2026-02-16T22:00:00.000Z"
+  function formatDate(val) {
+    if (!val) return '';
+    var s = String(val);
+    // Already in DD/MM/YYYY format
+    if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) return s;
+    // ISO date string
+    var d = new Date(s);
+    if (isNaN(d.getTime())) return s;
+    var dd = ('0' + d.getDate()).slice(-2);
+    var mm = ('0' + (d.getMonth() + 1)).slice(-2);
+    var yyyy = d.getFullYear();
+    // Sheets date "2026-02-16T22:00:00.000Z" is actually 17/02 in Israel timezone
+    if (d.getHours() >= 21 && d.getTimezoneOffset() <= -120) {
+      // Already correct
+    }
+    return dd + '/' + mm + '/' + yyyy;
+  }
+
+  // Format time for display. New format: "1 דק' 05 שנ'". Old format: Sheets Date "1899-12-29T22:44:20.000Z"
+  function formatTime(val) {
+    if (!val) return '';
+    var s = String(val);
+    // New format: "X דק' YY שנ'" — already readable, return as-is
+    if (s.indexOf('\u05D3\u05E7') !== -1) return s;
+    // Already in M:SS or MM:SS format
+    if (/^\d{1,2}:\d{2}$/.test(s)) return s;
+    // ISO date from Sheets time column — unreliable due to timezone issues, just return as-is
+    // This handles legacy data; new exams will use the "דק' שנ'" format
+    if (s.indexOf('1899') !== -1 || s.indexOf('1900') !== -1) {
+      return '\u05DC\u05D0 \u05D6\u05DE\u05D9\u05DF'; // "לא זמין"
+    }
+    if (s.indexOf('T') !== -1) {
+      return '\u05DC\u05D0 \u05D6\u05DE\u05D9\u05DF';
+    }
+    return s;
+  }
+
+  // Google Sheets returns "30%" as 0.3 (number)
+  function formatPercent(val) {
+    if (val === null || val === undefined || val === '') return '';
+    var s = String(val);
+    // Already has % sign
+    if (s.indexOf('%') !== -1) return s;
+    // Decimal number (0.3 = 30%)
+    var n = Number(val);
+    if (!isNaN(n)) {
+      if (n <= 1 && n >= 0) return Math.round(n * 100) + '%';
+      return Math.round(n) + '%';
+    }
+    return s;
+  }
+
+  // Mark as sent when WA link is clicked
+  window.markSentWA = function(idx) {
+    var r = completedResults[idx];
+    if (r) apiGet({ action: 'markSent', sessionCode: sessionCode, idNumber: r.idNumber });
+  };
+
+  // Parse wrongDetails text into table rows
+  function parseWrongDetails(text) {
+    if (!text) return [];
+    var items = [];
+    var blocks = text.split('\n\n');
+    for (var b = 0; b < blocks.length; b++) {
+      var lines = blocks[b].trim().split('\n');
+      var q = '', yours = '', correct = '';
+      for (var l = 0; l < lines.length; l++) {
+        var line = lines[l].trim();
+        if (line.indexOf('\u05E9\u05D0\u05DC\u05D4:') === 0) q = line.replace('\u05E9\u05D0\u05DC\u05D4:', '').trim();
+        else if (line.indexOf('\u05EA\u05E9\u05D5\u05D1\u05EA \u05D4\u05E0\u05D1\u05D7\u05DF:') === 0) yours = line.replace('\u05EA\u05E9\u05D5\u05D1\u05EA \u05D4\u05E0\u05D1\u05D7\u05DF:', '').trim();
+        else if (line.indexOf('\u05EA\u05E9\u05D5\u05D1\u05D4 \u05E0\u05DB\u05D5\u05E0\u05D4:') === 0) correct = line.replace('\u05EA\u05E9\u05D5\u05D1\u05D4 \u05E0\u05DB\u05D5\u05E0\u05D4:', '').trim();
+      }
+      if (q) items.push({ question: q, yourAnswer: yours, correctAnswer: correct });
+    }
+    return items;
+  }
+
+  // Open PDF report for a specific examinee
+  window.openExamineePDF = function(idx) {
+    var r = completedResults[idx];
+    if (!r) return;
+
+    var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === '\u05E4\u05E1\u05D5\u05DC';
+    var isPassed = !isDQ && (r.passed === '\u05E2\u05D1\u05E8' || r.passed === true);
+    var passText = isDQ ? '\u05E4\u05E1\u05D5\u05DC' : (isPassed ? '\u05E2\u05D1\u05E8' : '\u05E0\u05DB\u05E9\u05DC');
+
+    // Parse wrong answers
+    var wrongItems = parseWrongDetails(r.wrongDetails);
+    var tableRows = '';
+    for (var i = 0; i < wrongItems.length; i++) {
+      var bg = i % 2 === 0 ? '#f8fafc' : '#ffffff';
+      tableRows += '<tr style="background:' + bg + ';">' +
+        '<td style="border:1px solid #94a3b8;padding:8px;text-align:center;width:5%;">' + (i + 1) + '</td>' +
+        '<td style="border:1px solid #94a3b8;padding:8px;width:35%;">' + escHtml(wrongItems[i].question) + '</td>' +
+        '<td style="border:1px solid #94a3b8;padding:8px;width:30%;">' + escHtml(wrongItems[i].yourAnswer) + '</td>' +
+        '<td style="border:1px solid #94a3b8;padding:8px;width:30%;">' + escHtml(wrongItems[i].correctAnswer) + '</td>' +
+        '</tr>';
+    }
+
+    // Only show "all correct" if score is actually perfect (e.g. 30/30), not just because wrongDetails is empty
+    var scoreNum = 0, totalNum = 0;
+    var scoreParts = String(r.score || '').split('/');
+    if (scoreParts.length === 2) { scoreNum = parseInt(scoreParts[0]) || 0; totalNum = parseInt(scoreParts[1]) || 30; }
+    var isAllCorrect = wrongItems.length === 0 && scoreNum === totalNum && scoreNum > 0;
+    var allCorrectMsg = isAllCorrect ? '<p style="color:#16a34a;font-weight:bold;font-size:16px;text-align:center;">\u05DB\u05DC \u05D4\u05EA\u05E9\u05D5\u05D1\u05D5\u05EA \u05E0\u05DB\u05D5\u05E0\u05D5\u05EA!</p>' : '';
+    if (!isAllCorrect && wrongItems.length === 0 && scoreNum < totalNum) {
+      allCorrectMsg = '<p style="color:#94a3b8;font-size:13px;text-align:center;">\u05E4\u05D9\u05E8\u05D5\u05D8 \u05E9\u05D0\u05DC\u05D5\u05EA \u05E9\u05D2\u05D5\u05D9\u05D5\u05EA \u05DC\u05D0 \u05D6\u05DE\u05D9\u05DF</p>';
+    }
+
+    var footerMsg = '';
+    if (!isPassed && !isDQ) {
+      footerMsg = '<div class="footer">\u05D4\u05E0\u05DA \u05E8\u05E9\u05D0\u05D9 \u05DC\u05E2\u05E8\u05E2\u05E8 \u05E2\u05DC \u05EA\u05D5\u05E6\u05D0\u05EA \u05D4\u05DE\u05D1\u05D7\u05DF \u05D1\u05E4\u05E0\u05D9\u05D9\u05D4 \u05DC\u05D1\u05D5\u05D7\u05DF.</div>';
+    }
+
+    var html = '<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"/>' +
+      '<title>\u05D0\u05D9\u05E9\u05D5\u05E8 \u05EA\u05D5\u05E6\u05D0\u05D5\u05EA \u05D1\u05D7\u05D9\u05E0\u05D4 - ' + escHtml(r.name) + '</title>' +
+      '<style>' +
+      'body{font-family:Arial,"Segoe UI",sans-serif;margin:20px 30px;color:#1e293b;line-height:1.6;direction:rtl;}' +
+      'h1{font-size:18px;text-align:center;margin-bottom:4px;color:#0f172a;}' +
+      '.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 30px;margin:14px 0;font-size:13px;border:1px solid #cbd5e1;padding:10px 14px;border-radius:8px;background:#f8fafc;}' +
+      '.info-grid .label{color:#64748b;font-weight:400;} .info-grid .val{font-weight:700;}' +
+      '.result-badge{text-align:center;font-size:22px;font-weight:900;margin:14px 0;padding:10px;border-radius:10px;}' +
+      '.result-badge.pass{background:#dcfce7;color:#166534;} .result-badge.fail{background:#fef2f2;color:#991b1b;}' +
+      'table{width:100%;border-collapse:collapse;margin-top:14px;font-size:12px;}' +
+      'th{background:#e2e8f0;border:1px solid #94a3b8;padding:8px;font-weight:700;text-align:center;font-size:12px;}' +
+      'td{font-size:12px;line-height:1.5;vertical-align:top;}' +
+      '.footer{margin-top:20px;font-size:12px;color:#64748b;text-align:center;border-top:1px solid #e2e8f0;padding-top:10px;}' +
+      '@media print{body{margin:10px 15px;} .no-print{display:none!important;}}' +
+      '</style></head><body>' +
+      (logoBase64 ? '<div style="text-align:center;margin-bottom:8px;"><img src="' + logoBase64 + '" style="height:80px;" alt="\u05E1\u05DE\u05DB\u05D5\u05EA \u05E8\u05D9\u05E9\u05D5\u05D9 \u05E6\u05D4\u05DC"/></div>' : '<div style="text-align:center;margin-bottom:8px;font-size:20px;font-weight:900;color:#8B6914;">\u05E1\u05DE\u05DB\u05D5\u05EA \u05E8\u05D9\u05E9\u05D5\u05D9 \u05E6\u05D4"\u05DC</div>') +
+      '<h1>\u05D0\u05D9\u05E9\u05D5\u05E8 \u05EA\u05D5\u05E6\u05D0\u05EA \u05D1\u05D7\u05D9\u05E0\u05D4 \u05E2\u05D9\u05D5\u05E0\u05D9\u05EA \u05D7\u05D9\u05E6\u05D5\u05E0\u05D9\u05EA</h1>' +
+      '<div class="info-grid">' +
+      '<div><span class="label">\u05E9\u05DD: </span><span class="val">' + escHtml(r.name) + '</span></div>' +
+      '<div><span class="label">\u05EA.\u05D6.: </span><span class="val">' + escHtml(r.idNumber) + '</span></div>' +
+      '<div><span class="label">\u05D3\u05E8\u05D2\u05EA \u05E8\u05D9\u05E9\u05D9\u05D5\u05DF: </span><span class="val">' + escHtml(r.license || '') + '</span></div>' +
+      '<div><span class="label">\u05EA\u05D0\u05E8\u05D9\u05DA: </span><span class="val">' + escHtml(formatDate(r.date)) + '</span></div>' +
+      '<div><span class="label">\u05E0\u05D9\u05E1\u05D9\u05D5\u05DF: </span><span class="val">' + (r.attempt || 1) + '</span></div>' +
+      '<div><span class="label">\u05D6\u05DE\u05DF \u05DE\u05D1\u05D7\u05DF: </span><span class="val">' + escHtml(formatTime(r.time)) + '</span></div>' +
+      '<div><span class="label">\u05D0\u05EA\u05E8: </span><span class="val">' + escHtml(r.site || currentSite) + '</span></div>' +
+      '<div><span class="label">\u05D1\u05D5\u05D7\u05DF: </span><span class="val">' + escHtml(r.examiner || examinerData.name) + '</span></div>' +
+      '</div>' +
+      '<div class="result-badge ' + (isPassed ? 'pass' : 'fail') + '">' + escHtml(String(r.score || '')) + ' (' + escHtml(formatPercent(r.percent)) + ') \u2014 ' + passText + '</div>';
+
+    if (wrongItems.length > 0) {
+      html += '<table><thead><tr>' +
+        '<th style="width:5%;">#</th>' +
+        '<th style="width:35%;">\u05EA\u05D9\u05D0\u05D5\u05E8 \u05D4\u05E9\u05D0\u05DC\u05D4</th>' +
+        '<th style="width:30%;">\u05EA\u05E9\u05D5\u05D1\u05D4 \u05E9\u05D2\u05D5\u05D9\u05D4</th>' +
+        '<th style="width:30%;">\u05EA\u05E9\u05D5\u05D1\u05D4 \u05E0\u05DB\u05D5\u05E0\u05D4</th>' +
+        '</tr></thead><tbody>' + tableRows + '</tbody></table>';
+    }
+    html += allCorrectMsg;
+    html += footerMsg;
+    html += '<div class="no-print" style="text-align:center;margin-top:20px;">' +
+      '<button onclick="window.print()" style="padding:12px 30px;font-size:16px;font-weight:800;background:#1a73e8;color:white;border:none;border-radius:10px;cursor:pointer;">\uD83D\uDDA8\uFE0F \u05D4\u05D3\u05E4\u05E1 / \u05E9\u05DE\u05D5\u05E8 PDF</button>' +
+      '<p style="font-size:13px;color:#94a3b8;margin-top:8px;">\u05E9\u05DE\u05D5\u05E8 \u05DB-PDF \u05D5\u05E6\u05E8\u05E3 \u05DC\u05D4\u05D5\u05D3\u05E2\u05EA \u05D5\u05D5\u05D0\u05D8\u05E1\u05D0\u05E4</p></div>';
+    html += '</body></html>';
+
+    var w = window.open('', '_blank');
+    if (w) { w.document.write(html); w.document.close(); }
+    else { alert('\u05D7\u05E1\u05D5\u05DD popup \u05E0\u05D7\u05E1\u05DD. \u05D0\u05E4\u05E9\u05E8 \u05D7\u05DC\u05D5\u05DF popup \u05DC\u05D0\u05EA\u05E8 \u05D6\u05D4.'); }
+  };
+
+  window.sendBulkToManager = function() {
+    if (!currentSiteManagerPhone) { alert('\u05DC\u05D0 \u05D4\u05D5\u05D2\u05D3\u05E8 \u05DE\u05E1\u05E4\u05E8 \u05DE\u05E0\u05D4\u05DC \u05D0\u05EA\u05E8'); return; }
+    var phone = formatPhone(currentSiteManagerPhone);
+    var today = new Date();
+    var dateStr = today.getDate() + '/' + (today.getMonth() + 1) + '/' + today.getFullYear();
+
+    var msg = '*\u05E1\u05D9\u05DB\u05D5\u05DD \u05DE\u05D1\u05D7\u05E0\u05D9\u05DD \u2014 ' + currentSite + '*\n';
+    msg += '\u05D1\u05D5\u05D7\u05DF: ' + examinerData.name + '\n';
+    msg += '\u05EA\u05D0\u05E8\u05D9\u05DA: ' + dateStr + '\n';
+    msg += '\u05DB\u05D9\u05EA\u05D4: ' + currentClassroom + '\n\n';
+
+    var passCount = 0, failCount = 0;
+    for (var i = 0; i < completedResults.length; i++) {
+      var r = completedResults[i];
+      var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === '\u05E4\u05E1\u05D5\u05DC';
+      var isPassed = !isDQ && (r.passed === '\u05E2\u05D1\u05E8' || r.passed === true);
+      var id4 = String(r.idNumber).slice(-4);
+
+      var attemptStr = (r.attempt && r.attempt > 1) ? ' [\u05E0\u05D9\u05E1\u05D9\u05D5\u05DF ' + r.attempt + ']' : '';
+      if (isDQ) {
+        msg += '\u26D4 ' + r.name + ' (...' + id4 + ')' + attemptStr + ' \u2014 \u05E4\u05E1\u05D5\u05DC\n';
+      } else if (isPassed) {
+        msg += '\u2705 ' + r.name + ' (...' + id4 + ')' + attemptStr + ' \u2014 ' + r.score + '\n';
+        passCount++;
+      } else {
+        msg += '\u274C ' + r.name + ' (...' + id4 + ')' + attemptStr + ' \u2014 ' + r.score + '\n';
+        failCount++;
+      }
+    }
+    msg += '\n*\u05E1\u05D4"\u05DB: ' + completedResults.length + ' | \u05E2\u05D1\u05E8\u05D5: ' + passCount + ' | \u05E0\u05DB\u05E9\u05DC\u05D5: ' + failCount + '*';
+
+    window.open('https://wa.me/' + phone + '?text=' + encodeURIComponent(msg), '_blank');
+  };
+
+  window.sendToAllExaminees = function() {
+    alert('\u05DC\u05D7\u05E5 \u05E2\u05DC \u05DB\u05E4\u05EA\u05D5\u05E8 WA \u05DC\u05D9\u05D3 \u05DB\u05DC \u05E0\u05D1\u05D7\u05DF \u05D1\u05D8\u05D1\u05DC\u05D4. \u05E9\u05DE\u05D5\u05E8 \u05E7\u05D5\u05D3\u05DD PDF \u05D5\u05E6\u05E8\u05E3 \u05DC\u05D5\u05D5\u05D0\u05D8\u05E1\u05D0\u05E4.');
+  };
+
+  window.disqualifyResult = function(idx) {
+    var r = completedResults[idx];
+    if (!r) return;
+    if (confirm('\u05D4\u05D0\u05DD \u05DC\u05E4\u05E1\u05D5\u05DC \u05D0\u05EA \u05D4\u05DE\u05D1\u05D7\u05DF \u05E9\u05DC ' + r.name + '?')) {
+      apiGet({ action: 'disqualify', sessionCode: sessionCode, idNumber: r.idNumber }).then(function(data) {
+        if (data.status === 'ok') {
+          alert(r.name + ' \u05E0\u05E4\u05E1\u05DC.');
+          pollDashboard();
+        } else {
+          alert('\u05E9\u05D2\u05D9\u05D0\u05D4: ' + (data.message || ''));
+        }
+      });
+    }
+  };
+
+  // ========== Settings Modal ==========
+  window.openSettingsModal = function() {
+    document.getElementById('modalLicense').value = currentLicense;
+    document.getElementById('modalLanguage').value = currentLanguage;
+    document.getElementById('modalAudio').value = currentAudioMode;
+    document.getElementById('settingsModal').classList.add('show');
+  };
+
+  window.closeSettingsModal = function() {
+    document.getElementById('settingsModal').classList.remove('show');
+  };
+
+  window.saveSettings = function() {
+    var license = document.getElementById('modalLicense').value;
+    var language = document.getElementById('modalLanguage').value;
+    var audioMode = document.getElementById('modalAudio').value;
+
+    apiGet({
+      action: 'updateSession',
+      sessionCode: sessionCode,
+      examinerId: examinerData.id,
+      license: license, language: language, audioMode: audioMode
+    }).then(function(data) {
+      if (data.status === 'ok') {
+        currentLicense = license;
+        currentLanguage = language;
+        currentAudioMode = audioMode;
+        saveState();
+        renderDashboard();
+        closeSettingsModal();
+      } else {
+        alert(data.message || 'שגיאה בעדכון');
+      }
+    });
+  };
+
+  // ========== Close Session ==========
+  window.confirmCloseSession = function() {
+    if (confirm('האם לסגור את הסשן? נבחנים חדשים לא יוכלו להיכנס.')) {
+      apiGet({ action: 'closeSession', sessionCode: sessionCode, examinerId: examinerData.id }).then(function() {
+        stopDashboardPolling();
+        clearState();
+        alert('הסשן נסגר.');
+        showScreen('screenSetup');
+      });
+    }
+  };
+
+  // ========== Countdown ==========
+  function startCountdown() {
+    if (countdownInterval) clearInterval(countdownInterval);
+    countdownInterval = setInterval(function() {
+      if (!sessionValidUntil) return;
+      var remaining = Math.max(0, Math.floor((sessionValidUntil.getTime() - Date.now()) / 1000));
+      var h = Math.floor(remaining / 3600);
+      var m = Math.floor((remaining % 3600) / 60);
+      var s = remaining % 60;
+      document.getElementById('barCountdown').textContent =
+        (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+      if (remaining <= 1800) {
+        document.getElementById('barCountdown').style.color = '#dc2626';
+      }
+      if (remaining <= 0) {
+        clearInterval(countdownInterval);
+        document.getElementById('barCountdown').textContent = 'פג תוקף';
+      }
+    }, 1000);
+  }
+
+  // ========== Helpers ==========
+  function escHtml(str) {
+    var div = document.createElement('div');
+    div.textContent = str || '';
+    return div.innerHTML;
+  }
+
+  function playNotif() {
+    try {
+      var audio = document.getElementById('notifSound');
+      if (audio) { audio.currentTime = 0; audio.play().catch(function(){}); }
+    } catch(e) {}
+  }
+
+  // ========== Auto-restore on page load ==========
+  if (loadState()) {
+    // We have a saved session — check if it's still valid
+    if (sessionValidUntil && new Date() < sessionValidUntil) {
+      document.getElementById('topbarInfo').textContent = examinerData.name + ' | ' + currentSite + ' | כיתה ' + currentClassroom;
+      document.getElementById('logoutBtn').style.display = 'inline-block';
+      renderDashboard();
+      showScreen('screenDashboard');
+      startDashboardPolling();
+      startCountdown();
+      showQR(sessionCode);
+    } else {
+      // Session expired — go to setup screen with examiner logged in
+      document.getElementById('topbarInfo').textContent = examinerData.name;
+      document.getElementById('logoutBtn').style.display = 'inline-block';
+      document.getElementById('setupExaminerName').textContent = 'שלום, ' + examinerData.name;
+      clearState();
+      showScreen('screenSetup');
+      fetchSites();
+    }
+  }
+
+  // ========== QR Code for examinee access ==========
+  // אם הקובץ רץ מקומית (file://) — הברקוד לא יעבוד בטלפון.
+  // פתרון 1: הפעל start_server.bat ופתח דרך http://
+  // פתרון 2: העלה ל-GitHub Pages ושנה את השורה הבאה:
+  var EXAMINEE_OVERRIDE_URL = ''; // לדוגמה: 'https://your-site.github.io/standalone_exam/examinee.html'
+
+  var EXAMINEE_BASE_URL = (function() {
+    if (EXAMINEE_OVERRIDE_URL) return EXAMINEE_OVERRIDE_URL;
+    var loc = window.location;
+    var path = loc.pathname.substring(0, loc.pathname.lastIndexOf('/') + 1);
+    return loc.protocol + '//' + loc.host + path + 'examinee.html';
+  })();
+
+  function getExamineeUrl(code) {
+    return EXAMINEE_BASE_URL + '?code=' + code;
+  }
+
+  window.showQR = function showQR(code) {
+    var url = getExamineeUrl(code);
+    var section = document.getElementById('qrSection');
+    var canvas = document.getElementById('qrCanvas');
+    var urlInput = document.getElementById('examineeUrlInput');
+    var localWarn = document.getElementById('qrLocalWarning');
+    urlInput.value = url;
+
+    // Show warning if running from file://
+    if (window.location.protocol === 'file:' && !EXAMINEE_OVERRIDE_URL) {
+      localWarn.style.display = 'block';
+    } else {
+      localWarn.style.display = 'none';
+    }
+
+    function renderQR() {
+      // Generate QR using the CDN library
+      if (window.QRCode) {
+        QRCode.toCanvas(canvas, url, {
+          width: 200,
+          margin: 2,
+          color: { dark: '#0f172a', light: '#ffffff' }
+        }, function(err) {
+          if (err) { console.log('[QR] Error:', err); section.style.display = 'none'; return; }
+          section.style.display = 'block';
+        });
+      } else {
+        // Fallback: use an external QR API (works even without CDN)
+        var img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = function() {
+          canvas.width = 200; canvas.height = 200;
+          var ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, 200, 200);
+          section.style.display = 'block';
+        };
+        img.onerror = function() { section.style.display = 'none'; };
+        img.src = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(url);
+      }
+    }
+
+    // If QR library not loaded yet, wait for it (CDN loads after main script)
+    if (!window.QRCode) {
+      var attempts = 0;
+      var waitForLib = setInterval(function() {
+        attempts++;
+        if (window.QRCode || attempts > 20) {
+          clearInterval(waitForLib);
+          renderQR();
+        }
+      }, 150);
+    } else {
+      renderQR();
+    }
+  }
+
+  window.copyExamineeUrl = function() {
+    var input = document.getElementById('examineeUrlInput');
+    input.select();
+    document.execCommand('copy');
+    var btn = input.nextElementSibling;
+    var orig = btn.textContent;
+    btn.textContent = '\u05D4\u05D5\u05E2\u05EA\u05E7!'; // הועתק!
+    setTimeout(function() { btn.textContent = orig; }, 1500);
+  };
+
+})();
+</script>
+<!-- QR Code library (qrcode.min.js from CDN, ~33KB) -->
+<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
+</body>
+</html>
