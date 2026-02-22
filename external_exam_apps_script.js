@@ -99,7 +99,9 @@ function todayStr() {
   var dd = ('0' + d.getDate()).slice(-2);
   var mm = ('0' + (d.getMonth() + 1)).slice(-2);
   var yyyy = d.getFullYear();
-  return dd + '/' + mm + '/' + yyyy;
+  var hh = ('0' + d.getHours()).slice(-2);
+  var mi = ('0' + d.getMinutes()).slice(-2);
+  return dd + '/' + mm + '/' + yyyy + ' ' + hh + ':' + mi;
 }
 
 // ========== doGet — קריאות קריאה + פעולות קלות ==========

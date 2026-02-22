@@ -885,19 +885,23 @@
   function formatDate(val) {
     if (!val) return '';
     var s = String(val);
-    // Already in DD/MM/YYYY format
-    if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) return s;
+    // DD/MM/YYYY or DD/MM/YYYY HH:MM format — extract just the date part
+    var dm = s.match(/^(\d{1,2}\/\d{1,2}\/\d{4})/);
+    if (dm) return dm[1];
     // ISO date string
     var d = new Date(s);
     if (isNaN(d.getTime())) return s;
     var dd = ('0' + d.getDate()).slice(-2);
     var mm = ('0' + (d.getMonth() + 1)).slice(-2);
     var yyyy = d.getFullYear();
-    // Sheets date "2026-02-16T22:00:00.000Z" is actually 17/02 in Israel timezone
-    if (d.getHours() >= 21 && d.getTimezoneOffset() <= -120) {
-      // Already correct
-    }
     return dd + '/' + mm + '/' + yyyy;
+  }
+
+  function extractExamHour(val) {
+    if (!val) return '';
+    var s = String(val);
+    var m = s.match(/\d{1,2}\/\d{1,2}\/\d{4}\s+(\d{1,2}:\d{2})/);
+    return m ? m[1] : '';
   }
 
   // Format time for display. New format: "1 דק' 05 שנ'". Old format: Sheets Date "1899-12-29T22:44:20.000Z"
@@ -1018,6 +1022,7 @@
       '<div><span class="label">\u05EA.\u05D6.: </span><span class="val">' + escHtml(r.idNumber) + '</span></div>' +
       '<div><span class="label">\u05D3\u05E8\u05D2\u05EA \u05E8\u05D9\u05E9\u05D9\u05D5\u05DF: </span><span class="val">' + escHtml(r.license || '') + '</span></div>' +
       '<div><span class="label">\u05EA\u05D0\u05E8\u05D9\u05DA: </span><span class="val">' + escHtml(formatDate(r.date)) + '</span></div>' +
+      '<div><span class="label">\u05E9\u05E2\u05D4: </span><span class="val">' + escHtml(extractExamHour(r.date) || '-') + '</span></div>' +
       '<div><span class="label">\u05E0\u05D9\u05E1\u05D9\u05D5\u05DF: </span><span class="val">' + (r.attempt || 1) + '</span></div>' +
       '<div><span class="label">\u05D6\u05DE\u05DF \u05DE\u05D1\u05D7\u05DF: </span><span class="val">' + escHtml(formatTime(r.time)) + '</span></div>' +
       '<div><span class="label">\u05D0\u05EA\u05E8: </span><span class="val">' + escHtml(r.site || currentSite) + '</span></div>' +
