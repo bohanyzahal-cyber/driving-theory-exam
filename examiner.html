@@ -904,6 +904,32 @@
     return m ? m[1] : '';
   }
 
+  // Format ISO registration time to date DD/MM/YYYY
+  function formatRegDate(val) {
+    if (!val) return '-';
+    var d = new Date(val);
+    if (isNaN(d.getTime())) {
+      // Try DD/MM/YYYY format
+      var s = String(val);
+      var m = s.match(/^(\d{1,2}\/\d{1,2}\/\d{4})/);
+      return m ? m[1] : s;
+    }
+    var dd = ('0' + d.getDate()).slice(-2);
+    var mm = ('0' + (d.getMonth() + 1)).slice(-2);
+    var yyyy = d.getFullYear();
+    return dd + '/' + mm + '/' + yyyy;
+  }
+
+  // Format ISO registration time to HH:MM
+  function formatRegTime(val) {
+    if (!val) return '-';
+    var d = new Date(val);
+    if (isNaN(d.getTime())) return '-';
+    var hh = ('0' + d.getHours()).slice(-2);
+    var mi = ('0' + d.getMinutes()).slice(-2);
+    return hh + ':' + mi;
+  }
+
   // Format time for display. New format: "1 דק' 05 שנ'". Old format: Sheets Date "1899-12-29T22:44:20.000Z"
   function formatTime(val) {
     if (!val) return '';
@@ -996,8 +1022,8 @@
     }
 
     var footerMsg = '';
-    if (!isPassed && !isDQ) {
-      footerMsg = '<div class="footer">\u05D4\u05E0\u05DA \u05E8\u05E9\u05D0\u05D9 \u05DC\u05E2\u05E8\u05E2\u05E8 \u05E2\u05DC \u05EA\u05D5\u05E6\u05D0\u05EA \u05D4\u05DE\u05D1\u05D7\u05DF \u05D1\u05E4\u05E0\u05D9\u05D9\u05D4 \u05DC\u05D1\u05D5\u05D7\u05DF.</div>';
+    if (!isPassed || isDQ) {
+      footerMsg = '<div class="footer">\u05D4\u05E0\u05DA \u05E8\u05E9\u05D0\u05D9 \u05DC\u05E2\u05E8\u05E2\u05E8 \u05E2\u05DC \u05EA\u05D5\u05E6\u05D0\u05EA \u05D4\u05DE\u05D1\u05D7\u05DF \u05D1\u05D0\u05DE\u05E6\u05E2\u05D5\u05EA \u05D8\u05D5\u05E4\u05E1 \u05E2\u05E8\u05E2\u05D5\u05E8 \u05DE\u05E7\u05D5\u05D5\u05DF \u05D1\u05D0\u05EA\u05E8 \u05D4\u05D0\u05D9\u05E0\u05D8\u05E8\u05E0\u05D8</div>';
     }
 
     var html = '<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"/>' +
@@ -1021,14 +1047,17 @@
       '<div><span class="label">\u05E9\u05DD: </span><span class="val">' + escHtml(r.name) + '</span></div>' +
       '<div><span class="label">\u05EA.\u05D6.: </span><span class="val">' + escHtml(r.idNumber) + '</span></div>' +
       '<div><span class="label">\u05D3\u05E8\u05D2\u05EA \u05E8\u05D9\u05E9\u05D9\u05D5\u05DF: </span><span class="val">' + escHtml(r.license || '') + '</span></div>' +
-      '<div><span class="label">\u05EA\u05D0\u05E8\u05D9\u05DA: </span><span class="val">' + escHtml(formatDate(r.date)) + '</span></div>' +
-      '<div><span class="label">\u05E9\u05E2\u05D4: </span><span class="val">' + escHtml(extractExamHour(r.date) || '-') + '</span></div>' +
+      '<div><span class="label">\u05EA\u05D0\u05E8\u05D9\u05DA \u05E8\u05D9\u05E9\u05D5\u05DD: </span><span class="val">' + escHtml(formatRegDate(r.registrationTime) || formatDate(r.date)) + '</span></div>' +
+      '<div><span class="label">\u05E9\u05E2\u05EA \u05E7\u05D1\u05DC\u05D4: </span><span class="val">' + escHtml(formatRegTime(r.registrationTime) || '-') + '</span></div>' +
+      '<div><span class="label">\u05EA\u05D0\u05E8\u05D9\u05DA \u05E1\u05D9\u05D5\u05DD \u05D1\u05D7\u05D9\u05E0\u05D4: </span><span class="val">' + escHtml(formatDate(r.date)) + ' ' + escHtml(extractExamHour(r.date) || '') + '</span></div>' +
       '<div><span class="label">\u05E0\u05D9\u05E1\u05D9\u05D5\u05DF: </span><span class="val">' + (r.attempt || 1) + '</span></div>' +
       '<div><span class="label">\u05D6\u05DE\u05DF \u05DE\u05D1\u05D7\u05DF: </span><span class="val">' + escHtml(formatTime(r.time)) + '</span></div>' +
       '<div><span class="label">\u05D0\u05EA\u05E8: </span><span class="val">' + escHtml(r.site || currentSite) + '</span></div>' +
       '<div><span class="label">\u05DE\u05E1\' \u05D1\u05D5\u05D7\u05DF: </span><span class="val">' + escHtml(examinerData.examinerNumber || r.examiner || examinerData.name) + '</span></div>' +
+      '<div><span class="label">\u05EA\u05E9\u05D5\u05D1\u05D5\u05EA \u05E9\u05D2\u05D5\u05D9\u05D5\u05EA: </span><span class="val">' + wrongItems.length + '</span></div>' +
+      '<div><span class="label">\u05EA\u05D5\u05E6\u05D0\u05D4: </span><span class="val">' + passText + '</span></div>' +
       '</div>' +
-      '<div class="result-badge ' + (isPassed ? 'pass' : 'fail') + '">' + escHtml(String(r.score || '')) + ' (' + escHtml(formatPercent(r.percent)) + ') \u2014 ' + passText + '</div>';
+      '<div class="result-badge ' + (isPassed ? 'pass' : 'fail') + '">' + escHtml(String(r.score || '')) + ' (' + escHtml(formatPercent(r.percent)) + ')</div>';
 
     if (wrongItems.length > 0) {
       html += '<table><thead><tr>' +

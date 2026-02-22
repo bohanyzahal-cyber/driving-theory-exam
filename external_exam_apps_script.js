@@ -505,6 +505,16 @@ function handleExaminerDashboard(p) {
     });
   }
 
+  // Cross-reference registration times from ממתינים for completed results
+  for (var c = 0; c < completed.length; c++) {
+    for (var p2 = pendData.length - 1; p2 >= 1; p2--) {
+      if (String(pendData[p2][0]) === code && normalizeId(pendData[p2][1]) === normalizeId(completed[c].idNumber)) {
+        completed[c].registrationTime = pendData[p2][4];
+        break;
+      }
+    }
+  }
+
   return jsonResponse({ status: 'ok', pending: pending, active: active, completed: completed });
 }
 
