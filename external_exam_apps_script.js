@@ -71,7 +71,7 @@ function countAttempts(idNumber, license) {
   var data = sheet.getDataRange().getValues();
   var count = 0;
   for (var i = 1; i < data.length; i++) {
-    if (String(data[i][1]) === String(idNumber) && String(data[i][4]) === String(license)) {
+    if (normalizeId(data[i][1]) === normalizeId(idNumber) && String(data[i][4]) === String(license)) {
       count++;
     }
   }
@@ -82,6 +82,12 @@ function formatPhoneForWA(phone) {
   phone = (phone || '').replace(/[^0-9]/g, '');
   if (phone.charAt(0) === '0') phone = '972' + phone.substring(1);
   return phone;
+}
+
+function normalizeId(val) {
+  var s = String(val || '').replace(/[^0-9]/g, '');
+  while (s.length < 9) s = '0' + s;
+  return s;
 }
 
 function nowISO() {
@@ -238,10 +244,10 @@ function handleLogin(p) {
   var sheet = getSheet('בוחנים');
   var data = sheet.getDataRange().getValues();
   for (var i = 1; i < data.length; i++) {
-    if (String(data[i][1]) === String(p.idNumber)) {
+    if (normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
       if (String(data[i][2]) === String(p.password)) {
         if (data[i][3] === 'כן' || data[i][3] === true || data[i][3] === 'TRUE') {
-          return jsonResponse({ status: 'ok', examiner: { name: data[i][0], id: data[i][1], examinerNumber: String(data[i][4] || '') } });
+          return jsonResponse({ status: 'ok', examiner: { name: data[i][0], id: normalizeId(data[i][1]), examinerNumber: String(data[i][4] || '') } });
         } else {
           return jsonResponse({ status: 'error', message: 'החשבון אינו פעיל' });
         }
@@ -275,10 +281,14 @@ function handleCreateSession(p) {
   var now = new Date();
   var validUntil = new Date(now.getTime() + 8 * 60 * 60 * 1000);
 
-  // Lookup examiner name
+  // Lookup examiner name (normalize ID to handle leading zeros)
   var exSheet = getSheet('בוחנים');
-  var exRow = findRow(exSheet, 1, p.examinerId);
-  var examinerName = exRow > 0 ? exSheet.getRange(exRow, 1).getValue() : '';
+  var exData = exSheet.getDataRange().getValues();
+  var exRow = -1;
+  var examinerName = '';
+  for (var ei = 1; ei < exData.length; ei++) {
+    if (normalizeId(exData[ei][1]) === normalizeId(p.examinerId)) { exRow = ei + 1; examinerName = exData[ei][0]; break; }
+  }
 
   sheet.appendRow([
     code,
@@ -303,7 +313,7 @@ function handleUpdateSession(p) {
   var searchCode = String(p.sessionCode).trim();
   for (var i = 1; i < data.length; i++) {
     if (String(data[i][0]).trim() === searchCode && (data[i][10] === true || String(data[i][10]).toUpperCase() === 'TRUE')) {
-      if (String(data[i][1]) !== String(p.examinerId)) {
+      if (normalizeId(data[i][1]) !== normalizeId(p.examinerId)) {
         return jsonResponse({ status: 'error', message: 'אין הרשאה לעדכן סשן זה' });
       }
       var row = i + 1;
@@ -321,7 +331,7 @@ function handleCloseSession(p) {
   var data = sheet.getDataRange().getValues();
   var searchCode = String(p.sessionCode).trim();
   for (var i = 1; i < data.length; i++) {
-    if (String(data[i][0]).trim() === searchCode && String(data[i][1]).trim() === String(p.examinerId).trim()) {
+    if (String(data[i][0]).trim() === searchCode && normalizeId(data[i][1]) === normalizeId(p.examinerId)) {
       sheet.getRange(i + 1, 11).setValue(false);
       return jsonResponse({ status: 'ok' });
     }
@@ -371,7 +381,7 @@ function handleRegisterExaminee(p) {
   var pendSheet = getSheet('ממתינים');
   var data = pendSheet.getDataRange().getValues();
   for (var i = 1; i < data.length; i++) {
-    if (String(data[i][0]) === String(p.sessionCode) && String(data[i][1]) === String(p.idNumber)) {
+    if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
       var status = data[i][5];
       if (status === 'waiting' || status === 'approved' || status === 'in_exam') {
         return jsonResponse({ status: 'error', message: 'כבר רשום בסשן זה' });
@@ -393,7 +403,7 @@ function handleCheckApproval(p) {
   var sheet = getSheet('ממתינים');
   var data = sheet.getDataRange().getValues();
   for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]).trim() === String(p.sessionCode).trim() && String(data[i][1]).trim() === String(p.idNumber).trim()) {
+    if (String(data[i][0]).trim() === String(p.sessionCode).trim() && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
       var approval = String(data[i][5] || 'waiting').trim();
       // Skip terminal statuses from previous exams — keep looking for active row
       if (approval === 'completed' || approval === 'disqualified') continue;
@@ -407,7 +417,7 @@ function handleApproveExaminee(p) {
   var sheet = getSheet('ממתינים');
   var data = sheet.getDataRange().getValues();
   for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]) === String(p.sessionCode) && String(data[i][1]) === String(p.idNumber) && String(data[i][5]).trim() === 'waiting') {
+    if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber) && String(data[i][5]).trim() === 'waiting') {
       sheet.getRange(i + 1, 6).setValue('approved');
       SpreadsheetApp.flush();
       return jsonResponse({ status: 'ok' });
@@ -418,7 +428,7 @@ function handleApproveExaminee(p) {
 
 function findStatus(data, p) {
   for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]) === String(p.sessionCode) && String(data[i][1]) === String(p.idNumber)) {
+    if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
       return String(data[i][5]);
     }
   }
@@ -429,7 +439,7 @@ function handleRejectExaminee(p) {
   var sheet = getSheet('ממתינים');
   var data = sheet.getDataRange().getValues();
   for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]) === String(p.sessionCode) && String(data[i][1]) === String(p.idNumber) && String(data[i][5]).trim() === 'waiting') {
+    if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber) && String(data[i][5]).trim() === 'waiting') {
       sheet.getRange(i + 1, 6).setValue('rejected');
       SpreadsheetApp.flush();
       return jsonResponse({ status: 'ok' });
@@ -442,7 +452,7 @@ function handleMarkExamStarted(p) {
   var sheet = getSheet('ממתינים');
   var data = sheet.getDataRange().getValues();
   for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]) === String(p.sessionCode) && String(data[i][1]) === String(p.idNumber) && String(data[i][5]).trim() === 'approved') {
+    if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber) && String(data[i][5]).trim() === 'approved') {
       sheet.getRange(i + 1, 6).setValue('in_exam');
       SpreadsheetApp.flush();
       return jsonResponse({ status: 'ok' });
@@ -502,7 +512,7 @@ function handleDisqualify(p) {
   var pendData = pendSheet.getDataRange().getValues();
   var name = '', phone = '';
   for (var j = pendData.length - 1; j >= 1; j--) {
-    if (String(pendData[j][0]) === String(p.sessionCode) && String(pendData[j][1]) === String(p.idNumber)) {
+    if (String(pendData[j][0]) === String(p.sessionCode) && normalizeId(pendData[j][1]) === normalizeId(p.idNumber)) {
       name = pendData[j][2] || '';
       phone = pendData[j][3] || '';
       pendSheet.getRange(j + 1, 6).setValue('disqualified');
@@ -514,7 +524,7 @@ function handleDisqualify(p) {
   var sheet = getSheet('תוצאות');
   var data = sheet.getDataRange().getValues();
   for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][13]) === String(p.sessionCode) && String(data[i][1]) === String(p.idNumber)) {
+    if (String(data[i][13]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
       sheet.getRange(i + 1, 18).setValue(true);  // פסול? — column R (18)
       sheet.getRange(i + 1, 8).setValue('פסול');
       SpreadsheetApp.flush();
@@ -555,7 +565,7 @@ function handleMarkSent(p) {
   for (var i = data.length - 1; i >= 1; i--) {
     if (String(data[i][13]) === String(p.sessionCode)) {
       for (var k = 0; k < ids.length; k++) {
-        if (String(data[i][1]) === String(ids[k]).trim()) {
+        if (normalizeId(data[i][1]) === normalizeId(ids[k])) {
           sheet.getRange(i + 1, 17).setValue(true);  // נשלח? — column Q (17)
           count++;
         }
@@ -676,7 +686,7 @@ function handleSubmitResult(data) {
   var pendSheet = getSheet('ממתינים');
   var pendData = pendSheet.getDataRange().getValues();
   for (var j = pendData.length - 1; j >= 1; j--) {
-    if (String(pendData[j][0]) === String(data.sessionCode) && String(pendData[j][1]) === String(data.idNumber) && (String(pendData[j][5]).trim() === 'in_exam' || String(pendData[j][5]).trim() === 'approved')) {
+    if (String(pendData[j][0]) === String(data.sessionCode) && normalizeId(pendData[j][1]) === normalizeId(data.idNumber) && (String(pendData[j][5]).trim() === 'in_exam' || String(pendData[j][5]).trim() === 'approved')) {
       pendSheet.getRange(j + 1, 6).setValue('completed');
       break;
     }
@@ -690,7 +700,7 @@ function handleSubmitWrongAnswers(p) {
   var sheet = getSheet('תוצאות');
   var data = sheet.getDataRange().getValues();
   for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][13]) === String(p.sessionCode) && String(data[i][1]) === String(p.idNumber)) {
+    if (String(data[i][13]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
       var existing = String(data[i][15] || '');
 
       // New format: individual item with question/yourAnswer/correctAnswer params
@@ -733,7 +743,7 @@ function handleSubmitWrongAnswersBulk(data) {
   var sheet = getSheet('תוצאות');
   var rows = sheet.getDataRange().getValues();
   for (var i = rows.length - 1; i >= 1; i--) {
-    if (String(rows[i][13]) === String(data.sessionCode) && String(rows[i][1]) === String(data.idNumber)) {
+    if (String(rows[i][13]) === String(data.sessionCode) && normalizeId(rows[i][1]) === normalizeId(data.idNumber)) {
       var wrongDetails = '';
       if (data.wrongAnswers && data.wrongAnswers.length > 0) {
         for (var w = 0; w < data.wrongAnswers.length; w++) {
@@ -781,7 +791,7 @@ function handleSubmitFailOnClose(data) {
   var pendSheet = getSheet('ממתינים');
   var pendData = pendSheet.getDataRange().getValues();
   for (var j = pendData.length - 1; j >= 1; j--) {
-    if (String(pendData[j][0]) === String(data.sessionCode) && String(pendData[j][1]) === String(data.idNumber)) {
+    if (String(pendData[j][0]) === String(data.sessionCode) && normalizeId(pendData[j][1]) === normalizeId(data.idNumber)) {
       var s = pendData[j][5];
       if (s === 'in_exam' || s === 'approved') {
         pendSheet.getRange(j + 1, 6).setValue('completed');
