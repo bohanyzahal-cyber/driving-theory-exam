@@ -294,6 +294,7 @@
         <h2>ממתין לאישור הבוחן...</h2>
         <p class="muted">הבוחן יאשר את הכניסה שלך. אנא המתן.</p>
         <p id="approvalDebug" style="font-size:11px; color:#94a3b8; margin-top:8px;"></p>
+        <p id="approvalDebugResponse" style="font-size:11px; color:#94a3b8; margin:2px 0 0; direction:ltr;"></p>
         <div id="approvalError" class="info-banner error" style="display:none; margin-top:12px;"></div>
       </div>
     </div>
@@ -566,15 +567,17 @@
   var approvalFailCount = 0;
   var approvalPollCount = 0;
 
-  function updateApprovalDebug(msg) {
+  function updateApprovalDebug(line1, line2) {
     var el = document.getElementById('approvalDebug');
-    if (el) el.textContent = msg;
+    if (el) el.textContent = line1;
+    var el2 = document.getElementById('approvalDebugResponse');
+    if (el2 && line2 !== undefined) el2.textContent = line2;
   }
 
   function doCheckApproval() {
     approvalPollCount++;
     var pollNum = approvalPollCount;
-    updateApprovalDebug('בדיקה #' + pollNum + '...');
+    updateApprovalDebug('בדיקה #' + pollNum + ' | סשן: ' + sessionCode + ' | ת.ז.: ' + examineeData.idNumber);
     apiGet({
       action: 'checkApproval',
       sessionCode: sessionCode,
@@ -587,7 +590,7 @@
       if (errBanner) errBanner.style.display = 'none';
 
       if (data.status === 'ok') {
-        updateApprovalDebug('בדיקה #' + pollNum + ': ' + data.approval);
+        updateApprovalDebug('בדיקה #' + pollNum + ' OK', 'תגובה: ' + data.approval);
         if (data.approval === 'approved') {
           clearInterval(approvalInterval); approvalInterval = null;
           showInstructions();
@@ -599,17 +602,16 @@
         // else still 'waiting' — continue polling
       } else {
         console.log('[APPROVAL] Non-ok status:', data.message);
-        updateApprovalDebug('בדיקה #' + pollNum + ': שגיאה - ' + (data.message || ''));
-        // If registration not found, show helpful message
+        updateApprovalDebug('בדיקה #' + pollNum + ' שגיאה', 'תגובה: ' + (data.message || 'unknown'));
         approvalFailCount++;
         if (approvalFailCount >= 3) {
-          showApprovalError('שגיאת שרת: ' + (data.message || 'לא ידוע') + '. נסה לרענן.');
+          showApprovalError('שגיאת שרת: ' + (data.message || 'לא ידוע'));
         }
       }
     }).catch(function(err) {
       approvalFailCount++;
       console.log('[APPROVAL] Error (fail #' + approvalFailCount + '):', err);
-      updateApprovalDebug('בדיקה #' + pollNum + ': שגיאת תקשורת #' + approvalFailCount);
+      updateApprovalDebug('בדיקה #' + pollNum + ' נכשלה', 'שגיאה: ' + String(err).substring(0, 80));
       if (approvalFailCount >= 3) {
         showApprovalError('בעיית תקשורת עם השרת. נסה לרענן את הדף.');
       }
