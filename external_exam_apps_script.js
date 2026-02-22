@@ -7,7 +7,7 @@
 // ========== פונקציות עזר ==========
 
 var SHEET_HEADERS = {
-  'בוחנים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל'],
+  'בוחנים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'מס בוחן'],
   'אתרים': ['שם אתר', 'מזהה', 'טלפון מנהל', 'כיתות'],
   'סשנים': ['קוד', 'בוחן ת.ז.', 'שם בוחן', 'אתר', 'כיתה', 'דרגה', 'שפה', 'מצב שמע', 'זמן יצירה', 'תקף עד', 'פעיל'],
   'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס'],
@@ -241,7 +241,7 @@ function handleLogin(p) {
     if (String(data[i][1]) === String(p.idNumber)) {
       if (String(data[i][2]) === String(p.password)) {
         if (data[i][3] === 'כן' || data[i][3] === true || data[i][3] === 'TRUE') {
-          return jsonResponse({ status: 'ok', examiner: { name: data[i][0], id: data[i][1] } });
+          return jsonResponse({ status: 'ok', examiner: { name: data[i][0], id: data[i][1], examinerNumber: String(data[i][4] || '') } });
         } else {
           return jsonResponse({ status: 'error', message: 'החשבון אינו פעיל' });
         }
