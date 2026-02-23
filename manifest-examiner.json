@@ -1,0 +1,20 @@
+{
+  "name": "לוח בוחן — מבחן תאוריה חיצוני",
+  "short_name": "לוח בוחן",
+  "description": "מערכת בחינות תאוריה חיצונית — לוח בקרה לבוחנים",
+  "start_url": "./examiner.html",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f0f4f8",
+  "theme_color": "#1a73e8",
+  "lang": "he",
+  "dir": "rtl",
+  "icons": [
+    {
+      "src": "logo.png",
+      "sizes": "300x300",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}
