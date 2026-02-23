@@ -335,6 +335,7 @@
       <p>התוצאות יימסרו לך ע"י הבוחן.</p>
       <p class="muted">ניתן לפנות את המקום.</p>
       <div id="doneTimeUpMsg" style="display:none;"></div>
+      <button id="nextExamineeBtn" onclick="resetForNextExaminee()" style="margin-top:24px; display:block; width:100%; padding:14px; font-size:17px; background:#0f172a;">נבחן הבא ←</button>
     </div>
   </section>
 
@@ -427,6 +428,36 @@
   function clearExamineeState() {
     try { sessionStorage.removeItem('ext_examinee_state'); } catch(e) {}
   }
+
+  // Reset everything so the next examinee can use the same device
+  window.resetForNextExaminee = function() {
+    // Clear state
+    clearExamineeState();
+    examInProgress = false;
+    examSubmitted = false;
+    tabSwitchTriggered = false;
+    examStartTime = null;
+    activeQuestions = [];
+    currentIndex = 0;
+    userAnswers = [];
+    shuffledOrders = [];
+    timeRemaining = EXAM_TIME_MINUTES * 60;
+    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+    if (approvalInterval) { clearInterval(approvalInterval); approvalInterval = null; }
+    examineeData = { idNumber: '', fullName: '', phone: '' };
+    // Keep sessionCode and sessionData — same session, different examinee
+    // Clear form fields
+    document.getElementById('idNumber').value = '';
+    document.getElementById('firstName').value = '';
+    document.getElementById('lastName').value = '';
+    document.getElementById('phoneNumber').value = '';
+    // Clear exam area
+    document.getElementById('examArea').innerHTML = '';
+    // Re-enable tab switch detection for next examinee
+    document.addEventListener('visibilitychange', onTabSwitch);
+    // Go to identification screen (skip session code — same session)
+    showScreen('screenIdForm');
+  };
 
   // ========== Screen management ==========
   function showScreen(id) {
@@ -833,6 +864,7 @@
           '<p style="color:#64748b; font-size:15px;">זוהה מעבר למסך אחר או אפליקציה אחרת.</p>' +
           '<p style="color:#64748b; font-size:15px;">אין לצאת ממסך המבחן במהלך המבחן.</p>' +
           '<p style="color:#94a3b8; font-size:13px; margin-top:20px;">פנה לבוחן לקבלת הנחיות.</p>' +
+          '<button onclick="resetForNextExaminee()" style="margin-top:24px; display:block; width:100%; padding:14px; font-size:17px; background:#0f172a; color:white; border:none; border-radius:10px; cursor:pointer; font-weight:700;">\u05E0\u05D1\u05D7\u05DF \u05D4\u05D1\u05D0 \u2190</button>' +
         '</div>';
     }
   }
