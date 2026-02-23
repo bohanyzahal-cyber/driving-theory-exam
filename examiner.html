@@ -3,6 +3,12 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta name="theme-color" content="#1a73e8"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="לוח בוחן"/>
+  <link rel="manifest" href="manifest-examiner.json"/>
+  <link rel="apple-touch-icon" href="logo.png"/>
   <title>לוח בוחן — מבחן חיצוני</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
@@ -215,7 +221,16 @@
       </label>
     </div>
     <div class="form-error" id="loginError"></div>
+    <label style="display:flex; align-items:center; gap:8px; margin-top:10px; font-weight:400; cursor:pointer;">
+      <input type="checkbox" id="rememberMe" style="width:18px; height:18px; cursor:pointer;">
+      <span>זכור אותי במכשיר הזה</span>
+    </label>
     <button id="loginBtn" style="display:block; width:100%; padding:14px; font-size:17px; margin-top:12px;">כניסה</button>
+    <!-- PWA Install Banner -->
+    <div id="installBanner" style="display:none; margin-top:16px; padding:12px 16px; background:#eff6ff; border:1px solid #93c5fd; border-radius:12px; text-align:center;">
+      <p style="margin:0 0 8px; font-size:14px; color:#1e40af;"><strong>התקן כאפליקציה</strong> — גישה מהירה מהמסך הראשי</p>
+      <button onclick="installPWA()" style="background:#1a73e8; padding:8px 24px; font-size:14px; border-radius:8px;">התקן</button>
+    </div>
   </section>
 
   <!-- ===== Screen 2: Session Setup ===== -->
@@ -501,6 +516,10 @@
       btn.disabled = false; btn.textContent = 'כניסה';
       if (data.status === 'ok') {
         examinerData = data.examiner;
+        // Save credentials if "remember me" is checked
+        if (document.getElementById('rememberMe').checked) {
+          try { localStorage.setItem('ext_examiner_remember', JSON.stringify({ id: id, pass: pass })); } catch(e) {}
+        }
         document.getElementById('topbarInfo').textContent = examinerData.name;
         document.getElementById('logoutBtn').style.display = 'inline-block';
         document.getElementById('setupExaminerName').textContent = 'שלום, ' + examinerData.name;
@@ -520,9 +539,13 @@
   window.logout = function() {
     stopDashboardPolling();
     clearState();
+    try { localStorage.removeItem('ext_examiner_remember'); } catch(e) {}
     examinerData = null; sessionCode = '';
     document.getElementById('logoutBtn').style.display = 'none';
     document.getElementById('topbarInfo').textContent = '';
+    document.getElementById('loginId').value = '';
+    document.getElementById('loginPass').value = '';
+    document.getElementById('rememberMe').checked = false;
     showScreen('screenLogin');
   };
 
@@ -1047,7 +1070,7 @@
       '<div><span class="label">\u05E9\u05DD: </span><span class="val">' + escHtml(r.name) + '</span></div>' +
       '<div><span class="label">\u05EA.\u05D6.: </span><span class="val">' + escHtml(r.idNumber) + '</span></div>' +
       '<div><span class="label">\u05D3\u05E8\u05D2\u05EA \u05E8\u05D9\u05E9\u05D9\u05D5\u05DF: </span><span class="val">' + escHtml(r.license || '') + '</span></div>' +
-      '<div><span class="label">\u05EA\u05D0\u05E8\u05D9\u05DA \u05E8\u05D9\u05E9\u05D5\u05DD: </span><span class="val">' + escHtml(formatRegDate(r.registrationTime) || formatDate(r.date)) + '</span></div>' +
+      '<div><span class="label">\u05EA\u05D0\u05E8\u05D9\u05DA \u05E8\u05D9\u05E9\u05D5\u05DD: </span><span class="val">' + escHtml(r.registrationTime ? formatRegDate(r.registrationTime) : formatDate(r.date)) + '</span></div>' +
       '<div><span class="label">\u05E9\u05E2\u05EA \u05E7\u05D1\u05DC\u05D4: </span><span class="val">' + escHtml(formatRegTime(r.registrationTime) || '-') + '</span></div>' +
       '<div><span class="label">\u05EA\u05D0\u05E8\u05D9\u05DA \u05E1\u05D9\u05D5\u05DD \u05D1\u05D7\u05D9\u05E0\u05D4: </span><span class="val">' + escHtml(formatDate(r.date)) + ' ' + escHtml(extractExamHour(r.date) || '') + '</span></div>' +
       '<div><span class="label">\u05E0\u05D9\u05E1\u05D9\u05D5\u05DF: </span><span class="val">' + (r.attempt || 1) + '</span></div>' +
@@ -1233,7 +1256,7 @@
   if (loadState()) {
     // We have a saved session — check if it's still valid
     if (sessionValidUntil && new Date() < sessionValidUntil) {
-      document.getElementById('topbarInfo').textContent = examinerData.name + ' | ' + currentSite + ' | כיתה ' + currentClassroom;
+      document.getElementById('topbarInfo').textContent = examinerData.name + ' | ' + currentSite + ' | \u05DB\u05D9\u05EA\u05D4 ' + currentClassroom;
       document.getElementById('logoutBtn').style.display = 'inline-block';
       renderDashboard();
       showScreen('screenDashboard');
@@ -1243,11 +1266,26 @@
       // Session expired — go to setup screen with examiner logged in
       document.getElementById('topbarInfo').textContent = examinerData.name;
       document.getElementById('logoutBtn').style.display = 'inline-block';
-      document.getElementById('setupExaminerName').textContent = 'שלום, ' + examinerData.name;
+      document.getElementById('setupExaminerName').textContent = '\u05E9\u05DC\u05D5\u05DD, ' + examinerData.name;
       clearState();
       showScreen('screenSetup');
       fetchSites();
     }
+  } else {
+    // No active session — try "remember me" auto-login
+    try {
+      var remembered = localStorage.getItem('ext_examiner_remember');
+      if (remembered) {
+        var creds = JSON.parse(remembered);
+        if (creds.id && creds.pass) {
+          document.getElementById('loginId').value = creds.id;
+          document.getElementById('loginPass').value = creds.pass;
+          document.getElementById('rememberMe').checked = true;
+          // Auto-click login
+          document.getElementById('loginBtn').click();
+        }
+      }
+    } catch(e) {}
   }
 
   function showQR(code) {
@@ -1277,6 +1315,39 @@
     btn.textContent = '\u05D4\u05D5\u05E2\u05EA\u05E7!'; // הועתק!
     setTimeout(function() { btn.textContent = orig; }, 1500);
   };
+
+  // ========== PWA: Service Worker + Install Prompt ==========
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw-examiner.js').catch(function() {});
+  }
+
+  var deferredInstallPrompt = null;
+  window.addEventListener('beforeinstallprompt', function(e) {
+    e.preventDefault();
+    deferredInstallPrompt = e;
+    // Show install banner on login screen
+    var banner = document.getElementById('installBanner');
+    if (banner) banner.style.display = 'block';
+  });
+
+  window.installPWA = function() {
+    if (!deferredInstallPrompt) return;
+    deferredInstallPrompt.prompt();
+    deferredInstallPrompt.userChoice.then(function(result) {
+      if (result.outcome === 'accepted') {
+        var banner = document.getElementById('installBanner');
+        if (banner) banner.style.display = 'none';
+      }
+      deferredInstallPrompt = null;
+    });
+  };
+
+  // Hide install banner if already installed as PWA
+  window.addEventListener('appinstalled', function() {
+    var banner = document.getElementById('installBanner');
+    if (banner) banner.style.display = 'none';
+    deferredInstallPrompt = null;
+  });
 
 })();
 </script>
