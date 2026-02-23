@@ -1106,11 +1106,13 @@
       if (!q.answers || q.answers.length < 2) return false;
       // For translated languages, require the translation fields to exist
       if (needTranslation && !hasTranslation(q, language)) return false;
+      // "מתן זכות קדימה" questions apply to all license types
+      if (/\u05D6\u05DB\u05D5\u05EA \u05E7\u05D3\u05D9\u05DE\u05D4/.test(q.category || '')) return true;
       if (license === '1') {
         var lt = (q.licenseType || '').trim();
         if (lt !== '' && lt !== 'N/A') return false;
         var cat = (q.category || '');
-        if (cat.indexOf('1') === -1 && !/\u05D6\u05DB\u05D5\u05EA \u05E7\u05D3\u05D9\u05DE\u05D4/.test(cat)) return false;
+        if (cat.indexOf('1') === -1) return false;
       } else if (license === 'C') {
         var lic = (q.licenseType || '').trim();
         if (lic !== 'C' && lic !== 'C/E' && lic !== 'C+E' && lic !== 'CE') return false;
