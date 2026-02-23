@@ -788,33 +788,40 @@
     document.addEventListener('visibilitychange', onTabSwitch);
   }
 
+  // Build disqualify URL for fire-and-forget requests
+  function buildDisqualifyUrl() {
+    var params = {
+      action: 'disqualify',
+      sessionCode: sessionCode,
+      idNumber: examineeData.idNumber
+    };
+    var qs = [];
+    for (var k in params) {
+      if (params.hasOwnProperty(k)) qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
+    }
+    return API_URL + '?' + qs.join('&');
+  }
+
   function onTabSwitch() {
     if (!examInProgress || examSubmitted) return;
 
     if (document.visibilityState === 'hidden') {
-      // Mark for disqualification — will execute when user returns
       tabSwitchTriggered = true;
+      // Send disqualification to server IMMEDIATELY (before OS may kill the page)
+      var url = buildDisqualifyUrl();
+      try { fetch(url, { keepalive: true }); } catch(ex) {}
+      // Fallback: Image GET (survives even if fetch doesn't)
+      try { new Image().src = url + '&_t=' + Date.now(); } catch(ex) {}
     }
 
     if (document.visibilityState === 'visible' && tabSwitchTriggered) {
-      // User came back — disqualify now (fetch works reliably when tab is visible)
+      // User came back — show DQ screen (server already notified above)
       tabSwitchTriggered = false;
       document.removeEventListener('visibilitychange', onTabSwitch);
       stopSpeaking();
       stopTimer();
       examInProgress = false;
       examSubmitted = true;
-
-      // Send disqualification to server (reliable — tab is visible)
-      apiGet({
-        action: 'disqualify',
-        sessionCode: sessionCode,
-        idNumber: examineeData.idNumber
-      }).then(function(data) {
-        console.log('[DQ] Disqualify response:', JSON.stringify(data));
-      }).catch(function(err) {
-        console.log('[DQ] Disqualify error:', err);
-      });
 
       // Show disqualification screen
       clearExamineeState();
