@@ -346,6 +346,7 @@
       <div class="bulk-actions" id="bulkActions" style="display:none;">
         <button class="wa-btn" style="padding:8px 16px; font-size:14px;" onclick="sendBulkToManager()">שלח סיכום למנהל אתר</button>
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#1a73e8;" onclick="sendToAllExaminees()">שלח לכל הנבחנים</button>
+        <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#1a5276;" onclick="generateExaminerReport()">&#x1f4cb; דו"ח בוחן</button>
       </div>
     </div>
 
@@ -1169,6 +1170,277 @@
 
   window.sendToAllExaminees = function() {
     alert('\u05DC\u05D7\u05E5 \u05E2\u05DC \u05DB\u05E4\u05EA\u05D5\u05E8 WA \u05DC\u05D9\u05D3 \u05DB\u05DC \u05E0\u05D1\u05D7\u05DF \u05D1\u05D8\u05D1\u05DC\u05D4. \u05E9\u05DE\u05D5\u05E8 \u05E7\u05D5\u05D3\u05DD PDF \u05D5\u05E6\u05E8\u05E3 \u05DC\u05D5\u05D5\u05D0\u05D8\u05E1\u05D0\u05E4.');
+  };
+
+  // ========== Examiner Report (דו"ח בוחן) ==========
+  window.generateExaminerReport = function() {
+    if (!completedResults || completedResults.length === 0) {
+      alert('\u05D0\u05D9\u05DF \u05EA\u05D5\u05E6\u05D0\u05D5\u05EA \u05DC\u05D4\u05E6\u05D2\u05D4 \u05D1\u05D3\u05D5"\u05D7');
+      return;
+    }
+
+    // Gather header info
+    var today = new Date();
+    var dateStr = today.getDate() + '/' + (today.getMonth() + 1) + '/' + today.getFullYear();
+    var site = currentSite || '';
+    var classroom = currentClassroom || '';
+    var examiner = examinerData.name || '';
+    var examinerNum = examinerData.examinerNumber || '';
+    var license = currentLicense || '';
+
+    // Process results
+    var passCount = 0, failCount = 0, dqCount = 0;
+    var popStats = {};
+    var rows = '';
+
+    for (var i = 0; i < completedResults.length; i++) {
+      var r = completedResults[i];
+      var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === '\u05E4\u05E1\u05D5\u05DC';
+      var isPassed = !isDQ && (r.passed === '\u05E2\u05D1\u05E8' || r.passed === true);
+      var isCorrected = r.corrected === true || r.corrected === 'TRUE';
+      var resultText = isDQ ? '\u05E4\u05E1\u05D5\u05DC' : (isPassed ? (isCorrected ? '\u05E2\u05D1\u05E8 \u270E' : '\u05E2\u05D1\u05E8') : '\u05E0\u05DB\u05E9\u05DC');
+
+      // Split name: last word = family name, rest = first name
+      var nameParts = String(r.name || '').trim().split(/\s+/);
+      var familyName = nameParts.length > 1 ? nameParts[nameParts.length - 1] : (nameParts[0] || '');
+      var firstName = nameParts.length > 1 ? nameParts.slice(0, nameParts.length - 1).join(' ') : '';
+
+      var pop = r.population || '';
+      var rowBg = isDQ ? '#fef9e7' : (isPassed ? '#eafaf1' : '#fdedec');
+      var resultColor = isDQ ? '#d4ac0d' : (isPassed ? '#27ae60' : '#c0392b');
+
+      if (isDQ) dqCount++;
+      else if (isPassed) passCount++;
+      else failCount++;
+
+      if (!isDQ && pop) {
+        if (!popStats[pop]) popStats[pop] = { total: 0, passed: 0, failed: 0 };
+        popStats[pop].total++;
+        if (isPassed) popStats[pop].passed++;
+        else popStats[pop].failed++;
+      }
+
+      rows += '<tr style="background:' + rowBg + ';">' +
+        '<td style="font-weight:bold;">' + (i + 1) + '</td>' +
+        '<td style="direction:ltr;">' + escHtml(String(r.idNumber || '')) + '</td>' +
+        '<td style="text-align:right;">' + escHtml(familyName) + '</td>' +
+        '<td style="text-align:right;">' + escHtml(firstName) + '</td>' +
+        '<td>' + escHtml(r.license || license) + '</td>' +
+        '<td>' + escHtml(pop) + '</td>' +
+        '<td>\u05DE\u05D7\u05E9\u05D1</td>' +
+        '<td>' + (r.attempt || 1) + '</td>' +
+        '<td style="font-weight:bold;color:' + resultColor + ';">' + resultText + '</td>' +
+        '</tr>';
+    }
+
+    var total = passCount + failCount;
+    var rate = total > 0 ? Math.round((passCount / total) * 100) : 0;
+
+    // Population breakdown rows
+    var popOrder = ['\u05E6\u05D1\u05D0', '\u05E7\u05D3\u05F4\u05E5', '\u05D5\u05D5\u05D0\u05D5\u05E6\u05F3\u05E8', '\u05E2\u05D9\u05D5\u05E0\u05D9 \u05D1\u05DC\u05D1\u05D3'];
+    var popRows = '';
+    var popKeys = Object.keys(popStats);
+    var orderedPops = [];
+    for (var p = 0; p < popOrder.length; p++) {
+      if (popStats[popOrder[p]]) orderedPops.push(popOrder[p]);
+    }
+    for (var k = 0; k < popKeys.length; k++) {
+      if (orderedPops.indexOf(popKeys[k]) === -1) orderedPops.push(popKeys[k]);
+    }
+    for (var j = 0; j < orderedPops.length; j++) {
+      var ps = popStats[orderedPops[j]];
+      var pr = ps.total > 0 ? Math.round((ps.passed / ps.total) * 100) : 0;
+      popRows += '<tr>' +
+        '<td>' + escHtml(orderedPops[j]) + '</td>' +
+        '<td>' + ps.total + '</td>' +
+        '<td style="color:#27ae60;font-weight:600;">' + ps.passed + '</td>' +
+        '<td style="color:#c0392b;font-weight:600;">' + ps.failed + '</td>' +
+        '<td>' + pr + '%</td></tr>';
+    }
+    popRows += '<tr style="border-top:2px solid #34495e;font-weight:bold;">' +
+      '<td>\u05E1\u05D4"\u05DB</td>' +
+      '<td>' + total + '</td>' +
+      '<td style="color:#27ae60;">' + passCount + '</td>' +
+      '<td style="color:#c0392b;">' + failCount + '</td>' +
+      '<td>' + rate + '%</td></tr>';
+
+    // Stamp
+    var stampHtml = '';
+    if (examinerNum) {
+      stampHtml = '<div style="display:inline-block;border:2px solid #1a5276;border-radius:8px;padding:10px 20px;margin-bottom:15px;font-size:14px;font-weight:bold;color:#1a5276;line-height:1.6;text-align:center;background:#f8fbff;">' +
+        escHtml(examiner) + '<br>\u05D1\u05D5\u05D7\u05DF \u05E8\u05D9\u05E9\u05D5\u05D9 \u05E6\u05D4"\u05DC<br>\u05DE\u05E1\u05F3 ' + escHtml(examinerNum) + '</div>';
+    }
+
+    // Build WA message for report
+    var waMsg = '*\uD83D\uDCCB \u05D3\u05D5"\u05D7 \u05D1\u05D5\u05D7\u05DF \u2014 \u05DE\u05D1\u05D7\u05DF \u05EA\u05D0\u05D5\u05E8\u05D9\u05D4*\n\n';
+    waMsg += '\uD83D\uDCC5 \u05EA\u05D0\u05E8\u05D9\u05DA: ' + dateStr + '\n';
+    waMsg += '\uD83D\uDCCD \u05D0\u05EA\u05E8: ' + site;
+    if (classroom) waMsg += ' | \u05DB\u05D9\u05EA\u05D4: ' + classroom;
+    waMsg += '\n';
+    waMsg += '\uD83E\uDEAA \u05D3\u05E8\u05D2\u05D4: ' + license + '\n';
+    waMsg += '\uD83D\uDC64 \u05D1\u05D5\u05D7\u05DF: ' + examiner + '\n\n';
+    waMsg += '\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n';
+
+    for (var m = 0; m < completedResults.length; m++) {
+      var rm = completedResults[m];
+      var isDQm = rm.disqualified === true || rm.disqualified === 'TRUE' || rm.passed === '\u05E4\u05E1\u05D5\u05DC';
+      var isPassedm = !isDQm && (rm.passed === '\u05E2\u05D1\u05E8' || rm.passed === true);
+      var nmParts = String(rm.name || '').trim().split(/\s+/);
+      var fam = nmParts.length > 1 ? nmParts[nmParts.length - 1] : nmParts[0] || '';
+      var first = nmParts.length > 1 ? nmParts.slice(0, nmParts.length - 1).join(' ') : '';
+      var popM = rm.population ? ' [' + rm.population + ']' : '';
+      var attemptM = (rm.attempt && rm.attempt > 1) ? ' [\u05E0\u05D9\u05E1\u05D9\u05D5\u05DF ' + rm.attempt + ']' : '';
+      var icon = isDQm ? '\u26D4' : (isPassedm ? '\u2705' : '\u274C');
+      var resM = isDQm ? '\u05E4\u05E1\u05D5\u05DC' : (isPassedm ? '\u05E2\u05D1\u05E8' : '\u05E0\u05DB\u05E9\u05DC');
+      waMsg += icon + ' ' + fam + ' ' + first + popM + attemptM + ' \u2014 ' + resM + '\n';
+    }
+
+    waMsg += '\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n';
+    waMsg += '*\u05E1\u05D9\u05DB\u05D5\u05DD \u05DB\u05DC\u05DC\u05D9:*\n';
+    waMsg += '\u05E1\u05D4"\u05DB: ' + total + ' | \u05E2\u05D1\u05E8\u05D5: ' + passCount + ' | \u05E0\u05DB\u05E9\u05DC\u05D5: ' + failCount + '\n';
+    waMsg += '\u05D0\u05D7\u05D5\u05D6 \u05D4\u05E6\u05DC\u05D7\u05D4: ' + rate + '%\n';
+    if (dqCount > 0) waMsg += '\u05E4\u05E1\u05D5\u05DC\u05D9\u05DD: ' + dqCount + '\n';
+
+    if (orderedPops.length > 0) {
+      waMsg += '\n*\u05E4\u05D9\u05E8\u05D5\u05D8 \u05DC\u05E4\u05D9 \u05D0\u05D5\u05DB\u05DC\u05D5\u05E1\u05D9\u05D4:*\n';
+      for (var q = 0; q < orderedPops.length; q++) {
+        var psq = popStats[orderedPops[q]];
+        var ptq = psq.total;
+        var prq = ptq > 0 ? Math.round((psq.passed / ptq) * 100) : 0;
+        waMsg += orderedPops[q] + ': ' + ptq + ' (\u05E2\u05D1\u05E8\u05D5 ' + psq.passed + ', \u05E0\u05DB\u05E9\u05DC\u05D5 ' + psq.failed + ', ' + prq + '%)\n';
+      }
+    }
+
+    var waMsgEncoded = encodeURIComponent(waMsg);
+
+    // Build report HTML
+    var html = '<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"/>' +
+      '<meta name="viewport" content="width=device-width,initial-scale=1"/>' +
+      '<title>\u05D3\u05D5"\u05D7 \u05D1\u05D5\u05D7\u05DF \u2014 \u05DE\u05D1\u05D7\u05DF \u05EA\u05D0\u05D5\u05E8\u05D9\u05D4 \u05D7\u05D9\u05E6\u05D5\u05E0\u05D9</title>' +
+      '<style>' +
+      '*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}' +
+      'body{font-family:"Segoe UI",Tahoma,Arial,sans-serif;background:#f0f2f5;color:#333;direction:rtl;padding:20px}' +
+      '.container{max-width:900px;margin:0 auto;background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.08);overflow:hidden}' +
+      '.header-bar{background:linear-gradient(135deg,#1a5276,#2980b9);color:#fff;padding:20px 30px;text-align:center}' +
+      '.header-bar h1{font-size:22px;margin-bottom:4px}.header-bar p{font-size:13px;opacity:.85}' +
+      '.section{padding:20px 30px;border-bottom:1px solid #eee}.section:last-child{border-bottom:none}' +
+      '.section-title{font-size:16px;font-weight:bold;color:#1a5276;margin-bottom:15px;padding-bottom:8px;border-bottom:2px solid #2980b9;display:flex;align-items:center;gap:8px}' +
+      '.section-title .icon{font-size:20px}' +
+      '.info-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}' +
+      '.info-item label{font-size:12px;color:#666;display:block;margin-bottom:2px;font-weight:600}' +
+      '.info-item .val{font-size:14px;font-weight:700;color:#1e293b}' +
+      '.table-wrap{overflow-x:auto;margin-top:10px}' +
+      'table{width:100%;border-collapse:collapse;font-size:13px}' +
+      'thead th{background:#2c3e50;color:#fff;padding:10px 6px;font-weight:600;white-space:nowrap;font-size:12px}' +
+      'tbody tr{border-bottom:1px solid #eee}' +
+      'tbody td{padding:8px 6px;text-align:center;vertical-align:middle}' +
+      '.summary-bar{display:flex;gap:15px;flex-wrap:wrap;padding:12px 0;justify-content:center}' +
+      '.summary-item{text-align:center;padding:8px 16px;border-radius:8px;min-width:80px}' +
+      '.summary-item .num{font-size:22px;font-weight:bold;display:block}' +
+      '.summary-item .lbl{font-size:11px;color:#666}' +
+      '.si-total{background:#eaf2f8}.si-total .num{color:#2980b9}' +
+      '.si-passed{background:#eafaf1}.si-passed .num{color:#27ae60}' +
+      '.si-failed{background:#fdedec}.si-failed .num{color:#c0392b}' +
+      '.si-computer{background:#eaf2f8}.si-computer .num{color:#2c3e50}' +
+      '.si-rate{background:#f4ecf7}.si-rate .num{color:#8e44ad}' +
+      '.pop-table{width:auto;min-width:320px;margin:10px auto 0;border-collapse:collapse;font-size:13px}' +
+      '.pop-table th{background:#34495e;color:#fff;padding:8px 14px;font-weight:600;white-space:nowrap}' +
+      '.pop-table td{padding:6px 14px;text-align:center;border-bottom:1px solid #eee}' +
+      '.signature-area{text-align:center;padding:15px 0}' +
+      '.signature-line{width:200px;border-bottom:1px solid #333;margin:20px auto 5px}' +
+      '.signature-label{font-size:12px;color:#666}' +
+      '.signature-name{font-size:16px;font-weight:bold;color:#2c3e50;margin-top:8px}' +
+      '.actions-row{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;padding:10px 0}' +
+      '.btn{border:none;padding:10px 20px;border-radius:6px;cursor:pointer;font-size:14px;font-family:inherit;font-weight:600;display:inline-flex;align-items:center;gap:6px}' +
+      '.btn-wa{background:#25d366;color:#fff}.btn-wa:hover{background:#1da851}' +
+      '.btn-primary{background:#2980b9;color:#fff}.btn-primary:hover{background:#2471a3}' +
+      '.phone-input{padding:8px 10px;border:1px solid #b7e4c7;border-radius:6px;font-size:14px;direction:ltr;width:180px;text-align:center;margin:0 8px}' +
+      '@media print{body{background:#fff;padding:0}.container{box-shadow:none;max-width:100%}.no-print{display:none!important}' +
+      'thead th,.summary-item,.pop-table th{-webkit-print-color-adjust:exact;print-color-adjust:exact}' +
+      'tbody tr{-webkit-print-color-adjust:exact;print-color-adjust:exact}}' +
+      '@media(max-width:600px){body{padding:8px}.section{padding:14px 16px}.info-grid{grid-template-columns:1fr}}' +
+      '</style></head><body><div class="container">' +
+
+      // Header
+      '<div class="header-bar"><h1>\uD83D\uDCCB \u05D3\u05D5"\u05D7 \u05D1\u05D5\u05D7\u05DF \u2014 \u05DE\u05D1\u05D7\u05DF \u05EA\u05D0\u05D5\u05E8\u05D9\u05D4 \u05D7\u05D9\u05E6\u05D5\u05E0\u05D9</h1>' +
+      '<p>\u05E1\u05D9\u05DB\u05D5\u05DD \u05EA\u05D5\u05E6\u05D0\u05D5\u05EA \u05DC\u05E9\u05DC\u05D9\u05D7\u05D4 \u05DC\u05E8\u05D1 \u05D1\u05D5\u05D7\u05DF</p></div>' +
+
+      // Exam details
+      '<div class="section">' +
+      '<div class="section-title"><span class="icon">\uD83D\uDCDD</span> \u05E4\u05E8\u05D8\u05D9 \u05D4\u05DE\u05D1\u05D7\u05DF</div>' +
+      '<div class="info-grid">' +
+      '<div class="info-item"><label>\u05EA\u05D0\u05E8\u05D9\u05DA</label><div class="val">' + escHtml(dateStr) + '</div></div>' +
+      '<div class="info-item"><label>\u05DE\u05E7\u05D5\u05DD \u05D4\u05DE\u05D1\u05D7\u05DF (\u05D0\u05EA\u05E8)</label><div class="val">' + escHtml(site) + '</div></div>' +
+      '<div class="info-item"><label>\u05DB\u05D9\u05EA\u05D4</label><div class="val">' + escHtml(classroom) + '</div></div>' +
+      '<div class="info-item"><label>\u05E9\u05DD \u05D4\u05D1\u05D5\u05D7\u05DF</label><div class="val">' + escHtml(examiner) + '</div></div>' +
+      '<div class="info-item"><label>\u05D3\u05E8\u05D2\u05EA \u05E8\u05D9\u05E9\u05D9\u05D5\u05DF</label><div class="val">' + escHtml(license) + '</div></div>' +
+      (examinerNum ? '<div class="info-item"><label>\u05DE\u05E1\u05F3 \u05D1\u05D5\u05D7\u05DF</label><div class="val">' + escHtml(examinerNum) + '</div></div>' : '') +
+      '</div></div>' +
+
+      // Examinees table
+      '<div class="section">' +
+      '<div class="section-title"><span class="icon">\uD83D\uDC65</span> \u05D8\u05D1\u05DC\u05EA \u05E0\u05D1\u05D7\u05E0\u05D9\u05DD</div>' +
+      '<div class="table-wrap"><table><thead><tr>' +
+      '<th>#</th><th>\u05EA.\u05D6.</th><th>\u05E9\u05DD \u05DE\u05E9\u05E4\u05D7\u05D4</th><th>\u05E9\u05DD \u05E4\u05E8\u05D8\u05D9</th>' +
+      '<th>\u05E1\u05D5\u05D2 \u05E8\u05DB\u05D1</th><th>\u05DE\u05D2\u05D6\u05E8</th><th>\u05E1\u05D5\u05D2 \u05DE\u05D1\u05D7\u05DF</th>' +
+      '<th>\u05DE\u05D1\u05D7\u05DF \u05DE\u05E1\'</th><th>\u05EA\u05D5\u05E6\u05D0\u05D4</th>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table></div></div>' +
+
+      // Summary
+      '<div class="section">' +
+      '<div class="section-title"><span class="icon">\uD83D\uDCCA</span> \u05E1\u05D9\u05DB\u05D5\u05DD</div>' +
+      '<div class="summary-bar">' +
+      '<div class="summary-item si-total"><span class="num">' + total + '</span><span class="lbl">\u05E1\u05D4"\u05DB</span></div>' +
+      '<div class="summary-item si-passed"><span class="num">' + passCount + '</span><span class="lbl">\u05E2\u05D1\u05E8\u05D5</span></div>' +
+      '<div class="summary-item si-failed"><span class="num">' + failCount + '</span><span class="lbl">\u05E0\u05DB\u05E9\u05DC\u05D5</span></div>' +
+      '<div class="summary-item si-computer"><span class="num">' + total + '</span><span class="lbl">\u05D1\u05DE\u05D7\u05E9\u05D1</span></div>' +
+      '<div class="summary-item si-rate"><span class="num">' + rate + '%</span><span class="lbl">\u05D0\u05D7\u05D5\u05D6 \u05D4\u05E6\u05DC\u05D7\u05D4</span></div>' +
+      '</div>' +
+      (dqCount > 0 ? '<div style="text-align:center;color:#d4ac0d;font-weight:700;margin-top:4px;">\u05E4\u05E1\u05D5\u05DC\u05D9\u05DD: ' + dqCount + '</div>' : '') +
+
+      // Population breakdown
+      (orderedPops.length > 0 ?
+        '<div style="margin-top:18px;"><h4 style="font-size:14px;color:#1a5276;margin-bottom:8px;">\uD83D\uDCCA \u05E4\u05D9\u05E8\u05D5\u05D8 \u05DC\u05E4\u05D9 \u05D0\u05D5\u05DB\u05DC\u05D5\u05E1\u05D9\u05D4</h4>' +
+        '<div class="table-wrap"><table class="pop-table"><thead><tr>' +
+        '<th>\u05D0\u05D5\u05DB\u05DC\u05D5\u05E1\u05D9\u05D4</th><th>\u05E1\u05D4"\u05DB</th><th>\u05E2\u05D1\u05E8\u05D5</th><th>\u05E0\u05DB\u05E9\u05DC\u05D5</th><th>\u05D0\u05D7\u05D5\u05D6 \u05D4\u05E6\u05DC\u05D7\u05D4</th>' +
+        '</tr></thead><tbody>' + popRows + '</tbody></table></div></div>'
+      : '') +
+      '</div>' +
+
+      // Signature
+      '<div class="section">' +
+      '<div class="signature-area">' + stampHtml +
+      '<div class="signature-line"></div>' +
+      '<div class="signature-label">\u05D7\u05D5\u05EA\u05DE\u05EA \u05D5\u05D7\u05EA\u05D9\u05DE\u05EA \u05D4\u05D1\u05D5\u05D7\u05DF</div>' +
+      '<div class="signature-name">' + escHtml(examiner) + '</div></div>' +
+
+      // Actions (no-print)
+      '<div class="actions-row no-print">' +
+      '<span style="font-size:13px;color:#666;align-self:center;">\u05D8\u05DC\u05F3 \u05E8\u05D1 \u05D1\u05D5\u05D7\u05DF:</span>' +
+      '<input type="tel" id="rpManagerPhone" class="phone-input" placeholder="05X-XXXXXXX" inputmode="tel">' +
+      '<button class="btn btn-wa" onclick="sendReport()">\uD83D\uDCF1 \u05E9\u05DC\u05D7 \u05D3\u05D5"\u05D7 \u05DC\u05E8\u05D1 \u05D1\u05D5\u05D7\u05DF</button>' +
+      '<button class="btn btn-primary" onclick="window.print()">\uD83D\uDDA8\uFE0F \u05D4\u05D3\u05E4\u05E1 / \u05E9\u05DE\u05D5\u05E8 PDF</button>' +
+      '</div>' +
+      '</div>' +
+
+      '</div>' +
+
+      // Script for WA send
+      '<script>' +
+      'function sendReport(){' +
+      'var ph=document.getElementById("rpManagerPhone").value.trim();' +
+      'if(!ph){alert("\u05D9\u05E9 \u05DC\u05D4\u05D6\u05D9\u05DF \u05DE\u05E1\u05E4\u05E8 \u05D8\u05DC\u05E4\u05D5\u05DF \u05E9\u05DC \u05E8\u05D1 \u05D1\u05D5\u05D7\u05DF");return;}' +
+      'var p=ph.replace(/[^0-9]/g,"");' +
+      'if(p.charAt(0)==="0")p="972"+p.substring(1);' +
+      'if(!p.startsWith("972"))p="972"+p;' +
+      'window.open("https://wa.me/"+p+"?text=' + waMsgEncoded + '","_blank");}' +
+      '<\/script>' +
+
+      '</body></html>';
+
+    var w = window.open('', '_blank');
+    if (w) { w.document.write(html); w.document.close(); }
+    else { alert('\u05D7\u05E1\u05D5\u05DD popup \u05E0\u05D7\u05E1\u05DD. \u05D0\u05E4\u05E9\u05E8 \u05D7\u05DC\u05D5\u05DF popup \u05DC\u05D0\u05EA\u05E8 \u05D6\u05D4.'); }
   };
 
   window.disqualifyResult = function(idx) {
