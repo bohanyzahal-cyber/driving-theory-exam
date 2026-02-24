@@ -646,7 +646,8 @@
       phone: examineeData.phone,
       language: examineeData.language,
       population: examineeData.population,
-      license: examineeData.license
+      license: examineeData.license,
+      audioMode: sessionData.audioMode || 'off'
     }).then(function(data) {
       registerBtn.disabled = false;
       registerBtn.textContent = 'הירשם למבחן';
@@ -869,7 +870,8 @@
           answeredCount: getAnsweredCount(),
           totalQuestions: TOTAL_QUESTIONS,
           time: getElapsedTimeStr(),
-          population: examineeData.population || ''
+          population: examineeData.population || '',
+          audioMode: sessionData.audioMode || 'off'
         };
         var qs = [];
         for (var k in params) {
@@ -1731,7 +1733,8 @@
       examinerName: sessionData.examinerName || '',
       site: sessionData.site || '',
       classroom: sessionData.classroom || '',
-      population: examineeData.population || ''
+      population: examineeData.population || '',
+      audioMode: sessionData.audioMode || 'off'
     };
     // Include wrong answers in GET (POST doesn't work with Apps Script redirects)
     if (wrongData.length > 0) {
