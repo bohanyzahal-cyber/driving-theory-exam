@@ -55,9 +55,6 @@ body {
 .btn-green:hover:not(:disabled) { background: #219a52; }
 .btn-wa { background: #25d366; color: white; }
 .btn-wa:hover:not(:disabled) { background: #1da851; }
-.btn-red { background: #c0392b; color: white; }
-.btn-red:hover:not(:disabled) { background: #a93226; }
-.btn-full { width: 100%; justify-content: center; font-size: 16px; padding: 14px; margin-top: 10px; }
 .btn-outline { background: transparent; border: 2px solid #2980b9; color: #2980b9; }
 .btn-outline:hover:not(:disabled) { background: #eaf2f8; }
 
@@ -67,7 +64,6 @@ body {
   border: 1px solid #e0e0e0;
 }
 .connect-panel .form-grid { margin-bottom: 12px; }
-.connect-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
 
 /* Session cards */
 .session-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
@@ -94,6 +90,7 @@ tbody tr.pass { background: #eafaf1; }
 tbody tr.fail { background: #fdedec; }
 tbody tr.dq { background: #fef9e7; }
 tbody td { padding: 8px 6px; text-align: center; vertical-align: middle; }
+td.row-num { font-weight: bold; }
 
 /* Summary */
 .summary-bar { display: flex; gap: 15px; flex-wrap: wrap; padding: 12px 0; justify-content: center; }
@@ -106,8 +103,18 @@ tbody td { padding: 8px 6px; text-align: center; vertical-align: middle; }
 .summary-item.passed .num { color: #27ae60; }
 .summary-item.failed { background: #fdedec; }
 .summary-item.failed .num { color: #c0392b; }
+.summary-item.computer { background: #eaf2f8; }
+.summary-item.computer .num { color: #2c3e50; }
 .summary-item.rate { background: #f4ecf7; }
 .summary-item.rate .num { color: #8e44ad; }
+
+/* Population breakdown table */
+.pop-breakdown { margin-top: 18px; }
+.pop-breakdown h4 { font-size: 14px; color: #1a5276; margin-bottom: 8px; }
+.pop-table { width: auto; min-width: 320px; margin: 0 auto; border-collapse: collapse; font-size: 13px; }
+.pop-table th { background: #34495e; color: white; padding: 8px 14px; font-weight: 600; white-space: nowrap; }
+.pop-table td { padding: 6px 14px; text-align: center; border-bottom: 1px solid #eee; }
+.pop-table tr:last-child td { border-bottom: 2px solid #34495e; font-weight: bold; }
 
 /* Signature area */
 .signature-area { text-align: center; padding: 15px 0; }
@@ -122,6 +129,18 @@ tbody td { padding: 8px 6px; text-align: center; vertical-align: middle; }
 
 /* Actions row */
 .actions-row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; padding: 10px 0; }
+
+/* Recipient panel */
+.recipient-panel {
+  background: #f0faf0; border: 1px solid #b7e4c7; border-radius: 8px;
+  padding: 12px 16px; margin-bottom: 15px;
+}
+.recipient-panel label { font-size: 12px; color: #333; font-weight: 600; display: block; margin-bottom: 4px; }
+.recipient-panel input {
+  padding: 8px 10px; border: 1px solid #b7e4c7; border-radius: 6px;
+  font-size: 14px; font-family: inherit; direction: ltr; width: 180px; text-align: center;
+}
+.recipient-panel input:focus { outline: none; border-color: #25d366; box-shadow: 0 0 0 2px rgba(37,211,102,0.15); }
 
 /* Status */
 .status {
@@ -143,8 +162,8 @@ tbody td { padding: 8px 6px; text-align: center; vertical-align: middle; }
   .section { padding: 10px 20px; }
   tbody tr.pass { background: #eafaf1 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   tbody tr.fail { background: #fdedec !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .summary-item { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  thead th { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  tbody tr.dq { background: #fef9e7 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .summary-item, thead th, .pop-table th { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 }
 
 /* Responsive */
@@ -160,7 +179,7 @@ tbody td { padding: 8px 6px; text-align: center; vertical-align: middle; }
 <div class="container">
   <div class="header-bar">
     <h1>&#x1f4cb; דו"ח בוחן — מבחן תאוריה חיצוני</h1>
-    <p>טעינת נתונים מהמערכת והפקת דו"ח למנהל אתר</p>
+    <p>טעינת נתונים מהמערכת והפקת דו"ח לרב בוחן</p>
   </div>
 
   <!-- Section 0: Connect to system -->
@@ -215,7 +234,7 @@ tbody td { padding: 8px 6px; text-align: center; vertical-align: middle; }
         <input type="text" id="rptExaminer" readonly>
       </div>
       <div class="form-group">
-        <label>סוג רישיון</label>
+        <label>דרגת רישיון</label>
         <input type="text" id="rptLicense" readonly>
       </div>
       <div class="form-group">
@@ -234,12 +253,12 @@ tbody td { padding: 8px 6px; text-align: center; vertical-align: middle; }
           <tr>
             <th>#</th>
             <th>ת.ז.</th>
-            <th>שם</th>
-            <th>סוג רישיון</th>
-            <th>אוכלוסיה</th>
-            <th>שפה</th>
-            <th>ניסיון</th>
-            <th>ציון</th>
+            <th>שם משפחה</th>
+            <th>שם פרטי</th>
+            <th>סוג רכב</th>
+            <th>מגזר</th>
+            <th>סוג מבחן</th>
+            <th>מבחן מס'</th>
             <th>תוצאה</th>
           </tr>
         </thead>
@@ -264,25 +283,55 @@ tbody td { padding: 8px 6px; text-align: center; vertical-align: middle; }
         <span id="sumFailed" class="num">0</span>
         <span class="lbl">נכשלו</span>
       </div>
+      <div class="summary-item computer">
+        <span id="sumComputer" class="num">0</span>
+        <span class="lbl">במחשב</span>
+      </div>
       <div class="summary-item rate">
         <span id="sumRate" class="num">0%</span>
         <span class="lbl">אחוז הצלחה</span>
       </div>
     </div>
+
+    <!-- Population breakdown -->
+    <div class="pop-breakdown" id="popBreakdown">
+      <h4>&#x1f4ca; פירוט לפי אוכלוסיה</h4>
+      <div class="table-wrap">
+        <table class="pop-table" id="popTable">
+          <thead>
+            <tr>
+              <th>אוכלוסיה</th>
+              <th>סה"כ</th>
+              <th>עברו</th>
+              <th>נכשלו</th>
+              <th>אחוז הצלחה</th>
+            </tr>
+          </thead>
+          <tbody id="popBody"></tbody>
+        </table>
+      </div>
+    </div>
   </div>
 
-  <!-- Section 4: Signature + Actions -->
+  <!-- Section 4: Stamp + Signature + Actions -->
   <div class="section" id="actionsSection" style="display:none;">
     <div class="signature-area">
-      <div id="testerStamp"></div>
+      <div id="testerStamp" class="tester-stamp" style="display:none;"></div>
       <div class="signature-line"></div>
-      <div class="signature-label">בוחן סמכות רישוי צה"ל</div>
+      <div class="signature-label">חותמת וחתימת הבוחן</div>
       <div class="signature-name" id="sigName"></div>
+    </div>
+
+    <div class="no-print" style="margin-top:20px;">
+      <div class="recipient-panel">
+        <label>&#x1f4f1; מספר טלפון רב בוחן (לשליחת הדו"ח)</label>
+        <input type="tel" id="managerPhone" placeholder="05X-XXXXXXX" inputmode="tel">
+      </div>
     </div>
 
     <div class="actions-row no-print">
       <button class="btn btn-wa" onclick="sendToManager()">
-        &#x1f4f1; שלח דו"ח למנהל אתר
+        &#x1f4f1; שלח דו"ח לרב בוחן
       </button>
       <button class="btn btn-primary" onclick="window.print()">
         &#x1f5a8; הדפס / שמור PDF
@@ -302,11 +351,13 @@ var API_URL = 'https://script.google.com/macros/s/AKfycbz_Lqn1Y_8iai6FmHV7V1xJlF
 
 var LANG_LABELS = { 'he': 'עברית', 'ru': 'רוסית', 'en': 'אנגלית', 'ar': 'ערבית', 'fr': 'צרפתית', 'es': 'ספרדית' };
 
+// Population order for breakdown
+var POP_ORDER = ['צבא', 'קד״ץ', 'וואוצ׳ר', 'עיוני בלבד'];
+
 var examinerData = {};
 var sessions = [];
 var selectedSession = null;
 var completedResults = [];
-var siteManagerPhone = '';
 
 // ===== API HELPER =====
 function apiGet(params) {
@@ -331,6 +382,29 @@ function formatPhone(ph) {
   return p;
 }
 
+// Split full name into familyName + firstName
+// Convention: last word is family name, rest is first name
+function splitName(fullName) {
+  if (!fullName) return { familyName: '', firstName: '' };
+  var parts = String(fullName).trim().split(/\s+/);
+  if (parts.length <= 1) return { familyName: parts[0] || '', firstName: '' };
+  var familyName = parts[parts.length - 1];
+  var firstName = parts.slice(0, parts.length - 1).join(' ');
+  return { familyName: familyName, firstName: firstName };
+}
+
+// Normalize population display - handle slight variations
+function normalizePop(pop) {
+  if (!pop) return '';
+  var s = String(pop).trim();
+  // Normalize common variations
+  if (s === 'צבא') return 'צבא';
+  if (s.indexOf('קד') === 0) return 'קד״ץ';
+  if (s.indexOf('וואוצ') === 0 || s.indexOf('ווצ') === 0) return 'וואוצ׳ר';
+  if (s.indexOf('עיוני') === 0) return 'עיוני בלבד';
+  return s;
+}
+
 // ===== CONNECT =====
 window.connectToSystem = function() {
   var id = document.getElementById('loginId').value.trim();
@@ -353,11 +427,9 @@ window.connectToSystem = function() {
       return;
     }
 
-    // API returns { status: 'ok', examiner: { name, id, examinerNumber } }
     examinerData = data.examiner || data;
     showStatus('connectStatus', 'success', 'התחברת בהצלחה: ' + examinerData.name);
 
-    // Fetch sessions
     loadSessions(examinerData.id || id);
   }).catch(function(err) {
     btn.disabled = false;
@@ -440,7 +512,6 @@ window.loadSessionData = function() {
     }
 
     completedResults = data.completed;
-    siteManagerPhone = selectedSession.managerPhone || '';
 
     fillReport();
     showStatus('loadStatus', 'success', 'נטענו ' + completedResults.length + ' תוצאות');
@@ -459,7 +530,6 @@ function fillReport() {
     var d = completedResults[0].date;
     if (typeof d === 'string') {
       dateStr = d.split('T')[0].split(' ')[0];
-      // Convert YYYY-MM-DD to DD/MM/YYYY
       var parts = dateStr.split('-');
       if (parts.length === 3 && parts[0].length === 4) dateStr = parts[2] + '/' + parts[1] + '/' + parts[0];
     }
@@ -476,13 +546,14 @@ function fillReport() {
   document.getElementById('rptLicense').value = selectedSession.license || '';
   document.getElementById('rptSessionCode').value = selectedSession.code || '';
 
-  // Signature
+  // Signature / stamp
   document.getElementById('sigName').textContent = examinerData.name || '';
   var stampEl = document.getElementById('testerStamp');
   if (examinerData.examinerNumber) {
     stampEl.innerHTML = escHtml(examinerData.name) + '<br>בוחן רישוי צה"ל<br>מס׳ ' + escHtml(examinerData.examinerNumber);
+    stampEl.style.display = 'inline-block';
   } else {
-    stampEl.innerHTML = escHtml(examinerData.name || '');
+    stampEl.style.display = 'none';
   }
 
   // Table
@@ -509,46 +580,114 @@ function renderTable() {
     var isCorrected = r.corrected === true || r.corrected === 'TRUE';
     var resultText = isDQ ? 'פסול' : (isPassed ? (isCorrected ? 'עבר ✎' : 'עבר') : 'נכשל');
     var rowClass = isDQ ? 'dq' : (isPassed ? 'pass' : 'fail');
-    var id4 = String(r.idNumber || '').slice(-4);
+
+    // Split name into family + first
+    var nameParts = splitName(r.name);
+
+    // Population / sector display
+    var popDisplay = normalizePop(r.population);
 
     var tr = document.createElement('tr');
     tr.className = rowClass;
     tr.innerHTML =
-      '<td>' + (i + 1) + '</td>' +
-      '<td style="direction:ltr">....' + id4 + '</td>' +
-      '<td style="text-align:right;">' + escHtml(r.name) + '</td>' +
+      '<td class="row-num">' + (i + 1) + '</td>' +
+      '<td style="direction:ltr">' + escHtml(String(r.idNumber || '')) + '</td>' +
+      '<td style="text-align:right;">' + escHtml(nameParts.familyName) + '</td>' +
+      '<td style="text-align:right;">' + escHtml(nameParts.firstName) + '</td>' +
       '<td>' + escHtml(r.license || '') + '</td>' +
-      '<td>' + escHtml(r.population || '') + '</td>' +
-      '<td>' + escHtml(LANG_LABELS[r.language] || r.language || '') + '</td>' +
+      '<td>' + escHtml(popDisplay) + '</td>' +
+      '<td>מחשב</td>' +
       '<td>' + (r.attempt || 1) + '</td>' +
-      '<td>' + escHtml(String(r.score || '')) + '</td>' +
       '<td style="font-weight:bold; color:' + (isDQ ? '#d4ac0d' : (isPassed ? '#27ae60' : '#c0392b')) + ';">' + resultText + '</td>';
     tbody.appendChild(tr);
   }
 }
 
 function updateSummary() {
-  var total = 0, passed = 0, failed = 0;
+  var total = 0, passed = 0, failed = 0, dqCount = 0;
+  // Population breakdown: { popName: { total, passed, failed } }
+  var popStats = {};
+
   for (var i = 0; i < completedResults.length; i++) {
     var r = completedResults[i];
     var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === 'פסול';
     var isPassed = !isDQ && (r.passed === 'עבר' || r.passed === true);
-    if (!isDQ) total++;
-    if (isPassed) passed++;
-    else if (!isDQ) failed++;
+    var pop = normalizePop(r.population) || 'לא צוין';
+
+    if (isDQ) {
+      dqCount++;
+    } else {
+      total++;
+      if (isPassed) passed++;
+      else failed++;
+
+      // Population stats (exclude DQ)
+      if (!popStats[pop]) popStats[pop] = { total: 0, passed: 0, failed: 0 };
+      popStats[pop].total++;
+      if (isPassed) popStats[pop].passed++;
+      else popStats[pop].failed++;
+    }
   }
 
   document.getElementById('sumTotal').textContent = total;
   document.getElementById('sumPassed').textContent = passed;
   document.getElementById('sumFailed').textContent = failed;
+  document.getElementById('sumComputer').textContent = total; // all exams are computer-based
   document.getElementById('sumRate').textContent = total > 0 ? Math.round((passed / total) * 100) + '%' : '0%';
+
+  // Population breakdown table
+  renderPopBreakdown(popStats, total, passed, failed);
 }
 
-// ===== SEND TO MANAGER =====
+function renderPopBreakdown(popStats, grandTotal, grandPassed, grandFailed) {
+  var tbody = document.getElementById('popBody');
+  tbody.innerHTML = '';
+
+  // Sort: known populations first in POP_ORDER, then any extras
+  var keys = Object.keys(popStats);
+  var sorted = [];
+  for (var p = 0; p < POP_ORDER.length; p++) {
+    if (popStats[POP_ORDER[p]]) sorted.push(POP_ORDER[p]);
+  }
+  for (var k = 0; k < keys.length; k++) {
+    if (sorted.indexOf(keys[k]) === -1) sorted.push(keys[k]);
+  }
+
+  for (var i = 0; i < sorted.length; i++) {
+    var pop = sorted[i];
+    var st = popStats[pop];
+    var rate = st.total > 0 ? Math.round((st.passed / st.total) * 100) : 0;
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td>' + escHtml(pop) + '</td>' +
+      '<td>' + st.total + '</td>' +
+      '<td style="color:#27ae60; font-weight:600;">' + st.passed + '</td>' +
+      '<td style="color:#c0392b; font-weight:600;">' + st.failed + '</td>' +
+      '<td>' + rate + '%</td>';
+    tbody.appendChild(tr);
+  }
+
+  // Grand total row
+  var grandRate = grandTotal > 0 ? Math.round((grandPassed / grandTotal) * 100) : 0;
+  var totalTr = document.createElement('tr');
+  totalTr.innerHTML =
+    '<td>סה"כ</td>' +
+    '<td>' + grandTotal + '</td>' +
+    '<td style="color:#27ae60;">' + grandPassed + '</td>' +
+    '<td style="color:#c0392b;">' + grandFailed + '</td>' +
+    '<td>' + grandRate + '%</td>';
+  tbody.appendChild(totalTr);
+
+  // Show/hide breakdown
+  document.getElementById('popBreakdown').style.display = sorted.length > 0 ? 'block' : 'none';
+}
+
+// ===== SEND TO MANAGER (רב בוחן) =====
 window.sendToManager = function() {
-  if (!siteManagerPhone) {
-    // Try to get from site data
-    showStatus('actionStatus', 'info', 'מספר מנהל אתר לא הוגדר. ניתן לשלוח ידנית.');
+  var phone = document.getElementById('managerPhone').value.trim();
+  if (!phone) {
+    showStatus('actionStatus', 'error', 'יש להזין מספר טלפון של רב בוחן');
+    return;
   }
 
   var dateStr = document.getElementById('rptDate').value;
@@ -559,56 +698,78 @@ window.sendToManager = function() {
 
   var total = 0, passed = 0, failed = 0, dqCount = 0;
   var lines = [];
+  var popStats = {};
 
   for (var i = 0; i < completedResults.length; i++) {
     var r = completedResults[i];
     var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === 'פסול';
     var isPassed = !isDQ && (r.passed === 'עבר' || r.passed === true);
-    var id4 = String(r.idNumber || '').slice(-4);
+    var nameParts = splitName(r.name);
+    var pop = normalizePop(r.population) || 'לא צוין';
     var attemptStr = (r.attempt && r.attempt > 1) ? ' [ניסיון ' + r.attempt + ']' : '';
-    var popStr = r.population ? ' [' + r.population + ']' : '';
 
     if (isDQ) {
-      lines.push('⛔ ' + r.name + popStr + ' (...' + id4 + ')' + attemptStr + ' — פסול');
+      lines.push((i+1) + '. ' + nameParts.familyName + ' ' + nameParts.firstName + ' | ' + pop + attemptStr + ' — פסול');
       dqCount++;
     } else if (isPassed) {
-      lines.push('✅ ' + r.name + popStr + ' (...' + id4 + ')' + attemptStr + ' — ' + r.score);
+      lines.push((i+1) + '. ' + nameParts.familyName + ' ' + nameParts.firstName + ' | ' + pop + attemptStr + ' — עבר');
       passed++;
       total++;
+      if (!popStats[pop]) popStats[pop] = { passed: 0, failed: 0 };
+      popStats[pop].passed++;
     } else {
-      lines.push('❌ ' + r.name + popStr + ' (...' + id4 + ')' + attemptStr + ' — ' + r.score);
+      lines.push((i+1) + '. ' + nameParts.familyName + ' ' + nameParts.firstName + ' | ' + pop + attemptStr + ' — נכשל');
       failed++;
       total++;
+      if (!popStats[pop]) popStats[pop] = { passed: 0, failed: 0 };
+      popStats[pop].failed++;
     }
   }
 
   var rate = total > 0 ? Math.round((passed / total) * 100) : 0;
 
-  var msg = '*📋 דו"ח בוחן — מבחן תאוריה חיצוני*\n\n';
+  var msg = '*📋 דו"ח בוחן — מבחן תאוריה*\n\n';
   msg += '📅 תאריך: ' + dateStr + '\n';
-  msg += '📍 אתר: ' + site + '\n';
-  if (classroom) msg += '🏫 כיתה: ' + classroom + '\n';
+  msg += '📍 אתר: ' + site;
+  if (classroom) msg += ' | כיתה: ' + classroom;
+  msg += '\n';
   msg += '🪪 דרגה: ' + license + '\n';
   msg += '👤 בוחן: ' + examiner + '\n\n';
   msg += '━━━━━━━━━━━━━━━\n';
   msg += lines.join('\n');
   msg += '\n━━━━━━━━━━━━━━━\n\n';
-  msg += '*סה"כ: ' + total + ' | עברו: ' + passed + ' | נכשלו: ' + failed + '*\n';
-  msg += '*אחוז הצלחה: ' + rate + '%*';
-  if (dqCount > 0) msg += '\n*פסולים: ' + dqCount + '*';
 
-  var phone = formatPhone(siteManagerPhone);
-  if (phone) {
-    window.open('https://wa.me/' + phone + '?text=' + encodeURIComponent(msg), '_blank');
-  } else {
-    // No phone - copy to clipboard and open WA
-    if (navigator.clipboard) {
-      navigator.clipboard.writeText(msg).then(function() {
-        showStatus('actionStatus', 'success', 'הדו"ח הועתק ללוח. פתח וואטסאפ ושלח ידנית.');
-      });
+  // Overall summary
+  msg += '*סיכום כללי:*\n';
+  msg += 'סה"כ: ' + total + ' | עברו: ' + passed + ' | נכשלו: ' + failed + '\n';
+  msg += 'אחוז הצלחה: ' + rate + '%\n';
+  if (dqCount > 0) msg += 'פסולים: ' + dqCount + '\n';
+
+  // Population breakdown
+  var popKeys = Object.keys(popStats);
+  if (popKeys.length > 0) {
+    msg += '\n*פירוט לפי אוכלוסיה:*\n';
+    for (var p = 0; p < POP_ORDER.length; p++) {
+      if (popStats[POP_ORDER[p]]) {
+        var ps = popStats[POP_ORDER[p]];
+        var pt = ps.passed + ps.failed;
+        var pr = pt > 0 ? Math.round((ps.passed / pt) * 100) : 0;
+        msg += POP_ORDER[p] + ': ' + pt + ' (עברו ' + ps.passed + ', נכשלו ' + ps.failed + ', ' + pr + '%)\n';
+      }
     }
-    window.open('https://wa.me/?text=' + encodeURIComponent(msg), '_blank');
+    // Any populations not in POP_ORDER
+    for (var k = 0; k < popKeys.length; k++) {
+      if (POP_ORDER.indexOf(popKeys[k]) === -1) {
+        var ps2 = popStats[popKeys[k]];
+        var pt2 = ps2.passed + ps2.failed;
+        var pr2 = pt2 > 0 ? Math.round((ps2.passed / pt2) * 100) : 0;
+        msg += popKeys[k] + ': ' + pt2 + ' (עברו ' + ps2.passed + ', נכשלו ' + ps2.failed + ', ' + pr2 + '%)\n';
+      }
+    }
   }
+
+  var formattedPhone = formatPhone(phone);
+  window.open('https://wa.me/' + formattedPhone + '?text=' + encodeURIComponent(msg), '_blank');
 };
 
 // ===== UTILS =====
