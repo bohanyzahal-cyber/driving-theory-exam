@@ -10,8 +10,8 @@ var SHEET_HEADERS = {
   'בוחנים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'מס בוחן'],
   'אתרים': ['שם אתר', 'מזהה', 'טלפון מנהל', 'כיתות'],
   'סשנים': ['קוד', 'בוחן ת.ז.', 'שם בוחן', 'אתר', 'כיתה', 'דרגה', 'שפה', 'מצב שמע', 'זמן יצירה', 'תקף עד', 'פעיל'],
-  'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס'],
-  'תוצאות': ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר', 'כיתה', 'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ']
+  'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה'],
+  'תוצאות': ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר', 'כיתה', 'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ', 'אוכלוסיה', 'תוקן?']
 };
 
 function getSheet(name) {
@@ -152,6 +152,9 @@ function doGet(e) {
       case 'disqualify':
         return handleDisqualify(p);
 
+      case 'correctToPass':
+        return handleCorrectToPass(p);
+
       case 'markSent':
         return handleMarkSent(p);
 
@@ -179,6 +182,7 @@ function doGet(e) {
           examinerName: p.examinerName || '',
           site: p.site || '',
           classroom: p.classroom || '',
+          population: p.population || '',
           wrongAnswers: []
         };
         try { if (p.wrongAnswers) resultData.wrongAnswers = JSON.parse(p.wrongAnswers); } catch(ex) {}
@@ -201,7 +205,8 @@ function doGet(e) {
           classroom: p.classroom || '',
           answeredCount: Number(p.answeredCount) || 0,
           totalQuestions: Number(p.totalQuestions) || 30,
-          time: p.time || ''
+          time: p.time || '',
+          population: p.population || ''
         };
         return handleSubmitFailOnClose(failData);
 
@@ -397,7 +402,8 @@ function handleRegisterExaminee(p) {
     p.phone || '',
     nowISO(),
     'waiting',
-    p.language || ''
+    p.language || '',
+    p.population || ''
   ]);
   return jsonResponse({ status: 'ok' });
 }
@@ -475,7 +481,7 @@ function handleExaminerDashboard(p) {
   for (var i = 1; i < pendData.length; i++) {
     if (String(pendData[i][0]) !== code) continue;
     var s = pendData[i][5];
-    var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], status: s, language: pendData[i][6] || '' };
+    var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], status: s, language: pendData[i][6] || '', population: pendData[i][7] || '' };
     if (s === 'waiting') pending.push(item);
     else if (s === 'in_exam') active.push(item);
   }
@@ -502,7 +508,9 @@ function handleExaminerDashboard(p) {
       wrongDetails: resData[j][15],
       sent: resData[j][16],
       disqualified: resData[j][17],
-      waLink: resData[j][18]
+      waLink: resData[j][18],
+      population: resData[j][19] || '',
+      corrected: resData[j][20] || false
     });
   }
 
@@ -523,11 +531,12 @@ function handleDisqualify(p) {
   // ALWAYS remove from ממתינים first (so examinee leaves "active" list)
   var pendSheet = getSheet('ממתינים');
   var pendData = pendSheet.getDataRange().getValues();
-  var name = '', phone = '';
+  var name = '', phone = '', population = '';
   for (var j = pendData.length - 1; j >= 1; j--) {
     if (String(pendData[j][0]) === String(p.sessionCode) && normalizeId(pendData[j][1]) === normalizeId(p.idNumber)) {
       name = pendData[j][2] || '';
       phone = pendData[j][3] || '';
+      population = pendData[j][7] || '';
       pendSheet.getRange(j + 1, 6).setValue('disqualified');
       break;
     }
@@ -564,10 +573,45 @@ function handleDisqualify(p) {
     todayStr(), p.idNumber, name, phone, license,
     '0/30', '0%', 'פסול', '', examinerName,
     site, classroom, language, String(p.sessionCode),
-    attemptNum, '', false, true, ''
+    attemptNum, '', false, true, '',
+    population, false
   ]);
   SpreadsheetApp.flush();
   return jsonResponse({ status: 'ok' });
+}
+
+function handleCorrectToPass(p) {
+  var sheet = getSheet('תוצאות');
+  var data = sheet.getDataRange().getValues();
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][13]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
+      // Verify score is eligible (>= 24/30)
+      var scoreParts = String(data[i][5]).split('/');
+      var scoreNum = parseInt(scoreParts[0]) || 0;
+      if (scoreNum < 24) {
+        return jsonResponse({ status: 'error', message: 'ציון נמוך מדי לתיקון (מתחת ל-24)' });
+      }
+      // Update pass/fail to עבר
+      sheet.getRange(i + 1, 8).setValue('עבר');     // column H = עבר/נכשל
+      // Mark as corrected
+      sheet.getRange(i + 1, 21).setValue(true);      // column U = תוקן?
+      // Regenerate WhatsApp link with pass status
+      var phone = formatPhoneForWA(data[i][3]);
+      var waMsg = '*🚗 אישור תוצאת מבחן תאוריה חיצוני*\n\n' +
+        'שם: ' + data[i][2] + '\n' +
+        'ת.ז.: ' + data[i][1] + '\n' +
+        'דרגה: ' + data[i][4] + '\n' +
+        (data[i][19] ? 'אוכלוסיה: ' + data[i][19] + '\n' : '') +
+        'תאריך: ' + data[i][0] + '\n' +
+        'תוצאה: *עבר* (' + data[i][5] + ')\n' +
+        'זמן: ' + data[i][8] + '\n';
+      var waLink = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(waMsg);
+      sheet.getRange(i + 1, 19).setValue(waLink);    // column S = קישור וואטסאפ
+      SpreadsheetApp.flush();
+      return jsonResponse({ status: 'ok' });
+    }
+  }
+  return jsonResponse({ status: 'error', message: 'תוצאה לא נמצאה' });
 }
 
 function handleMarkSent(p) {
@@ -651,6 +695,7 @@ function handleSubmitResult(data) {
     'שם: ' + data.fullName + '\n' +
     'ת.ז.: ' + data.idNumber + '\n' +
     'דרגה: ' + data.license + '\n' +
+    (data.population ? 'אוכלוסיה: ' + data.population + '\n' : '') +
     'תאריך: ' + todayStr() + '\n' +
     'תוצאה: *' + passText + '* (' + data.score + '/' + data.total + ')\n' +
     'זמן: ' + data.time + '\n';
@@ -692,7 +737,9 @@ function handleSubmitResult(data) {
     wrongDetails,
     false,
     false,
-    waLink
+    waLink,
+    data.population || '',
+    false
   ]);
 
   // Update pending status to completed
@@ -798,7 +845,9 @@ function handleSubmitFailOnClose(data) {
     'סגירת דפדפן באמצע מבחן (נענו ' + (data.answeredCount || 0) + ' שאלות)',
     false,
     false,
-    ''
+    '',
+    data.population || '',
+    false
   ]);
 
   var pendSheet = getSheet('ממתינים');

@@ -131,7 +131,16 @@
       background: #f8fafc; border-radius: 14px; padding: 1.2rem 1.4rem;
       border: 1px solid #e2e8f0; margin-top: 1rem;
     }
-    .q-number { font-size: 13px; color: #64748b; margin-bottom: 6px; }
+    .q-number { font-size: 13px; color: #64748b; margin-bottom: 6px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .q-category {
+      display: inline-block; padding: 2px 10px; border-radius: 8px;
+      font-size: 11px; font-weight: 700;
+    }
+    .q-cat-safety { background: #dbeafe; color: #1e40af; }
+    .q-cat-vehicle { background: #fef3c7; color: #92400e; }
+    .q-cat-law { background: #dcfce7; color: #166534; }
+    .q-cat-signs { background: #fce7f3; color: #9d174d; }
+    .q-cat-specific { background: #ede9fe; color: #5b21b6; }
     .q-text { font-size: 1.15rem; font-weight: 700; line-height: 1.6; margin-bottom: 16px; color: #0f172a; }
     .q-image {
       display: block; max-width: 100%; max-height: 320px; border-radius: 10px;
@@ -291,6 +300,15 @@
           <option value="es">ספרדית</option>
         </select>
       </label>
+      <label>
+        <span>אוכלוסיה</span>
+        <select id="populationSelect">
+          <option value="צבא">צבא</option>
+          <option value="קד״ץ">קד״ץ</option>
+          <option value="וואוצ׳ר">וואוצ׳ר</option>
+          <option value="עיוני בלבד">עיוני בלבד</option>
+        </select>
+      </label>
     </div>
     <div class="info-banner error" id="registerError" style="display:none;"></div>
     <button id="registerBtn" style="display:block; width:100%; padding:14px; font-size:17px; margin-top:12px;">הירשם למבחן</button>
@@ -391,7 +409,7 @@
   // ========== State ==========
   var sessionCode = '';
   var sessionData = {};
-  var examineeData = { idNumber: '', fullName: '', phone: '' };
+  var examineeData = { idNumber: '', fullName: '', phone: '', population: '' };
   var activeQuestions = [];
   var currentIndex = 0;
   var userAnswers = [];
@@ -455,7 +473,7 @@
     timeRemaining = EXAM_TIME_MINUTES * 60;
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
     if (approvalInterval) { clearInterval(approvalInterval); approvalInterval = null; }
-    examineeData = { idNumber: '', fullName: '', phone: '' };
+    examineeData = { idNumber: '', fullName: '', phone: '', population: '' };
     // Keep sessionCode and sessionData — same session, different examinee
     // Restore session's default language (undo examinee's override)
     sessionData.language = sessionData._defaultLanguage || sessionData.language || 'he';
@@ -467,6 +485,9 @@
     // Reset language dropdown to session default
     var langSel = document.getElementById('langSelect');
     if (langSel) langSel.value = sessionData.language || 'he';
+    // Reset population dropdown
+    var popSel = document.getElementById('populationSelect');
+    if (popSel) popSel.value = '\u05E6\u05D1\u05D0';
     // Clear exam area
     document.getElementById('examArea').innerHTML = '';
     // Re-enable tab switch detection for next examinee
@@ -580,6 +601,7 @@
       examineeData.fullName = fn + ' ' + ln;
       examineeData.phone = document.getElementById('phoneNumber').value.trim();
       examineeData.language = document.getElementById('langSelect').value || sessionData.language || 'he';
+      examineeData.population = document.getElementById('populationSelect').value || '\u05E6\u05D1\u05D0';
     }
     return valid;
   }
@@ -600,7 +622,8 @@
       idNumber: examineeData.idNumber,
       fullName: examineeData.fullName,
       phone: examineeData.phone,
-      language: examineeData.language
+      language: examineeData.language,
+      population: examineeData.population
     }).then(function(data) {
       registerBtn.disabled = false;
       registerBtn.textContent = 'הירשם למבחן';
@@ -822,7 +845,8 @@
           classroom: sessionData.classroom || '',
           answeredCount: getAnsweredCount(),
           totalQuestions: TOTAL_QUESTIONS,
-          time: getElapsedTimeStr()
+          time: getElapsedTimeStr(),
+          population: examineeData.population || ''
         };
         var qs = [];
         for (var k in params) {
@@ -1093,6 +1117,16 @@
     if (/\u05D7\u05D5\u05E7/.test(c)) return '\u05D7\u05D5\u05E7';
     if (/\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD/.test(c)) return '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD';
     if (/\u05D6\u05DB\u05D5\u05EA \u05E7\u05D3\u05D9\u05DE\u05D4/.test(c)) return '\u05D7\u05D5\u05E7';
+    return '';
+  }
+
+  function categoryClass(cat) {
+    var n = classifyCategory(cat);
+    if (n === '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA') return 'q-cat-safety';
+    if (n === '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1') return 'q-cat-vehicle';
+    if (n === '\u05D7\u05D5\u05E7') return 'q-cat-law';
+    if (n === '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD') return 'q-cat-signs';
+    if (n === '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9') return 'q-cat-specific';
     return '';
   }
 
@@ -1371,7 +1405,16 @@
 
     var meta = document.createElement('div');
     meta.className = 'q-number';
-    meta.textContent = '\u05E9\u05D0\u05DC\u05D4 ' + (currentIndex + 1) + ' \u05DE\u05EA\u05D5\u05DA ' + total;
+    var metaNum = document.createElement('span');
+    metaNum.textContent = '\u05E9\u05D0\u05DC\u05D4 ' + (currentIndex + 1) + ' \u05DE\u05EA\u05D5\u05DA ' + total;
+    meta.appendChild(metaNum);
+    var catName = classifyCategory(q.category);
+    if (catName) {
+      var catBadge = document.createElement('span');
+      catBadge.className = 'q-category ' + categoryClass(q.category);
+      catBadge.textContent = catName;
+      meta.appendChild(catBadge);
+    }
     card.appendChild(meta);
 
     // Audio buttons (only if audio mode on)
@@ -1664,7 +1707,8 @@
       time: timeStr,
       examinerName: sessionData.examinerName || '',
       site: sessionData.site || '',
-      classroom: sessionData.classroom || ''
+      classroom: sessionData.classroom || '',
+      population: examineeData.population || ''
     };
 
     submitWithRetry(payload, 3, wrongData);
