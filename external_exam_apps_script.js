@@ -119,6 +119,9 @@ function doGet(e) {
       case 'getSites':
         return handleGetSites();
 
+      case 'listSessions':
+        return handleListSessions(p);
+
       case 'createSession':
         return handleCreateSession(p);
 
@@ -280,6 +283,37 @@ function handleGetSites() {
     });
   }
   return jsonResponse({ status: 'ok', sites: sites });
+}
+
+function handleListSessions(p) {
+  var sheet = getSheet('סשנים');
+  var data = sheet.getDataRange().getValues();
+  var examinerId = normalizeId(p.examinerId);
+  var sitesSheet = getSheet('אתרים');
+  var sitesData = sitesSheet.getDataRange().getValues();
+  // Build sites lookup for manager phone
+  var sitesMap = {};
+  for (var s = 1; s < sitesData.length; s++) {
+    sitesMap[String(sitesData[s][0]).trim()] = { managerPhone: sitesData[s][2] || '' };
+  }
+  var sessions = [];
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (normalizeId(data[i][1]) === examinerId) {
+      var siteName = String(data[i][3] || '').trim();
+      sessions.push({
+        code: String(data[i][0]),
+        site: data[i][3] || '',
+        classroom: data[i][4] || '',
+        license: data[i][5] || '',
+        language: data[i][6] || 'he',
+        created: data[i][8] || '',
+        active: data[i][10] === true || String(data[i][10]).toUpperCase() === 'TRUE',
+        managerPhone: sitesMap[siteName] ? sitesMap[siteName].managerPhone : ''
+      });
+    }
+  }
+  // Return up to 20 most recent sessions
+  return jsonResponse({ status: 'ok', sessions: sessions.slice(0, 20) });
 }
 
 function handleCreateSession(p) {
