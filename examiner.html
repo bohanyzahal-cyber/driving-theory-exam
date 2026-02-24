@@ -741,6 +741,12 @@
           apiGet({ action: 'approveExaminee', sessionCode: sessionCode, idNumber: item.idNumber }).then(function(data) {
             if (data.status === 'ok') {
               approveBtn.textContent = '✓ אושר';
+              // Auto-disable audio after approving (examinee already captured it)
+              if (currentAudioMode === 'on') {
+                apiGet({ action: 'updateSession', sessionCode: sessionCode, examinerId: examinerData.id, license: currentLicense, language: currentLanguage, audioMode: 'off' }).then(function(d) {
+                  if (d.status === 'ok') { currentAudioMode = 'off'; saveState(); renderDashboard(); }
+                });
+              }
               pollDashboard();
             } else {
               alert('שגיאה באישור: ' + (data.message || 'לא ידוע'));
