@@ -1714,7 +1714,7 @@
       }
     }
 
-    // Step 1: Submit basic result via GET (reliable, no body needed)
+    // Submit result via GET — include wrong answers as JSON string
     var payload = {
       action: 'submitResult',
       sessionCode: sessionCode,
@@ -1733,6 +1733,10 @@
       classroom: sessionData.classroom || '',
       population: examineeData.population || ''
     };
+    // Include wrong answers in GET (POST doesn't work with Apps Script redirects)
+    if (wrongData.length > 0) {
+      payload.wrongAnswers = JSON.stringify(wrongData);
+    }
 
     submitWithRetry(payload, 3, wrongData);
 
