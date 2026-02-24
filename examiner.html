@@ -713,8 +713,12 @@
         var li = document.createElement('li');
         li.className = 'person-item';
         var id4 = String(item.idNumber).slice(-4);
+        var langBadge = '';
+        if (item.language && item.language !== currentLanguage) {
+          langBadge = ' <span style="background:#e8f0fe;color:#1a73e8;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">' + escHtml(LANG_LABELS[item.language] || item.language) + '</span>';
+        }
         li.innerHTML =
-          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + '</div>' +
+          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + langBadge + '</div>' +
           '<div class="person-meta">ת.ז. ....' + id4 + ' | ' + escHtml(item.phone) + '</div></div>' +
           '<div class="person-actions"></div>';
         var actions = li.querySelector('.person-actions');
@@ -794,8 +798,12 @@
           var em = Math.floor(diff / 60), es = diff % 60;
           elapsed = em + ':' + (es < 10 ? '0' : '') + es;
         }
+        var langBadge = '';
+        if (item.language && item.language !== currentLanguage) {
+          langBadge = ' <span style="background:#e8f0fe;color:#1a73e8;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">' + escHtml(LANG_LABELS[item.language] || item.language) + '</span>';
+        }
         li.innerHTML =
-          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + '</div>' +
+          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + langBadge + '</div>' +
           '<div class="person-meta">ת.ז. ....' + id4 + (elapsed ? ' | זמן: ' + elapsed : '') + '</div></div>' +
           '<div class="person-actions"></div>';
         var actions = li.querySelector('.person-actions');

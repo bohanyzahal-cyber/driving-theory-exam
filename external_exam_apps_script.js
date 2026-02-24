@@ -396,7 +396,8 @@ function handleRegisterExaminee(p) {
     p.fullName || '',
     p.phone || '',
     nowISO(),
-    'waiting'
+    'waiting',
+    p.language || ''
   ]);
   return jsonResponse({ status: 'ok' });
 }
@@ -474,7 +475,7 @@ function handleExaminerDashboard(p) {
   for (var i = 1; i < pendData.length; i++) {
     if (String(pendData[i][0]) !== code) continue;
     var s = pendData[i][5];
-    var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], status: s };
+    var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], status: s, language: pendData[i][6] || '' };
     if (s === 'waiting') pending.push(item);
     else if (s === 'in_exam') active.push(item);
   }
