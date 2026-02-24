@@ -717,8 +717,12 @@
         if (item.language && item.language !== currentLanguage) {
           langBadge = ' <span style="background:#e8f0fe;color:#1a73e8;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">' + escHtml(LANG_LABELS[item.language] || item.language) + '</span>';
         }
+        var popBadge = '';
+        if (item.population) {
+          popBadge = ' <span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">' + escHtml(item.population) + '</span>';
+        }
         li.innerHTML =
-          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + langBadge + '</div>' +
+          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + langBadge + popBadge + '</div>' +
           '<div class="person-meta">ת.ז. ....' + id4 + ' | ' + escHtml(item.phone) + '</div></div>' +
           '<div class="person-actions"></div>';
         var actions = li.querySelector('.person-actions');
@@ -802,8 +806,12 @@
         if (item.language && item.language !== currentLanguage) {
           langBadge = ' <span style="background:#e8f0fe;color:#1a73e8;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">' + escHtml(LANG_LABELS[item.language] || item.language) + '</span>';
         }
+        var popBadge = '';
+        if (item.population) {
+          popBadge = ' <span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">' + escHtml(item.population) + '</span>';
+        }
         li.innerHTML =
-          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + langBadge + '</div>' +
+          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + langBadge + popBadge + '</div>' +
           '<div class="person-meta">ת.ז. ....' + id4 + (elapsed ? ' | זמן: ' + elapsed : '') + '</div></div>' +
           '<div class="person-actions"></div>';
         var actions = li.querySelector('.person-actions');
@@ -855,7 +863,7 @@
     }
 
     var html = '<div style="overflow-x:auto;"><table class="results-table"><thead><tr>' +
-      '<th>#</th><th>שם</th><th>ת.ז.</th><th>ניסיון</th><th>ציון</th><th>תוצאה</th><th>זמן</th><th>פעולות</th>' +
+      '<th>#</th><th>שם</th><th>ת.ז.</th><th>אוכלוסיה</th><th>ניסיון</th><th>ציון</th><th>תוצאה</th><th>זמן</th><th>פעולות</th>' +
       '</tr></thead><tbody>';
 
     var passCount = 0, failCount = 0, dqCount = 0;
@@ -863,13 +871,22 @@
       var r = completed[i];
       var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === 'פסול';
       var isPassed = !isDQ && (r.passed === 'עבר' || r.passed === true);
+      var isCorrected = r.corrected === true || r.corrected === 'TRUE';
       var badgeClass = isDQ ? 'badge-disqualified' : (isPassed ? 'badge-pass' : 'badge-fail');
-      var badgeText = isDQ ? 'פסול' : (isPassed ? 'עבר' : 'נכשל');
+      var badgeText = isDQ ? 'פסול' : (isPassed ? (isCorrected ? 'עבר \u270E' : 'עבר') : 'נכשל');
       var id4 = String(r.idNumber).slice(-4);
 
       if (isDQ) dqCount++;
       else if (isPassed) passCount++;
       else failCount++;
+
+      // Check if score correction is possible (failed, not DQ, score >= 24, not already corrected)
+      var canCorrect = false;
+      if (!isDQ && !isPassed && !isCorrected) {
+        var scoreParts2 = String(r.score || '').split('/');
+        var scoreVal2 = parseInt(scoreParts2[0]) || 0;
+        if (scoreVal2 >= 24) canCorrect = true;
+      }
 
       // Build WA link directly
       var phone = formatPhone(r.phone);
@@ -881,6 +898,7 @@
         '<td>' + (i + 1) + '</td>' +
         '<td>' + escHtml(r.name) + '</td>' +
         '<td>....' + id4 + '</td>' +
+        '<td>' + escHtml(r.population || '') + '</td>' +
         '<td>' + (r.attempt || 1) + '</td>' +
         '<td>' + escHtml(String(r.score || '')) + '</td>' +
         '<td><span class="' + badgeClass + '">' + badgeText + '</span></td>' +
@@ -889,6 +907,7 @@
           '<button class="wa-btn" style="background:#ef4444;margin-left:4px;" onclick="openExamineePDF(' + i + ')">\u{1F4C4} PDF</button>' +
           '<a href="' + waUrl + '" target="_blank" class="wa-btn" onclick="markSentWA(' + i + ')" style="margin-left:4px;">\u{1F4F1} WA</a>' +
           (!isDQ ? ' <button class="btn-disqualify" onclick="disqualifyResult(' + i + ')">\u05E4\u05E1\u05D5\u05DC</button>' : '') +
+          (canCorrect ? ' <button style="background:#f59e0b;color:white;padding:4px 10px;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;margin-left:4px;" onclick="correctToPass(' + i + ')">\u05EA\u05E7\u05DF</button>' : '') +
         '</td></tr>';
     }
     html += '</tbody></table></div>';
@@ -1027,7 +1046,8 @@
 
     var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === '\u05E4\u05E1\u05D5\u05DC';
     var isPassed = !isDQ && (r.passed === '\u05E2\u05D1\u05E8' || r.passed === true);
-    var passText = isDQ ? '\u05E4\u05E1\u05D5\u05DC' : (isPassed ? '\u05E2\u05D1\u05E8' : '\u05E0\u05DB\u05E9\u05DC');
+    var isCorrected = r.corrected === true || r.corrected === 'TRUE';
+    var passText = isDQ ? '\u05E4\u05E1\u05D5\u05DC' : (isPassed ? (isCorrected ? '\u05E2\u05D1\u05E8 (\u05EA\u05D5\u05E7\u05DF)' : '\u05E2\u05D1\u05E8') : '\u05E0\u05DB\u05E9\u05DC');
 
     // Parse wrong answers
     var wrongItems = parseWrongDetails(r.wrongDetails);
@@ -1085,8 +1105,10 @@
       '<div><span class="label">\u05D6\u05DE\u05DF \u05DE\u05D1\u05D7\u05DF: </span><span class="val">' + escHtml(formatTime(r.time)) + '</span></div>' +
       '<div><span class="label">\u05D0\u05EA\u05E8: </span><span class="val">' + escHtml(r.site || currentSite) + '</span></div>' +
       '<div><span class="label">\u05DE\u05E1\' \u05D1\u05D5\u05D7\u05DF: </span><span class="val">' + escHtml(examinerData.examinerNumber || r.examiner || examinerData.name) + '</span></div>' +
+      (r.population ? '<div><span class="label">\u05D0\u05D5\u05DB\u05DC\u05D5\u05E1\u05D9\u05D4: </span><span class="val">' + escHtml(r.population) + '</span></div>' : '') +
       '<div><span class="label">\u05EA\u05E9\u05D5\u05D1\u05D5\u05EA \u05E9\u05D2\u05D5\u05D9\u05D5\u05EA: </span><span class="val">' + wrongItems.length + '</span></div>' +
       '<div><span class="label">\u05EA\u05D5\u05E6\u05D0\u05D4: </span><span class="val">' + passText + '</span></div>' +
+      (isCorrected ? '<div><span class="label">\u05EA\u05D5\u05E7\u05DF: </span><span class="val" style="color:#f59e0b;">\u05DB\u05DF</span></div>' : '') +
       '</div>' +
       '<div class="result-badge ' + (isPassed ? 'pass' : 'fail') + '">' + escHtml(String(r.score || '')) + ' (' + escHtml(formatPercent(r.percent)) + ')</div>';
 
@@ -1129,13 +1151,14 @@
       var id4 = String(r.idNumber).slice(-4);
 
       var attemptStr = (r.attempt && r.attempt > 1) ? ' [\u05E0\u05D9\u05E1\u05D9\u05D5\u05DF ' + r.attempt + ']' : '';
+      var popStr = r.population ? ' [' + r.population + ']' : '';
       if (isDQ) {
-        msg += '\u26D4 ' + r.name + ' (...' + id4 + ')' + attemptStr + ' \u2014 \u05E4\u05E1\u05D5\u05DC\n';
+        msg += '\u26D4 ' + r.name + popStr + ' (...' + id4 + ')' + attemptStr + ' \u2014 \u05E4\u05E1\u05D5\u05DC\n';
       } else if (isPassed) {
-        msg += '\u2705 ' + r.name + ' (...' + id4 + ')' + attemptStr + ' \u2014 ' + r.score + '\n';
+        msg += '\u2705 ' + r.name + popStr + ' (...' + id4 + ')' + attemptStr + ' \u2014 ' + r.score + '\n';
         passCount++;
       } else {
-        msg += '\u274C ' + r.name + ' (...' + id4 + ')' + attemptStr + ' \u2014 ' + r.score + '\n';
+        msg += '\u274C ' + r.name + popStr + ' (...' + id4 + ')' + attemptStr + ' \u2014 ' + r.score + '\n';
         failCount++;
       }
     }
@@ -1155,6 +1178,45 @@
       apiGet({ action: 'disqualify', sessionCode: sessionCode, idNumber: r.idNumber }).then(function(data) {
         if (data.status === 'ok') {
           alert(r.name + ' \u05E0\u05E4\u05E1\u05DC.');
+          pollDashboard();
+        } else {
+          alert('\u05E9\u05D2\u05D9\u05D0\u05D4: ' + (data.message || ''));
+        }
+      });
+    }
+  };
+
+  window.correctToPass = function(idx) {
+    var r = completedResults[idx];
+    if (!r) return;
+    // Parse wrong details for display
+    var wrongText = String(r.wrongDetails || '');
+    var wrongItems = [];
+    var blocks = wrongText.split(/\n\n/).filter(function(b) { return b.trim(); });
+    for (var b = 0; b < blocks.length; b++) {
+      var lines = blocks[b].split('\n');
+      var q = '', yours = '', correct = '';
+      for (var l = 0; l < lines.length; l++) {
+        if (lines[l].indexOf('\u05E9\u05D0\u05DC\u05D4:') === 0) q = lines[l].replace('\u05E9\u05D0\u05DC\u05D4: ', '');
+        if (lines[l].indexOf('\u05EA\u05E9\u05D5\u05D1\u05EA \u05D4\u05E0\u05D1\u05D7\u05DF:') === 0) yours = lines[l].replace('\u05EA\u05E9\u05D5\u05D1\u05EA \u05D4\u05E0\u05D1\u05D7\u05DF: ', '');
+        if (lines[l].indexOf('\u05EA\u05E9\u05D5\u05D1\u05D4 \u05E0\u05DB\u05D5\u05E0\u05D4:') === 0) correct = lines[l].replace('\u05EA\u05E9\u05D5\u05D1\u05D4 \u05E0\u05DB\u05D5\u05E0\u05D4: ', '');
+      }
+      if (q) wrongItems.push({ question: q, yourAnswer: yours, correctAnswer: correct });
+    }
+    var wrongList = '';
+    for (var w = 0; w < wrongItems.length; w++) {
+      wrongList += '\n' + (w + 1) + '. ' + wrongItems[w].question +
+        '\n   \u05E2\u05E0\u05D4: ' + wrongItems[w].yourAnswer +
+        '\n   \u05E0\u05DB\u05D5\u05DF: ' + wrongItems[w].correctAnswer + '\n';
+    }
+    var confirmMsg = '\u05EA\u05D9\u05E7\u05D5\u05DF \u05E6\u05D9\u05D5\u05DF \u05E2\u05D1\u05D5\u05E8 ' + r.name + '\n' +
+      '\u05E6\u05D9\u05D5\u05DF: ' + r.score + '\n\n' +
+      '\u05E9\u05D0\u05DC\u05D5\u05EA \u05E9\u05D2\u05D5\u05D9\u05D5\u05EA:' + wrongList + '\n' +
+      '\u05D4\u05D0\u05DD \u05DC\u05E9\u05E0\u05D5\u05EA \u05D0\u05EA \u05D4\u05EA\u05D5\u05E6\u05D0\u05D4 \u05DC"\u05E2\u05D1\u05E8"?';
+    if (confirm(confirmMsg)) {
+      apiGet({ action: 'correctToPass', sessionCode: sessionCode, idNumber: r.idNumber }).then(function(data) {
+        if (data.status === 'ok') {
+          alert(r.name + ' \u05EA\u05D5\u05E7\u05DF \u05DC"\u05E2\u05D1\u05E8".');
           pollDashboard();
         } else {
           alert('\u05E9\u05D2\u05D9\u05D0\u05D4: ' + (data.message || ''));
