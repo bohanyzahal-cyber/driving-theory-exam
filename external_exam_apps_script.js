@@ -10,7 +10,7 @@ var SHEET_HEADERS = {
   'בוחנים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'מס בוחן'],
   'אתרים': ['שם אתר', 'מזהה', 'טלפון מנהל', 'כיתות'],
   'סשנים': ['קוד', 'בוחן ת.ז.', 'שם בוחן', 'אתר', 'כיתה', 'דרגה', 'שפה', 'מצב שמע', 'זמן יצירה', 'תקף עד', 'פעיל'],
-  'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה'],
+  'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה', 'דרגה'],
   'תוצאות': ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר', 'כיתה', 'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ', 'אוכלוסיה', 'תוקן?']
 };
 
@@ -437,7 +437,8 @@ function handleRegisterExaminee(p) {
     nowISO(),
     'waiting',
     p.language || '',
-    p.population || ''
+    p.population || '',
+    p.license || ''
   ]);
   return jsonResponse({ status: 'ok' });
 }
@@ -515,7 +516,7 @@ function handleExaminerDashboard(p) {
   for (var i = 1; i < pendData.length; i++) {
     if (String(pendData[i][0]) !== code) continue;
     var s = pendData[i][5];
-    var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], status: s, language: pendData[i][6] || '', population: pendData[i][7] || '' };
+    var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], status: s, language: pendData[i][6] || '', population: pendData[i][7] || '', license: pendData[i][8] || '' };
     if (s === 'waiting') pending.push(item);
     else if (s === 'in_exam') active.push(item);
   }
@@ -565,12 +566,13 @@ function handleDisqualify(p) {
   // ALWAYS remove from ממתינים first (so examinee leaves "active" list)
   var pendSheet = getSheet('ממתינים');
   var pendData = pendSheet.getDataRange().getValues();
-  var name = '', phone = '', population = '';
+  var name = '', phone = '', population = '', examineeLicense = '';
   for (var j = pendData.length - 1; j >= 1; j--) {
     if (String(pendData[j][0]) === String(p.sessionCode) && normalizeId(pendData[j][1]) === normalizeId(p.idNumber)) {
       name = pendData[j][2] || '';
       phone = pendData[j][3] || '';
       population = pendData[j][7] || '';
+      examineeLicense = pendData[j][8] || '';
       pendSheet.getRange(j + 1, 6).setValue('disqualified');
       break;
     }
@@ -597,11 +599,12 @@ function handleDisqualify(p) {
       examinerName = sesData[s][2] || '';
       site = sesData[s][3] || '';
       classroom = sesData[s][4] || '';
-      license = sesData[s][5] || '';
+      license = examineeLicense || sesData[s][5] || '';
       language = sesData[s][6] || 'he';
       break;
     }
   }
+  if (!license) license = examineeLicense;
   var attemptNum = countAttempts(String(p.idNumber), license) + 1;
   sheet.appendRow([
     todayStr(), p.idNumber, name, phone, license,

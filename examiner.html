@@ -722,8 +722,12 @@
         if (item.population) {
           popBadge = ' <span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">' + escHtml(item.population) + '</span>';
         }
+        var licBadge = '';
+        if (item.license && item.license !== currentLicense) {
+          licBadge = ' <span style="background:#dcfce7;color:#166534;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">' + escHtml(LICENSE_LABELS[item.license] || item.license) + '</span>';
+        }
         li.innerHTML =
-          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + langBadge + popBadge + '</div>' +
+          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + langBadge + popBadge + licBadge + '</div>' +
           '<div class="person-meta">ת.ז. ....' + id4 + ' | ' + escHtml(item.phone) + '</div></div>' +
           '<div class="person-actions"></div>';
         var actions = li.querySelector('.person-actions');
@@ -811,8 +815,12 @@
         if (item.population) {
           popBadge = ' <span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">' + escHtml(item.population) + '</span>';
         }
+        var licBadge = '';
+        if (item.license && item.license !== currentLicense) {
+          licBadge = ' <span style="background:#dcfce7;color:#166534;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">' + escHtml(LICENSE_LABELS[item.license] || item.license) + '</span>';
+        }
         li.innerHTML =
-          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + langBadge + popBadge + '</div>' +
+          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + langBadge + popBadge + licBadge + '</div>' +
           '<div class="person-meta">ת.ז. ....' + id4 + (elapsed ? ' | זמן: ' + elapsed : '') + '</div></div>' +
           '<div class="person-actions"></div>';
         var actions = li.querySelector('.person-actions');

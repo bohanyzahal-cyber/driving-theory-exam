@@ -309,6 +309,16 @@
           <option value="עיוני בלבד">עיוני בלבד</option>
         </select>
       </label>
+      <label>
+        <span>דרגת רישיון</span>
+        <select id="licenseSelect">
+          <option value="B">B - רכב פרטי</option>
+          <option value="1">1 - אופנוע</option>
+          <option value="C1">C1 - משאית קלה</option>
+          <option value="C">C - משאית</option>
+          <option value="D">D - אוטובוס</option>
+        </select>
+      </label>
     </div>
     <div class="info-banner error" id="registerError" style="display:none;"></div>
     <button id="registerBtn" style="display:block; width:100%; padding:14px; font-size:17px; margin-top:12px;">הירשם למבחן</button>
@@ -409,7 +419,7 @@
   // ========== State ==========
   var sessionCode = '';
   var sessionData = {};
-  var examineeData = { idNumber: '', fullName: '', phone: '', population: '' };
+  var examineeData = { idNumber: '', fullName: '', phone: '', population: '', license: '' };
   var activeQuestions = [];
   var currentIndex = 0;
   var userAnswers = [];
@@ -473,10 +483,11 @@
     timeRemaining = EXAM_TIME_MINUTES * 60;
     if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
     if (approvalInterval) { clearInterval(approvalInterval); approvalInterval = null; }
-    examineeData = { idNumber: '', fullName: '', phone: '', population: '' };
+    examineeData = { idNumber: '', fullName: '', phone: '', population: '', license: '' };
     // Keep sessionCode and sessionData — same session, different examinee
-    // Restore session's default language (undo examinee's override)
+    // Restore session's default language and license (undo examinee's override)
     sessionData.language = sessionData._defaultLanguage || sessionData.language || 'he';
+    sessionData.license = sessionData._defaultLicense || sessionData.license || 'B';
     // Clear form fields
     document.getElementById('idNumber').value = '';
     document.getElementById('firstName').value = '';
@@ -488,6 +499,9 @@
     // Reset population dropdown
     var popSel = document.getElementById('populationSelect');
     if (popSel) popSel.value = '\u05E6\u05D1\u05D0';
+    // Reset license dropdown to session default
+    var licSel = document.getElementById('licenseSelect');
+    if (licSel) licSel.value = sessionData.license || 'B';
     // Clear exam area
     document.getElementById('examArea').innerHTML = '';
     // Re-enable tab switch detection for next examinee
@@ -554,11 +568,15 @@
         sessionData = data.session;
         // Ensure license is string (Google Sheets may return number for "1")
         sessionData.license = String(sessionData.license || 'B');
-        // Save original session language as default (for resetForNextExaminee)
+        // Save original session language/license as default (for resetForNextExaminee)
         sessionData._defaultLanguage = sessionData.language || 'he';
+        sessionData._defaultLicense = sessionData.license || 'B';
         // Set language dropdown default to session language
         var langSel = document.getElementById('langSelect');
         if (langSel) langSel.value = sessionData.language || 'he';
+        // Set license dropdown default to session license
+        var licSel = document.getElementById('licenseSelect');
+        if (licSel) licSel.value = sessionData.license || 'B';
         document.getElementById('topbarSub').textContent = sessionData.site + ' | ' + (LICENSE_LABELS[sessionData.license] || sessionData.license);
         saveExamineeState('screenIdForm');
         showScreen('screenIdForm');
@@ -602,6 +620,7 @@
       examineeData.phone = document.getElementById('phoneNumber').value.trim();
       examineeData.language = document.getElementById('langSelect').value || sessionData.language || 'he';
       examineeData.population = document.getElementById('populationSelect').value || '\u05E6\u05D1\u05D0';
+      examineeData.license = document.getElementById('licenseSelect').value || sessionData.license || 'B';
     }
     return valid;
   }
@@ -613,8 +632,11 @@
     registerBtn.disabled = true;
     registerBtn.textContent = 'נרשם...';
 
-    // Override session language with examinee's choice
+    // Override session language/license with examinee's choice
     sessionData.language = examineeData.language;
+    sessionData.license = String(examineeData.license || sessionData.license || 'B');
+    // Update topbar to reflect chosen license
+    document.getElementById('topbarSub').textContent = sessionData.site + ' | ' + (LICENSE_LABELS[sessionData.license] || sessionData.license);
 
     apiGet({
       action: 'registerExaminee',
@@ -623,7 +645,8 @@
       fullName: examineeData.fullName,
       phone: examineeData.phone,
       language: examineeData.language,
-      population: examineeData.population
+      population: examineeData.population,
+      license: examineeData.license
     }).then(function(data) {
       registerBtn.disabled = false;
       registerBtn.textContent = 'הירשם למבחן';
