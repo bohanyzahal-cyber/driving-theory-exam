@@ -1175,7 +1175,7 @@
   // ========== Examiner Report (דו"ח בוחן) ==========
   window.generateExaminerReport = function() {
     if (!completedResults || completedResults.length === 0) {
-      alert('\u05D0\u05D9\u05DF \u05EA\u05D5\u05E6\u05D0\u05D5\u05EA \u05DC\u05D4\u05E6\u05D2\u05D4 \u05D1\u05D3\u05D5"\u05D7');
+      alert('אין תוצאות להצגה בדו"ח');
       return;
     }
 
@@ -1200,7 +1200,6 @@
       var isCorrected = r.corrected === true || r.corrected === 'TRUE';
       var resultText = isDQ ? '\u05E4\u05E1\u05D5\u05DC' : (isPassed ? (isCorrected ? '\u05E2\u05D1\u05E8 \u270E' : '\u05E2\u05D1\u05E8') : '\u05E0\u05DB\u05E9\u05DC');
 
-      // Split name: last word = family name, rest = first name
       var nameParts = String(r.name || '').trim().split(/\s+/);
       var familyName = nameParts.length > 1 ? nameParts[nameParts.length - 1] : (nameParts[0] || '');
       var firstName = nameParts.length > 1 ? nameParts.slice(0, nameParts.length - 1).join(' ') : '';
@@ -1271,16 +1270,8 @@
         escHtml(examiner) + '<br>\u05D1\u05D5\u05D7\u05DF \u05E8\u05D9\u05E9\u05D5\u05D9 \u05E6\u05D4"\u05DC<br>\u05DE\u05E1\u05F3 ' + escHtml(examinerNum) + '</div>';
     }
 
-    // Build WA message for report
-    var waMsg = '*\uD83D\uDCCB \u05D3\u05D5"\u05D7 \u05D1\u05D5\u05D7\u05DF \u2014 \u05DE\u05D1\u05D7\u05DF \u05EA\u05D0\u05D5\u05E8\u05D9\u05D4*\n\n';
-    waMsg += '\uD83D\uDCC5 \u05EA\u05D0\u05E8\u05D9\u05DA: ' + dateStr + '\n';
-    waMsg += '\uD83D\uDCCD \u05D0\u05EA\u05E8: ' + site;
-    if (classroom) waMsg += ' | \u05DB\u05D9\u05EA\u05D4: ' + classroom;
-    waMsg += '\n';
-    waMsg += '\uD83E\uDEAA \u05D3\u05E8\u05D2\u05D4: ' + license + '\n';
-    waMsg += '\uD83D\uDC64 \u05D1\u05D5\u05D7\u05DF: ' + examiner + '\n\n';
-    waMsg += '\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n';
-
+    // Pre-build WA results part (static) — planning part will be added dynamically in popup
+    var waResultsLines = '';
     for (var m = 0; m < completedResults.length; m++) {
       var rm = completedResults[m];
       var isDQm = rm.disqualified === true || rm.disqualified === 'TRUE' || rm.passed === '\u05E4\u05E1\u05D5\u05DC';
@@ -1292,26 +1283,23 @@
       var attemptM = (rm.attempt && rm.attempt > 1) ? ' [\u05E0\u05D9\u05E1\u05D9\u05D5\u05DF ' + rm.attempt + ']' : '';
       var icon = isDQm ? '\u26D4' : (isPassedm ? '\u2705' : '\u274C');
       var resM = isDQm ? '\u05E4\u05E1\u05D5\u05DC' : (isPassedm ? '\u05E2\u05D1\u05E8' : '\u05E0\u05DB\u05E9\u05DC');
-      waMsg += icon + ' ' + fam + ' ' + first + popM + attemptM + ' \u2014 ' + resM + '\n';
+      waResultsLines += icon + ' ' + fam + ' ' + first + popM + attemptM + ' — ' + resM + '\\n';
     }
 
-    waMsg += '\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n';
-    waMsg += '*\u05E1\u05D9\u05DB\u05D5\u05DD \u05DB\u05DC\u05DC\u05D9:*\n';
-    waMsg += '\u05E1\u05D4"\u05DB: ' + total + ' | \u05E2\u05D1\u05E8\u05D5: ' + passCount + ' | \u05E0\u05DB\u05E9\u05DC\u05D5: ' + failCount + '\n';
-    waMsg += '\u05D0\u05D7\u05D5\u05D6 \u05D4\u05E6\u05DC\u05D7\u05D4: ' + rate + '%\n';
-    if (dqCount > 0) waMsg += '\u05E4\u05E1\u05D5\u05DC\u05D9\u05DD: ' + dqCount + '\n';
+    // Escape for embedding in JS string
+    var waResultsEsc = waResultsLines.replace(/'/g, "\\'");
 
+    // Pop breakdown for WA
+    var waPopLines = '';
     if (orderedPops.length > 0) {
-      waMsg += '\n*\u05E4\u05D9\u05E8\u05D5\u05D8 \u05DC\u05E4\u05D9 \u05D0\u05D5\u05DB\u05DC\u05D5\u05E1\u05D9\u05D4:*\n';
+      waPopLines += '\\n*\u05E4\u05D9\u05E8\u05D5\u05D8 \u05DC\u05E4\u05D9 \u05D0\u05D5\u05DB\u05DC\u05D5\u05E1\u05D9\u05D4:*\\n';
       for (var q = 0; q < orderedPops.length; q++) {
         var psq = popStats[orderedPops[q]];
         var ptq = psq.total;
         var prq = ptq > 0 ? Math.round((psq.passed / ptq) * 100) : 0;
-        waMsg += orderedPops[q] + ': ' + ptq + ' (\u05E2\u05D1\u05E8\u05D5 ' + psq.passed + ', \u05E0\u05DB\u05E9\u05DC\u05D5 ' + psq.failed + ', ' + prq + '%)\n';
+        waPopLines += orderedPops[q].replace(/'/g, "\\'") + ': ' + ptq + ' (\u05E2\u05D1\u05E8\u05D5 ' + psq.passed + ', \u05E0\u05DB\u05E9\u05DC\u05D5 ' + psq.failed + ', ' + prq + '%)\\n';
       }
     }
-
-    var waMsgEncoded = encodeURIComponent(waMsg);
 
     // Build report HTML
     var html = '<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"/>' +
@@ -1332,6 +1320,7 @@
       '.table-wrap{overflow-x:auto;margin-top:10px}' +
       'table{width:100%;border-collapse:collapse;font-size:13px}' +
       'thead th{background:#2c3e50;color:#fff;padding:10px 6px;font-weight:600;white-space:nowrap;font-size:12px}' +
+      'thead th.actual{background:#1a5276;color:#f1c40f}' +
       'tbody tr{border-bottom:1px solid #eee}' +
       'tbody td{padding:8px 6px;text-align:center;vertical-align:middle}' +
       '.summary-bar{display:flex;gap:15px;flex-wrap:wrap;padding:12px 0;justify-content:center}' +
@@ -1350,13 +1339,22 @@
       '.signature-line{width:200px;border-bottom:1px solid #333;margin:20px auto 5px}' +
       '.signature-label{font-size:12px;color:#666}' +
       '.signature-name{font-size:16px;font-weight:bold;color:#2c3e50;margin-top:8px}' +
-      '.actions-row{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;padding:10px 0}' +
+      '.actions-row{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;padding:10px 0;align-items:center}' +
       '.btn{border:none;padding:10px 20px;border-radius:6px;cursor:pointer;font-size:14px;font-family:inherit;font-weight:600;display:inline-flex;align-items:center;gap:6px}' +
       '.btn-wa{background:#25d366;color:#fff}.btn-wa:hover{background:#1da851}' +
       '.btn-primary{background:#2980b9;color:#fff}.btn-primary:hover{background:#2471a3}' +
+      '.btn-add{background:#27ae60;color:#fff;font-size:12px;padding:6px 14px;border:none;border-radius:6px;cursor:pointer;font-weight:600}' +
+      '.btn-add:hover{background:#219a52}' +
+      '.btn-del{background:#c0392b;color:#fff;font-size:11px;padding:3px 8px;border:none;border-radius:4px;cursor:pointer}' +
       '.phone-input{padding:8px 10px;border:1px solid #b7e4c7;border-radius:6px;font-size:14px;direction:ltr;width:180px;text-align:center;margin:0 8px}' +
+      '.plan-input{width:100%;padding:4px;border:1px solid #ddd;border-radius:4px;font-size:13px;font-family:inherit;text-align:center}' +
+      '.plan-input.txt{text-align:right;direction:rtl}' +
+      '.plan-input.num{width:50px;direction:ltr}' +
+      '.plan-input.actual{background:#fffde7}' +
+      '.plan-select{padding:4px;border:1px solid #ddd;border-radius:4px;font-size:12px;font-family:inherit}' +
+      '.plan-select.actual{background:#fffde7}' +
       '@media print{body{background:#fff;padding:0}.container{box-shadow:none;max-width:100%}.no-print{display:none!important}' +
-      'thead th,.summary-item,.pop-table th{-webkit-print-color-adjust:exact;print-color-adjust:exact}' +
+      'thead th,.summary-item,.pop-table th,thead th.actual{-webkit-print-color-adjust:exact;print-color-adjust:exact}' +
       'tbody tr{-webkit-print-color-adjust:exact;print-color-adjust:exact}}' +
       '@media(max-width:600px){body{padding:8px}.section{padding:14px 16px}.info-grid{grid-template-columns:1fr}}' +
       '</style></head><body><div class="container">' +
@@ -1376,6 +1374,29 @@
       '<div class="info-item"><label>\u05D3\u05E8\u05D2\u05EA \u05E8\u05D9\u05E9\u05D9\u05D5\u05DF</label><div class="val">' + escHtml(license) + '</div></div>' +
       (examinerNum ? '<div class="info-item"><label>\u05DE\u05E1\u05F3 \u05D1\u05D5\u05D7\u05DF</label><div class="val">' + escHtml(examinerNum) + '</div></div>' : '') +
       '</div></div>' +
+
+      // ===== WORK PLANNING TABLE =====
+      '<div class="section no-print" id="planSection">' +
+      '<div class="section-title"><span class="icon">\uD83D\uDCCB</span> \u05E1\u05D9\u05D3\u05D5\u05E8 \u05E2\u05D1\u05D5\u05D3\u05D4 - \u05EA\u05DB\u05E0\u05D5\u05DF \u05D5\u05D1\u05D9\u05E6\u05D5\u05E2</div>' +
+      '<div class="table-wrap"><table id="planTable"><thead><tr>' +
+      '<th>\u05DE\u05E7\u05D5\u05DD</th>' +
+      '<th>\u05E9\u05E2\u05D4</th>' +
+      '<th>\u05E1\u05D5\u05D2 \u05DE\u05D1\u05D7\u05DF</th>' +
+      '<th>\u05D3\u05E8\u05D2\u05EA \u05E8\u05D9\u05E9\u05D9\u05D5\u05DF</th>' +
+      '<th>\u05DE\u05D2\u05D6\u05E8</th>' +
+      '<th>\u05DB\u05DE\u05D5\u05EA</th>' +
+      '<th class="actual">\u05E1\u05D5\u05D2 \u05D1\u05E4\u05D5\u05E2\u05DC</th>' +
+      '<th class="actual">\u05DB\u05DE\u05D5\u05EA \u05D1\u05E4\u05D5\u05E2\u05DC</th>' +
+      '<th></th>' +
+      '</tr></thead><tbody id="planBody"></tbody></table></div>' +
+      '<button class="btn-add" style="margin-top:8px;" onclick="addPlanRow()">\u2795 \u05D4\u05D5\u05E1\u05E3 \u05E9\u05D5\u05E8\u05D4</button>' +
+      '</div>' +
+
+      // Print-friendly version of plan table (rendered by JS before print)
+      '<div class="section" id="planPrintSection" style="display:none;">' +
+      '<div class="section-title"><span class="icon">\uD83D\uDCCB</span> \u05E1\u05D9\u05D3\u05D5\u05E8 \u05E2\u05D1\u05D5\u05D3\u05D4 - \u05EA\u05DB\u05E0\u05D5\u05DF \u05D5\u05D1\u05D9\u05E6\u05D5\u05E2</div>' +
+      '<div class="table-wrap" id="planPrintWrap"></div>' +
+      '</div>' +
 
       // Examinees table
       '<div class="section">' +
@@ -1416,24 +1437,121 @@
 
       // Actions (no-print)
       '<div class="actions-row no-print">' +
-      '<span style="font-size:13px;color:#666;align-self:center;">\u05D8\u05DC\u05F3 \u05E8\u05D1 \u05D1\u05D5\u05D7\u05DF:</span>' +
+      '<span style="font-size:13px;color:#666;">\u05D8\u05DC\u05F3 \u05E8\u05D1 \u05D1\u05D5\u05D7\u05DF:</span>' +
       '<input type="tel" id="rpManagerPhone" class="phone-input" placeholder="05X-XXXXXXX" inputmode="tel">' +
       '<button class="btn btn-wa" onclick="sendReport()">\uD83D\uDCF1 \u05E9\u05DC\u05D7 \u05D3\u05D5"\u05D7 \u05DC\u05E8\u05D1 \u05D1\u05D5\u05D7\u05DF</button>' +
-      '<button class="btn btn-primary" onclick="window.print()">\uD83D\uDDA8\uFE0F \u05D4\u05D3\u05E4\u05E1 / \u05E9\u05DE\u05D5\u05E8 PDF</button>' +
+      '<button class="btn btn-primary" onclick="doPrint()">\uD83D\uDDA8\uFE0F \u05D4\u05D3\u05E4\u05E1 / \u05E9\u05DE\u05D5\u05E8 PDF</button>' +
       '</div>' +
       '</div>' +
 
       '</div>' +
 
-      // Script for WA send
+      // ===== POPUP SCRIPT =====
       '<script>' +
+
+      // Plan row data
+      'var planRows=[];' +
+
+      // Initial row with site/license pre-filled
+      'addPlanRow();' +
+
+      'function addPlanRow(){' +
+      'planRows.push({location:"' + site.replace(/"/g, '\\"') + '",time:"",examType:"computer",license:"' + license.replace(/"/g, '\\"') + '",sector:"army",count:"",actualExamType:"",actualCount:""});' +
+      'renderPlan();}' +
+
+      'function removePlanRow(i){planRows.splice(i,1);renderPlan();}' +
+
+      'function updatePlan(i,f,v){planRows[i][f]=v;}' +
+
+      'function renderPlan(){' +
+      'var tb=document.getElementById("planBody");tb.innerHTML="";' +
+      'for(var i=0;i<planRows.length;i++){' +
+      '(function(idx){' +
+      'var r=planRows[idx];var tr=document.createElement("tr");' +
+      'tr.innerHTML=' +
+      '"<td><input class=\\"plan-input txt\\" value=\\""+esc(r.location)+"\\" onchange=\\"updatePlan("+idx+",\'location\',this.value)\\" placeholder=\\"מקום...\\"></td>"+ ' +
+      '"<td><input class=\\"plan-input\\" type=\\"time\\" value=\\""+r.time+"\\" onchange=\\"updatePlan("+idx+",\'time\',this.value)\\"></td>"+ ' +
+      '"<td><select class=\\"plan-select\\" onchange=\\"updatePlan("+idx+",\'examType\',this.value)\\">"+ ' +
+      '"<option value=\\"computer\\""+(r.examType==="computer"?" selected":"")+">מחשב</option>"+ ' +
+      '"<option value=\\"written\\""+(r.examType==="written"?" selected":"")+">בכתב</option>"+ ' +
+      '"<option value=\\"oral\\""+(r.examType==="oral"?" selected":"")+">בעל פה</option></select></td>"+ ' +
+      '"<td><select class=\\"plan-select\\" onchange=\\"updatePlan("+idx+",\'license\',this.value)\\">"+ ' +
+      '"<option value=\\"B\\""+(r.license==="B"?" selected":"")+">B</option>"+ ' +
+      '"<option value=\\"1\\""+(r.license==="1"?" selected":"")+">1</option>"+ ' +
+      '"<option value=\\"C1\\""+(r.license==="C1"?" selected":"")+">C1</option>"+ ' +
+      '"<option value=\\"C\\""+(r.license==="C"?" selected":"")+">C</option>"+ ' +
+      '"<option value=\\"C+E\\""+(r.license==="C+E"?" selected":"")+">C+E</option>"+ ' +
+      '"<option value=\\"D\\""+(r.license==="D"?" selected":"")+">D</option></select></td>"+ ' +
+      '"<td><select class=\\"plan-select\\" onchange=\\"updatePlan("+idx+",\'sector\',this.value)\\">"+ ' +
+      '"<option value=\\"army\\""+(r.sector==="army"?" selected":"")+">צבא</option>"+ ' +
+      '"<option value=\\"voucher\\""+(r.sector==="voucher"?" selected":"")+">וואוצ׳ר</option>"+ ' +
+      '"<option value=\\"kadatz\\""+(r.sector==="kadatz"?" selected":"")+">קד\\"צ</option></select></td>"+ ' +
+      '"<td><input class=\\"plan-input num\\" type=\\"number\\" min=\\"0\\" value=\\""+r.count+"\\" onchange=\\"updatePlan("+idx+",\'count\',this.value)\\"></td>"+ ' +
+      '"<td><select class=\\"plan-select actual\\" onchange=\\"updatePlan("+idx+",\'actualExamType\',this.value)\\">"+ ' +
+      '"<option value=\\"\\""+(!r.actualExamType?" selected":"")+">-</option>"+ ' +
+      '"<option value=\\"computer\\""+(r.actualExamType==="computer"?" selected":"")+">מחשב</option>"+ ' +
+      '"<option value=\\"written\\""+(r.actualExamType==="written"?" selected":"")+">בכתב</option>"+ ' +
+      '"<option value=\\"oral\\""+(r.actualExamType==="oral"?" selected":"")+">בעל פה</option></select></td>"+ ' +
+      '"<td><input class=\\"plan-input num actual\\" type=\\"number\\" min=\\"0\\" value=\\""+r.actualCount+"\\" onchange=\\"updatePlan("+idx+",\'actualCount\',this.value)\\" placeholder=\\"\\"></td>"+ ' +
+      '"<td><button class=\\"btn-del\\" onclick=\\"removePlanRow("+idx+")\\">✖</button></td>";' +
+      'tb.appendChild(tr);})(i);}}' +
+
+      'function esc(s){return s?String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"):""}' +
+
+      // Sector label helper
+      'function sectorLbl(s){if(s==="army")return"\u05E6\u05D1\u05D0";if(s==="voucher")return"\u05D5\u05D5\u05D0\u05D5\u05E6\u05F3\u05E8";if(s==="kadatz")return"\u05E7\u05D3\\"\\u05E5";return s||"";}' +
+      'function examTypeLbl(s){if(s==="computer")return"\u05DE\u05D7\u05E9\u05D1";if(s==="written")return"\u05D1\u05DB\u05EA\u05D1";if(s==="oral")return"\u05D1\u05E2\\"\\u05E4";return s||"-";}' +
+
+      // Print: render plan as static table
+      'function doPrint(){' +
+      'var pp=document.getElementById("planPrintSection");' +
+      'var w=document.getElementById("planPrintWrap");' +
+      'if(planRows.length>0 && planRows.some(function(r){return r.location||r.count||r.actualCount;})){' +
+      'var h="<table><thead><tr><th>\u05DE\u05E7\u05D5\u05DD</th><th>\u05E9\u05E2\u05D4</th><th>\u05E1\u05D5\u05D2 \u05DE\u05D1\u05D7\u05DF</th><th>\u05D3\u05E8\u05D2\u05D4</th><th>\u05DE\u05D2\u05D6\u05E8</th><th>\u05DB\u05DE\u05D5\u05EA</th><th class=\\"actual\\">\u05E1\u05D5\u05D2 \u05D1\u05E4\u05D5\u05E2\u05DC</th><th class=\\"actual\\">\u05DB\u05DE\u05D5\u05EA \u05D1\u05E4\u05D5\u05E2\u05DC</th></tr></thead><tbody>";' +
+      'for(var i=0;i<planRows.length;i++){var r=planRows[i];' +
+      'h+="<tr><td>"+esc(r.location)+"</td><td>"+esc(r.time)+"</td><td>"+examTypeLbl(r.examType)+"</td><td>"+esc(r.license)+"</td><td>"+sectorLbl(r.sector)+"</td><td>"+esc(r.count)+"</td><td>"+examTypeLbl(r.actualExamType)+"</td><td>"+esc(r.actualCount)+"</td></tr>";}' +
+      'h+="</tbody></table>";w.innerHTML=h;pp.style.display="block";}' +
+      'else{pp.style.display="none";}' +
+      'setTimeout(function(){window.print();},100);}' +
+
+      // Build WA message dynamically (includes plan data)
       'function sendReport(){' +
       'var ph=document.getElementById("rpManagerPhone").value.trim();' +
       'if(!ph){alert("\u05D9\u05E9 \u05DC\u05D4\u05D6\u05D9\u05DF \u05DE\u05E1\u05E4\u05E8 \u05D8\u05DC\u05E4\u05D5\u05DF \u05E9\u05DC \u05E8\u05D1 \u05D1\u05D5\u05D7\u05DF");return;}' +
       'var p=ph.replace(/[^0-9]/g,"");' +
       'if(p.charAt(0)==="0")p="972"+p.substring(1);' +
       'if(!p.startsWith("972"))p="972"+p;' +
-      'window.open("https://wa.me/"+p+"?text=' + waMsgEncoded + '","_blank");}' +
+
+      // Build message
+      'var msg="*\uD83D\uDCCB \u05D3\u05D5\\"\\u05D7 \u05D1\u05D5\u05D7\u05DF \\u2014 \u05DE\u05D1\u05D7\u05DF \u05EA\u05D0\u05D5\u05E8\u05D9\u05D4*\\n\\n";' +
+      'msg+="\uD83D\uDCC5 \u05EA\u05D0\u05E8\u05D9\u05DA: ' + escHtml(dateStr) + '\\n";' +
+      'msg+="\uD83D\uDCCD \u05D0\u05EA\u05E8: ' + escHtml(site) + (classroom ? ' | \u05DB\u05D9\u05EA\u05D4: ' + escHtml(classroom) : '') + '\\n";' +
+      'msg+="\uD83E\uDEAA \u05D3\u05E8\u05D2\u05D4: ' + escHtml(license) + '\\n";' +
+      'msg+="\uD83D\uDC64 \u05D1\u05D5\u05D7\u05DF: ' + escHtml(examiner) + '\\n\\n";' +
+
+      // Plan section
+      'var hasPlan=planRows.some(function(r){return r.location||r.count||r.actualCount;});' +
+      'if(hasPlan){' +
+      'msg+="*\uD83D\uDCCB \u05E1\u05D9\u05D3\u05D5\u05E8 \u05E2\u05D1\u05D5\u05D3\u05D4:*\\n";' +
+      'for(var i=0;i<planRows.length;i++){var pr=planRows[i];' +
+      'if(!pr.location&&!pr.count&&!pr.actualCount)continue;' +
+      'msg+=(pr.location||"-")+" | "+examTypeLbl(pr.examType)+" | "+sectorLbl(pr.sector)+" | \u05EA\u05DB\u05E0\u05D5\u05DF: "+(pr.count||"0")+" | \u05D1\u05E4\u05D5\u05E2\u05DC: "+(pr.actualCount||"0")+"\\n";}' +
+      'msg+="\\n";}' +
+
+      // Results
+      'msg+="\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\n";' +
+      'msg+=\'' + waResultsEsc + '\';' +
+      'msg+="\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\n\\n";' +
+
+      // Summary
+      'msg+="*\u05E1\u05D9\u05DB\u05D5\u05DD \u05DB\u05DC\u05DC\u05D9:*\\n";' +
+      'msg+="\u05E1\u05D4\\"\\u05DB: ' + total + ' | \u05E2\u05D1\u05E8\u05D5: ' + passCount + ' | \u05E0\u05DB\u05E9\u05DC\u05D5: ' + failCount + '\\n";' +
+      'msg+="\u05D0\u05D7\u05D5\u05D6 \u05D4\u05E6\u05DC\u05D7\u05D4: ' + rate + '%\\n";' +
+      (dqCount > 0 ? 'msg+="\u05E4\u05E1\u05D5\u05DC\u05D9\u05DD: ' + dqCount + '\\n";' : '') +
+      'msg+=\'' + waPopLines + '\';' +
+
+      'window.open("https://wa.me/"+p+"?text="+encodeURIComponent(msg),"_blank");}' +
+
       '<\/script>' +
 
       '</body></html>';
