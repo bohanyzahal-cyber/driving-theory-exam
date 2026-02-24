@@ -1175,11 +1175,8 @@
   // ========== Examiner Report (דו"ח בוחן) ==========
   window.generateExaminerReport = function() {
     if (!completedResults || completedResults.length === 0) {
-      alert('אין תוצאות להצגה בדו"ח');
-      return;
+      alert('אין תוצאות להצגה בדו"ח'); return;
     }
-
-    // Gather header info
     var today = new Date();
     var dateStr = today.getDate() + '/' + (today.getMonth() + 1) + '/' + today.getFullYear();
     var site = currentSite || '';
@@ -1188,10 +1185,22 @@
     var examinerNum = examinerData.examinerNumber || '';
     var license = currentLicense || '';
 
-    // Process results
+    // === Compute results data ===
     var passCount = 0, failCount = 0, dqCount = 0;
     var popStats = {};
+    // Execution breakdown: pass/fail by mapped population (צבא, קד"צ, וואוצ'ר, שונות)
+    var execPass = { army: 0, kadatz: 0, voucher: 0, other: 0 };
+    var execFail = { army: 0, kadatz: 0, voucher: 0, other: 0 };
     var rows = '';
+
+    function mapPop(pop) {
+      if (!pop) return 'other';
+      var s = String(pop).trim();
+      if (s === '\u05E6\u05D1\u05D0') return 'army';
+      if (s.indexOf('\u05E7\u05D3') === 0) return 'kadatz';
+      if (s.indexOf('\u05D5\u05D5\u05D0\u05D5\u05E6') === 0 || s.indexOf('\u05D5\u05D5\u05E6') === 0) return 'voucher';
+      return 'other';
+    }
 
     for (var i = 0; i < completedResults.length; i++) {
       var r = completedResults[i];
@@ -1218,6 +1227,12 @@
         if (isPassed) popStats[pop].passed++;
         else popStats[pop].failed++;
       }
+      // Map to execution categories
+      if (!isDQ) {
+        var mk = mapPop(pop);
+        if (isPassed) execPass[mk]++;
+        else execFail[mk]++;
+      }
 
       rows += '<tr style="background:' + rowBg + ';">' +
         '<td style="font-weight:bold;">' + (i + 1) + '</td>' +
@@ -1228,40 +1243,28 @@
         '<td>' + escHtml(pop) + '</td>' +
         '<td>\u05DE\u05D7\u05E9\u05D1</td>' +
         '<td>' + (r.attempt || 1) + '</td>' +
-        '<td style="font-weight:bold;color:' + resultColor + ';">' + resultText + '</td>' +
-        '</tr>';
+        '<td style="font-weight:bold;color:' + resultColor + ';">' + resultText + '</td></tr>';
     }
 
     var total = passCount + failCount;
     var rate = total > 0 ? Math.round((passCount / total) * 100) : 0;
 
-    // Population breakdown rows
+    // Population breakdown rows for summary table
     var popOrder = ['\u05E6\u05D1\u05D0', '\u05E7\u05D3\u05F4\u05E5', '\u05D5\u05D5\u05D0\u05D5\u05E6\u05F3\u05E8', '\u05E2\u05D9\u05D5\u05E0\u05D9 \u05D1\u05DC\u05D1\u05D3'];
     var popRows = '';
     var popKeys = Object.keys(popStats);
     var orderedPops = [];
-    for (var p = 0; p < popOrder.length; p++) {
-      if (popStats[popOrder[p]]) orderedPops.push(popOrder[p]);
-    }
-    for (var k = 0; k < popKeys.length; k++) {
-      if (orderedPops.indexOf(popKeys[k]) === -1) orderedPops.push(popKeys[k]);
-    }
+    for (var p = 0; p < popOrder.length; p++) { if (popStats[popOrder[p]]) orderedPops.push(popOrder[p]); }
+    for (var k = 0; k < popKeys.length; k++) { if (orderedPops.indexOf(popKeys[k]) === -1) orderedPops.push(popKeys[k]); }
     for (var j = 0; j < orderedPops.length; j++) {
       var ps = popStats[orderedPops[j]];
       var pr = ps.total > 0 ? Math.round((ps.passed / ps.total) * 100) : 0;
-      popRows += '<tr>' +
-        '<td>' + escHtml(orderedPops[j]) + '</td>' +
-        '<td>' + ps.total + '</td>' +
+      popRows += '<tr><td>' + escHtml(orderedPops[j]) + '</td><td>' + ps.total + '</td>' +
         '<td style="color:#27ae60;font-weight:600;">' + ps.passed + '</td>' +
-        '<td style="color:#c0392b;font-weight:600;">' + ps.failed + '</td>' +
-        '<td>' + pr + '%</td></tr>';
+        '<td style="color:#c0392b;font-weight:600;">' + ps.failed + '</td><td>' + pr + '%</td></tr>';
     }
-    popRows += '<tr style="border-top:2px solid #34495e;font-weight:bold;">' +
-      '<td>\u05E1\u05D4"\u05DB</td>' +
-      '<td>' + total + '</td>' +
-      '<td style="color:#27ae60;">' + passCount + '</td>' +
-      '<td style="color:#c0392b;">' + failCount + '</td>' +
-      '<td>' + rate + '%</td></tr>';
+    popRows += '<tr style="border-top:2px solid #34495e;font-weight:bold;"><td>\u05E1\u05D4"\u05DB</td><td>' + total + '</td>' +
+      '<td style="color:#27ae60;">' + passCount + '</td><td style="color:#c0392b;">' + failCount + '</td><td>' + rate + '%</td></tr>';
 
     // Stamp
     var stampHtml = '';
@@ -1270,7 +1273,7 @@
         escHtml(examiner) + '<br>\u05D1\u05D5\u05D7\u05DF \u05E8\u05D9\u05E9\u05D5\u05D9 \u05E6\u05D4"\u05DC<br>\u05DE\u05E1\u05F3 ' + escHtml(examinerNum) + '</div>';
     }
 
-    // Pre-build WA results part (static) — planning part will be added dynamically in popup
+    // WA results lines
     var waResultsLines = '';
     for (var m = 0; m < completedResults.length; m++) {
       var rm = completedResults[m];
@@ -1283,281 +1286,244 @@
       var attemptM = (rm.attempt && rm.attempt > 1) ? ' [\u05E0\u05D9\u05E1\u05D9\u05D5\u05DF ' + rm.attempt + ']' : '';
       var icon = isDQm ? '\u26D4' : (isPassedm ? '\u2705' : '\u274C');
       var resM = isDQm ? '\u05E4\u05E1\u05D5\u05DC' : (isPassedm ? '\u05E2\u05D1\u05E8' : '\u05E0\u05DB\u05E9\u05DC');
-      waResultsLines += icon + ' ' + fam + ' ' + first + popM + attemptM + ' — ' + resM + '\\n';
+      waResultsLines += icon + ' ' + fam + ' ' + first + popM + attemptM + ' \u2014 ' + resM + '\\n';
     }
-
-    // Escape for embedding in JS string
     var waResultsEsc = waResultsLines.replace(/'/g, "\\'");
-
-    // Pop breakdown for WA
     var waPopLines = '';
     if (orderedPops.length > 0) {
       waPopLines += '\\n*\u05E4\u05D9\u05E8\u05D5\u05D8 \u05DC\u05E4\u05D9 \u05D0\u05D5\u05DB\u05DC\u05D5\u05E1\u05D9\u05D4:*\\n';
       for (var q = 0; q < orderedPops.length; q++) {
-        var psq = popStats[orderedPops[q]];
-        var ptq = psq.total;
+        var psq = popStats[orderedPops[q]]; var ptq = psq.total;
         var prq = ptq > 0 ? Math.round((psq.passed / ptq) * 100) : 0;
         waPopLines += orderedPops[q].replace(/'/g, "\\'") + ': ' + ptq + ' (\u05E2\u05D1\u05E8\u05D5 ' + psq.passed + ', \u05E0\u05DB\u05E9\u05DC\u05D5 ' + psq.failed + ', ' + prq + '%)\\n';
       }
     }
 
-    // Build report HTML
-    var html = '<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"/>' +
-      '<meta name="viewport" content="width=device-width,initial-scale=1"/>' +
-      '<title>\u05D3\u05D5"\u05D7 \u05D1\u05D5\u05D7\u05DF \u2014 \u05DE\u05D1\u05D7\u05DF \u05EA\u05D0\u05D5\u05E8\u05D9\u05D4 \u05D7\u05D9\u05E6\u05D5\u05E0\u05D9</title>' +
-      '<style>' +
-      '*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}' +
-      'body{font-family:"Segoe UI",Tahoma,Arial,sans-serif;background:#f0f2f5;color:#333;direction:rtl;padding:20px}' +
-      '.container{max-width:900px;margin:0 auto;background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.08);overflow:hidden}' +
-      '.header-bar{background:linear-gradient(135deg,#1a5276,#2980b9);color:#fff;padding:20px 30px;text-align:center}' +
-      '.header-bar h1{font-size:22px;margin-bottom:4px}.header-bar p{font-size:13px;opacity:.85}' +
-      '.section{padding:20px 30px;border-bottom:1px solid #eee}.section:last-child{border-bottom:none}' +
-      '.section-title{font-size:16px;font-weight:bold;color:#1a5276;margin-bottom:15px;padding-bottom:8px;border-bottom:2px solid #2980b9;display:flex;align-items:center;gap:8px}' +
-      '.section-title .icon{font-size:20px}' +
-      '.info-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}' +
-      '.info-item label{font-size:12px;color:#666;display:block;margin-bottom:2px;font-weight:600}' +
-      '.info-item .val{font-size:14px;font-weight:700;color:#1e293b}' +
-      '.table-wrap{overflow-x:auto;margin-top:10px}' +
-      'table{width:100%;border-collapse:collapse;font-size:13px}' +
-      'thead th{background:#2c3e50;color:#fff;padding:10px 6px;font-weight:600;white-space:nowrap;font-size:12px}' +
-      'thead th.actual{background:#1a5276;color:#f1c40f}' +
-      'tbody tr{border-bottom:1px solid #eee}' +
-      'tbody td{padding:8px 6px;text-align:center;vertical-align:middle}' +
-      '.summary-bar{display:flex;gap:15px;flex-wrap:wrap;padding:12px 0;justify-content:center}' +
-      '.summary-item{text-align:center;padding:8px 16px;border-radius:8px;min-width:80px}' +
-      '.summary-item .num{font-size:22px;font-weight:bold;display:block}' +
-      '.summary-item .lbl{font-size:11px;color:#666}' +
-      '.si-total{background:#eaf2f8}.si-total .num{color:#2980b9}' +
-      '.si-passed{background:#eafaf1}.si-passed .num{color:#27ae60}' +
-      '.si-failed{background:#fdedec}.si-failed .num{color:#c0392b}' +
-      '.si-computer{background:#eaf2f8}.si-computer .num{color:#2c3e50}' +
-      '.si-rate{background:#f4ecf7}.si-rate .num{color:#8e44ad}' +
-      '.pop-table{width:auto;min-width:320px;margin:10px auto 0;border-collapse:collapse;font-size:13px}' +
-      '.pop-table th{background:#34495e;color:#fff;padding:8px 14px;font-weight:600;white-space:nowrap}' +
-      '.pop-table td{padding:6px 14px;text-align:center;border-bottom:1px solid #eee}' +
-      '.signature-area{text-align:center;padding:15px 0}' +
-      '.signature-line{width:200px;border-bottom:1px solid #333;margin:20px auto 5px}' +
-      '.signature-label{font-size:12px;color:#666}' +
-      '.signature-name{font-size:16px;font-weight:bold;color:#2c3e50;margin-top:8px}' +
-      '.actions-row{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;padding:10px 0;align-items:center}' +
-      '.btn{border:none;padding:10px 20px;border-radius:6px;cursor:pointer;font-size:14px;font-family:inherit;font-weight:600;display:inline-flex;align-items:center;gap:6px}' +
-      '.btn-wa{background:#25d366;color:#fff}.btn-wa:hover{background:#1da851}' +
-      '.btn-primary{background:#2980b9;color:#fff}.btn-primary:hover{background:#2471a3}' +
-      '.btn-add{background:#27ae60;color:#fff;font-size:12px;padding:6px 14px;border:none;border-radius:6px;cursor:pointer;font-weight:600}' +
-      '.btn-add:hover{background:#219a52}' +
-      '.btn-del{background:#c0392b;color:#fff;font-size:11px;padding:3px 8px;border:none;border-radius:4px;cursor:pointer}' +
-      '.phone-input{padding:8px 10px;border:1px solid #b7e4c7;border-radius:6px;font-size:14px;direction:ltr;width:180px;text-align:center;margin:0 8px}' +
-      '.plan-input{width:100%;padding:4px;border:1px solid #ddd;border-radius:4px;font-size:13px;font-family:inherit;text-align:center}' +
-      '.plan-input.txt{text-align:right;direction:rtl}' +
-      '.plan-input.num{width:50px;direction:ltr}' +
-      '.plan-input.actual{background:#fffde7}' +
-      '.plan-select{padding:4px;border:1px solid #ddd;border-radius:4px;font-size:12px;font-family:inherit}' +
-      '.plan-select.actual{background:#fffde7}' +
-      '@media print{body{background:#fff;padding:0}.container{box-shadow:none;max-width:100%}.no-print{display:none!important}' +
-      'thead th,.summary-item,.pop-table th,thead th.actual{-webkit-print-color-adjust:exact;print-color-adjust:exact}' +
-      'tbody tr{-webkit-print-color-adjust:exact;print-color-adjust:exact}}' +
-      '@media(max-width:600px){body{padding:8px}.section{padding:14px 16px}.info-grid{grid-template-columns:1fr}}' +
-      '</style></head><body><div class="container">' +
+    // === Build report popup HTML ===
+    var H = [];
+    H.push('<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"/>');
+    H.push('<meta name="viewport" content="width=device-width,initial-scale=1"/>');
+    H.push('<title>\u05D3\u05D5"\u05D7 \u05D1\u05D5\u05D7\u05DF \u2014 \u05DE\u05D1\u05D7\u05DF \u05EA\u05D0\u05D5\u05E8\u05D9\u05D4</title>');
+    H.push('<style>');
+    H.push('*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}');
+    H.push('body{font-family:"Segoe UI",Tahoma,Arial,sans-serif;background:#f0f2f5;color:#333;direction:rtl;padding:20px}');
+    H.push('.container{max-width:1100px;margin:0 auto;background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.08);overflow:hidden}');
+    H.push('.header-bar{background:linear-gradient(135deg,#1a5276,#2980b9);color:#fff;padding:20px 30px;text-align:center}');
+    H.push('.header-bar h1{font-size:22px;margin-bottom:4px}.header-bar p{font-size:13px;opacity:.85}');
+    H.push('.section{padding:20px 30px;border-bottom:1px solid #eee}.section:last-child{border-bottom:none}');
+    H.push('.section-title{font-size:16px;font-weight:bold;color:#1a5276;margin-bottom:15px;padding-bottom:8px;border-bottom:2px solid #2980b9;display:flex;align-items:center;gap:8px}');
+    H.push('.section-title .icon{font-size:20px}');
+    H.push('.info-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}');
+    H.push('.info-item label{font-size:12px;color:#666;display:block;margin-bottom:2px;font-weight:600}');
+    H.push('.info-item .val{font-size:14px;font-weight:700;color:#1e293b}');
+    H.push('.tw{overflow-x:auto;margin-top:10px}');
+    H.push('table{width:100%;border-collapse:collapse;font-size:12px}');
+    H.push('thead th{background:#2c3e50;color:#fff;padding:6px 4px;font-weight:600;white-space:nowrap;font-size:11px;border:1px solid #1a252f}');
+    H.push('thead th.exec{background:#1a5276;color:#f1c40f}');
+    H.push('thead th.pass-h{background:#27ae60;color:#fff}');
+    H.push('thead th.fail-h{background:#c0392b;color:#fff}');
+    H.push('tbody tr{border-bottom:1px solid #eee}');
+    H.push('tbody td{padding:6px 4px;text-align:center;vertical-align:middle;border:1px solid #eee}');
+    H.push('.summary-bar{display:flex;gap:15px;flex-wrap:wrap;padding:12px 0;justify-content:center}');
+    H.push('.summary-item{text-align:center;padding:8px 16px;border-radius:8px;min-width:80px}');
+    H.push('.summary-item .num{font-size:22px;font-weight:bold;display:block}');
+    H.push('.summary-item .lbl{font-size:11px;color:#666}');
+    H.push('.si-total{background:#eaf2f8}.si-total .num{color:#2980b9}');
+    H.push('.si-passed{background:#eafaf1}.si-passed .num{color:#27ae60}');
+    H.push('.si-failed{background:#fdedec}.si-failed .num{color:#c0392b}');
+    H.push('.si-rate{background:#f4ecf7}.si-rate .num{color:#8e44ad}');
+    H.push('.pop-table{width:auto;min-width:320px;margin:10px auto 0;border-collapse:collapse;font-size:13px}');
+    H.push('.pop-table th{background:#34495e;color:#fff;padding:8px 14px;font-weight:600;white-space:nowrap}');
+    H.push('.pop-table td{padding:6px 14px;text-align:center;border-bottom:1px solid #eee}');
+    H.push('.signature-area{text-align:center;padding:15px 0}');
+    H.push('.signature-line{width:200px;border-bottom:1px solid #333;margin:20px auto 5px}');
+    H.push('.signature-label{font-size:12px;color:#666}');
+    H.push('.signature-name{font-size:16px;font-weight:bold;color:#2c3e50;margin-top:8px}');
+    H.push('.actions-row{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;padding:10px 0;align-items:center}');
+    H.push('.btn{border:none;padding:10px 20px;border-radius:6px;cursor:pointer;font-size:14px;font-family:inherit;font-weight:600;display:inline-flex;align-items:center;gap:6px}');
+    H.push('.btn-wa{background:#25d366;color:#fff}.btn-wa:hover{background:#1da851}');
+    H.push('.btn-primary{background:#2980b9;color:#fff}.btn-primary:hover{background:#2471a3}');
+    H.push('.btn-add{background:#27ae60;color:#fff;font-size:12px;padding:6px 14px;border:none;border-radius:6px;cursor:pointer;font-weight:600}');
+    H.push('.btn-del{background:#c0392b;color:#fff;font-size:11px;padding:3px 8px;border:none;border-radius:4px;cursor:pointer}');
+    H.push('.phone-input{padding:8px 10px;border:1px solid #b7e4c7;border-radius:6px;font-size:14px;direction:ltr;width:180px;text-align:center;margin:0 8px}');
+    H.push('.pi{width:100%;padding:3px;border:1px solid #ddd;border-radius:4px;font-size:12px;font-family:inherit;text-align:center}');
+    H.push('.pi.t{text-align:right;direction:rtl}.pi.n{width:45px;direction:ltr}');
+    H.push('.ps{padding:3px;border:1px solid #ddd;border-radius:4px;font-size:11px;font-family:inherit}');
+    H.push('.exec-val{font-weight:700;font-size:13px;background:#f0faf0}');
+    H.push('.exec-val.z{color:#94a3b8;background:#f8f9fa}');
+    H.push('@media print{body{background:#fff;padding:0}.container{box-shadow:none;max-width:100%}.no-print{display:none!important}');
+    H.push('thead th,.summary-item,.pop-table th{-webkit-print-color-adjust:exact;print-color-adjust:exact}');
+    H.push('tbody tr{-webkit-print-color-adjust:exact;print-color-adjust:exact}}');
+    H.push('@media(max-width:600px){body{padding:8px}.section{padding:14px 16px}}');
+    H.push('</style></head><body><div class="container">');
 
-      // Header
-      '<div class="header-bar"><h1>\uD83D\uDCCB \u05D3\u05D5"\u05D7 \u05D1\u05D5\u05D7\u05DF \u2014 \u05DE\u05D1\u05D7\u05DF \u05EA\u05D0\u05D5\u05E8\u05D9\u05D4 \u05D7\u05D9\u05E6\u05D5\u05E0\u05D9</h1>' +
-      '<p>\u05E1\u05D9\u05DB\u05D5\u05DD \u05EA\u05D5\u05E6\u05D0\u05D5\u05EA \u05DC\u05E9\u05DC\u05D9\u05D7\u05D4 \u05DC\u05E8\u05D1 \u05D1\u05D5\u05D7\u05DF</p></div>' +
+    // Header
+    H.push('<div class="header-bar"><h1>\uD83D\uDCCB \u05D3\u05D5"\u05D7 \u05D1\u05D5\u05D7\u05DF \u2014 \u05DE\u05D1\u05D7\u05DF \u05EA\u05D0\u05D5\u05E8\u05D9\u05D4</h1>');
+    H.push('<p>\u05E1\u05D9\u05DB\u05D5\u05DD \u05EA\u05D5\u05E6\u05D0\u05D5\u05EA \u05DC\u05E9\u05DC\u05D9\u05D7\u05D4 \u05DC\u05E8\u05D1 \u05D1\u05D5\u05D7\u05DF</p></div>');
 
-      // Exam details
-      '<div class="section">' +
-      '<div class="section-title"><span class="icon">\uD83D\uDCDD</span> \u05E4\u05E8\u05D8\u05D9 \u05D4\u05DE\u05D1\u05D7\u05DF</div>' +
-      '<div class="info-grid">' +
-      '<div class="info-item"><label>\u05EA\u05D0\u05E8\u05D9\u05DA</label><div class="val">' + escHtml(dateStr) + '</div></div>' +
-      '<div class="info-item"><label>\u05DE\u05E7\u05D5\u05DD \u05D4\u05DE\u05D1\u05D7\u05DF (\u05D0\u05EA\u05E8)</label><div class="val">' + escHtml(site) + '</div></div>' +
-      '<div class="info-item"><label>\u05DB\u05D9\u05EA\u05D4</label><div class="val">' + escHtml(classroom) + '</div></div>' +
-      '<div class="info-item"><label>\u05E9\u05DD \u05D4\u05D1\u05D5\u05D7\u05DF</label><div class="val">' + escHtml(examiner) + '</div></div>' +
-      '<div class="info-item"><label>\u05D3\u05E8\u05D2\u05EA \u05E8\u05D9\u05E9\u05D9\u05D5\u05DF</label><div class="val">' + escHtml(license) + '</div></div>' +
-      (examinerNum ? '<div class="info-item"><label>\u05DE\u05E1\u05F3 \u05D1\u05D5\u05D7\u05DF</label><div class="val">' + escHtml(examinerNum) + '</div></div>' : '') +
-      '</div></div>' +
+    // Exam details
+    H.push('<div class="section">');
+    H.push('<div class="section-title"><span class="icon">\uD83D\uDCDD</span> \u05E4\u05E8\u05D8\u05D9 \u05D4\u05DE\u05D1\u05D7\u05DF</div>');
+    H.push('<div class="info-grid">');
+    H.push('<div class="info-item"><label>\u05EA\u05D0\u05E8\u05D9\u05DA</label><div class="val">' + escHtml(dateStr) + '</div></div>');
+    H.push('<div class="info-item"><label>\u05D0\u05EA\u05E8</label><div class="val">' + escHtml(site) + '</div></div>');
+    H.push('<div class="info-item"><label>\u05DB\u05D9\u05EA\u05D4</label><div class="val">' + escHtml(classroom) + '</div></div>');
+    H.push('<div class="info-item"><label>\u05D1\u05D5\u05D7\u05DF</label><div class="val">' + escHtml(examiner) + '</div></div>');
+    H.push('<div class="info-item"><label>\u05D3\u05E8\u05D2\u05D4</label><div class="val">' + escHtml(license) + '</div></div>');
+    if (examinerNum) H.push('<div class="info-item"><label>\u05DE\u05E1\u05F3 \u05D1\u05D5\u05D7\u05DF</label><div class="val">' + escHtml(examinerNum) + '</div></div>');
+    H.push('</div></div>');
 
-      // ===== WORK PLANNING TABLE =====
-      '<div class="section no-print" id="planSection">' +
-      '<div class="section-title"><span class="icon">\uD83D\uDCCB</span> \u05E1\u05D9\u05D3\u05D5\u05E8 \u05E2\u05D1\u05D5\u05D3\u05D4 - \u05EA\u05DB\u05E0\u05D5\u05DF \u05D5\u05D1\u05D9\u05E6\u05D5\u05E2</div>' +
-      '<div class="table-wrap"><table id="planTable"><thead><tr>' +
-      '<th>\u05DE\u05E7\u05D5\u05DD</th>' +
-      '<th>\u05E9\u05E2\u05D4</th>' +
-      '<th>\u05E1\u05D5\u05D2 \u05DE\u05D1\u05D7\u05DF</th>' +
-      '<th>\u05D3\u05E8\u05D2\u05EA \u05E8\u05D9\u05E9\u05D9\u05D5\u05DF</th>' +
-      '<th>\u05DE\u05D2\u05D6\u05E8</th>' +
-      '<th>\u05DB\u05DE\u05D5\u05EA</th>' +
-      '<th class="actual">\u05E1\u05D5\u05D2 \u05D1\u05E4\u05D5\u05E2\u05DC</th>' +
-      '<th class="actual">\u05DB\u05DE\u05D5\u05EA \u05D1\u05E4\u05D5\u05E2\u05DC</th>' +
-      '<th></th>' +
-      '</tr></thead><tbody id="planBody"></tbody></table></div>' +
-      '<button class="btn-add" style="margin-top:8px;" onclick="addPlanRow()">\u2795 \u05D4\u05D5\u05E1\u05E3 \u05E9\u05D5\u05E8\u05D4</button>' +
-      '</div>' +
+    // ===== WORK PLANNING TABLE (matches physical form) =====
+    H.push('<div class="section">');
+    H.push('<div class="section-title"><span class="icon">\uD83D\uDCCB</span> \u05E1\u05D9\u05D3\u05D5\u05E8 \u05E2\u05D1\u05D5\u05D3\u05D4 - \u05EA\u05DB\u05E0\u05D5\u05DF \u05D5\u05D1\u05D9\u05E6\u05D5\u05E2</div>');
+    H.push('<div class="tw"><table id="planTable"><thead>');
+    // Row 1: super-headers
+    H.push('<tr>');
+    H.push('<th colspan="6" style="background:#34495e;font-size:13px;">\u05EA\u05DB\u05E0\u05D5\u05DF</th>');
+    H.push('<th rowspan="3" style="background:#2c3e50;">\u05E9\u05E2\u05D4</th>');
+    H.push('<th colspan="9" class="exec" style="font-size:13px;">\u05D1\u05D9\u05E6\u05D5\u05E2</th>');
+    H.push('<th rowspan="3" class="no-print" style="background:#2c3e50;width:30px;"></th>');
+    H.push('</tr>');
+    // Row 2: sub-headers
+    H.push('<tr>');
+    H.push('<th rowspan="2">\u05D1\u05D9\u05D4"\u05E1</th>');
+    H.push('<th rowspan="2">\u05E1\u05D5\u05D2 \u05E8\u05DB\u05D1</th>');
+    H.push('<th rowspan="2">\u05DB\u05DE\u05D5\u05EA \u05DE\u05D1\u05D5\u05E7\u05E9\u05EA</th>');
+    H.push('<th rowspan="2">\u05DB\u05DE\u05D5\u05EA \u05DE\u05D0\u05D5\u05E9\u05E8\u05EA</th>');
+    H.push('<th rowspan="2">\u05D4\u05E2\u05E8\u05D5\u05EA</th>');
+    H.push('<th rowspan="2">\u05DB\u05DE\u05D5\u05EA \u05D1\u05E9\u05DE\u05E2</th>');
+    H.push('<th rowspan="2" class="exec">\u05DB\u05DE\u05D5\u05EA \u05D1\u05E4\u05D5\u05E2\u05DC</th>');
+    H.push('<th colspan="4" class="pass-h">\u05E2\u05D1\u05E8</th>');
+    H.push('<th colspan="4" class="fail-h">\u05E0\u05DB\u05E9\u05DC</th>');
+    H.push('</tr>');
+    // Row 3: population sub-sub-headers
+    H.push('<tr>');
+    H.push('<th class="pass-h">\u05E6\u05D1\u05D0</th><th class="pass-h">\u05E9\u05D5\u05E0\u05D5\u05EA</th><th class="pass-h">\u05D5\u05D5\u05D0\u05D5\u05E6\u05F3\u05E8</th><th class="pass-h">\u05E7\u05D3"\u05E6</th>');
+    H.push('<th class="fail-h">\u05E6\u05D1\u05D0</th><th class="fail-h">\u05E9\u05D5\u05E0\u05D5\u05EA</th><th class="fail-h">\u05D5\u05D5\u05D0\u05D5\u05E6\u05F3\u05E8</th><th class="fail-h">\u05E7\u05D3"\u05E6</th>');
+    H.push('</tr>');
+    H.push('</thead><tbody id="planBody"></tbody></table></div>');
+    H.push('<button class="btn-add no-print" style="margin-top:8px;" onclick="addPlanRow()">\u2795 \u05D4\u05D5\u05E1\u05E3 \u05E9\u05D5\u05E8\u05D4</button>');
+    H.push('</div>');
 
-      // Print-friendly version of plan table (rendered by JS before print)
-      '<div class="section" id="planPrintSection" style="display:none;">' +
-      '<div class="section-title"><span class="icon">\uD83D\uDCCB</span> \u05E1\u05D9\u05D3\u05D5\u05E8 \u05E2\u05D1\u05D5\u05D3\u05D4 - \u05EA\u05DB\u05E0\u05D5\u05DF \u05D5\u05D1\u05D9\u05E6\u05D5\u05E2</div>' +
-      '<div class="table-wrap" id="planPrintWrap"></div>' +
-      '</div>' +
+    // Examinees table
+    H.push('<div class="section">');
+    H.push('<div class="section-title"><span class="icon">\uD83D\uDC65</span> \u05D8\u05D1\u05DC\u05EA \u05E0\u05D1\u05D7\u05E0\u05D9\u05DD</div>');
+    H.push('<div class="tw"><table><thead><tr>');
+    H.push('<th>#</th><th>\u05EA.\u05D6.</th><th>\u05E9\u05DD \u05DE\u05E9\u05E4\u05D7\u05D4</th><th>\u05E9\u05DD \u05E4\u05E8\u05D8\u05D9</th>');
+    H.push('<th>\u05E1\u05D5\u05D2 \u05E8\u05DB\u05D1</th><th>\u05DE\u05D2\u05D6\u05E8</th><th>\u05E1\u05D5\u05D2 \u05DE\u05D1\u05D7\u05DF</th>');
+    H.push('<th>\u05DE\u05D1\u05D7\u05DF \u05DE\u05E1\'</th><th>\u05EA\u05D5\u05E6\u05D0\u05D4</th>');
+    H.push('</tr></thead><tbody>' + rows + '</tbody></table></div></div>');
 
-      // Examinees table
-      '<div class="section">' +
-      '<div class="section-title"><span class="icon">\uD83D\uDC65</span> \u05D8\u05D1\u05DC\u05EA \u05E0\u05D1\u05D7\u05E0\u05D9\u05DD</div>' +
-      '<div class="table-wrap"><table><thead><tr>' +
-      '<th>#</th><th>\u05EA.\u05D6.</th><th>\u05E9\u05DD \u05DE\u05E9\u05E4\u05D7\u05D4</th><th>\u05E9\u05DD \u05E4\u05E8\u05D8\u05D9</th>' +
-      '<th>\u05E1\u05D5\u05D2 \u05E8\u05DB\u05D1</th><th>\u05DE\u05D2\u05D6\u05E8</th><th>\u05E1\u05D5\u05D2 \u05DE\u05D1\u05D7\u05DF</th>' +
-      '<th>\u05DE\u05D1\u05D7\u05DF \u05DE\u05E1\'</th><th>\u05EA\u05D5\u05E6\u05D0\u05D4</th>' +
-      '</tr></thead><tbody>' + rows + '</tbody></table></div></div>' +
+    // Summary
+    H.push('<div class="section">');
+    H.push('<div class="section-title"><span class="icon">\uD83D\uDCCA</span> \u05E1\u05D9\u05DB\u05D5\u05DD</div>');
+    H.push('<div class="summary-bar">');
+    H.push('<div class="summary-item si-total"><span class="num">' + total + '</span><span class="lbl">\u05E1\u05D4"\u05DB</span></div>');
+    H.push('<div class="summary-item si-passed"><span class="num">' + passCount + '</span><span class="lbl">\u05E2\u05D1\u05E8\u05D5</span></div>');
+    H.push('<div class="summary-item si-failed"><span class="num">' + failCount + '</span><span class="lbl">\u05E0\u05DB\u05E9\u05DC\u05D5</span></div>');
+    H.push('<div class="summary-item si-rate"><span class="num">' + rate + '%</span><span class="lbl">\u05D0\u05D7\u05D5\u05D6 \u05D4\u05E6\u05DC\u05D7\u05D4</span></div>');
+    H.push('</div>');
+    if (dqCount > 0) H.push('<div style="text-align:center;color:#d4ac0d;font-weight:700;margin-top:4px;">\u05E4\u05E1\u05D5\u05DC\u05D9\u05DD: ' + dqCount + '</div>');
+    // Pop breakdown
+    if (orderedPops.length > 0) {
+      H.push('<div style="margin-top:18px;"><h4 style="font-size:14px;color:#1a5276;margin-bottom:8px;">\uD83D\uDCCA \u05E4\u05D9\u05E8\u05D5\u05D8 \u05DC\u05E4\u05D9 \u05D0\u05D5\u05DB\u05DC\u05D5\u05E1\u05D9\u05D4</h4>');
+      H.push('<div class="tw"><table class="pop-table"><thead><tr>');
+      H.push('<th>\u05D0\u05D5\u05DB\u05DC\u05D5\u05E1\u05D9\u05D4</th><th>\u05E1\u05D4"\u05DB</th><th>\u05E2\u05D1\u05E8\u05D5</th><th>\u05E0\u05DB\u05E9\u05DC\u05D5</th><th>\u05D0\u05D7\u05D5\u05D6</th>');
+      H.push('</tr></thead><tbody>' + popRows + '</tbody></table></div></div>');
+    }
+    H.push('</div>');
 
-      // Summary
-      '<div class="section">' +
-      '<div class="section-title"><span class="icon">\uD83D\uDCCA</span> \u05E1\u05D9\u05DB\u05D5\u05DD</div>' +
-      '<div class="summary-bar">' +
-      '<div class="summary-item si-total"><span class="num">' + total + '</span><span class="lbl">\u05E1\u05D4"\u05DB</span></div>' +
-      '<div class="summary-item si-passed"><span class="num">' + passCount + '</span><span class="lbl">\u05E2\u05D1\u05E8\u05D5</span></div>' +
-      '<div class="summary-item si-failed"><span class="num">' + failCount + '</span><span class="lbl">\u05E0\u05DB\u05E9\u05DC\u05D5</span></div>' +
-      '<div class="summary-item si-computer"><span class="num">' + total + '</span><span class="lbl">\u05D1\u05DE\u05D7\u05E9\u05D1</span></div>' +
-      '<div class="summary-item si-rate"><span class="num">' + rate + '%</span><span class="lbl">\u05D0\u05D7\u05D5\u05D6 \u05D4\u05E6\u05DC\u05D7\u05D4</span></div>' +
-      '</div>' +
-      (dqCount > 0 ? '<div style="text-align:center;color:#d4ac0d;font-weight:700;margin-top:4px;">\u05E4\u05E1\u05D5\u05DC\u05D9\u05DD: ' + dqCount + '</div>' : '') +
+    // Signature
+    H.push('<div class="section"><div class="signature-area">' + stampHtml);
+    H.push('<div class="signature-line"></div>');
+    H.push('<div class="signature-label">\u05D7\u05D5\u05EA\u05DE\u05EA \u05D5\u05D7\u05EA\u05D9\u05DE\u05EA \u05D4\u05D1\u05D5\u05D7\u05DF</div>');
+    H.push('<div class="signature-name">' + escHtml(examiner) + '</div></div>');
 
-      // Population breakdown
-      (orderedPops.length > 0 ?
-        '<div style="margin-top:18px;"><h4 style="font-size:14px;color:#1a5276;margin-bottom:8px;">\uD83D\uDCCA \u05E4\u05D9\u05E8\u05D5\u05D8 \u05DC\u05E4\u05D9 \u05D0\u05D5\u05DB\u05DC\u05D5\u05E1\u05D9\u05D4</h4>' +
-        '<div class="table-wrap"><table class="pop-table"><thead><tr>' +
-        '<th>\u05D0\u05D5\u05DB\u05DC\u05D5\u05E1\u05D9\u05D4</th><th>\u05E1\u05D4"\u05DB</th><th>\u05E2\u05D1\u05E8\u05D5</th><th>\u05E0\u05DB\u05E9\u05DC\u05D5</th><th>\u05D0\u05D7\u05D5\u05D6 \u05D4\u05E6\u05DC\u05D7\u05D4</th>' +
-        '</tr></thead><tbody>' + popRows + '</tbody></table></div></div>'
-      : '') +
-      '</div>' +
+    // Actions
+    H.push('<div class="actions-row no-print">');
+    H.push('<span style="font-size:13px;color:#666;">\u05D8\u05DC\u05F3 \u05E8\u05D1 \u05D1\u05D5\u05D7\u05DF:</span>');
+    H.push('<input type="tel" id="rpManagerPhone" class="phone-input" placeholder="05X-XXXXXXX" inputmode="tel">');
+    H.push('<button class="btn btn-wa" onclick="sendReport()">\uD83D\uDCF1 \u05E9\u05DC\u05D7 \u05D3\u05D5"\u05D7</button>');
+    H.push('<button class="btn btn-primary" onclick="window.print()">\uD83D\uDDA8\uFE0F \u05D4\u05D3\u05E4\u05E1 / PDF</button>');
+    H.push('</div></div></div>');
 
-      // Signature
-      '<div class="section">' +
-      '<div class="signature-area">' + stampHtml +
-      '<div class="signature-line"></div>' +
-      '<div class="signature-label">\u05D7\u05D5\u05EA\u05DE\u05EA \u05D5\u05D7\u05EA\u05D9\u05DE\u05EA \u05D4\u05D1\u05D5\u05D7\u05DF</div>' +
-      '<div class="signature-name">' + escHtml(examiner) + '</div></div>' +
+    // ===== POPUP SCRIPT =====
+    H.push('<script>');
+    // Execution data (auto-calculated)
+    H.push('var EX={total:' + total + ',pa:{army:' + execPass.army + ',kadatz:' + execPass.kadatz + ',voucher:' + execPass.voucher + ',other:' + execPass.other + '},fa:{army:' + execFail.army + ',kadatz:' + execFail.kadatz + ',voucher:' + execFail.voucher + ',other:' + execFail.other + '}};');
+    H.push('var planRows=[];');
+    H.push('addPlanRow();');
 
-      // Actions (no-print)
-      '<div class="actions-row no-print">' +
-      '<span style="font-size:13px;color:#666;">\u05D8\u05DC\u05F3 \u05E8\u05D1 \u05D1\u05D5\u05D7\u05DF:</span>' +
-      '<input type="tel" id="rpManagerPhone" class="phone-input" placeholder="05X-XXXXXXX" inputmode="tel">' +
-      '<button class="btn btn-wa" onclick="sendReport()">\uD83D\uDCF1 \u05E9\u05DC\u05D7 \u05D3\u05D5"\u05D7 \u05DC\u05E8\u05D1 \u05D1\u05D5\u05D7\u05DF</button>' +
-      '<button class="btn btn-primary" onclick="doPrint()">\uD83D\uDDA8\uFE0F \u05D4\u05D3\u05E4\u05E1 / \u05E9\u05DE\u05D5\u05E8 PDF</button>' +
-      '</div>' +
-      '</div>' +
+    H.push('function addPlanRow(){');
+    H.push('planRows.push({site:"' + site.replace(/"/g, '\\"') + '",license:"' + license.replace(/"/g, '\\"') + '",qtyReq:"",qtyAppr:"",notes:"",qtyAudio:"",time:""});');
+    H.push('renderPlan();}');
 
-      '</div>' +
+    H.push('function removePlanRow(i){planRows.splice(i,1);renderPlan();}');
+    H.push('function upd(i,f,v){planRows[i][f]=v;}');
 
-      // ===== POPUP SCRIPT =====
-      '<script>' +
+    H.push('function esc(s){return s?String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"):""}');
 
-      // Plan row data
-      'var planRows=[];' +
+    // Render plan table
+    H.push('function renderPlan(){');
+    H.push('var tb=document.getElementById("planBody");tb.innerHTML="";');
+    H.push('for(var i=0;i<planRows.length;i++){(function(idx){');
+    H.push('var r=planRows[idx];var isFirst=(idx===0);');
+    H.push('var tr=document.createElement("tr");');
+    H.push('var h="";');
+    // Planning columns (editable)
+    H.push('h+="<td><input class=\\"pi t\\" value=\\""+esc(r.site)+"\\" onchange=\\"upd("+idx+",\'site\',this.value)\\"></td>";');
+    H.push('h+="<td><input class=\\"pi\\" value=\\""+esc(r.license)+"\\" onchange=\\"upd("+idx+",\'license\',this.value)\\" style=\\"width:50px\\"></td>";');
+    H.push('h+="<td><input class=\\"pi n\\" type=\\"number\\" min=\\"0\\" value=\\""+r.qtyReq+"\\" onchange=\\"upd("+idx+",\'qtyReq\',this.value)\\"></td>";');
+    H.push('h+="<td><input class=\\"pi n\\" type=\\"number\\" min=\\"0\\" value=\\""+r.qtyAppr+"\\" onchange=\\"upd("+idx+",\'qtyAppr\',this.value)\\"></td>";');
+    H.push('h+="<td><input class=\\"pi t\\" value=\\""+esc(r.notes)+"\\" onchange=\\"upd("+idx+",\'notes\',this.value)\\" placeholder=\\"הערות...\\"></td>";');
+    H.push('h+="<td><input class=\\"pi n\\" type=\\"number\\" min=\\"0\\" value=\\""+r.qtyAudio+"\\" onchange=\\"upd("+idx+",\'qtyAudio\',this.value)\\"></td>";');
+    // Time
+    H.push('h+="<td><input class=\\"pi\\" type=\\"time\\" value=\\""+r.time+"\\" onchange=\\"upd("+idx+",\'time\',this.value)\\" style=\\"width:80px\\"></td>";');
+    // Execution columns — auto-filled for first row, empty for others
+    H.push('if(isFirst){');
+    H.push('var ec=function(v){return v>0?"<td class=\\"exec-val\\">"+v+"</td>":"<td class=\\"exec-val z\\">0</td>";};');
+    H.push('h+=ec(EX.total);');
+    H.push('h+=ec(EX.pa.army);h+=ec(EX.pa.other);h+=ec(EX.pa.voucher);h+=ec(EX.pa.kadatz);');
+    H.push('h+=ec(EX.fa.army);h+=ec(EX.fa.other);h+=ec(EX.fa.voucher);h+=ec(EX.fa.kadatz);');
+    H.push('}else{for(var c=0;c<9;c++)h+="<td></td>";}');
+    // Delete button
+    H.push('h+="<td class=\\"no-print\\"><button class=\\"btn-del\\" onclick=\\"removePlanRow("+idx+")\\">\\u2716</button></td>";');
+    H.push('tr.innerHTML=h;tb.appendChild(tr);');
+    H.push('})(i);}}');
 
-      // Initial row with site/license pre-filled
-      'addPlanRow();' +
+    // WA send
+    H.push('function sendReport(){');
+    H.push('var ph=document.getElementById("rpManagerPhone").value.trim();');
+    H.push('if(!ph){alert("\\u05D9\\u05E9 \\u05DC\\u05D4\\u05D6\\u05D9\\u05DF \\u05DE\\u05E1\\u05E4\\u05E8 \\u05D8\\u05DC\\u05E4\\u05D5\\u05DF \\u05E9\\u05DC \\u05E8\\u05D1 \\u05D1\\u05D5\\u05D7\\u05DF");return;}');
+    H.push('var p=ph.replace(/[^0-9]/g,"");');
+    H.push('if(p.charAt(0)==="0")p="972"+p.substring(1);');
+    H.push('if(!p.startsWith("972"))p="972"+p;');
+    H.push('var msg="*\\uD83D\\uDCCB \\u05D3\\u05D5\\"\\u05D7 \\u05D1\\u05D5\\u05D7\\u05DF \\u2014 \\u05DE\\u05D1\\u05D7\\u05DF \\u05EA\\u05D0\\u05D5\\u05E8\\u05D9\\u05D4*\\n\\n";');
+    H.push('msg+="\\uD83D\\uDCC5 \\u05EA\\u05D0\\u05E8\\u05D9\\u05DA: ' + escHtml(dateStr) + '\\n";');
+    H.push('msg+="\\uD83D\\uDCCD \\u05D0\\u05EA\\u05E8: ' + escHtml(site) + (classroom ? ' | \\u05DB\\u05D9\\u05EA\\u05D4: ' + escHtml(classroom) : '') + '\\n";');
+    H.push('msg+="\\uD83E\\uDEAA \\u05D3\\u05E8\\u05D2\\u05D4: ' + escHtml(license) + '\\n";');
+    H.push('msg+="\\uD83D\\uDC64 \\u05D1\\u05D5\\u05D7\\u05DF: ' + escHtml(examiner) + '\\n\\n";');
+    // Plan in WA
+    H.push('var hp=planRows.some(function(r){return r.site||r.qtyReq||r.qtyAppr;});');
+    H.push('if(hp){msg+="*\\uD83D\\uDCCB \\u05E1\\u05D9\\u05D3\\u05D5\\u05E8 \\u05E2\\u05D1\\u05D5\\u05D3\\u05D4:*\\n";');
+    H.push('for(var i=0;i<planRows.length;i++){var pr=planRows[i];if(!pr.site&&!pr.qtyReq)continue;');
+    H.push('msg+=(pr.site||"-")+" | "+pr.license+" | \\u05DE\\u05D1\\u05D5\\u05E7\\u05E9\\u05EA: "+(pr.qtyReq||"0")+" | \\u05DE\\u05D0\\u05D5\\u05E9\\u05E8\\u05EA: "+(pr.qtyAppr||"0")+" | \\u05D1\\u05E4\\u05D5\\u05E2\\u05DC: "+EX.total+"\\n";}');
+    H.push('msg+="\\n";}');
+    // Results
+    H.push('msg+="\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\n";');
+    H.push('msg+=\'' + waResultsEsc + '\';');
+    H.push('msg+="\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\n\\n";');
+    H.push('msg+="*\\u05E1\\u05D9\\u05DB\\u05D5\\u05DD:*\\n";');
+    H.push('msg+="\\u05E1\\u05D4\\"\\u05DB: ' + total + ' | \\u05E2\\u05D1\\u05E8\\u05D5: ' + passCount + ' | \\u05E0\\u05DB\\u05E9\\u05DC\\u05D5: ' + failCount + '\\n";');
+    H.push('msg+="\\u05D0\\u05D7\\u05D5\\u05D6 \\u05D4\\u05E6\\u05DC\\u05D7\\u05D4: ' + rate + '%\\n";');
+    if (dqCount > 0) H.push('msg+="\\u05E4\\u05E1\\u05D5\\u05DC\\u05D9\\u05DD: ' + dqCount + '\\n";');
+    H.push('msg+=\'' + waPopLines + '\';');
+    H.push('window.open("https://wa.me/"+p+"?text="+encodeURIComponent(msg),"_blank");}');
 
-      'function addPlanRow(){' +
-      'planRows.push({location:"' + site.replace(/"/g, '\\"') + '",time:"",examType:"computer",license:"' + license.replace(/"/g, '\\"') + '",sector:"army",count:"",actualExamType:"",actualCount:""});' +
-      'renderPlan();}' +
-
-      'function removePlanRow(i){planRows.splice(i,1);renderPlan();}' +
-
-      'function updatePlan(i,f,v){planRows[i][f]=v;}' +
-
-      'function renderPlan(){' +
-      'var tb=document.getElementById("planBody");tb.innerHTML="";' +
-      'for(var i=0;i<planRows.length;i++){' +
-      '(function(idx){' +
-      'var r=planRows[idx];var tr=document.createElement("tr");' +
-      'tr.innerHTML=' +
-      '"<td><input class=\\"plan-input txt\\" value=\\""+esc(r.location)+"\\" onchange=\\"updatePlan("+idx+",\'location\',this.value)\\" placeholder=\\"מקום...\\"></td>"+ ' +
-      '"<td><input class=\\"plan-input\\" type=\\"time\\" value=\\""+r.time+"\\" onchange=\\"updatePlan("+idx+",\'time\',this.value)\\"></td>"+ ' +
-      '"<td><select class=\\"plan-select\\" onchange=\\"updatePlan("+idx+",\'examType\',this.value)\\">"+ ' +
-      '"<option value=\\"computer\\""+(r.examType==="computer"?" selected":"")+">מחשב</option>"+ ' +
-      '"<option value=\\"written\\""+(r.examType==="written"?" selected":"")+">בכתב</option>"+ ' +
-      '"<option value=\\"oral\\""+(r.examType==="oral"?" selected":"")+">בעל פה</option></select></td>"+ ' +
-      '"<td><select class=\\"plan-select\\" onchange=\\"updatePlan("+idx+",\'license\',this.value)\\">"+ ' +
-      '"<option value=\\"B\\""+(r.license==="B"?" selected":"")+">B</option>"+ ' +
-      '"<option value=\\"1\\""+(r.license==="1"?" selected":"")+">1</option>"+ ' +
-      '"<option value=\\"C1\\""+(r.license==="C1"?" selected":"")+">C1</option>"+ ' +
-      '"<option value=\\"C\\""+(r.license==="C"?" selected":"")+">C</option>"+ ' +
-      '"<option value=\\"C+E\\""+(r.license==="C+E"?" selected":"")+">C+E</option>"+ ' +
-      '"<option value=\\"D\\""+(r.license==="D"?" selected":"")+">D</option></select></td>"+ ' +
-      '"<td><select class=\\"plan-select\\" onchange=\\"updatePlan("+idx+",\'sector\',this.value)\\">"+ ' +
-      '"<option value=\\"army\\""+(r.sector==="army"?" selected":"")+">צבא</option>"+ ' +
-      '"<option value=\\"voucher\\""+(r.sector==="voucher"?" selected":"")+">וואוצ׳ר</option>"+ ' +
-      '"<option value=\\"kadatz\\""+(r.sector==="kadatz"?" selected":"")+">קד\\"צ</option></select></td>"+ ' +
-      '"<td><input class=\\"plan-input num\\" type=\\"number\\" min=\\"0\\" value=\\""+r.count+"\\" onchange=\\"updatePlan("+idx+",\'count\',this.value)\\"></td>"+ ' +
-      '"<td><select class=\\"plan-select actual\\" onchange=\\"updatePlan("+idx+",\'actualExamType\',this.value)\\">"+ ' +
-      '"<option value=\\"\\""+(!r.actualExamType?" selected":"")+">-</option>"+ ' +
-      '"<option value=\\"computer\\""+(r.actualExamType==="computer"?" selected":"")+">מחשב</option>"+ ' +
-      '"<option value=\\"written\\""+(r.actualExamType==="written"?" selected":"")+">בכתב</option>"+ ' +
-      '"<option value=\\"oral\\""+(r.actualExamType==="oral"?" selected":"")+">בעל פה</option></select></td>"+ ' +
-      '"<td><input class=\\"plan-input num actual\\" type=\\"number\\" min=\\"0\\" value=\\""+r.actualCount+"\\" onchange=\\"updatePlan("+idx+",\'actualCount\',this.value)\\" placeholder=\\"\\"></td>"+ ' +
-      '"<td><button class=\\"btn-del\\" onclick=\\"removePlanRow("+idx+")\\">✖</button></td>";' +
-      'tb.appendChild(tr);})(i);}}' +
-
-      'function esc(s){return s?String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"):""}' +
-
-      // Sector label helper
-      'function sectorLbl(s){if(s==="army")return"\u05E6\u05D1\u05D0";if(s==="voucher")return"\u05D5\u05D5\u05D0\u05D5\u05E6\u05F3\u05E8";if(s==="kadatz")return"\u05E7\u05D3\\"\\u05E5";return s||"";}' +
-      'function examTypeLbl(s){if(s==="computer")return"\u05DE\u05D7\u05E9\u05D1";if(s==="written")return"\u05D1\u05DB\u05EA\u05D1";if(s==="oral")return"\u05D1\u05E2\\"\\u05E4";return s||"-";}' +
-
-      // Print: render plan as static table
-      'function doPrint(){' +
-      'var pp=document.getElementById("planPrintSection");' +
-      'var w=document.getElementById("planPrintWrap");' +
-      'if(planRows.length>0 && planRows.some(function(r){return r.location||r.count||r.actualCount;})){' +
-      'var h="<table><thead><tr><th>\u05DE\u05E7\u05D5\u05DD</th><th>\u05E9\u05E2\u05D4</th><th>\u05E1\u05D5\u05D2 \u05DE\u05D1\u05D7\u05DF</th><th>\u05D3\u05E8\u05D2\u05D4</th><th>\u05DE\u05D2\u05D6\u05E8</th><th>\u05DB\u05DE\u05D5\u05EA</th><th class=\\"actual\\">\u05E1\u05D5\u05D2 \u05D1\u05E4\u05D5\u05E2\u05DC</th><th class=\\"actual\\">\u05DB\u05DE\u05D5\u05EA \u05D1\u05E4\u05D5\u05E2\u05DC</th></tr></thead><tbody>";' +
-      'for(var i=0;i<planRows.length;i++){var r=planRows[i];' +
-      'h+="<tr><td>"+esc(r.location)+"</td><td>"+esc(r.time)+"</td><td>"+examTypeLbl(r.examType)+"</td><td>"+esc(r.license)+"</td><td>"+sectorLbl(r.sector)+"</td><td>"+esc(r.count)+"</td><td>"+examTypeLbl(r.actualExamType)+"</td><td>"+esc(r.actualCount)+"</td></tr>";}' +
-      'h+="</tbody></table>";w.innerHTML=h;pp.style.display="block";}' +
-      'else{pp.style.display="none";}' +
-      'setTimeout(function(){window.print();},100);}' +
-
-      // Build WA message dynamically (includes plan data)
-      'function sendReport(){' +
-      'var ph=document.getElementById("rpManagerPhone").value.trim();' +
-      'if(!ph){alert("\u05D9\u05E9 \u05DC\u05D4\u05D6\u05D9\u05DF \u05DE\u05E1\u05E4\u05E8 \u05D8\u05DC\u05E4\u05D5\u05DF \u05E9\u05DC \u05E8\u05D1 \u05D1\u05D5\u05D7\u05DF");return;}' +
-      'var p=ph.replace(/[^0-9]/g,"");' +
-      'if(p.charAt(0)==="0")p="972"+p.substring(1);' +
-      'if(!p.startsWith("972"))p="972"+p;' +
-
-      // Build message
-      'var msg="*\uD83D\uDCCB \u05D3\u05D5\\"\\u05D7 \u05D1\u05D5\u05D7\u05DF \\u2014 \u05DE\u05D1\u05D7\u05DF \u05EA\u05D0\u05D5\u05E8\u05D9\u05D4*\\n\\n";' +
-      'msg+="\uD83D\uDCC5 \u05EA\u05D0\u05E8\u05D9\u05DA: ' + escHtml(dateStr) + '\\n";' +
-      'msg+="\uD83D\uDCCD \u05D0\u05EA\u05E8: ' + escHtml(site) + (classroom ? ' | \u05DB\u05D9\u05EA\u05D4: ' + escHtml(classroom) : '') + '\\n";' +
-      'msg+="\uD83E\uDEAA \u05D3\u05E8\u05D2\u05D4: ' + escHtml(license) + '\\n";' +
-      'msg+="\uD83D\uDC64 \u05D1\u05D5\u05D7\u05DF: ' + escHtml(examiner) + '\\n\\n";' +
-
-      // Plan section
-      'var hasPlan=planRows.some(function(r){return r.location||r.count||r.actualCount;});' +
-      'if(hasPlan){' +
-      'msg+="*\uD83D\uDCCB \u05E1\u05D9\u05D3\u05D5\u05E8 \u05E2\u05D1\u05D5\u05D3\u05D4:*\\n";' +
-      'for(var i=0;i<planRows.length;i++){var pr=planRows[i];' +
-      'if(!pr.location&&!pr.count&&!pr.actualCount)continue;' +
-      'msg+=(pr.location||"-")+" | "+examTypeLbl(pr.examType)+" | "+sectorLbl(pr.sector)+" | \u05EA\u05DB\u05E0\u05D5\u05DF: "+(pr.count||"0")+" | \u05D1\u05E4\u05D5\u05E2\u05DC: "+(pr.actualCount||"0")+"\\n";}' +
-      'msg+="\\n";}' +
-
-      // Results
-      'msg+="\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\n";' +
-      'msg+=\'' + waResultsEsc + '\';' +
-      'msg+="\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\n\\n";' +
-
-      // Summary
-      'msg+="*\u05E1\u05D9\u05DB\u05D5\u05DD \u05DB\u05DC\u05DC\u05D9:*\\n";' +
-      'msg+="\u05E1\u05D4\\"\\u05DB: ' + total + ' | \u05E2\u05D1\u05E8\u05D5: ' + passCount + ' | \u05E0\u05DB\u05E9\u05DC\u05D5: ' + failCount + '\\n";' +
-      'msg+="\u05D0\u05D7\u05D5\u05D6 \u05D4\u05E6\u05DC\u05D7\u05D4: ' + rate + '%\\n";' +
-      (dqCount > 0 ? 'msg+="\u05E4\u05E1\u05D5\u05DC\u05D9\u05DD: ' + dqCount + '\\n";' : '') +
-      'msg+=\'' + waPopLines + '\';' +
-
-      'window.open("https://wa.me/"+p+"?text="+encodeURIComponent(msg),"_blank");}' +
-
-      '<\/script>' +
-
-      '</body></html>';
+    H.push('<\/script></body></html>');
 
     var w = window.open('', '_blank');
-    if (w) { w.document.write(html); w.document.close(); }
+    if (w) { w.document.write(H.join('')); w.document.close(); }
     else { alert('\u05D7\u05E1\u05D5\u05DD popup \u05E0\u05D7\u05E1\u05DD. \u05D0\u05E4\u05E9\u05E8 \u05D7\u05DC\u05D5\u05DF popup \u05DC\u05D0\u05EA\u05E8 \u05D6\u05D4.'); }
   };
 
