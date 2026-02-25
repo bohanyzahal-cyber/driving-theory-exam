@@ -1773,6 +1773,9 @@
       payload.wrongAnswers = JSON.stringify(wrongData);
     }
 
+    // Save result to localStorage BEFORE sending — safety net for network failures
+    try { localStorage.setItem('pendingResult_' + payload.idNumber, JSON.stringify(payload)); } catch(e2) {}
+
     submitWithRetry(payload, 3, wrongData);
 
     // Show done screen - NO score
@@ -1818,6 +1821,8 @@
       if (data.status === 'ok') {
         debugEl.innerHTML = '<span style="color:green;">&#x2705; Result submitted successfully</span>' +
           '<br>Session: ' + payload.sessionCode + ' | ID: ' + payload.idNumber + ' | Score: ' + payload.score + '/' + payload.total;
+        // Clear pending from localStorage — successfully sent
+        try { localStorage.removeItem('pendingResult_' + payload.idNumber); } catch(e3) {}
         // Now send wrong answers AFTER result row exists on server
         if (wrongData && wrongData.length > 0) {
           sendWrongAnswers(wrongData);
@@ -1842,8 +1847,7 @@
       if (retries > 1) {
         setTimeout(function() { submitWithRetry(payload, retries - 1, wrongData); }, 3000);
       } else {
-        try { localStorage.setItem('pendingResult_' + payload.idNumber, JSON.stringify(payload)); } catch(e2) {}
-        debugEl.innerHTML += '<br>Saved to localStorage for retry.';
+        debugEl.innerHTML += '<br>התוצאה שמורה. רענן את הדף כדי לנסות שוב.';
       }
     });
   }
@@ -1872,6 +1876,36 @@
       showScreen('screenIdForm');
     }
     // Note: we don't restore into exam — that would be cheating-prone
+  })();
+
+  // ========== Auto-retry pending results on page load ==========
+  (function() {
+    try {
+      for (var k = 0; k < localStorage.length; k++) {
+        var key = localStorage.key(k);
+        if (key && key.indexOf('pendingResult_') === 0) {
+          var pending = JSON.parse(localStorage.getItem(key));
+          if (pending && pending.action === 'submitResult' && pending.sessionCode) {
+            console.log('[RETRY] Found pending result for ' + pending.idNumber + ', retrying...');
+            // Show done screen with retry indicator
+            var nameEl = document.getElementById('doneNameDisplay');
+            if (nameEl) nameEl.textContent = pending.fullName || '';
+            showScreen('screenDone');
+            var debugEl = document.getElementById('submitDebug');
+            if (!debugEl) {
+              debugEl = document.createElement('div');
+              debugEl.id = 'submitDebug';
+              debugEl.style.cssText = 'margin:10px;padding:10px;background:#fff3cd;border:1px solid #ffc107;border-radius:8px;font-size:13px;text-align:center;';
+              var doneScreen = document.getElementById('screenDone');
+              if (doneScreen) doneScreen.appendChild(debugEl);
+            }
+            debugEl.innerHTML = '⏳ שולח תוצאה שנשמרה מניסיון קודם...';
+            submitWithRetry(pending, 3, null);
+            return; // handle one at a time
+          }
+        }
+      }
+    } catch(e) { console.log('[RETRY] Error:', e); }
   })();
 
   // ========== Auto-fill from URL parameter (?code=XXXXXX) ==========
