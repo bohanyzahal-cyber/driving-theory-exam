@@ -120,6 +120,8 @@
     .btn-reject { background: #ef4444; font-size: 13px; padding: 6px 14px; }
     .btn-reject:hover { background: #dc2626; }
     .btn-disqualify { background: #64748b; font-size: 12px; padding: 4px 10px; }
+    .btn-reset { background: #f59e0b; font-size: 12px; padding: 4px 10px; color: #fff; border: none; border-radius: 6px; cursor: pointer; }
+    .btn-reset:hover { background: #d97706; }
 
     /* Results table */
     .results-table { width: 100%; border-collapse: collapse; font-size: 14px; }
@@ -862,6 +864,33 @@
           }
         });
         actions.appendChild(dqBtn);
+
+        var resetBtn = document.createElement('button');
+        resetBtn.className = 'btn-reset';
+        resetBtn.textContent = 'אפס';
+        resetBtn.title = 'תקלה טכנית — אפס לרישום מחדש';
+        resetBtn.addEventListener('click', function() {
+          if (confirm('לאפס את ' + item.name + '?\nהנבחן יוכל להירשם מחדש (לא ייחשב כנכשל או פסול).')) {
+            resetBtn.disabled = true;
+            resetBtn.textContent = 'מאפס...';
+            apiGet({ action: 'resetExaminee', sessionCode: sessionCode, idNumber: item.idNumber }).then(function(data) {
+              if (data.status === 'ok') {
+                alert(item.name + ' אופס — יכול להירשם מחדש.');
+                pollDashboard();
+              } else {
+                alert('שגיאה: ' + (data.message || 'לא ידוע'));
+                resetBtn.disabled = false;
+                resetBtn.textContent = 'אפס';
+              }
+            }).catch(function() {
+              alert('שגיאת תקשורת');
+              resetBtn.disabled = false;
+              resetBtn.textContent = 'אפס';
+            });
+          }
+        });
+        actions.appendChild(resetBtn);
+
         list.appendChild(li);
       })(active[i]);
     }

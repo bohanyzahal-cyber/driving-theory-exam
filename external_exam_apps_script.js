@@ -158,6 +158,9 @@ function doGet(e) {
       case 'disqualify':
         return handleDisqualify(p);
 
+      case 'resetExaminee':
+        return handleResetExaminee(p);
+
       case 'correctToPass':
         return handleCorrectToPass(p);
 
@@ -639,6 +642,22 @@ function handleDisqualify(p) {
   ]);
   SpreadsheetApp.flush();
   return jsonResponse({ status: 'ok' });
+}
+
+function handleResetExaminee(p) {
+  var sheet = getSheet('ממתינים');
+  var data = sheet.getDataRange().getValues();
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
+      var s = String(data[i][5]).trim();
+      if (s === 'in_exam' || s === 'approved' || s === 'waiting') {
+        sheet.getRange(i + 1, 6).setValue('cancelled');
+        SpreadsheetApp.flush();
+        return jsonResponse({ status: 'ok' });
+      }
+    }
+  }
+  return jsonResponse({ status: 'error', message: 'לא נמצא נבחן פעיל לאיפוס' });
 }
 
 function handleCorrectToPass(p) {
