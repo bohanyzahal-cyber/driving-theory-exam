@@ -335,6 +335,7 @@
         <p id="approvalDebug" style="font-size:11px; color:#94a3b8; margin-top:8px;"></p>
         <p id="approvalDebugResponse" style="font-size:11px; color:#94a3b8; margin:2px 0 0; direction:ltr;"></p>
         <div id="approvalError" class="info-banner error" style="display:none; margin-top:12px;"></div>
+        <a href="#" id="changeSelectionWaiting" style="display:inline-block; margin-top:18px; font-size:13px; color:#64748b; text-decoration:underline; cursor:pointer;">טעיתי בבחירה? לחץ כאן לשנות שפה/דרגה</a>
       </div>
     </div>
     <!-- Phase B: instructions -->
@@ -357,6 +358,9 @@
         </div>
       </div>
       <button class="btn-start-exam" id="startExamBtn">התחל מבחן</button>
+      <div style="text-align:center; margin-top:12px;">
+        <a href="#" id="changeSelectionInstructions" style="font-size:13px; color:#64748b; text-decoration:underline; cursor:pointer;">טעיתי בבחירה? שנה שפה/דרגה</a>
+      </div>
     </div>
     <div class="info-banner error" id="rejectedMsg" style="display:none;">הבוחן דחה את הכניסה שלך. פנה לבוחן.</div>
   </section>
@@ -781,6 +785,34 @@
     // Pre-load translation file so it's ready when exam starts
     loadTranslationFile(sessionData.language || 'he');
   }
+
+  // ========== Change Selection (cancel + go back to registration) ==========
+  function cancelAndChangeSelection(e) {
+    e.preventDefault();
+    if (!confirm('לחזור לטופס הרישום כדי לשנות שפה או דרגה?\nהבוחן יצטרך לאשר אותך שוב.')) return;
+    // Stop approval polling
+    if (approvalInterval) { clearInterval(approvalInterval); approvalInterval = null; }
+    // Cancel registration on server
+    apiGet({ action: 'cancelRegistration', sessionCode: sessionCode, idNumber: examineeData.idNumber }).then(function() {
+      // Restore session defaults
+      sessionData.language = sessionData._defaultLanguage || 'he';
+      sessionData.license = sessionData._defaultLicense || 'B';
+      // Reset UI and go back to registration form
+      document.getElementById('waitingPhase').style.display = 'block';
+      document.getElementById('instructionsPhase').style.display = 'none';
+      document.getElementById('audioModeNotice').style.display = 'none';
+      var langSel = document.getElementById('languageSelect');
+      if (langSel) langSel.value = sessionData._defaultLanguage || 'he';
+      var licSel = document.getElementById('licenseSelect');
+      if (licSel) licSel.value = sessionData._defaultLicense || 'B';
+      showScreen('screenIdForm');
+      saveExamineeState('screenIdForm');
+    }).catch(function() {
+      alert('שגיאת תקשורת. נסה שוב.');
+    });
+  }
+  document.getElementById('changeSelectionWaiting').addEventListener('click', cancelAndChangeSelection);
+  document.getElementById('changeSelectionInstructions').addEventListener('click', cancelAndChangeSelection);
 
   // ========== Start Exam ==========
   function doStartExam() {
