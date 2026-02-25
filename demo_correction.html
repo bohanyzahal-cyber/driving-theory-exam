@@ -1,0 +1,1149 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>סימולציה — תיקון ציון | מערכת מבחן תאוריה חיצוני</title>
+<style>
+/* ───────── RESET & BASE ───────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --navy-900: #0a1628;
+  --navy-800: #111d35;
+  --navy-700: #172a46;
+  --navy-600: #1e3a5f;
+  --navy-500: #264d7a;
+  --navy-400: #3b6ea5;
+  --navy-300: #5a9fd4;
+  --gold: #c9a227;
+  --gold-light: #e8cc5a;
+  --green-600: #16a34a;
+  --green-100: #dcfce7;
+  --red-600: #dc2626;
+  --red-100: #fee2e2;
+  --amber-500: #f59e0b;
+  --amber-100: #fef3c7;
+  --slate-100: #f1f5f9;
+  --slate-200: #e2e8f0;
+  --slate-300: #cbd5e1;
+  --slate-400: #94a3b8;
+  --slate-500: #64748b;
+  --slate-600: #475569;
+  --slate-800: #1e293b;
+  --radius: 12px;
+  --shadow-card: 0 4px 24px rgba(10,22,40,0.10);
+  --shadow-heavy: 0 12px 48px rgba(10,22,40,0.22);
+}
+body {
+  font-family: 'Segoe UI', Tahoma, Arial, sans-serif;
+  background: linear-gradient(160deg, #e8edf4 0%, #f0f4f8 40%, #e2e8f0 100%);
+  color: var(--slate-800);
+  direction: rtl;
+  min-height: 100vh;
+  padding-bottom: 40px;
+}
+
+/* ───────── HEADER ───────── */
+.header {
+  background: linear-gradient(135deg, var(--navy-900) 0%, var(--navy-700) 60%, var(--navy-600) 100%);
+  color: white;
+  padding: 28px 24px 24px;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+.header::before {
+  content: '';
+  position: absolute;
+  top: -50%;
+  right: -20%;
+  width: 60%;
+  height: 200%;
+  background: radial-gradient(ellipse, rgba(201,162,39,0.08) 0%, transparent 70%);
+  pointer-events: none;
+}
+.header-badge {
+  display: inline-block;
+  background: rgba(201,162,39,0.15);
+  border: 1px solid rgba(201,162,39,0.35);
+  color: var(--gold-light);
+  font-size: 0.72em;
+  font-weight: 700;
+  letter-spacing: 2px;
+  padding: 4px 18px;
+  border-radius: 20px;
+  margin-bottom: 12px;
+  text-transform: uppercase;
+}
+.header h1 {
+  font-size: 1.65em;
+  font-weight: 800;
+  margin-bottom: 6px;
+  letter-spacing: 0.5px;
+}
+.header h1 .accent { color: var(--gold-light); }
+.header-sub {
+  font-size: 0.92em;
+  color: rgba(255,255,255,0.6);
+  font-weight: 400;
+}
+.header-meta {
+  display: flex;
+  justify-content: center;
+  gap: 28px;
+  margin-top: 16px;
+  font-size: 0.82em;
+  color: rgba(255,255,255,0.5);
+}
+.header-meta span { display: flex; align-items: center; gap: 6px; }
+
+/* ───────── CONTAINER ───────── */
+.container {
+  max-width: 1060px;
+  margin: 0 auto;
+  padding: 0 20px;
+}
+
+/* ───────── STATS BAR ───────── */
+.stats-bar {
+  display: flex;
+  gap: 12px;
+  margin-top: -28px;
+  position: relative;
+  z-index: 10;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.stat-card {
+  background: white;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  padding: 14px 22px;
+  text-align: center;
+  min-width: 120px;
+  flex: 1;
+  max-width: 180px;
+  border-top: 3px solid var(--slate-300);
+  transition: transform 0.2s;
+}
+.stat-card:hover { transform: translateY(-2px); }
+.stat-card.total { border-top-color: var(--navy-400); }
+.stat-card.passed { border-top-color: var(--green-600); }
+.stat-card.failed { border-top-color: var(--red-600); }
+.stat-card.dq { border-top-color: var(--slate-400); }
+.stat-card.rate { border-top-color: var(--gold); }
+.stat-number {
+  font-size: 1.9em;
+  font-weight: 800;
+  line-height: 1;
+  margin-bottom: 2px;
+}
+.stat-card.total .stat-number { color: var(--navy-600); }
+.stat-card.passed .stat-number { color: var(--green-600); }
+.stat-card.failed .stat-number { color: var(--red-600); }
+.stat-card.dq .stat-number { color: var(--slate-500); }
+.stat-card.rate .stat-number { color: var(--gold); }
+.stat-label {
+  font-size: 0.78em;
+  color: var(--slate-500);
+  font-weight: 600;
+}
+
+/* ───────── EXPLANATION BOX ───────── */
+.explain {
+  background: white;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  padding: 22px 26px;
+  margin-top: 20px;
+  border-right: 4px solid var(--navy-600);
+}
+.explain-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  font-size: 1.05em;
+  font-weight: 700;
+  color: var(--navy-700);
+}
+.explain-header .icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: var(--navy-700);
+  color: white;
+  border-radius: 8px;
+  font-size: 0.95em;
+}
+.explain-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 24px;
+}
+.explain-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 0.88em;
+  line-height: 1.6;
+  color: var(--slate-600);
+}
+.explain-item .bullet {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7em;
+  font-weight: 800;
+  margin-top: 2px;
+}
+.bullet-blue { background: #dbeafe; color: #1d4ed8; }
+.bullet-amber { background: #fef3c7; color: #92400e; }
+.bullet-green { background: #dcfce7; color: #166534; }
+.bullet-red { background: #fee2e2; color: #991b1b; }
+.bullet-gray { background: #f1f5f9; color: #475569; }
+.tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 6px;
+  font-weight: 700;
+  font-size: 0.88em;
+}
+.tag-blue { background: #dbeafe; color: #1d4ed8; }
+.tag-amber { background: #fef3c7; color: #92400e; }
+.tag-green { background: #dcfce7; color: #166534; }
+.tag-red { background: #fee2e2; color: #991b1b; }
+
+/* ───────── STEP INDICATOR ───────── */
+.step-bar {
+  margin-top: 20px;
+  text-align: center;
+}
+.step-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 22px;
+  border-radius: 24px;
+  font-size: 0.88em;
+  font-weight: 700;
+  transition: all 0.4s ease;
+}
+.step-1 { background: #dbeafe; color: #1d4ed8; }
+.step-2 { background: #fef3c7; color: #92400e; }
+.step-3 { background: #dcfce7; color: #166534; }
+.step-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  animation: stepPulse 1.5s infinite;
+}
+.step-1 .step-dot { background: #1d4ed8; }
+.step-2 .step-dot { background: #92400e; }
+.step-3 .step-dot { background: #166534; }
+@keyframes stepPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.7); }
+}
+
+/* ───────── TABLE CARD ───────── */
+.card {
+  background: white;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  margin-top: 20px;
+  overflow: hidden;
+}
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 22px;
+  background: linear-gradient(135deg, var(--navy-800) 0%, var(--navy-700) 100%);
+  color: white;
+}
+.card-header h2 {
+  font-size: 1em;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.card-header .session-code {
+  background: rgba(255,255,255,0.12);
+  padding: 3px 12px;
+  border-radius: 8px;
+  font-size: 0.85em;
+  font-family: 'Consolas', 'Courier New', monospace;
+  direction: ltr;
+  letter-spacing: 1.5px;
+}
+.card-actions { display: flex; gap: 8px; }
+.btn-print {
+  background: rgba(255,255,255,0.12);
+  border: 1px solid rgba(255,255,255,0.2);
+  color: white;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 0.82em;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.btn-print:hover { background: rgba(255,255,255,0.22); }
+
+/* ───────── TABLE ───────── */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 0.88em; }
+thead th {
+  background: var(--slate-100);
+  padding: 11px 10px;
+  text-align: right;
+  font-weight: 700;
+  color: var(--slate-600);
+  border-bottom: 2px solid var(--slate-300);
+  white-space: nowrap;
+  font-size: 0.92em;
+}
+tbody td {
+  padding: 11px 10px;
+  border-bottom: 1px solid var(--slate-200);
+  vertical-align: middle;
+}
+tbody tr { transition: background 0.2s; }
+tbody tr:hover { background: #f8fafc; }
+tbody tr:last-child td { border-bottom: none; }
+
+.name-cell { font-weight: 700; }
+.id-cell { font-family: 'Consolas', 'Courier New', monospace; color: var(--slate-500); direction: ltr; text-align: right; font-size: 0.95em; }
+.rank-cell { font-size: 0.85em; color: var(--slate-600); }
+.pop-cell {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 6px;
+  font-size: 0.8em;
+  font-weight: 700;
+}
+.pop-army { background: #dbeafe; color: #1d4ed8; }
+.pop-kadatz { background: #f3e8ff; color: #7c3aed; }
+.pop-voucher { background: #fef3c7; color: #92400e; }
+
+.license-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 22px;
+  border-radius: 5px;
+  font-weight: 800;
+  font-size: 0.78em;
+  letter-spacing: 0.5px;
+}
+.license-B { background: #dbeafe; color: #1d4ed8; }
+.license-C1 { background: #fce7f3; color: #be185d; }
+
+.mode-cell { font-size: 0.85em; }
+.mode-audio {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  background: #fff7ed;
+  color: #c2410c;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 0.85em;
+  font-weight: 600;
+}
+.mode-computer { color: var(--slate-500); font-size: 0.85em; }
+
+.score-cell { font-weight: 700; direction: ltr; text-align: right; }
+.score-errors { color: var(--slate-400); font-size: 0.8em; font-weight: 400; margin-right: 4px; }
+
+/* Badges */
+.badge {
+  display: inline-block;
+  padding: 4px 14px;
+  border-radius: 10px;
+  font-weight: 800;
+  font-size: 0.82em;
+  letter-spacing: 0.3px;
+}
+.badge-pass { background: var(--green-100); color: var(--green-600); }
+.badge-fail { background: var(--red-100); color: var(--red-600); }
+.badge-corrected { background: var(--green-100); color: var(--green-600); border: 1.5px dashed var(--green-600); }
+.badge-dq { background: #f1f5f9; color: var(--slate-500); }
+
+/* Action buttons */
+.actions-cell { white-space: nowrap; display: flex; gap: 5px; align-items: center; flex-wrap: nowrap; }
+.btn-sm {
+  padding: 5px 10px;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.78em;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.btn-sm:hover { transform: translateY(-1px); filter: brightness(1.08); }
+.btn-pdf { background: #fef2f2; color: #dc2626; }
+.btn-wa { background: #ecfdf5; color: #059669; }
+.btn-correct {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  color: white;
+  padding: 5px 12px;
+  box-shadow: 0 2px 8px rgba(245,158,11,0.3);
+}
+.btn-correct:hover { box-shadow: 0 4px 12px rgba(245,158,11,0.45); }
+.btn-correct:disabled { background: #d1d5db; box-shadow: none; cursor: default; transform: none; filter: none; }
+.lock-icon {
+  color: var(--slate-400);
+  font-size: 0.9em;
+  cursor: default;
+  position: relative;
+}
+.lock-icon:hover::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: 130%;
+  right: 50%;
+  transform: translateX(50%);
+  background: var(--navy-800);
+  color: white;
+  font-size: 0.78em;
+  font-weight: 400;
+  padding: 5px 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+  z-index: 20;
+  pointer-events: none;
+}
+
+/* ───────── MODALS ───────── */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(10,22,40,0.55);
+  backdrop-filter: blur(4px);
+  z-index: 1000;
+  justify-content: center;
+  align-items: center;
+}
+.modal-overlay.show { display: flex; }
+.modal-box {
+  background: white;
+  border-radius: 16px;
+  padding: 0;
+  max-width: 600px;
+  width: 92%;
+  max-height: 85vh;
+  overflow: hidden;
+  box-shadow: var(--shadow-heavy);
+  animation: modalIn 0.25s ease;
+}
+@keyframes modalIn {
+  from { opacity: 0; transform: translateY(20px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.modal-header {
+  padding: 18px 24px;
+  background: linear-gradient(135deg, var(--navy-800), var(--navy-700));
+  color: white;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.modal-header h3 { font-size: 1.05em; font-weight: 700; }
+.modal-header .icon-circle {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: rgba(245,158,11,0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1em;
+}
+.modal-body {
+  padding: 20px 24px;
+  overflow-y: auto;
+  max-height: calc(85vh - 160px);
+}
+.modal-info-row {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.modal-info-item {
+  flex: 1;
+  background: var(--slate-100);
+  padding: 10px 14px;
+  border-radius: 10px;
+  text-align: center;
+}
+.modal-info-item .label { font-size: 0.75em; color: var(--slate-500); font-weight: 600; margin-bottom: 2px; }
+.modal-info-item .value { font-size: 1.1em; font-weight: 800; color: var(--slate-800); }
+
+.wrong-list {
+  background: #fef8f8;
+  border: 1px solid #fecaca;
+  border-radius: 12px;
+  padding: 4px 0;
+  margin: 12px 0;
+}
+.wrong-item {
+  padding: 12px 18px;
+  border-bottom: 1px solid #fde8e8;
+}
+.wrong-item:last-child { border-bottom: none; }
+.wrong-item .q-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: var(--red-100);
+  color: var(--red-600);
+  border-radius: 6px;
+  font-size: 0.75em;
+  font-weight: 800;
+  margin-left: 8px;
+}
+.wrong-item .q-text { font-weight: 700; font-size: 0.9em; color: var(--slate-800); margin-bottom: 6px; }
+.wrong-item .ans-row {
+  display: flex;
+  gap: 16px;
+  font-size: 0.84em;
+}
+.wrong-item .ans-label { color: var(--slate-500); font-weight: 600; }
+.wrong-item .ans-wrong { color: var(--red-600); font-weight: 700; text-decoration: line-through; text-decoration-thickness: 1.5px; }
+.wrong-item .ans-right { color: var(--green-600); font-weight: 700; }
+
+.modal-footer {
+  padding: 16px 24px;
+  border-top: 1px solid var(--slate-200);
+  display: flex;
+  gap: 10px;
+  background: #fafbfc;
+}
+.btn-modal {
+  flex: 1;
+  padding: 12px;
+  border: none;
+  border-radius: 10px;
+  font-size: 0.95em;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.btn-modal-confirm {
+  background: linear-gradient(135deg, var(--amber-500), #d97706);
+  color: white;
+  box-shadow: 0 3px 12px rgba(245,158,11,0.3);
+}
+.btn-modal-confirm:hover { filter: brightness(1.08); box-shadow: 0 5px 16px rgba(245,158,11,0.4); }
+.btn-modal-confirm:disabled {
+  background: var(--slate-300);
+  box-shadow: none;
+  cursor: wait;
+}
+.btn-modal-cancel {
+  background: var(--slate-200);
+  color: var(--slate-600);
+}
+.btn-modal-cancel:hover { background: var(--slate-300); }
+
+/* Success modal */
+.success-icon {
+  width: 72px;
+  height: 72px;
+  margin: 0 auto 16px;
+  background: var(--green-100);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2.2em;
+  animation: successPop 0.4s ease;
+}
+@keyframes successPop {
+  0% { transform: scale(0.5); opacity: 0; }
+  60% { transform: scale(1.15); }
+  100% { transform: scale(1); opacity: 1; }
+}
+.success-title { font-size: 1.2em; font-weight: 800; color: var(--green-600); margin-bottom: 6px; }
+.success-sub { color: var(--slate-500); font-size: 0.92em; }
+.btn-success-close {
+  margin-top: 18px;
+  width: 100%;
+  padding: 12px;
+  background: var(--green-600);
+  color: white;
+  border: none;
+  border-radius: 10px;
+  font-size: 0.95em;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn-success-close:hover { background: #15803d; }
+
+/* Loading spinner */
+.spinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2.5px solid rgba(255,255,255,0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Row flash */
+.success-flash { animation: flashGreen 2s ease; }
+@keyframes flashGreen {
+  0% { background: #bbf7d0; }
+  100% { background: transparent; }
+}
+
+/* DQ row */
+tr.row-dq { opacity: 0.6; }
+tr.row-dq td { font-style: italic; }
+
+/* ───────── FOOTER ───────── */
+.page-footer {
+  text-align: center;
+  margin-top: 32px;
+  padding: 16px;
+  color: var(--slate-400);
+  font-size: 0.78em;
+}
+.page-footer .line2 { margin-top: 4px; direction: ltr; }
+
+/* ───────── PRINT ───────── */
+@media print {
+  body { background: white; padding: 0; }
+  .header { background: var(--navy-900) !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .stats-bar { margin-top: 12px; }
+  .stat-card { box-shadow: none; border: 1px solid var(--slate-200); }
+  .explain { box-shadow: none; border: 1px solid var(--slate-200); }
+  .card { box-shadow: none; border: 1px solid var(--slate-200); }
+  .btn-print, .actions-cell .btn-sm, .lock-icon { display: none !important; }
+  .step-bar { display: none; }
+  .modal-overlay { display: none !important; }
+  .page-footer .line2 { display: none; }
+  table { font-size: 0.82em; }
+  thead th, tbody td { padding: 8px 6px; }
+  .badge, .pop-cell, .license-badge, .mode-audio {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  @page { margin: 12mm; }
+}
+
+/* ───────── RESPONSIVE ───────── */
+@media (max-width: 700px) {
+  .explain-grid { grid-template-columns: 1fr; }
+  .stats-bar { gap: 8px; }
+  .stat-card { min-width: 80px; padding: 10px 12px; }
+  .stat-number { font-size: 1.4em; }
+  .header h1 { font-size: 1.25em; }
+  .header-meta { flex-wrap: wrap; gap: 12px; }
+  .modal-info-row { flex-direction: column; gap: 8px; }
+}
+</style>
+</head>
+<body>
+
+<!-- ═══════ HEADER ═══════ -->
+<div class="header">
+  <div class="header-badge">צה"ל — ענף הדרכה ומבחנים</div>
+  <h1>מערכת מבחן תאוריה חיצוני — <span class="accent">סימולציית תיקון ציון</span></h1>
+  <p class="header-sub">הדגמת תהליך תיקון ציון נכשל במערכת הבוחנים</p>
+  <div class="header-meta">
+    <span>&#128197; תאריך: 24.02.2026</span>
+    <span>&#128205; אתר: בסיס 1 — בה"ד 20</span>
+    <span>&#128100; בוחן: רס"ל דנה מזרחי</span>
+  </div>
+</div>
+
+<!-- ═══════ STATS BAR ═══════ -->
+<div class="container">
+  <div class="stats-bar" id="statsBar">
+    <!-- filled by JS -->
+  </div>
+
+  <!-- ═══════ EXPLANATION ═══════ -->
+  <div class="explain">
+    <div class="explain-header">
+      <div class="icon">&#9432;</div>
+      <span>מנגנון תיקון ציון — איך זה עובד?</span>
+    </div>
+    <div class="explain-grid">
+      <div class="explain-item">
+        <div class="bullet bullet-blue">1</div>
+        <div>המבחן כולל <span class="tag tag-blue">30 שאלות</span>, סף מעבר: <strong>26 תשובות נכונות</strong> (עד 4 שגיאות)</div>
+      </div>
+      <div class="explain-item">
+        <div class="bullet bullet-amber">2</div>
+        <div>נכשל עם ציון <span class="tag tag-amber">24+</span> (5-6 שגיאות) &larr; מופיע כפתור <span class="tag tag-amber">&#9889; תקן</span> בצהוב</div>
+      </div>
+      <div class="explain-item">
+        <div class="bullet bullet-green">3</div>
+        <div>הבוחן רואה <strong>פירוט שאלות שגויות</strong>, בודק ומאשר &rarr; סטטוס משתנה ל-<span class="tag tag-green">עבר &#9998;</span></div>
+      </div>
+      <div class="explain-item">
+        <div class="bullet bullet-red">4</div>
+        <div><strong>7+ שגיאות</strong> (ציון &lt;24) &rarr; <span class="tag tag-red">נעול</span> — לא ניתן לתקן, הנכשל חייב לגשת מחדש</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════ STEP INDICATOR ═══════ -->
+  <div class="step-bar" id="stepBar">
+    <div class="step-pill step-1" id="stepPill">
+      <div class="step-dot"></div>
+      <span>שלב 1: צפה בטבלת התוצאות &larr; לחץ "&#9889; תקן" ליד נבחן שנכשל</span>
+    </div>
+  </div>
+
+  <!-- ═══════ RESULTS TABLE ═══════ -->
+  <div class="card">
+    <div class="card-header">
+      <h2>&#128202; תוצאות נבחנים <span class="session-code">482917#</span></h2>
+      <div class="card-actions">
+        <button class="btn-print" onclick="window.print()">&#128424; הדפסה</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>שם</th>
+            <th>ת.ז.</th>
+            <th>דרגה</th>
+            <th>אוכלוסיה</th>
+            <th>רישיון</th>
+            <th>אופן</th>
+            <th>ציון</th>
+            <th>תוצאה</th>
+            <th>פעולות</th>
+          </tr>
+        </thead>
+        <tbody id="resultsBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ═══════ FOOTER ═══════ -->
+  <div class="page-footer">
+    <div>מערכת מבחן תאוריה חיצוני — ענף הדרכה ומבחנים, צה"ל</div>
+    <div class="line2">Demo Simulation &mdash; Score Correction Flow</div>
+  </div>
+</div>
+
+<!-- ═══════ CORRECTION MODAL ═══════ -->
+<div class="modal-overlay" id="correctionModal">
+  <div class="modal-box">
+    <div class="modal-header">
+      <div class="icon-circle">&#9889;</div>
+      <h3>תיקון ציון &mdash; <span id="modalName"></span></h3>
+    </div>
+    <div class="modal-body">
+      <div class="modal-info-row">
+        <div class="modal-info-item">
+          <div class="label">ציון</div>
+          <div class="value" id="modalScore"></div>
+        </div>
+        <div class="modal-info-item">
+          <div class="label">שגיאות</div>
+          <div class="value" id="modalErrors" style="color: var(--red-600);"></div>
+        </div>
+        <div class="modal-info-item">
+          <div class="label">סף מעבר</div>
+          <div class="value">26/30</div>
+        </div>
+      </div>
+      <div class="wrong-list" id="modalWrongList"></div>
+      <p style="font-size: 0.9em; color: var(--slate-500); text-align: center;">
+        לאחר בדיקת השאלות &mdash; האם לשנות את התוצאה ל<strong>"עבר"</strong>?
+      </p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-modal btn-modal-confirm" id="btnConfirmCorrect">&#10003; תקן לעבר</button>
+      <button class="btn-modal btn-modal-cancel" id="btnCancelCorrect">ביטול</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════ SUCCESS MODAL ═══════ -->
+<div class="modal-overlay" id="successModal">
+  <div class="modal-box" style="max-width: 420px;">
+    <div style="padding: 32px 24px; text-align: center;">
+      <div class="success-icon">&#10004;</div>
+      <div class="success-title">תוקן בהצלחה!</div>
+      <p class="success-sub" id="successText"></p>
+      <button class="btn-success-close" onclick="closeSuccess()">סגור</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  /* ═══════ DATA ═══════ */
+  var examinees = [
+    {
+      name: 'יוסף כהן',
+      id: '7284',
+      rank: 'טור\'',
+      pop: 'army',
+      popLabel: 'צבא',
+      license: 'B',
+      mode: 'computer',
+      score: 28,
+      total: 30,
+      status: 'pass',
+      corrected: false,
+      wrong: [
+        { q: 'מהי המהירות המרבית המותרת בדרך עירונית?', yours: '70 קמ"ש', correct: '50 קמ"ש' },
+        { q: 'מתי חובה להדליק אורות יום?', yours: 'רק בכביש בינעירוני', correct: 'בכל נסיעה מחוץ לשטח עירוני' }
+      ]
+    },
+    {
+      name: 'שרה לוי',
+      id: '3391',
+      rank: 'רב"ט',
+      pop: 'army',
+      popLabel: 'צבא',
+      license: 'B',
+      mode: 'computer',
+      score: 25,
+      total: 30,
+      status: 'fail',
+      corrected: false,
+      wrong: [
+        { q: 'מה הכלל בצומת שווי זכויות?', yours: 'ימין מקבל זכות קדימה', correct: 'תנועה מימין קודמת' },
+        { q: 'מרחק עצירה כולל מורכב מ:?', yours: 'מרחק בלימה בלבד', correct: 'מרחק תגובה + מרחק בלימה' },
+        { q: 'מתי מותר לעקוף מימין?', yours: 'כשנוסעים לאט', correct: 'כשהרכב שלפניך פנה שמאלה או מסמן שמאלה' },
+        { q: 'מהו תפקיד מערכת ABS?', yours: 'מקצרת מרחק בלימה', correct: 'מונעת נעילת גלגלים בעת בלימה' },
+        { q: 'מה המשמעות של קו הפרדה לבן רצוף?', yours: 'מותר לחצות בזהירות', correct: 'אסור לחצות או לעבור עליו' }
+      ]
+    },
+    {
+      name: 'אחמד חסן',
+      id: '9015',
+      rank: 'טור\'',
+      pop: 'kadatz',
+      popLabel: 'קד"צ',
+      license: 'C1',
+      mode: 'audio',
+      score: 24,
+      total: 30,
+      status: 'fail',
+      corrected: false,
+      wrong: [
+        { q: 'מהי חובת חגורת בטיחות ברכב?', yours: 'רק במושב קדמי', correct: 'כל הנוסעים ברכב' },
+        { q: 'מה סדר הפעולות הנכון לפני נסיעה?', yours: 'התנעה ואז חגורה', correct: 'חגורה ואז התנעה' },
+        { q: 'מרחק מינימלי מרכב שלפניך בעיר?', yours: 'שנייה אחת', correct: 'שתי שניות לפחות' },
+        { q: 'מהי כמות האלכוהול המותרת בנהיגה?', yours: 'כוס בירה אחת', correct: 'עד 240 מיקרוגרם לליטר אוויר נשוף' },
+        { q: 'מתי חובה להפעיל מגבי שמשה?', yours: 'כשהגשם חזק', correct: 'בכל עת שהראות מוגבלת' },
+        { q: 'מה משמעות תמרור עיגול אדום עם פס לבן?', yours: 'האט', correct: 'אסורה הכניסה לכל רכב' }
+      ]
+    },
+    {
+      name: 'מיכל אברהם',
+      id: '6647',
+      rank: 'סמל',
+      pop: 'voucher',
+      popLabel: 'ווצ\'ר',
+      license: 'B',
+      mode: 'computer',
+      score: 22,
+      total: 30,
+      status: 'fail',
+      corrected: false,
+      wrong: [
+        { q: 'מה חובה לעשות לפני פניית פרסה?', yours: 'להאט ולפנות', correct: 'לוודא שאין שלט האוסר זאת ושאין סכנה' },
+        { q: 'מהי משמעות רמזור מהבהב צהוב?', yours: 'עצור', correct: 'נהג בזהירות מיוחדת' },
+        { q: 'מה הדין בנהיגה תחת השפעת סמים?', yours: 'קנס בלבד', correct: 'עבירה פלילית — פסילת רישיון ומאסר' },
+        { q: 'מרחק חניה ממעבר חצייה?', yours: '5 מטר', correct: '12 מטר לפני ואחרי' },
+        { q: 'מה סימון משולש אדום הפוך?', yours: 'עצור', correct: 'תן זכות קדימה' },
+        { q: 'מתי נדרש להשתמש באורות גבוהים?', yours: 'בכל נסיעת לילה', correct: 'כשאין תאורה ואין רכב מולך' },
+        { q: 'מהי חובת הנהג בתאונת דרכים עם נפגעים?', yours: 'להמשיך ולדווח אח"כ', correct: 'לעצור, לסייע ולהזעיק עזרה מיד' },
+        { q: 'מה המשמעות של סימון כפול צהוב בשפת הכביש?', yours: 'מותר לעצור לפריקה', correct: 'אסורה העצירה והחניה' }
+      ]
+    },
+    {
+      name: 'דוד ביטון',
+      id: '4521',
+      rank: 'רב"ט',
+      pop: 'army',
+      popLabel: 'צבא',
+      license: 'B',
+      mode: 'computer',
+      score: 0,
+      total: 30,
+      status: 'dq',
+      corrected: false,
+      dqReason: 'מעבר בין חלונות/לשוניות',
+      wrong: []
+    }
+  ];
+
+  var currentCorrectIdx = -1;
+
+  /* ═══════ STATS ═══════ */
+  function updateStats() {
+    var total = examinees.length;
+    var passed = 0, failed = 0, dq = 0;
+    for (var i = 0; i < examinees.length; i++) {
+      if (examinees[i].status === 'dq') dq++;
+      else if (examinees[i].status === 'pass' || examinees[i].corrected) passed++;
+      else failed++;
+    }
+    var validExams = total - dq;
+    var rate = validExams > 0 ? Math.round((passed / validExams) * 100) : 0;
+
+    document.getElementById('statsBar').innerHTML =
+      '<div class="stat-card total"><div class="stat-number">' + total + '</div><div class="stat-label">&#1505;&#1492;"&#1499; &#1504;&#1489;&#1495;&#1504;&#1497;&#1501;</div></div>' +
+      '<div class="stat-card passed"><div class="stat-number" id="statPassed">' + passed + '</div><div class="stat-label">&#1506;&#1489;&#1512;&#1493;</div></div>' +
+      '<div class="stat-card failed"><div class="stat-number" id="statFailed">' + failed + '</div><div class="stat-label">&#1504;&#1499;&#1513;&#1500;&#1493;</div></div>' +
+      '<div class="stat-card dq"><div class="stat-number">' + dq + '</div><div class="stat-label">&#1508;&#1505;&#1493;&#1500;&#1497;&#1501;</div></div>' +
+      '<div class="stat-card rate"><div class="stat-number" id="statRate">' + rate + '%</div><div class="stat-label">&#1488;&#1495;&#1493;&#1494; &#1502;&#1506;&#1489;&#1512;</div></div>';
+  }
+
+  /* ═══════ RENDER TABLE ═══════ */
+  function render() {
+    updateStats();
+
+    var tbody = document.getElementById('resultsBody');
+    tbody.innerHTML = '';
+
+    for (var i = 0; i < examinees.length; i++) {
+      var e = examinees[i];
+      var errors = e.total - e.score;
+      var isDQ = e.status === 'dq';
+      var isPassed = e.status === 'pass' || e.corrected;
+      var canCorrect = e.status === 'fail' && !e.corrected && e.score >= 24;
+      var isLocked = e.status === 'fail' && !e.corrected && e.score < 24;
+
+      // Badge
+      var badgeClass, badgeText;
+      if (isDQ) {
+        badgeClass = 'badge-dq';
+        badgeText = '&#128683; &#1508;&#1505;&#1493;&#1500;';
+      } else if (e.corrected) {
+        badgeClass = 'badge-corrected';
+        badgeText = '&#1506;&#1489;&#1512; &#9998;';
+      } else if (isPassed) {
+        badgeClass = 'badge-pass';
+        badgeText = '&#1506;&#1489;&#1512;';
+      } else {
+        badgeClass = 'badge-fail';
+        badgeText = '&#1504;&#1499;&#1513;&#1500;';
+      }
+
+      // Population class
+      var popClass = e.pop === 'army' ? 'pop-army' : e.pop === 'kadatz' ? 'pop-kadatz' : 'pop-voucher';
+
+      // Mode
+      var modeHtml = e.mode === 'audio'
+        ? '<span class="mode-audio">&#128264; &#1513;&#1502;&#1506;</span>'
+        : '<span class="mode-computer">&#128187; &#1502;&#1495;&#1513;&#1489;</span>';
+
+      // Score display
+      var scoreHtml;
+      if (isDQ) {
+        scoreHtml = '<span style="color:var(--slate-400);">&mdash;</span>';
+      } else {
+        scoreHtml = '<span class="score-cell">' + e.score + '/' + e.total + '</span>' +
+                    '<span class="score-errors">(' + errors + ' &#1513;&#1490;&#1497;&#1488;&#1493;&#1514;)</span>';
+      }
+
+      // Actions
+      var actionsHtml = '';
+      if (!isDQ) {
+        actionsHtml += '<button class="btn-sm btn-pdf">&#128196; PDF</button>';
+        actionsHtml += '<button class="btn-sm btn-wa">&#128241; WA</button>';
+      }
+      if (canCorrect) {
+        actionsHtml += '<button class="btn-sm btn-correct" data-idx="' + i + '">&#9889; &#1514;&#1511;&#1503;</button>';
+      }
+      if (isLocked) {
+        actionsHtml += '<span class="lock-icon" data-tip="&#1510;&#1497;&#1493;&#1503; &#1504;&#1502;&#1493;&#1498; &#1502;-24, &#1500;&#1488; &#1504;&#1497;&#1514;&#1503; &#1500;&#1514;&#1511;&#1503;">&#128274;</span>';
+      }
+      if (isDQ) {
+        actionsHtml += '<span style="font-size:0.8em;color:var(--slate-400);">' + e.dqReason + '</span>';
+      }
+
+      var tr = document.createElement('tr');
+      tr.id = 'row-' + i;
+      if (isDQ) tr.className = 'row-dq';
+      tr.innerHTML =
+        '<td>' + (i + 1) + '</td>' +
+        '<td class="name-cell">' + e.name + '</td>' +
+        '<td class="id-cell">....' + e.id + '</td>' +
+        '<td class="rank-cell">' + e.rank + '</td>' +
+        '<td><span class="pop-cell ' + popClass + '">' + e.popLabel + '</span></td>' +
+        '<td><span class="license-badge license-' + e.license + '">' + e.license + '</span></td>' +
+        '<td>' + modeHtml + '</td>' +
+        '<td>' + scoreHtml + '</td>' +
+        '<td><span class="badge ' + badgeClass + '">' + badgeText + '</span></td>' +
+        '<td class="actions-cell">' + actionsHtml + '</td>';
+
+      tbody.appendChild(tr);
+    }
+
+    // Bind correct buttons
+    var btns = document.querySelectorAll('.btn-correct');
+    for (var b = 0; b < btns.length; b++) {
+      btns[b].addEventListener('click', function() {
+        openCorrectionModal(parseInt(this.getAttribute('data-idx')));
+      });
+    }
+  }
+
+  /* ═══════ CORRECTION MODAL ═══════ */
+  function openCorrectionModal(idx) {
+    currentCorrectIdx = idx;
+    var e = examinees[idx];
+    var errors = e.total - e.score;
+
+    document.getElementById('modalName').textContent = e.name;
+    document.getElementById('modalScore').textContent = e.score + '/' + e.total;
+    document.getElementById('modalErrors').textContent = errors;
+
+    var listHtml = '';
+    for (var w = 0; w < e.wrong.length; w++) {
+      listHtml +=
+        '<div class="wrong-item">' +
+          '<div class="q-text"><span class="q-num">' + (w + 1) + '</span>' + e.wrong[w].q + '</div>' +
+          '<div class="ans-row">' +
+            '<div><span class="ans-label">&#1506;&#1504;&#1492;: </span><span class="ans-wrong">' + e.wrong[w].yours + '</span></div>' +
+            '<div><span class="ans-label">&#1504;&#1499;&#1493;&#1503;: </span><span class="ans-right">' + e.wrong[w].correct + '</span></div>' +
+          '</div>' +
+        '</div>';
+    }
+    document.getElementById('modalWrongList').innerHTML = listHtml;
+    document.getElementById('correctionModal').classList.add('show');
+    updateStep(2);
+  }
+
+  /* ═══════ CONFIRM CORRECTION ═══════ */
+  document.getElementById('btnConfirmCorrect').addEventListener('click', function() {
+    if (currentCorrectIdx < 0) return;
+    var btn = this;
+    var e = examinees[currentCorrectIdx];
+
+    // Loading state
+    btn.innerHTML = '<span class="spinner"></span> &#1502;&#1514;&#1511;&#1503;...';
+    btn.disabled = true;
+    document.getElementById('btnCancelCorrect').style.display = 'none';
+
+    setTimeout(function() {
+      // Update data
+      e.status = 'pass';
+      e.corrected = true;
+
+      // Reset & close modal
+      document.getElementById('correctionModal').classList.remove('show');
+      btn.innerHTML = '&#10003; &#1514;&#1511;&#1503; &#1500;&#1506;&#1489;&#1512;';
+      btn.disabled = false;
+      document.getElementById('btnCancelCorrect').style.display = '';
+
+      // Success modal
+      document.getElementById('successText').textContent =
+        e.name + ' \u2014 &#1514;&#1493;&#1511;&#1503; &#1500;"&#1506;&#1489;&#1512;" (' + e.score + '/' + e.total + ')';
+      document.getElementById('successText').innerHTML =
+        e.name + ' &mdash; תוקן ל"עבר" (' + e.score + '/' + e.total + ')';
+      document.getElementById('successModal').classList.add('show');
+
+      // Re-render
+      render();
+
+      // Flash row
+      var row = document.getElementById('row-' + currentCorrectIdx);
+      if (row) row.classList.add('success-flash');
+
+      updateStep(3);
+      currentCorrectIdx = -1;
+    }, 1400);
+  });
+
+  /* ═══════ CANCEL ═══════ */
+  document.getElementById('btnCancelCorrect').addEventListener('click', function() {
+    document.getElementById('correctionModal').classList.remove('show');
+    currentCorrectIdx = -1;
+    updateStep(1);
+  });
+
+  /* ═══════ CLOSE SUCCESS ═══════ */
+  window.closeSuccess = function() {
+    document.getElementById('successModal').classList.remove('show');
+  };
+
+  /* ═══════ STEP INDICATOR ═══════ */
+  function updateStep(step) {
+    var pill = document.getElementById('stepPill');
+    if (step === 1) {
+      pill.className = 'step-pill step-1';
+      pill.innerHTML = '<div class="step-dot"></div><span>שלב 1: צפה בטבלת התוצאות \u2190 לחץ "\u26A1 תקן" ליד נבחן שנכשל</span>';
+    } else if (step === 2) {
+      pill.className = 'step-pill step-2';
+      pill.innerHTML = '<div class="step-dot"></div><span>שלב 2: בדוק פירוט שגיאות \u2190 לחץ "תקן לעבר" או "ביטול"</span>';
+    } else if (step === 3) {
+      pill.className = 'step-pill step-3';
+      pill.innerHTML = '<div class="step-dot"></div><span>שלב 3: הציון תוקן ל"עבר \u270E" \u2714 \u2014 ניתן לתקן גם את הנבחנים הנוספים</span>';
+    }
+  }
+
+  /* ═══════ CLOSE MODALS ON OVERLAY CLICK ═══════ */
+  document.getElementById('correctionModal').addEventListener('click', function(ev) {
+    if (ev.target === this) {
+      this.classList.remove('show');
+      currentCorrectIdx = -1;
+      updateStep(1);
+    }
+  });
+  document.getElementById('successModal').addEventListener('click', function(ev) {
+    if (ev.target === this) closeSuccess();
+  });
+
+  /* ═══════ KEYBOARD ═══════ */
+  document.addEventListener('keydown', function(ev) {
+    if (ev.key === 'Escape') {
+      document.getElementById('correctionModal').classList.remove('show');
+      document.getElementById('successModal').classList.remove('show');
+      if (currentCorrectIdx >= 0) {
+        currentCorrectIdx = -1;
+        updateStep(1);
+      }
+    }
+  });
+
+  /* ═══════ INIT ═══════ */
+  render();
+})();
+</script>
+</body>
+</html>

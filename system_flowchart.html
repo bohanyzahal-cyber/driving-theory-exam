@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>תרשים זרימה — מערכת מבחן תאוריה חיצוני</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #f8fafc; color: #1e293b; padding: 24px; direction: rtl; }
+
+  h1 { text-align: center; font-size: 28px; margin-bottom: 6px; color: #0f172a; }
+  .subtitle { text-align: center; color: #64748b; font-size: 15px; margin-bottom: 32px; }
+
+  /* Overview section */
+  .overview { background: #fff; border-radius: 16px; padding: 24px; margin-bottom: 32px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border: 1px solid #e2e8f0; }
+  .overview h2 { font-size: 20px; margin-bottom: 16px; color: #334155; }
+  .actors { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; }
+  .actor-card { flex: 1; min-width: 200px; max-width: 300px; padding: 16px; border-radius: 12px; text-align: center; }
+  .actor-card.examiner { background: #eff6ff; border: 2px solid #3b82f6; }
+  .actor-card.examinee { background: #f0fdf4; border: 2px solid #22c55e; }
+  .actor-card.server { background: #fef3c7; border: 2px solid #f59e0b; }
+  .actor-card .icon { font-size: 36px; margin-bottom: 8px; }
+  .actor-card .name { font-weight: 700; font-size: 16px; }
+  .actor-card .desc { font-size: 13px; color: #64748b; margin-top: 4px; }
+
+  /* Phase sections */
+  .phase { background: #fff; border-radius: 16px; padding: 24px; margin-bottom: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border: 1px solid #e2e8f0; position: relative; }
+  .phase-num { position: absolute; top: -14px; right: 20px; background: #3b82f6; color: #fff; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 14px; }
+
+  .phase h2 { font-size: 18px; color: #1e40af; margin-bottom: 16px; padding-right: 24px; }
+
+  /* Flow items */
+  .flow { display: flex; flex-direction: column; gap: 12px; }
+  .flow-step { display: flex; gap: 12px; align-items: flex-start; }
+  .step-marker { min-width: 32px; height: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; flex-shrink: 0; }
+  .step-marker.examiner-m { background: #dbeafe; color: #1d4ed8; }
+  .step-marker.examinee-m { background: #dcfce7; color: #16a34a; }
+  .step-marker.server-m { background: #fef3c7; color: #b45309; }
+  .step-marker.auto-m { background: #f1f5f9; color: #475569; }
+  .step-content { flex: 1; }
+  .step-content .title { font-weight: 700; font-size: 14px; margin-bottom: 2px; }
+  .step-content .detail { font-size: 13px; color: #64748b; line-height: 1.5; }
+  .step-content .screen { display: inline-block; background: #f1f5f9; padding: 1px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; color: #475569; margin-left: 6px; }
+  .step-content .api { display: inline-block; background: #fef3c7; padding: 1px 8px; border-radius: 6px; font-size: 11px; font-family: monospace; color: #92400e; margin-left: 6px; direction: ltr; }
+
+  /* Arrow connector */
+  .arrow-down { text-align: center; color: #cbd5e1; font-size: 24px; margin: 4px 0; }
+
+  /* Decision diamond */
+  .decision { background: #fef9c3; border: 2px solid #eab308; border-radius: 12px; padding: 12px 16px; margin: 8px 0; text-align: center; }
+  .decision .q { font-weight: 700; font-size: 14px; }
+  .decision-outcomes { display: flex; gap: 12px; justify-content: center; margin-top: 8px; flex-wrap: wrap; }
+  .outcome { padding: 6px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; }
+  .outcome.yes { background: #dcfce7; color: #166534; }
+  .outcome.no { background: #fee2e2; color: #991b1b; }
+  .outcome.wait { background: #e0f2fe; color: #075985; }
+  .outcome.dq { background: #fce7f3; color: #9d174d; }
+
+  /* Data table */
+  .data-table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+  .data-table th { background: #f1f5f9; padding: 8px 10px; text-align: right; font-weight: 700; border-bottom: 2px solid #e2e8f0; }
+  .data-table td { padding: 8px 10px; border-bottom: 1px solid #f1f5f9; }
+  .data-table tr:hover td { background: #f8fafc; }
+
+  /* Badge styles for pending list */
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 600; margin-left: 4px; }
+  .badge.blue { background: #dbeafe; color: #1d4ed8; }
+  .badge.yellow { background: #fef3c7; color: #92400e; }
+  .badge.green { background: #dcfce7; color: #166534; }
+
+  /* Legend */
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px; justify-content: center; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+  .legend-dot { width: 14px; height: 14px; border-radius: 50%; }
+  .legend-dot.ex { background: #3b82f6; }
+  .legend-dot.ee { background: #22c55e; }
+  .legend-dot.sv { background: #f59e0b; }
+  .legend-dot.au { background: #94a3b8; }
+
+  /* Sub-section within phase */
+  .sub-section { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px; margin: 12px 0; }
+  .sub-section h3 { font-size: 15px; color: #334155; margin-bottom: 10px; }
+
+  /* Print */
+  @media print {
+    body { padding: 12px; font-size: 11px; }
+    .phase { break-inside: avoid; page-break-inside: avoid; }
+    .no-print { display: none; }
+  }
+
+  .print-btn { position: fixed; top: 16px; left: 16px; background: #3b82f6; color: #fff; border: none; padding: 10px 20px; border-radius: 10px; cursor: pointer; font-size: 14px; font-weight: 600; z-index: 100; box-shadow: 0 2px 8px rgba(59,130,246,0.3); }
+  .print-btn:hover { background: #2563eb; }
+</style>
+</head>
+<body>
+
+<button class="print-btn no-print" onclick="window.print()">&#x1F5A8; הדפסה</button>
+
+<h1>מערכת מבחן תאוריה חיצוני — תרשים זרימה</h1>
+<p class="subtitle">סמכות רישוי צה"ל | מערכת מבחנים דיגיטלית</p>
+
+<!-- Overview -->
+<div class="overview">
+  <h2>שלושת השחקנים במערכת</h2>
+  <div class="actors">
+    <div class="actor-card examiner">
+      <div class="icon">&#x1F9D1;&#x200D;&#x1F4BB;</div>
+      <div class="name">בוחן</div>
+      <div class="desc">פותח סשן, מאשר נבחנים, צופה בתוצאות, מתקן ציונים, מפיק דו"ח בוחן, שולח הודעות WhatsApp</div>
+    </div>
+    <div class="actor-card examinee">
+      <div class="icon">&#x1F4DD;</div>
+      <div class="name">נבחן</div>
+      <div class="desc">מזין קוד סשן, נרשם (בוחר שפה/אוכלוסיה/דרגה), ממתין לאישור, עושה מבחן 30 שאלות תוך 40 דקות</div>
+    </div>
+    <div class="actor-card server">
+      <div class="icon">&#x2601;&#xFE0F;</div>
+      <div class="name">שרת (Google Sheets)</div>
+      <div class="desc">מאחסן בוחנים, אתרים, סשנים, ממתינים, תוצאות. מטפל בכל הבקשות.</div>
+    </div>
+  </div>
+  <div class="legend" style="margin-top:16px;">
+    <div class="legend-item"><div class="legend-dot ex"></div> פעולת בוחן</div>
+    <div class="legend-item"><div class="legend-dot ee"></div> פעולת נבחן</div>
+    <div class="legend-item"><div class="legend-dot sv"></div> פעולת שרת</div>
+    <div class="legend-item"><div class="legend-dot au"></div> פעולה אוטומטית</div>
+  </div>
+</div>
+
+<!-- Phase 1: Login -->
+<div class="phase">
+  <div class="phase-num">1</div>
+  <h2>התחברות בוחן</h2>
+  <div class="flow">
+    <div class="flow-step">
+      <div class="step-marker examiner-m">&#x1F464;</div>
+      <div class="step-content">
+        <div class="title">בוחן פותח את examiner.html <span class="screen">מסך התחברות</span></div>
+        <div class="detail">מזין מספר זהות (9 ספרות) + סיסמה</div>
+      </div>
+    </div>
+    <div class="arrow-down">&#x25BC;</div>
+    <div class="flow-step">
+      <div class="step-marker server-m">&#x2601;</div>
+      <div class="step-content">
+        <div class="title">אימות מול גיליון "בוחנים" <span class="api">action=login</span></div>
+        <div class="detail">בודק ת.ז + סיסמה + סטטוס "פעיל"</div>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="q">האימות הצליח?</div>
+      <div class="decision-outcomes">
+        <div class="outcome yes">&#x2714; כן &larr; עובר למסך פתיחת סשן</div>
+        <div class="outcome no">&#x2718; לא &larr; הודעת שגיאה</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Phase 2: Create Session -->
+<div class="phase">
+  <div class="phase-num">2</div>
+  <h2>פתיחת סשן חדש</h2>
+  <div class="flow">
+    <div class="flow-step">
+      <div class="step-marker examiner-m">&#x1F464;</div>
+      <div class="step-content">
+        <div class="title">בוחן בוחר הגדרות <span class="screen">מסך הגדרות סשן</span></div>
+        <div class="detail">אתר | כיתה | דרגת רישיון (B/1/C1/C/D) | שפה (עברית/רוסית/אנגלית/ערבית/צרפתית/ספרדית) | מצב שמע</div>
+      </div>
+    </div>
+    <div class="arrow-down">&#x25BC;</div>
+    <div class="flow-step">
+      <div class="step-marker examiner-m">&#x1F464;</div>
+      <div class="step-content">
+        <div class="title">לוחץ "פתח סשן"</div>
+      </div>
+    </div>
+    <div class="arrow-down">&#x25BC;</div>
+    <div class="flow-step">
+      <div class="step-marker server-m">&#x2601;</div>
+      <div class="step-content">
+        <div class="title">יצירת סשן <span class="api">action=createSession</span></div>
+        <div class="detail">מייצר קוד 6 ספרות ייחודי | תוקף: 8 שעות | נשמר בגיליון "סשנים" | השפה והרישיון נשמרים כברירת מחדל (_defaultLanguage, _defaultLicense)</div>
+      </div>
+    </div>
+    <div class="arrow-down">&#x25BC;</div>
+    <div class="flow-step">
+      <div class="step-marker examiner-m">&#x1F464;</div>
+      <div class="step-content">
+        <div class="title">דשבורד הבוחן נפתח <span class="screen">מסך דשבורד</span></div>
+        <div class="detail">מציג את קוד הסשן בגדול | הבוחן מודיע את הקוד לנבחנים | מתעדכן כל 5 שניות</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Phase 3: Examinee Registration -->
+<div class="phase">
+  <div class="phase-num">3</div>
+  <h2>רישום נבחן</h2>
+  <div class="flow">
+    <div class="flow-step">
+      <div class="step-marker examinee-m">&#x1F4DD;</div>
+      <div class="step-content">
+        <div class="title">נבחן פותח את examinee.html <span class="screen">מסך הזנת קוד</span></div>
+        <div class="detail">מזין את קוד הסשן בן 6 הספרות שקיבל מהבוחן</div>
+      </div>
+    </div>
+    <div class="arrow-down">&#x25BC;</div>
+    <div class="flow-step">
+      <div class="step-marker server-m">&#x2601;</div>
+      <div class="step-content">
+        <div class="title">אימות סשן <span class="api">action=getSessionInfo</span></div>
+        <div class="detail">בודק שהקוד קיים, הסשן פעיל ולא פג תוקף | מחזיר את ברירות המחדל של הסשן (שפה, רישיון)</div>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="q">הסשן תקף?</div>
+      <div class="decision-outcomes">
+        <div class="outcome yes">&#x2714; כן &larr; מסך רישום</div>
+        <div class="outcome no">&#x2718; לא &larr; "קוד שגוי / סשן סגור"</div>
+      </div>
+    </div>
+    <div class="arrow-down">&#x25BC;</div>
+    <div class="flow-step">
+      <div class="step-marker examinee-m">&#x1F4DD;</div>
+      <div class="step-content">
+        <div class="title">נבחן ממלא פרטים <span class="screen">מסך רישום</span></div>
+        <div class="detail">
+          <strong>שדות חובה:</strong> מספר זהות (9 ספרות) | שם פרטי | שם משפחה | טלפון<br>
+          <strong>שדות נוספים (dropdown):</strong><br>
+          &#x2022; <strong>שפה</strong> — ברירת מחדל מהסשן, הנבחן יכול לשנות<br>
+          &#x2022; <strong>אוכלוסיה</strong> — צבא / קד"צ / ווצ'ר / עיוני בלבד<br>
+          &#x2022; <strong>דרגת רישיון</strong> — B / 1 / C1 / C / D — ברירת מחדל מהסשן, הנבחן יכול לשנות
+        </div>
+      </div>
+    </div>
+    <div class="arrow-down">&#x25BC;</div>
+    <div class="flow-step">
+      <div class="step-marker server-m">&#x2601;</div>
+      <div class="step-content">
+        <div class="title">רישום לגיליון "ממתינים" <span class="api">action=registerExaminee</span></div>
+        <div class="detail">סטטוס: "ממתין לאישור" | שומר: שפה, אוכלוסיה, דרגה, שמע | מופיע בדשבורד הבוחן</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Phase 4: Approval -->
+<div class="phase">
+  <div class="phase-num">4</div>
+  <h2>אישור/דחיית נבחן</h2>
+  <div class="flow">
+    <div class="flow-step">
+      <div class="step-marker examinee-m">&#x1F4DD;</div>
+      <div class="step-content">
+        <div class="title">נבחן ממתין <span class="screen">מסך המתנה</span></div>
+        <div class="detail">ספינר + "ממתין לאישור הבוחן..." | סוקר כל 5 שניות <span class="api">action=checkApproval</span></div>
+      </div>
+    </div>
+    <div class="arrow-down">&#x25BC;</div>
+    <div class="flow-step">
+      <div class="step-marker examiner-m">&#x1F464;</div>
+      <div class="step-content">
+        <div class="title">בוחן רואה בקשה חדשה בדשבורד <span class="screen">אזור "ממתינים לאישור"</span></div>
+        <div class="detail">
+          מציג: שם | 4 ספרות אחרונות של ת.ז | טלפון | כפתורי אישור/דחייה<br>
+          <strong>תגיות (badges):</strong><br>
+          &#x2022; <span class="badge blue">שפה</span> — כחול, מופיע אם שונה מברירת המחדל של הסשן<br>
+          &#x2022; <span class="badge yellow">אוכלוסיה</span> — צהוב, תמיד מוצג<br>
+          &#x2022; <span class="badge green">דרגה</span> — ירוק, מופיע אם שונה מברירת המחדל של הסשן<br>
+          &#x2022; <span class="badge yellow">&#x1F50A; שמע</span> — צהוב, מופיע אם מצב שמע פעיל
+        </div>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="q">החלטת הבוחן?</div>
+      <div class="decision-outcomes">
+        <div class="outcome yes">&#x2714; אישור &larr; נבחן עובר להוראות</div>
+        <div class="outcome no">&#x2718; דחייה &larr; נבחן רואה "נדחית"</div>
+      </div>
+    </div>
+    <div class="arrow-down">&#x25BC;</div>
+    <div class="flow-step">
+      <div class="step-marker auto-m">&#x2699;</div>
+      <div class="step-content">
+        <div class="title">כיבוי אוטומטי של מצב שמע לאחר אישור נבחן שמע</div>
+        <div class="detail">אם הנבחן המאושר הוגדר עם שמע — מצב השמע של הסשן חוזר אוטומטית ל"כבוי" | הנבחן שאושר עדיין מקבל שמע (נשמר ברגע הרישום) | מונע הפעלה בטעות לנבחן הבא</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Phase 5: Instructions + Start -->
+<div class="phase">
+  <div class="phase-num">5</div>
+  <h2>הוראות והתחלת מבחן</h2>
+  <div class="flow">
+    <div class="flow-step">
+      <div class="step-marker examinee-m">&#x1F4DD;</div>
+      <div class="step-content">
+        <div class="title">נבחן קורא הוראות <span class="screen">מסך הוראות</span></div>
+        <div class="detail">
+          &#x2022; 30 שאלות, מעבר עם 26 תשובות נכונות<br>
+          &#x2022; זמן: 40 דקות<br>
+          &#x2022; <strong>סגירת דפדפן או מעבר לטאב אחר = נכשל אוטומטית</strong><br>
+          &#x2022; אפשר לחזור ולשנות תשובות<br>
+          &#x2022; התוצאות לא מוצגות למסך — נשלחות לבוחן
+        </div>
+      </div>
+    </div>
+    <div class="arrow-down">&#x25BC;</div>
+    <div class="flow-step">
+      <div class="step-marker auto-m">&#x2699;</div>
+      <div class="step-content">
+        <div class="title">טעינת קובץ תרגום (אם שפה לא עברית/רוסית)</div>
+        <div class="detail">questions_en.js / questions_ar.js / questions_fr.js / questions_es.js</div>
+      </div>
+    </div>
+    <div class="arrow-down">&#x25BC;</div>
+    <div class="flow-step">
+      <div class="step-marker examinee-m">&#x1F4DD;</div>
+      <div class="step-content">
+        <div class="title">נבחן לוחץ "התחל מבחן"</div>
+      </div>
+    </div>
+    <div class="arrow-down">&#x25BC;</div>
+    <div class="flow-step">
+      <div class="step-marker auto-m">&#x2699;</div>
+      <div class="step-content">
+        <div class="title">בניית המבחן</div>
+        <div class="detail">
+          סינון שאלות לפי רישיון + שפה | בחירה אקראית לפי מבנה:<br>
+          <table class="data-table" style="margin-top:8px; max-width:400px;">
+            <tr><th>דרגה</th><th>בטיחות</th><th>הכרת הרכב</th><th>חוק</th><th>תמרורים</th><th>ספציפי</th></tr>
+            <tr><td><strong>B</strong></td><td>7</td><td>7</td><td>7</td><td>9</td><td>—</td></tr>
+            <tr><td><strong>1</strong></td><td>5</td><td>5</td><td>6</td><td>6</td><td>8</td></tr>
+            <tr><td><strong>C1</strong></td><td>5</td><td>5</td><td>5</td><td>5</td><td>10</td></tr>
+            <tr><td><strong>C</strong></td><td>5</td><td>4</td><td>3</td><td>4</td><td>14</td></tr>
+            <tr><td><strong>D</strong></td><td>4</td><td>2</td><td>5</td><td>4</td><td>15</td></tr>
+          </table>
+          ערבוב שאלות + ערבוב סדר תשובות (Fisher-Yates)
+        </div>
+      </div>
+    </div>
+    <div class="arrow-down">&#x25BC;</div>
+    <div class="flow-step">
+      <div class="step-marker server-m">&#x2601;</div>
+      <div class="step-content">
+        <div class="title">עדכון סטטוס ל"במבחן" <span class="api">action=markExamStarted</span></div>
+        <div class="detail">הנבחן מופיע בדשבורד הבוחן באזור "במבחן כרגע" עם טיימר</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Phase 6: Exam Taking -->
+<div class="phase">
+  <div class="phase-num">6</div>
+  <h2>ביצוע המבחן (40 דקות)</h2>
+  <div class="flow">
+    <div class="flow-step">
+      <div class="step-marker examinee-m">&#x1F4DD;</div>
+      <div class="step-content">
+        <div class="title">נבחן עונה על שאלות <span class="screen">מסך מבחן</span></div>
+        <div class="detail">
+          <strong>מה רואה הנבחן:</strong><br>
+          &#x2022; טיימר עם ספירה לאחור (אדום מתחת 5 דקות)<br>
+          &#x2022; מפת שאלות 1-30 (ירוק=נענתה, אפור=לא נענתה)<br>
+          &#x2022; פס התקדמות (X/30 נענו)<br>
+          &#x2022; טקסט השאלה + תמונה (אם קיימת)<br>
+          &#x2022; 4 תשובות (א/ב/ג/ד או A/B/C/D)<br>
+          &#x2022; ניווט: הבא / הקודם / קפיצה לשאלה ספציפית<br>
+          &#x2022; אם מצב שמע פועל: כפתור השמעה + בקרת מהירות/מגדר קול
+        </div>
+      </div>
+    </div>
+    <div class="arrow-down">&#x25BC;</div>
+    <div class="flow-step">
+      <div class="step-marker auto-m">&#x2699;</div>
+      <div class="step-content">
+        <div class="title">הגנות נגד העתקה ומעבר טאבים</div>
+        <div class="detail">
+          &#x2022; חסימת: לחיצה ימנית | העתקה | גזירה | סימון טקסט<br>
+          &#x2022; <strong>זיהוי מעבר טאב (visibilitychange):</strong> אם הנבחן עובר לטאב אחר — פסילה מיידית אוטומטית<br>
+          &#x2022; הפסילה נשלחת באמצעות keepalive fetch + גיבוי עם Image fallback לאמינות מקסימלית<br>
+          &#x2022; כשהנבחן חוזר לטאב — רואה מסך פסילה (&#x26D4;) ולא יכול להמשיך<br>
+          &#x2022; סגירת דפדפן = נכשל אוטומטית (sendBeacon)
+        </div>
+      </div>
+    </div>
+    <div class="decision">
+      <div class="q">מה מסיים את המבחן?</div>
+      <div class="decision-outcomes">
+        <div class="outcome yes">לוחץ "סקירה וסיום"</div>
+        <div class="outcome no">&#x23F0; נגמר הזמן</div>
+        <div class="outcome dq">&#x274C; סגר דפדפן</div>
+        <div class="outcome dq">&#x26D4; עבר טאב</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Phase 7: Review -->
+<div class="phase">
+  <div class="phase-num">7</div>
+  <h2>סקירה לפני הגשה</h2>
+  <div class="flow">
+    <div class="flow-step">
+      <div class="step-marker examinee-m">&#x1F4DD;</div>
+      <div class="step-content">
+        <div class="title">מסך סקירה <span class="screen">סקירה וסיום</span></div>
+        <div class="detail">
+          &#x2022; רשת 6x5 — כל שאלה ירוקה (נענתה) או אדומה (לא נענתה)<br>
+          &#x2022; אם יש שאלות שלא נענו: "יש לך X שאלות שלא נענו. שאלה שלא נענתה = שגויה"<br>
+          &#x2022; אפשר ללחוץ על שאלה כדי לחזור ולשנות<br>
+          &#x2022; כפתור "סיים מבחן" עם אישור סופי
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Phase 8: Submission -->
+<div class="phase">
+  <div class="phase-num">8</div>
+  <h2>הגשה וחישוב תוצאות</h2>
+  <div class="flow">
+    <div class="flow-step">
+      <div class="step-marker auto-m">&#x2699;</div>
+      <div class="step-content">
+        <div class="title">חישוב ציון</div>
+        <div class="detail">ספירת תשובות נכונות | אחוז | עבר/נכשל (מעבר: 26/30 = 86.7%)</div>
+      </div>
+    </div>
+    <div class="arrow-down">&#x25BC;</div>
+    <div class="flow-step">
+      <div class="step-marker server-m">&#x2601;</div>
+      <div class="step-content">
+        <div class="title">שליחת תוצאה + שאלות שגויות בבקשה אחת <span class="api">action=submitResult (GET)</span></div>
+        <div class="detail">
+          ציון, אחוז, עבר/נכשל, זמן, שם בוחן, אתר, כיתה, <strong>audioMode</strong> | נשמר בגיליון "תוצאות" | מנסה 3 פעמים אם נכשל<br>
+          <strong>שאלות שגויות:</strong> נשלחות כפרמטר wrongAnswers (מחרוזת JSON) בתוך אותו GET request<br>
+          <em>תיקון באג:</em> POST עם no-cors איבד את ה-body בגלל 302 redirect של Apps Script — לכן הכל עבר ל-GET<br>
+          השרת מפענח את ה-JSON בצד doGet (שורה 191 ב-Apps Script)
+        </div>
+      </div>
+    </div>
+    <div class="arrow-down">&#x25BC;</div>
+    <div class="flow-step">
+      <div class="step-marker examinee-m">&#x1F4DD;</div>
+      <div class="step-content">
+        <div class="title">נבחן רואה מסך סיום <span class="screen">מסך תודה</span></div>
+        <div class="detail"><strong>הנבחן לא רואה את הציון!</strong> רק: "תודה, [שם]. התוצאות יועברו אליך דרך הבוחן."</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Phase 9: Results Management -->
+<div class="phase">
+  <div class="phase-num">9</div>
+  <h2>ניהול תוצאות (דשבורד בוחן)</h2>
+  <div class="flow">
+    <div class="flow-step">
+      <div class="step-marker examiner-m">&#x1F464;</div>
+      <div class="step-content">
+        <div class="title">צפייה בתוצאות <span class="screen">אזור "תוצאות" בדשבורד</span></div>
+        <div class="detail">
+          טבלה עם: שם | ת.ז | ניסיון | ציון | תוצאה (עבר/נכשל/פסול) | זמן | פעולות<br>
+          שורת סטטיסטיקה: סה"כ | עברו (ירוק) | נכשלו (אדום) | אחוז מעבר
+        </div>
+      </div>
+    </div>
+    <div class="arrow-down">&#x25BC;</div>
+    <div class="flow-step">
+      <div class="step-marker examiner-m">&#x1F464;</div>
+      <div class="step-content">
+        <div class="title">פעולות לכל תוצאה</div>
+        <div class="detail">
+          <strong>&#x1F4C4; PDF:</strong> דו"ח מפורט עם לוגו + פרטי נבחן + ציון + שאלות שגויות &larr; הדפסה<br>
+          <strong>&#x1F4F1; WhatsApp:</strong> שליחת תוצאה אישית לנבחן (כולל פירוט שגויות אם נכשל)<br>
+          <strong>&#x26D4; פסילה:</strong> סימון תוצאה כפסולה (במקרה של רמאות וכד')<br>
+          <strong>&#x270E; תיקון ציון:</strong> כפתור צהוב "תקן" — ראה פירוט בהמשך
+        </div>
+      </div>
+    </div>
+    <div class="arrow-down">&#x25BC;</div>
+    <div class="flow-step">
+      <div class="step-marker examiner-m">&#x1F464;</div>
+      <div class="step-content">
+        <div class="title">פעולות מרוכזות</div>
+        <div class="detail">
+          <strong>&#x1F4E8; סיכום למנהל אתר:</strong> הודעת WhatsApp מרוכזת עם כל התוצאות לטלפון מנהל האתר<br>
+          <strong>&#x1F4E4; שליחה לכל הנבחנים:</strong> פתיחת WhatsApp לכל נבחן בנפרד
+        </div>
+      </div>
+    </div>
+
+    <!-- Sub-section: Score Correction -->
+    <div class="sub-section">
+      <h3>&#x270E; תיקון ציון (Score Correction)</h3>
+      <div class="flow">
+        <div class="flow-step">
+          <div class="step-marker examiner-m">&#x1F464;</div>
+          <div class="step-content">
+            <div class="title">זיהוי נבחן שנכשל עם ציון גבוה</div>
+            <div class="detail">
+              <strong>תנאי:</strong> נבחן נכשל + ציון &ge; 24 (עד 6 שגיאות) &rarr; מופיע כפתור צהוב "תקן"<br>
+              ציון &lt; 24 &rarr; אין אפשרות תיקון
+            </div>
+          </div>
+        </div>
+        <div class="arrow-down">&#x25BC;</div>
+        <div class="flow-step">
+          <div class="step-marker examiner-m">&#x1F464;</div>
+          <div class="step-content">
+            <div class="title">בוחן לוחץ "תקן" <span class="screen">חלון אישור תיקון</span></div>
+            <div class="detail">
+              נפתח דיאלוג אישור המציג את <strong>כל השאלות השגויות</strong> בפירוט:<br>
+              &#x2022; טקסט השאלה<br>
+              &#x2022; תשובת הנבחן<br>
+              &#x2022; התשובה הנכונה<br>
+              הבוחן בודק ומאשר את התיקון
+            </div>
+          </div>
+        </div>
+        <div class="arrow-down">&#x25BC;</div>
+        <div class="flow-step">
+          <div class="step-marker server-m">&#x2601;</div>
+          <div class="step-content">
+            <div class="title">עדכון תוצאה בשרת</div>
+            <div class="detail">
+              סטטוס משתנה ל-<strong>"עבר &#x270E;"</strong> (סימון שתוקן) | עמודת "תוקן?" מסומנת בגיליון | קישור WhatsApp מתחדש עם הסטטוס המעודכן
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sub-section: Examiner Report -->
+    <div class="sub-section">
+      <h3>&#x1F4CB; דו"ח בוחן (Examiner Report)</h3>
+      <div class="flow">
+        <div class="flow-step">
+          <div class="step-marker examiner-m">&#x1F464;</div>
+          <div class="step-content">
+            <div class="title">בוחן לוחץ "דו"ח בוחן" <span class="screen">חלון דו"ח מלא (popup)</span></div>
+            <div class="detail">
+              מייצר דו"ח מקיף עבור ה<strong>רב בוחן</strong> (senior examiner) — מוצג בחלון popup עם אפשרות הדפסה
+            </div>
+          </div>
+        </div>
+        <div class="arrow-down">&#x25BC;</div>
+        <div class="flow-step">
+          <div class="step-marker auto-m">&#x2699;</div>
+          <div class="step-content">
+            <div class="title">תוכן הדו"ח</div>
+            <div class="detail">
+              <strong>1. פרטי המבחן:</strong> תאריך, אתר, כיתה, בוחן, דרגת רישיון<br><br>
+
+              <strong>2. סידור עבודה — תכנון וביצוע:</strong> טבלה לפי דרגת רישיון<br>
+              <em>עמודות תכנון:</em> בי"הס, סוג רכב, כמות מבוקשת, כמות מאושרת, הערות, כמות בשמע, שעה<br>
+              <em>עמודות ביצוע:</em> כמות בפועל, עבר (צבא/שונות/ווצ'ר/קד"צ), נכשל (צבא/שונות/ווצ'ר/קד"צ)<br>
+              &#x2022; נתוני ביצוע מחושבים אוטומטית מהתוצאות, מפורטים לפי דרגת רישיון<br>
+              &#x2022; כמות בשמע מתמלאת אוטומטית מנתוני הביצוע<br><br>
+
+              <strong>3. טבלת נבחנים:</strong><br>
+              #, ת.ז., שם משפחה, שם פרטי, סוג רכב, מגזר (אוכלוסיה), סוג מבחן (מחשב/&#x1F50A;שמע), מבחן מס', תוצאה<br><br>
+
+              <strong>4. שורת סיכום:</strong> פירוט לפי אוכלוסיה<br><br>
+
+              <strong>5. חתימה/חותמת:</strong> אזור חתימה בתחתית הדו"ח
+            </div>
+          </div>
+        </div>
+        <div class="arrow-down">&#x25BC;</div>
+        <div class="flow-step">
+          <div class="step-marker examiner-m">&#x1F464;</div>
+          <div class="step-content">
+            <div class="title">שליחת הדו"ח</div>
+            <div class="detail">
+              <strong>&#x1F4F1; WhatsApp לרב בוחן:</strong> כפתור שליחה לטלפון ברירת מחדל (0529282016) | אפשר לשנות את המספר<br>
+              <strong>&#x1F5A8; הדפסה:</strong> הדפסת הדו"ח ישירות מהחלון
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Phase 10: Special Cases -->
+<div class="phase">
+  <div class="phase-num">&#x26A0;</div>
+  <h2>מקרים מיוחדים</h2>
+  <div class="flow">
+    <div class="flow-step">
+      <div class="step-marker auto-m">&#x1F4F1;</div>
+      <div class="step-content">
+        <div class="title">סגירת דפדפן באמצע מבחן</div>
+        <div class="detail">המערכת שולחת אוטומטית תוצאה "נכשל" (0/30) דרך sendBeacon <span class="api">action=submitFailOnClose</span> | כולל audioMode | סטטוס: "סגר דפדפן"</div>
+      </div>
+    </div>
+    <div class="flow-step" style="margin-top:8px;">
+      <div class="step-marker auto-m">&#x26D4;</div>
+      <div class="step-content">
+        <div class="title">מעבר לטאב אחר באמצע מבחן (Tab Switch)</div>
+        <div class="detail">
+          זיהוי באמצעות visibilitychange | פסילה מיידית אוטומטית | נשלח באמצעות keepalive fetch + Image fallback<br>
+          כשהנבחן חוזר לטאב — רואה מסך &#x26D4; פסילה ולא יכול להמשיך
+        </div>
+      </div>
+    </div>
+    <div class="flow-step" style="margin-top:8px;">
+      <div class="step-marker auto-m">&#x23F0;</div>
+      <div class="step-content">
+        <div class="title">נגמר הזמן (40 דקות)</div>
+        <div class="detail">טיימר מבוסס שעון אמיתי (לא setInterval) | עובד גם כשהטאב ברקע | הגשה אוטומטית</div>
+      </div>
+    </div>
+    <div class="flow-step" style="margin-top:8px;">
+      <div class="step-marker auto-m">&#x1F504;</div>
+      <div class="step-content">
+        <div class="title">רענון דף באמצע המתנה/הוראות</div>
+        <div class="detail">sessionStorage שומר את המצב | חוזר למסך הנכון אוטומטית | לא חוזר לתוך מבחן פעיל (אנטי-רמאות)</div>
+      </div>
+    </div>
+    <div class="flow-step" style="margin-top:8px;">
+      <div class="step-marker examiner-m">&#x26D4;</div>
+      <div class="step-content">
+        <div class="title">פסילת נבחן</div>
+        <div class="detail">בוחן יכול לפסול נבחן גם באמצע מבחן (ממתינים) וגם אחרי סיום (תוצאות) | סטטוס: "פסול"</div>
+      </div>
+    </div>
+    <div class="flow-step" style="margin-top:8px;">
+      <div class="step-marker examiner-m">&#x270E;</div>
+      <div class="step-content">
+        <div class="title">תיקון ציון</div>
+        <div class="detail">נבחן שנכשל עם ציון &ge; 24 — הבוחן יכול לתקן את הסטטוס ל"עבר &#x270E;" אחרי סקירת השאלות השגויות | ציון &lt; 24 = אין אפשרות תיקון</div>
+      </div>
+    </div>
+    <div class="flow-step" style="margin-top:8px;">
+      <div class="step-marker auto-m">&#x1F50A;</div>
+      <div class="step-content">
+        <div class="title">כיבוי אוטומטי של שמע לאחר אישור</div>
+        <div class="detail">כשבוחן מאשר נבחן שמע — מצב השמע של הסשן חוזר אוטומטית ל"כבוי" | הנבחן שאושר ממשיך עם שמע (נלכד ברגע הרישום)</div>
+      </div>
+    </div>
+    <div class="flow-step" style="margin-top:8px;">
+      <div class="step-marker examiner-m">&#x1F512;</div>
+      <div class="step-content">
+        <div class="title">סגירת סשן</div>
+        <div class="detail">בוחן לוחץ "סגור סשן" או שפג התוקף (8 שעות) | נבחנים חדשים לא יכולים להיכנס | מבחנים פעילים ממשיכים</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Data Storage -->
+<div class="phase">
+  <div class="phase-num">&#x1F4BE;</div>
+  <h2>מבנה אחסון נתונים (Google Sheets)</h2>
+  <table class="data-table">
+    <tr><th style="width:140px;">גיליון</th><th>תוכן</th><th style="width:100px;">מתעדכן ע"י</th></tr>
+    <tr><td><strong>בוחנים</strong></td><td>שם, ת.ז, סיסמה, סטטוס פעיל</td><td>מנהל</td></tr>
+    <tr><td><strong>אתרים</strong></td><td>שם אתר, מזהה, טלפון מנהל, כיתות (מופרדות בפסיקים)</td><td>מנהל</td></tr>
+    <tr><td><strong>סשנים</strong></td><td>קוד 6 ספרות, בוחן, אתר, כיתה, רישיון, שפה, שמע, זמן יצירה, תוקף, פעיל</td><td>מערכת</td></tr>
+    <tr>
+      <td><strong>ממתינים</strong></td>
+      <td>
+        10 עמודות: קוד סשן, ת.ז, שם, טלפון, זמן הרשמה, סטטוס, <strong>שפה</strong>, <strong>אוכלוסיה</strong>, <strong>דרגה</strong>, <strong>שמע</strong>
+      </td>
+      <td>מערכת</td>
+    </tr>
+    <tr>
+      <td><strong>תוצאות</strong></td>
+      <td>
+        22 עמודות: תאריך, ת.ז, שם, טלפון, דרגה, ציון, אחוז, עבר/נכשל, זמן, בוחן, אתר, כיתה, שפה, קוד סשן, ניסיון, פירוט שגויות, נשלח?, פסול?, קישור וואטסאפ, <strong>אוכלוסיה</strong>, <strong>תוקן?</strong>, <strong>שמע</strong>
+      </td>
+      <td>מערכת</td>
+    </tr>
+  </table>
+</div>
+
+<!-- Languages -->
+<div class="phase">
+  <div class="phase-num">&#x1F30D;</div>
+  <h2>שפות נתמכות</h2>
+  <table class="data-table">
+    <tr><th>שפה</th><th>מקור שאלות</th><th>TTS (הקראה)</th><th>קובץ</th></tr>
+    <tr><td><strong>עברית</strong></td><td>questions.js (6,286 שאלות)</td><td>&#x2705;</td><td>מובנה</td></tr>
+    <tr><td><strong>רוסית</strong></td><td>questions.js (6,280 שאלות נפרדות)</td><td>&#x2705;</td><td>מובנה</td></tr>
+    <tr><td><strong>אנגלית</strong></td><td>תרגום 1,803 שאלות &larr; שאלות עברית</td><td>&#x2705;</td><td>questions_en.js (601 KB)</td></tr>
+    <tr><td><strong>ערבית</strong></td><td>תרגום 1,799 שאלות &larr; שאלות עברית</td><td>&#x2705;</td><td>questions_ar.js (835 KB)</td></tr>
+    <tr><td><strong>צרפתית</strong></td><td>תרגום 1,802 שאלות &larr; שאלות עברית</td><td>&#x2705;</td><td>questions_fr.js (708 KB)</td></tr>
+    <tr><td><strong>ספרדית</strong></td><td>תרגום 1,803 שאלות &larr; שאלות עברית</td><td>&#x2705;</td><td>questions_es.js (683 KB)</td></tr>
+  </table>
+  <p style="font-size:13px; color:#64748b; margin-top:8px;">* לשפות מתורגמות: קובץ התרגום נטען דינמית רק כשצריך. השאלות מבוססות על מאגר השאלות העברי.</p>
+</div>
+
+<p style="text-align:center; color:#94a3b8; font-size:12px; margin-top:32px;">
+  נוצר אוטומטית | מערכת מבחן תאוריה חיצוני | סמכות רישוי צה"ל | עדכון אחרון: פברואר 2026
+</p>
+
+</body>
+</html>
