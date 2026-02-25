@@ -137,6 +137,9 @@ function doGet(e) {
       case 'registerExaminee':
         return handleRegisterExaminee(p);
 
+      case 'cancelRegistration':
+        return handleCancelRegistration(p);
+
       case 'checkApproval':
         return handleCheckApproval(p);
 
@@ -446,6 +449,22 @@ function handleRegisterExaminee(p) {
   return jsonResponse({ status: 'ok' });
 }
 
+function handleCancelRegistration(p) {
+  var sheet = getSheet('ממתינים');
+  var data = sheet.getDataRange().getValues();
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
+      var s = String(data[i][5]).trim();
+      if (s === 'waiting' || s === 'approved') {
+        sheet.getRange(i + 1, 6).setValue('cancelled');
+        SpreadsheetApp.flush();
+        return jsonResponse({ status: 'ok' });
+      }
+    }
+  }
+  return jsonResponse({ status: 'error', message: 'לא נמצא רישום פעיל לביטול' });
+}
+
 function handleCheckApproval(p) {
   var sheet = getSheet('ממתינים');
   var data = sheet.getDataRange().getValues();
@@ -453,7 +472,7 @@ function handleCheckApproval(p) {
     if (String(data[i][0]).trim() === String(p.sessionCode).trim() && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
       var approval = String(data[i][5] || 'waiting').trim();
       // Skip terminal statuses from previous exams — keep looking for active row
-      if (approval === 'completed' || approval === 'disqualified') continue;
+      if (approval === 'completed' || approval === 'disqualified' || approval === 'cancelled') continue;
       return jsonResponse({ status: 'ok', approval: approval });
     }
   }
