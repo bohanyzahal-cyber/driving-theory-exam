@@ -481,6 +481,7 @@
       try {
         localStorage.removeItem('pendingResult_' + examineeData.idNumber);
         localStorage.removeItem('pendingWrongAnswers_' + examineeData.idNumber);
+        localStorage.removeItem('examEnded_' + sessionCode + '_' + examineeData.idNumber);
       } catch(e) {}
     }
     examInProgress = false;
@@ -938,6 +939,8 @@
   var beforeUnloadBound = false;
   function onBeforeUnload(e) {
       if (examInProgress && !examSubmitted) {
+        // Mark exam as ended in localStorage so page reload shows appropriate screen
+        try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'closed'); } catch(ex) {}
         // Send fail via GET (sendBeacon POST doesn't work with Apps Script)
         var params = {
           action: 'submitFailOnClose',
@@ -1013,6 +1016,7 @@
       if (tabSwitchWarnings >= TAB_SWITCH_MAX_WARNINGS) {
         // Already used their chance — immediate DQ, no grace
         tabSwitchDQConfirmed = true;
+        try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
         sendDQToServer();
       } else {
         // First offense — start grace period timer
@@ -1021,6 +1025,7 @@
           // Grace expired while still hidden — confirm DQ
           tabSwitchDQConfirmed = true;
           tabSwitchGraceTimer = null;
+          try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
           sendDQToServer();
         }, TAB_SWITCH_GRACE_MS);
       }
@@ -1989,7 +1994,26 @@
 
     document.getElementById('topbarSub').textContent = sessionData.site + ' | ' + (LICENSE_LABELS[sessionData.license] || sessionData.license);
 
-    if (saved.screen === 'screenInstructions' && examineeData.idNumber) {
+    // Check if exam already ended (refresh after close/DQ/submit)
+    var endedKey = 'examEnded_' + saved.sessionCode + '_' + (examineeData.idNumber || '');
+    var endedReason = null;
+    try { endedReason = localStorage.getItem(endedKey); } catch(ex) {}
+
+    if (endedReason && examineeData.idNumber) {
+      // Exam already ended — show clear "exam ended" screen instead of confusing waiting screen
+      clearExamineeState();
+      var isDQ = endedReason === 'dq';
+      var examArea = document.getElementById('examArea');
+      examArea.innerHTML =
+        '<div style="text-align:center; padding:40px 20px;">' +
+          '<div style="font-size:50px; margin-bottom:12px;">' + (isDQ ? '\u26D4' : '\uD83D\uDCCB') + '</div>' +
+          '<h2 style="color:' + (isDQ ? '#dc2626' : '#334155') + '; margin:0 0 12px;">' + (isDQ ? '\u05D4\u05DE\u05D1\u05D7\u05DF \u05E0\u05E4\u05E1\u05DC' : '\u05D4\u05DE\u05D1\u05D7\u05DF \u05D4\u05E1\u05EA\u05D9\u05D9\u05DD') + '</h2>' +
+          '<p style="color:#64748b; font-size:15px;">' + (isDQ ? '\u05D4\u05DE\u05D1\u05D7\u05DF \u05E0\u05E4\u05E1\u05DC \u05E2\u05E7\u05D1 \u05D9\u05E6\u05D9\u05D0\u05D4 \u05DE\u05DE\u05E1\u05DA \u05D4\u05DE\u05D1\u05D7\u05DF.' : '\u05D4\u05EA\u05D5\u05E6\u05D0\u05D4 \u05E0\u05E9\u05DC\u05D7\u05D4 \u05DC\u05D1\u05D5\u05D7\u05DF.') + '</p>' +
+          '<p style="color:#94a3b8; font-size:13px; margin-top:12px;">\u05E4\u05E0\u05D4 \u05DC\u05D1\u05D5\u05D7\u05DF \u05DC\u05E7\u05D1\u05DC\u05EA \u05D4\u05E0\u05D7\u05D9\u05D5\u05EA.</p>' +
+          '<button onclick="resetForNextExaminee()" style="margin-top:24px; display:block; width:100%; padding:14px; font-size:17px; background:#0f172a; color:white; border:none; border-radius:10px; cursor:pointer; font-weight:700;">\u05E0\u05D1\u05D7\u05DF \u05D4\u05D1\u05D0 \u2190</button>' +
+        '</div>';
+      showScreen('screenExam');
+    } else if (saved.screen === 'screenInstructions' && examineeData.idNumber) {
       // Was waiting for approval or in instructions — go back to waiting
       showScreen('screenInstructions');
       startApprovalPolling();
