@@ -1311,7 +1311,7 @@
       var firstName = nameParts.length > 1 ? nameParts.slice(0, nameParts.length - 1).join(' ') : '';
 
       var pop = r.population || '';
-      var rLic = r.license || license;
+      var rLic = String(r.license || license || '');
       var rowBg = isDQ ? '#fef9e7' : (isPassed ? '#eafaf1' : '#fdedec');
       var resultColor = isDQ ? '#d4ac0d' : (isPassed ? '#27ae60' : '#c0392b');
 
@@ -1553,8 +1553,8 @@
     // Execution data PER LICENSE (auto-calculated)
     var exJson = '{';
     for (var li = 0; li < licenseOrder.length; li++) {
-      var lk = licenseOrder[li];
-      var le = execByLicense[lk];
+      var lk = String(licenseOrder[li]);
+      var le = execByLicense[licenseOrder[li]];
       if (li > 0) exJson += ',';
       exJson += '"' + lk.replace(/"/g, '\\"') + '":{total:' + le.total + ',audio:' + le.audio + ',pa:{army:' + le.pa.army + ',kadatz:' + le.pa.kadatz + ',voucher:' + le.pa.voucher + ',other:' + le.pa.other + '},fa:{army:' + le.fa.army + ',kadatz:' + le.fa.kadatz + ',voucher:' + le.fa.voucher + ',other:' + le.fa.other + '}}';
     }
@@ -1565,7 +1565,7 @@
     if (licenseOrder.length > 0) {
       for (var li2 = 0; li2 < licenseOrder.length; li2++) {
         var autoAudio = execByLicense[licenseOrder[li2]] ? execByLicense[licenseOrder[li2]].audio : 0;
-        H.push('planRows.push({site:"' + site.replace(/"/g, '\\"') + '",license:"' + licenseOrder[li2].replace(/"/g, '\\"') + '",qtyReq:"",qtyAppr:"",notes:"",qtyAudio:"' + (autoAudio > 0 ? autoAudio : '') + '",time:""});');
+        H.push('planRows.push({site:"' + String(site).replace(/"/g, '\\"') + '",license:"' + String(licenseOrder[li2]).replace(/"/g, '\\"') + '",qtyReq:"",qtyAppr:"",notes:"",qtyAudio:"' + (autoAudio > 0 ? autoAudio : '') + '",time:""});');
       }
       H.push('renderPlan();');
     } else {
@@ -1573,7 +1573,7 @@
     }
 
     H.push('function addPlanRow(){');
-    H.push('planRows.push({site:"' + site.replace(/"/g, '\\"') + '",license:"' + license.replace(/"/g, '\\"') + '",qtyReq:"",qtyAppr:"",notes:"",qtyAudio:"",time:""});');
+    H.push('planRows.push({site:"' + String(site).replace(/"/g, '\\"') + '",license:"' + String(license).replace(/"/g, '\\"') + '",qtyReq:"",qtyAppr:"",notes:"",qtyAudio:"",time:""});');
     H.push('renderPlan();}');
 
     H.push('function removePlanRow(i){planRows.splice(i,1);renderPlan();}');
