@@ -482,7 +482,9 @@
     }
     examInProgress = false;
     examSubmitted = false;
-    tabSwitchTriggered = false;
+    tabSwitchDQConfirmed = false;
+    tabSwitchWarnings = 0;
+    if (tabSwitchGraceTimer) { clearTimeout(tabSwitchGraceTimer); tabSwitchGraceTimer = null; }
     examStartTime = null;
     activeQuestions = [];
     currentIndex = 0;
@@ -516,6 +518,8 @@
     if (doneTimeUp) doneTimeUp.style.display = 'none';
     var submitDbg = document.getElementById('submitDebug');
     if (submitDbg) submitDbg.parentNode.removeChild(submitDbg);
+    var tabWarn = document.getElementById('tabSwitchWarning');
+    if (tabWarn) tabWarn.parentNode.removeChild(tabWarn);
     // Reset instructions screen phases (prevent stale approval from showing instructions)
     document.getElementById('waitingPhase').style.display = 'block';
     document.getElementById('instructionsPhase').style.display = 'none';
@@ -968,8 +972,12 @@
     }
   }
 
-  // ========== Tab-switch detection — auto disqualify ==========
-  var tabSwitchTriggered = false;
+  // ========== Tab-switch detection — auto disqualify with grace period ==========
+  var tabSwitchDQConfirmed = false;   // true once DQ was actually sent to server
+  var tabSwitchGraceTimer = null;
+  var tabSwitchWarnings = 0;          // how many times user returned within grace
+  var TAB_SWITCH_GRACE_MS = 3000;     // 3 second grace on first offense
+  var TAB_SWITCH_MAX_WARNINGS = 1;    // allow 1 return; 2nd switch = immediate DQ
 
   function setupTabSwitchDetection() {
     document.addEventListener('visibilitychange', onTabSwitch);
@@ -989,40 +997,95 @@
     return API_URL + '?' + qs.join('&');
   }
 
+  function sendDQToServer() {
+    var url = buildDisqualifyUrl();
+    try { fetch(url, { keepalive: true }); } catch(ex) {}
+    try { new Image().src = url + '&_t=' + Date.now(); } catch(ex) {}
+  }
+
   function onTabSwitch() {
     if (!examInProgress || examSubmitted) return;
 
     if (document.visibilityState === 'hidden') {
-      tabSwitchTriggered = true;
-      // Send disqualification to server IMMEDIATELY (before OS may kill the page)
-      var url = buildDisqualifyUrl();
-      try { fetch(url, { keepalive: true }); } catch(ex) {}
-      // Fallback: Image GET (survives even if fetch doesn't)
-      try { new Image().src = url + '&_t=' + Date.now(); } catch(ex) {}
+      if (tabSwitchWarnings >= TAB_SWITCH_MAX_WARNINGS) {
+        // Already used their chance — immediate DQ, no grace
+        tabSwitchDQConfirmed = true;
+        sendDQToServer();
+      } else {
+        // First offense — start grace period timer
+        tabSwitchDQConfirmed = false;
+        tabSwitchGraceTimer = setTimeout(function() {
+          // Grace expired while still hidden — confirm DQ
+          tabSwitchDQConfirmed = true;
+          tabSwitchGraceTimer = null;
+          sendDQToServer();
+        }, TAB_SWITCH_GRACE_MS);
+      }
     }
 
-    if (document.visibilityState === 'visible' && tabSwitchTriggered) {
-      // User came back — show DQ screen (server already notified above)
-      tabSwitchTriggered = false;
-      document.removeEventListener('visibilitychange', onTabSwitch);
-      stopSpeaking();
-      stopTimer();
-      examInProgress = false;
-      examSubmitted = true;
+    if (document.visibilityState === 'visible') {
+      if (tabSwitchDQConfirmed) {
+        // DQ was sent (grace expired or 2nd offense) — show DQ screen
+        if (tabSwitchGraceTimer) { clearTimeout(tabSwitchGraceTimer); tabSwitchGraceTimer = null; }
+        document.removeEventListener('visibilitychange', onTabSwitch);
+        stopSpeaking();
+        stopTimer();
+        examInProgress = false;
+        examSubmitted = true;
 
-      // Show disqualification screen
-      clearExamineeState();
-      var examArea = document.getElementById('examArea');
-      examArea.innerHTML =
-        '<div style="text-align:center; padding:40px 20px;">' +
-          '<div style="font-size:60px; margin-bottom:16px;">⛔</div>' +
-          '<h2 style="color:#dc2626; margin:0 0 12px;">המבחן נפסל</h2>' +
-          '<p style="color:#64748b; font-size:15px;">זוהה מעבר למסך אחר או אפליקציה אחרת.</p>' +
-          '<p style="color:#64748b; font-size:15px;">אין לצאת ממסך המבחן במהלך המבחן.</p>' +
-          '<p style="color:#94a3b8; font-size:13px; margin-top:20px;">פנה לבוחן לקבלת הנחיות.</p>' +
-          '<button onclick="resetForNextExaminee()" style="margin-top:24px; display:block; width:100%; padding:14px; font-size:17px; background:#0f172a; color:white; border:none; border-radius:10px; cursor:pointer; font-weight:700;">\u05E0\u05D1\u05D7\u05DF \u05D4\u05D1\u05D0 \u2190</button>' +
-        '</div>';
+        clearExamineeState();
+        var examArea = document.getElementById('examArea');
+        examArea.innerHTML =
+          '<div style="text-align:center; padding:40px 20px;">' +
+            '<div style="font-size:60px; margin-bottom:16px;">\u26D4</div>' +
+            '<h2 style="color:#dc2626; margin:0 0 12px;">\u05D4\u05DE\u05D1\u05D7\u05DF \u05E0\u05E4\u05E1\u05DC</h2>' +
+            '<p style="color:#64748b; font-size:15px;">\u05D6\u05D5\u05D4\u05D4 \u05DE\u05E2\u05D1\u05E8 \u05DC\u05DE\u05E1\u05DA \u05D0\u05D7\u05E8 \u05D0\u05D5 \u05D0\u05E4\u05DC\u05D9\u05E7\u05E6\u05D9\u05D4 \u05D0\u05D7\u05E8\u05EA.</p>' +
+            '<p style="color:#64748b; font-size:15px;">\u05D0\u05D9\u05DF \u05DC\u05E6\u05D0\u05EA \u05DE\u05DE\u05E1\u05DA \u05D4\u05DE\u05D1\u05D7\u05DF \u05D1\u05DE\u05D4\u05DC\u05DA \u05D4\u05DE\u05D1\u05D7\u05DF.</p>' +
+            '<p style="color:#94a3b8; font-size:13px; margin-top:20px;">\u05E4\u05E0\u05D4 \u05DC\u05D1\u05D5\u05D7\u05DF \u05DC\u05E7\u05D1\u05DC\u05EA \u05D4\u05E0\u05D7\u05D9\u05D5\u05EA.</p>' +
+            '<button onclick="resetForNextExaminee()" style="margin-top:24px; display:block; width:100%; padding:14px; font-size:17px; background:#0f172a; color:white; border:none; border-radius:10px; cursor:pointer; font-weight:700;">\u05E0\u05D1\u05D7\u05DF \u05D4\u05D1\u05D0 \u2190</button>' +
+          '</div>';
+      } else if (tabSwitchGraceTimer) {
+        // Returned within grace period — cancel DQ, show warning
+        clearTimeout(tabSwitchGraceTimer);
+        tabSwitchGraceTimer = null;
+        tabSwitchWarnings++;
+        showTabSwitchWarning();
+      }
     }
+  }
+
+  function showTabSwitchWarning() {
+    // Remove previous warning if exists
+    var existing = document.getElementById('tabSwitchWarning');
+    if (existing) existing.parentNode.removeChild(existing);
+
+    var warn = document.createElement('div');
+    warn.id = 'tabSwitchWarning';
+    warn.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:linear-gradient(135deg,#dc2626,#b91c1c);color:#fff;padding:16px 20px;text-align:center;font-family:inherit;box-shadow:0 4px 20px rgba(220,38,38,0.4);animation:slideDown 0.3s ease;';
+    warn.innerHTML =
+      '<div style="font-size:22px;font-weight:800;margin-bottom:4px;">\u26A0\uFE0F \u05D0\u05D6\u05D4\u05E8\u05D4!</div>' +
+      '<div style="font-size:14px;line-height:1.5;">\u05D6\u05D5\u05D4\u05D4 \u05DE\u05E2\u05D1\u05E8 \u05DC\u05DE\u05E1\u05DA/\u05D0\u05E4\u05DC\u05D9\u05E7\u05E6\u05D9\u05D4 \u05D0\u05D7\u05E8\u05EA.<br><strong>\u05D1\u05E4\u05E2\u05DD \u05D4\u05D1\u05D0\u05D4 \u05D4\u05DE\u05D1\u05D7\u05DF \u05D9\u05D9\u05E4\u05E1\u05DC \u05D0\u05D5\u05D8\u05D5\u05DE\u05D8\u05D9\u05EA!</strong></div>';
+    document.body.appendChild(warn);
+
+    // Add animation keyframes if not yet added
+    if (!document.getElementById('tabWarnAnim')) {
+      var style = document.createElement('style');
+      style.id = 'tabWarnAnim';
+      style.textContent = '@keyframes slideDown{from{transform:translateY(-100%);opacity:0}to{transform:translateY(0);opacity:1}}@keyframes fadeOut{from{opacity:1}to{opacity:0}}';
+      document.head.appendChild(style);
+    }
+
+    // Auto-dismiss after 4 seconds
+    setTimeout(function() {
+      var el = document.getElementById('tabSwitchWarning');
+      if (el) {
+        el.style.animation = 'fadeOut 0.5s ease forwards';
+        setTimeout(function() {
+          var el2 = document.getElementById('tabSwitchWarning');
+          if (el2 && el2.parentNode) el2.parentNode.removeChild(el2);
+        }, 500);
+      }
+    }, 4000);
   }
 
   function getElapsedTimeStr() {
