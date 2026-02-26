@@ -885,15 +885,41 @@ function handleSubmitWrongAnswersBulk(data) {
   for (var i = rows.length - 1; i >= 1; i--) {
     if (String(rows[i][13]) === String(data.sessionCode) && normalizeId(rows[i][1]) === normalizeId(data.idNumber)) {
       var wrongDetails = '';
+      var wrongForWA = '';
       if (data.wrongAnswers && data.wrongAnswers.length > 0) {
         for (var w = 0; w < data.wrongAnswers.length; w++) {
           var item = data.wrongAnswers[w];
           wrongDetails += 'שאלה: ' + item.question + '\n';
           wrongDetails += 'תשובת הנבחן: ' + item.yourAnswer + '\n';
           wrongDetails += 'תשובה נכונה: ' + item.correctAnswer + '\n\n';
+          wrongForWA += '❌ ' + item.question + '\n';
+          wrongForWA += 'ענית: ' + item.yourAnswer + '\n';
+          wrongForWA += '✅ נכון: ' + item.correctAnswer + '\n\n';
         }
       }
+      // Update wrong details column
       sheet.getRange(i + 1, 16).setValue(wrongDetails);
+
+      // Regenerate WA link with wrong answers included
+      var isCorrected = rows[i][20] === true || String(rows[i][20]) === 'TRUE';
+      if (!isCorrected && data.wrongAnswers && data.wrongAnswers.length > 0) {
+        var passText = String(rows[i][7] || 'נכשל');
+        var phone = formatPhoneForWA(rows[i][3]);
+        var waMsg = '*🚗 אישור תוצאת מבחן תאוריה חיצוני*\n\n' +
+          'שם: ' + rows[i][2] + '\n' +
+          'ת.ז.: ' + rows[i][1] + '\n' +
+          'דרגה: ' + rows[i][4] + '\n' +
+          (rows[i][19] ? 'אוכלוסיה: ' + rows[i][19] + '\n' : '') +
+          'תאריך: ' + rows[i][0] + '\n' +
+          'תוצאה: *' + passText + '* (' + rows[i][5] + ')\n' +
+          'זמן: ' + rows[i][8] + '\n' +
+          '\n*שאלות שגויות (' + data.wrongAnswers.length + '):*\n\n' + wrongForWA;
+        var attemptNum = rows[i][14] || 1;
+        if (attemptNum > 1) waMsg += 'ניסיון: ' + attemptNum + '\n';
+        var waLink = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(waMsg);
+        sheet.getRange(i + 1, 19).setValue(waLink);
+      }
+
       SpreadsheetApp.flush();
       return jsonResponse({ status: 'ok', count: data.wrongAnswers ? data.wrongAnswers.length : 0 });
     }

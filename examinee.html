@@ -1808,10 +1808,7 @@
       population: examineeData.population || '',
       audioMode: sessionData.audioMode || 'off'
     };
-    // Include wrong answers in GET (POST doesn't work with Apps Script redirects)
-    if (wrongData.length > 0) {
-      payload.wrongAnswers = JSON.stringify(wrongData);
-    }
+    // Wrong answers sent separately via POST (GET URL would be too long on mobile)
 
     // Save result to localStorage BEFORE sending — safety net for network failures
     try { localStorage.setItem('pendingResult_' + payload.idNumber, JSON.stringify(payload)); } catch(e2) {}
