@@ -50,9 +50,8 @@ function generateSessionCode() {
   var data = sessSheet.getDataRange().getValues();
   var existingCodes = {};
   for (var i = 1; i < data.length; i++) {
-    if (data[i][10] === true || String(data[i][10]).toUpperCase() === 'TRUE') {
-      existingCodes[String(data[i][0]).trim()] = true;
-    }
+    // Check ALL session codes (not just active) to prevent data mixing with closed sessions
+    existingCodes[String(data[i][0]).trim()] = true;
   }
   var code;
   do {
@@ -81,6 +80,7 @@ function countAttempts(idNumber, license) {
 function formatPhoneForWA(phone) {
   phone = String(phone || '').replace(/[^0-9]/g, '');
   if (phone.charAt(0) === '0') phone = '972' + phone.substring(1);
+  else if (phone.length === 9 && phone.charAt(0) === '5') phone = '972' + phone;
   return phone;
 }
 
@@ -543,6 +543,7 @@ function handleExaminerDashboard(p) {
     var s = pendData[i][5];
     var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], status: s, language: pendData[i][6] || '', population: pendData[i][7] || '', license: pendData[i][8] || '', audioMode: pendData[i][9] || 'off' };
     if (s === 'waiting') pending.push(item);
+    else if (s === 'approved') pending.push(item);
     else if (s === 'in_exam') active.push(item);
   }
 
@@ -754,6 +755,15 @@ function handleDebugResults() {
 function handleSubmitResult(data) {
   var sheet = getSheet('תוצאות');
 
+  // Duplicate protection: check if result already exists for this session+ID
+  var existingData = sheet.getDataRange().getValues();
+  for (var d = 1; d < existingData.length; d++) {
+    if (String(existingData[d][13]) === String(data.sessionCode) && normalizeId(existingData[d][1]) === normalizeId(data.idNumber)) {
+      // Already submitted — return existing WA link
+      return jsonResponse({ status: 'ok', waLink: existingData[d][18] || '', duplicate: true });
+    }
+  }
+
   var wrongDetails = '';
   var wrongForWA = '';
   if (data.wrongAnswers && data.wrongAnswers.length > 0) {
@@ -929,6 +939,14 @@ function handleSubmitWrongAnswersBulk(data) {
 
 function handleSubmitFailOnClose(data) {
   var sheet = getSheet('תוצאות');
+
+  // Duplicate protection: check if result already exists for this session+ID
+  var existingData = sheet.getDataRange().getValues();
+  for (var d = 1; d < existingData.length; d++) {
+    if (String(existingData[d][13]) === String(data.sessionCode) && normalizeId(existingData[d][1]) === normalizeId(data.idNumber)) {
+      return jsonResponse({ status: 'ok', duplicate: true });
+    }
+  }
 
   var attemptNum = countAttempts(data.idNumber, data.license || '') + 1;
 

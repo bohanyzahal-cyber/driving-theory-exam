@@ -423,7 +423,7 @@
   // ========== State ==========
   var sessionCode = '';
   var sessionData = {};
-  var examineeData = { idNumber: '', fullName: '', phone: '', population: '', license: '' };
+  var examineeData = { idNumber: '', fullName: '', phone: '', population: '', license: '', language: '' };
   var activeQuestions = [];
   var currentIndex = 0;
   var userAnswers = [];
@@ -476,15 +476,10 @@
   window.resetForNextExaminee = function() {
     // Clear state
     clearExamineeState();
-    // Clear any pending results from localStorage (previous examinee)
-    try {
-      var keysToRemove = [];
-      for (var ki = 0; ki < localStorage.length; ki++) {
-        var lk = localStorage.key(ki);
-        if (lk && lk.indexOf('pendingResult_') === 0) keysToRemove.push(lk);
-      }
-      keysToRemove.forEach(function(k) { localStorage.removeItem(k); });
-    } catch(e) {}
+    // Clear pending result for CURRENT examinee only (in-flight retries for others may still need it)
+    if (examineeData.idNumber) {
+      try { localStorage.removeItem('pendingResult_' + examineeData.idNumber); } catch(e) {}
+    }
     examInProgress = false;
     examSubmitted = false;
     tabSwitchTriggered = false;
@@ -494,9 +489,9 @@
     userAnswers = [];
     shuffledOrders = [];
     timeRemaining = EXAM_TIME_MINUTES * 60;
-    if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+    stopTimer(); // clears interval, removes visibilitychange listener, resets examDeadline
     if (approvalInterval) { clearInterval(approvalInterval); approvalInterval = null; }
-    examineeData = { idNumber: '', fullName: '', phone: '', population: '', license: '' };
+    examineeData = { idNumber: '', fullName: '', phone: '', population: '', license: '', language: '' };
     // Keep sessionCode and sessionData — same session, different examinee
     // Restore session's default language and license (undo examinee's override)
     sessionData.language = sessionData._defaultLanguage || sessionData.language || 'he';
@@ -515,8 +510,12 @@
     // Reset license dropdown to session default
     var licSel = document.getElementById('licenseSelect');
     if (licSel) licSel.value = sessionData.license || 'B';
-    // Clear exam area
+    // Clear exam area and done-screen stale elements
     document.getElementById('examArea').innerHTML = '';
+    var doneTimeUp = document.getElementById('doneTimeUpMsg');
+    if (doneTimeUp) doneTimeUp.style.display = 'none';
+    var submitDbg = document.getElementById('submitDebug');
+    if (submitDbg) submitDbg.parentNode.removeChild(submitDbg);
     // Reset instructions screen phases (prevent stale approval from showing instructions)
     document.getElementById('waitingPhase').style.display = 'block';
     document.getElementById('instructionsPhase').style.display = 'none';
@@ -533,6 +532,11 @@
     var screens = document.querySelectorAll('.screen');
     for (var i = 0; i < screens.length; i++) screens[i].classList.remove('active');
     document.getElementById(id).classList.add('active');
+  }
+
+  // ========== Utility ==========
+  function escHtml(s) {
+    return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
   // ========== API Helper ==========
@@ -829,7 +833,7 @@
       document.getElementById('waitingPhase').style.display = 'block';
       document.getElementById('instructionsPhase').style.display = 'none';
       document.getElementById('audioModeNotice').style.display = 'none';
-      var langSel = document.getElementById('languageSelect');
+      var langSel = document.getElementById('langSelect');
       if (langSel) langSel.value = sessionData._defaultLanguage || 'he';
       var licSel = document.getElementById('licenseSelect');
       if (licSel) licSel.value = sessionData._defaultLicense || 'B';
@@ -924,8 +928,8 @@
   });
 
   // ========== beforeunload ==========
-  function setupBeforeUnload() {
-    window.addEventListener('beforeunload', function(e) {
+  var beforeUnloadBound = false;
+  function onBeforeUnload(e) {
       if (examInProgress && !examSubmitted) {
         // Send fail via GET (sendBeacon POST doesn't work with Apps Script)
         var params = {
@@ -934,8 +938,8 @@
           idNumber: examineeData.idNumber,
           fullName: examineeData.fullName,
           phone: examineeData.phone,
-          license: sessionData.license,
-          language: sessionData.language,
+          license: examineeData.license || sessionData.license || 'B',
+          language: examineeData.language || sessionData.language || 'he',
           examinerName: sessionData.examinerName || '',
           site: sessionData.site || '',
           classroom: sessionData.classroom || '',
@@ -956,7 +960,12 @@
         e.returnValue = 'סגירת הדפדפן תגרום לכישלון אוטומטי במבחן!';
         return e.returnValue;
       }
-    });
+  }
+  function setupBeforeUnload() {
+    if (!beforeUnloadBound) {
+      window.addEventListener('beforeunload', onBeforeUnload);
+      beforeUnloadBound = true;
+    }
   }
 
   // ========== Tab-switch detection — auto disqualify ==========
@@ -1795,8 +1804,8 @@
       idNumber: examineeData.idNumber,
       fullName: examineeData.fullName,
       phone: examineeData.phone,
-      license: sessionData.license,
-      language: sessionData.language || 'he',
+      license: examineeData.license || sessionData.license || 'B',
+      language: examineeData.language || sessionData.language || 'he',
       score: correctCount,
       total: TOTAL_QUESTIONS,
       percent: pct,
@@ -1826,14 +1835,15 @@
     showScreen('screenDone');
   }
 
-  function sendWrongAnswers(wrongData) {
+  function sendWrongAnswers(wrongData, capturedIdNumber) {
     if (!wrongData || wrongData.length === 0) return;
     // Send ALL wrong answers in a single POST (no URL length limits)
-    console.log('[WRONG] Sending ' + wrongData.length + ' wrong answers via POST');
+    var idToSend = capturedIdNumber || examineeData.idNumber;
+    console.log('[WRONG] Sending ' + wrongData.length + ' wrong answers via POST for ' + idToSend);
     apiPost({
       action: 'submitWrongAnswers',
       sessionCode: sessionCode,
-      idNumber: examineeData.idNumber,
+      idNumber: idToSend,
       wrongAnswers: wrongData
     }).then(function() {
       console.log('[WRONG] POST sent successfully');
@@ -1862,7 +1872,7 @@
         try { localStorage.removeItem('pendingResult_' + payload.idNumber); } catch(e3) {}
         // Now send wrong answers AFTER result row exists on server
         if (wrongData && wrongData.length > 0) {
-          sendWrongAnswers(wrongData);
+          sendWrongAnswers(wrongData, payload.idNumber);
         }
       } else {
         debugEl.innerHTML = '<span style="color:red;">&#x274C; Server error: ' + (data.message || 'unknown') + '</span>';
@@ -1899,7 +1909,7 @@
     // Restore state
     sessionCode = saved.sessionCode;
     sessionData = saved.sessionData;
-    examineeData = saved.examineeData || { idNumber: '', fullName: '', phone: '' };
+    examineeData = saved.examineeData || { idNumber: '', fullName: '', phone: '', population: '', license: '', language: '' };
     // Ensure license is string (Google Sheets may return number for "1")
     if (sessionData.license) sessionData.license = String(sessionData.license);
 
