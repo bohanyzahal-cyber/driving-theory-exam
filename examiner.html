@@ -765,7 +765,7 @@
           approveBtn.addEventListener('click', function() {
             approveBtn.disabled = true;
             approveBtn.textContent = 'מאשר...';
-            apiGet({ action: 'approveExaminee', sessionCode: sessionCode, idNumber: item.idNumber }).then(function(data) {
+            apiGet({ action: 'approveExaminee', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
               if (data.status === 'ok') {
                 approveBtn.textContent = '✓ אושר';
                 // Auto-disable audio after approving (examinee already captured it)
@@ -794,7 +794,7 @@
           rejectBtn.addEventListener('click', function() {
             rejectBtn.disabled = true;
             rejectBtn.textContent = 'דוחה...';
-            apiGet({ action: 'rejectExaminee', sessionCode: sessionCode, idNumber: item.idNumber }).then(function(data) {
+            apiGet({ action: 'rejectExaminee', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
               if (data.status === 'ok') {
                 rejectBtn.textContent = '✗ נדחה';
                 pollDashboard();
@@ -820,7 +820,7 @@
           if (confirm('לאפס את ' + item.name + '?\nהנבחן יוכל להירשם מחדש.')) {
             resetPendingBtn.disabled = true;
             resetPendingBtn.textContent = 'מאפס...';
-            apiGet({ action: 'resetExaminee', sessionCode: sessionCode, idNumber: item.idNumber }).then(function(data) {
+            apiGet({ action: 'resetExaminee', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
               if (data.status === 'ok') {
                 pollDashboard();
               } else {
@@ -894,7 +894,7 @@
           if (confirm('האם לפסול את ' + item.name + '?')) {
             dqBtn.disabled = true;
             dqBtn.textContent = 'מפסול...';
-            apiGet({ action: 'disqualify', sessionCode: sessionCode, idNumber: item.idNumber }).then(function(data) {
+            apiGet({ action: 'disqualify', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
               if (data.status === 'ok') {
                 alert(item.name + ' נפסל.');
                 pollDashboard();
@@ -920,7 +920,7 @@
           if (confirm('לאפס את ' + item.name + '?\nהנבחן יוכל להירשם מחדש (לא ייחשב כנכשל או פסול).')) {
             resetBtn.disabled = true;
             resetBtn.textContent = 'מאפס...';
-            apiGet({ action: 'resetExaminee', sessionCode: sessionCode, idNumber: item.idNumber }).then(function(data) {
+            apiGet({ action: 'resetExaminee', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
               if (data.status === 'ok') {
                 alert(item.name + ' אופס — יכול להירשם מחדש.');
                 pollDashboard();
@@ -1685,7 +1685,7 @@
     var r = completedResults[idx];
     if (!r) return;
     if (confirm('\u05D4\u05D0\u05DD \u05DC\u05E4\u05E1\u05D5\u05DC \u05D0\u05EA \u05D4\u05DE\u05D1\u05D7\u05DF \u05E9\u05DC ' + r.name + '?')) {
-      apiGet({ action: 'disqualify', sessionCode: sessionCode, idNumber: r.idNumber }).then(function(data) {
+      apiGet({ action: 'disqualify', sessionCode: sessionCode, idNumber: r.idNumber, examinerId: examinerData.id }).then(function(data) {
         if (data.status === 'ok') {
           alert(r.name + ' \u05E0\u05E4\u05E1\u05DC.');
           pollDashboard();
@@ -1724,7 +1724,7 @@
       '\u05E9\u05D0\u05DC\u05D5\u05EA \u05E9\u05D2\u05D5\u05D9\u05D5\u05EA:' + wrongList + '\n' +
       '\u05D4\u05D0\u05DD \u05DC\u05E9\u05E0\u05D5\u05EA \u05D0\u05EA \u05D4\u05EA\u05D5\u05E6\u05D0\u05D4 \u05DC"\u05E2\u05D1\u05E8"?';
     if (confirm(confirmMsg)) {
-      apiGet({ action: 'correctToPass', sessionCode: sessionCode, idNumber: r.idNumber }).then(function(data) {
+      apiGet({ action: 'correctToPass', sessionCode: sessionCode, idNumber: r.idNumber, examinerId: examinerData.id }).then(function(data) {
         if (data.status === 'ok') {
           alert(r.name + ' \u05EA\u05D5\u05E7\u05DF \u05DC"\u05E2\u05D1\u05E8".');
           pollDashboard();
