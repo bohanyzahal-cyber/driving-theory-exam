@@ -732,63 +732,93 @@
         if (item.audioMode === 'on') {
           audioBadge = ' <span style="background:#fef9c3;color:#854d0e;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">🔊 שמע</span>';
         }
+        var isApproved = item.status === 'approved';
+        var statusBadge = isApproved ? ' <span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:8px;font-size:0.8em;font-weight:600;">✓ מאושר</span>' : '';
         li.innerHTML =
-          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + langBadge + popBadge + licBadge + audioBadge + '</div>' +
+          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + statusBadge + langBadge + popBadge + licBadge + audioBadge + '</div>' +
           '<div class="person-meta">ת.ז. ....' + id4 + ' | ' + escHtml(item.phone) + '</div></div>' +
           '<div class="person-actions"></div>';
         var actions = li.querySelector('.person-actions');
 
-        var approveBtn = document.createElement('button');
-        approveBtn.className = 'btn-approve';
-        approveBtn.textContent = 'אשר';
-        approveBtn.addEventListener('click', function() {
-          approveBtn.disabled = true;
-          approveBtn.textContent = 'מאשר...';
-          apiGet({ action: 'approveExaminee', sessionCode: sessionCode, idNumber: item.idNumber }).then(function(data) {
-            if (data.status === 'ok') {
-              approveBtn.textContent = '✓ אושר';
-              // Auto-disable audio after approving (examinee already captured it)
-              if (currentAudioMode === 'on') {
-                apiGet({ action: 'updateSession', sessionCode: sessionCode, examinerId: examinerData.id, license: currentLicense, language: currentLanguage, audioMode: 'off' }).then(function(d) {
-                  if (d.status === 'ok') { currentAudioMode = 'off'; saveState(); renderDashboard(); }
-                });
+        if (!isApproved) {
+          // Waiting — show approve/reject buttons
+          var approveBtn = document.createElement('button');
+          approveBtn.className = 'btn-approve';
+          approveBtn.textContent = 'אשר';
+          approveBtn.addEventListener('click', function() {
+            approveBtn.disabled = true;
+            approveBtn.textContent = 'מאשר...';
+            apiGet({ action: 'approveExaminee', sessionCode: sessionCode, idNumber: item.idNumber }).then(function(data) {
+              if (data.status === 'ok') {
+                approveBtn.textContent = '✓ אושר';
+                // Auto-disable audio after approving (examinee already captured it)
+                if (currentAudioMode === 'on') {
+                  apiGet({ action: 'updateSession', sessionCode: sessionCode, examinerId: examinerData.id, license: currentLicense, language: currentLanguage, audioMode: 'off' }).then(function(d) {
+                    if (d.status === 'ok') { currentAudioMode = 'off'; saveState(); renderDashboard(); }
+                  });
+                }
+                pollDashboard();
+              } else {
+                alert('שגיאה באישור: ' + (data.message || 'לא ידוע'));
+                approveBtn.disabled = false;
+                approveBtn.textContent = 'אשר';
               }
-              pollDashboard();
-            } else {
-              alert('שגיאה באישור: ' + (data.message || 'לא ידוע'));
+            }).catch(function() {
+              alert('שגיאת תקשורת באישור');
               approveBtn.disabled = false;
               approveBtn.textContent = 'אשר';
-            }
-          }).catch(function() {
-            alert('שגיאת תקשורת באישור');
-            approveBtn.disabled = false;
-            approveBtn.textContent = 'אשר';
+            });
           });
-        });
-        actions.appendChild(approveBtn);
+          actions.appendChild(approveBtn);
 
-        var rejectBtn = document.createElement('button');
-        rejectBtn.className = 'btn-reject';
-        rejectBtn.textContent = 'דחה';
-        rejectBtn.addEventListener('click', function() {
-          rejectBtn.disabled = true;
-          rejectBtn.textContent = 'דוחה...';
-          apiGet({ action: 'rejectExaminee', sessionCode: sessionCode, idNumber: item.idNumber }).then(function(data) {
-            if (data.status === 'ok') {
-              rejectBtn.textContent = '✗ נדחה';
-              pollDashboard();
-            } else {
-              alert('שגיאה בדחייה: ' + (data.message || 'לא ידוע'));
+          var rejectBtn = document.createElement('button');
+          rejectBtn.className = 'btn-reject';
+          rejectBtn.textContent = 'דחה';
+          rejectBtn.addEventListener('click', function() {
+            rejectBtn.disabled = true;
+            rejectBtn.textContent = 'דוחה...';
+            apiGet({ action: 'rejectExaminee', sessionCode: sessionCode, idNumber: item.idNumber }).then(function(data) {
+              if (data.status === 'ok') {
+                rejectBtn.textContent = '✗ נדחה';
+                pollDashboard();
+              } else {
+                alert('שגיאה בדחייה: ' + (data.message || 'לא ידוע'));
+                rejectBtn.disabled = false;
+                rejectBtn.textContent = 'דחה';
+              }
+            }).catch(function() {
+              alert('שגיאת תקשורת בדחייה');
               rejectBtn.disabled = false;
               rejectBtn.textContent = 'דחה';
-            }
-          }).catch(function() {
-            alert('שגיאת תקשורת בדחייה');
-            rejectBtn.disabled = false;
-            rejectBtn.textContent = 'דחה';
+            });
           });
+          actions.appendChild(rejectBtn);
+        }
+        // Reset button for both waiting and approved (clear stale entries)
+        var resetPendingBtn = document.createElement('button');
+        resetPendingBtn.className = 'btn-reset';
+        resetPendingBtn.textContent = 'אפס';
+        resetPendingBtn.title = 'הסר נבחן מהרשימה';
+        resetPendingBtn.addEventListener('click', function() {
+          if (confirm('לאפס את ' + item.name + '?\nהנבחן יוכל להירשם מחדש.')) {
+            resetPendingBtn.disabled = true;
+            resetPendingBtn.textContent = 'מאפס...';
+            apiGet({ action: 'resetExaminee', sessionCode: sessionCode, idNumber: item.idNumber }).then(function(data) {
+              if (data.status === 'ok') {
+                pollDashboard();
+              } else {
+                alert('שגיאה: ' + (data.message || 'לא ידוע'));
+                resetPendingBtn.disabled = false;
+                resetPendingBtn.textContent = 'אפס';
+              }
+            }).catch(function() {
+              alert('שגיאת תקשורת');
+              resetPendingBtn.disabled = false;
+              resetPendingBtn.textContent = 'אפס';
+            });
+          }
         });
-        actions.appendChild(rejectBtn);
+        actions.appendChild(resetPendingBtn);
 
         list.appendChild(li);
       })(pending[i]);
@@ -1235,6 +1265,7 @@
     if (!completedResults || completedResults.length === 0) {
       alert('אין תוצאות להצגה בדו"ח'); return;
     }
+    try {
     var today = new Date();
     var dateStr = today.getDate() + '/' + (today.getMonth() + 1) + '/' + today.getFullYear();
     var site = currentSite || '';
@@ -1613,7 +1644,11 @@
 
     var w = window.open('', '_blank');
     if (w) { w.document.write(H.join('')); w.document.close(); }
-    else { alert('\u05D7\u05E1\u05D5\u05DD popup \u05E0\u05D7\u05E1\u05DD. \u05D0\u05E4\u05E9\u05E8 \u05D7\u05DC\u05D5\u05DF popup \u05DC\u05D0\u05EA\u05E8 \u05D6\u05D4.'); }
+    else { alert('חסום popup. אפשר חלון popup לאתר זה בהגדרות הדפדפן.'); }
+    } catch(reportErr) {
+      alert('שגיאה ביצירת דו"ח: ' + reportErr.message);
+      console.error('[REPORT]', reportErr);
+    }
   };
 
   window.disqualifyResult = function(idx) {
