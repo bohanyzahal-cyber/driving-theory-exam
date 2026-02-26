@@ -476,6 +476,15 @@
   window.resetForNextExaminee = function() {
     // Clear state
     clearExamineeState();
+    // Clear any pending results from localStorage (previous examinee)
+    try {
+      var keysToRemove = [];
+      for (var ki = 0; ki < localStorage.length; ki++) {
+        var lk = localStorage.key(ki);
+        if (lk && lk.indexOf('pendingResult_') === 0) keysToRemove.push(lk);
+      }
+      keysToRemove.forEach(function(k) { localStorage.removeItem(k); });
+    } catch(e) {}
     examInProgress = false;
     examSubmitted = false;
     tabSwitchTriggered = false;
@@ -685,12 +694,18 @@
   function doCheckApproval() {
     approvalPollCount++;
     var pollNum = approvalPollCount;
-    updateApprovalDebug('בדיקה #' + pollNum + ' | סשן: ' + sessionCode + ' | ת.ז.: ' + examineeData.idNumber);
+    var polledId = examineeData.idNumber; // capture at request time
+    updateApprovalDebug('בדיקה #' + pollNum + ' | סשן: ' + sessionCode + ' | ת.ז.: ' + polledId);
     apiGet({
       action: 'checkApproval',
       sessionCode: sessionCode,
-      idNumber: examineeData.idNumber
+      idNumber: polledId
     }).then(function(data) {
+      // Guard: discard stale response if examinee changed (race condition)
+      if (polledId !== examineeData.idNumber) {
+        console.log('[APPROVAL] Discarding stale response for ' + polledId + ' (current: ' + examineeData.idNumber + ')');
+        return;
+      }
       approvalFailCount = 0; // reset on success
       console.log('[APPROVAL] Poll #' + pollNum + ' Response:', JSON.stringify(data));
       // Hide error banner on success
@@ -834,7 +849,13 @@
         debugPool.forEach(function(q) { var t = classifyCategory(q.category); if (byT[t] !== undefined) byT[t]++; });
         for (var dt2 in structure) debugStr += '\n' + dt2 + ': ' + (byT[dt2]||0) + ' (צריך ' + structure[dt2] + ')';
       }
-      document.getElementById('examArea').innerHTML = '<div class="info-banner warn">אין מספיק שאלות לדרגה שנבחרה. פנה לבוחן.</div>' +
+      var langName = LANG_LABELS[language] || language;
+      var licName = LICENSE_LABELS[license] || license;
+      document.getElementById('examArea').innerHTML =
+        '<div class="info-banner warn" style="font-size:15px;">' +
+        '<strong>אין מספיק שאלות לשילוב שנבחר:</strong><br>' +
+        'דרגה: ' + escHtml(licName) + ' | שפה: ' + escHtml(langName) +
+        '<br><br>פנה לבוחן — ייתכן שצריך לשנות שפה או דרגה.</div>' +
         '<pre style="font-size:11px;color:#64748b;margin:12px;white-space:pre-wrap;text-align:right;">' + debugStr + '</pre>';
       showScreen('screenExam');
       return;
