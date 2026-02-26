@@ -517,6 +517,11 @@
     if (licSel) licSel.value = sessionData.license || 'B';
     // Clear exam area
     document.getElementById('examArea').innerHTML = '';
+    // Reset instructions screen phases (prevent stale approval from showing instructions)
+    document.getElementById('waitingPhase').style.display = 'block';
+    document.getElementById('instructionsPhase').style.display = 'none';
+    document.getElementById('audioModeNotice').style.display = 'none';
+    document.getElementById('rejectedMsg').style.display = 'none';
     // Re-enable tab switch detection for next examinee
     document.addEventListener('visibilitychange', onTabSwitch);
     // Go to identification screen (skip session code — same session)
@@ -786,11 +791,19 @@
   }
 
   function showInstructions() {
+    // Guard: ignore if no examinee is registered (stale approval response)
+    if (!examineeData.idNumber) {
+      console.log('[APPROVAL] showInstructions blocked — no registered examinee');
+      return;
+    }
+
     document.getElementById('waitingPhase').style.display = 'none';
     document.getElementById('instructionsPhase').style.display = 'block';
 
-    document.getElementById('infoLicense').textContent = LICENSE_LABELS[sessionData.license] || sessionData.license;
-    document.getElementById('infoLanguage').textContent = LANG_LABELS[sessionData.language] || sessionData.language;
+    var displayLicense = examineeData.license || sessionData.license;
+    var displayLanguage = examineeData.language || sessionData.language;
+    document.getElementById('infoLicense').textContent = LICENSE_LABELS[displayLicense] || displayLicense;
+    document.getElementById('infoLanguage').textContent = LANG_LABELS[displayLanguage] || displayLanguage;
     document.getElementById('infoSite').textContent = sessionData.site || '';
 
     if (sessionData.audioMode === 'on') {
@@ -831,12 +844,18 @@
 
   // ========== Start Exam ==========
   function doStartExam() {
+    // Guard: ensure an examinee is registered
+    if (!examineeData.idNumber) {
+      console.log('[EXAM] doStartExam blocked — no registered examinee');
+      return;
+    }
+
     // Notify server that exam started
     apiGet({ action: 'markExamStarted', sessionCode: sessionCode, idNumber: examineeData.idNumber });
 
-    // Build exam
-    var license = String(sessionData.license || 'B');
-    var language = String(sessionData.language || 'he');
+    // Use examinee's chosen license/language (may differ from session defaults)
+    var license = String(examineeData.license || sessionData.license || 'B');
+    var language = String(examineeData.language || sessionData.language || 'he');
     var exam = buildExam(license, language);
     if (exam.length < TOTAL_QUESTIONS) {
       var qsLoaded = (typeof QUESTIONS !== 'undefined' && Array.isArray(QUESTIONS)) ? QUESTIONS.length : 0;
