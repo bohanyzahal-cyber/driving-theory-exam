@@ -503,6 +503,22 @@
     return fetch(API_URL + '?' + qs.join('&'), { cache: 'no-store' }).then(function(r) { return r.json(); });
   }
 
+  // ========== Credential obfuscation (prevents plain-text passwords in localStorage) ==========
+  var _obfKey = 'ExMn2026';
+  function obfuscate(str) {
+    var r = '';
+    for (var i = 0; i < str.length; i++) r += String.fromCharCode(str.charCodeAt(i) ^ _obfKey.charCodeAt(i % _obfKey.length));
+    return btoa(r);
+  }
+  function deobfuscate(encoded) {
+    try {
+      var d = atob(encoded);
+      var r = '';
+      for (var i = 0; i < d.length; i++) r += String.fromCharCode(d.charCodeAt(i) ^ _obfKey.charCodeAt(i % _obfKey.length));
+      return r;
+    } catch(e) { return encoded; } // fallback: return as-is if decode fails (old plain-text)
+  }
+
   // ========== Login ==========
   document.getElementById('loginBtn').addEventListener('click', function() {
     var id = document.getElementById('loginId').value.trim();
@@ -522,7 +538,7 @@
         examinerData = data.examiner;
         // Save credentials if "remember me" is checked
         if (document.getElementById('rememberMe').checked) {
-          try { localStorage.setItem('ext_examiner_remember', JSON.stringify({ id: id, pass: pass })); } catch(e) {}
+          try { localStorage.setItem('ext_examiner_remember', JSON.stringify({ id: id, pass: obfuscate(pass) })); } catch(e) {}
         }
         document.getElementById('topbarInfo').textContent = examinerData.name;
         document.getElementById('logoutBtn').style.display = 'inline-block';
@@ -1843,7 +1859,7 @@
         var creds = JSON.parse(remembered);
         if (creds.id && creds.pass) {
           document.getElementById('loginId').value = creds.id;
-          document.getElementById('loginPass').value = creds.pass;
+          document.getElementById('loginPass').value = deobfuscate(creds.pass);
           document.getElementById('rememberMe').checked = true;
           // Auto-click login
           document.getElementById('loginBtn').click();
