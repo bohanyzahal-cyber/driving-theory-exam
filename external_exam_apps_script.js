@@ -79,7 +79,7 @@ function countAttempts(idNumber, license) {
 }
 
 function formatPhoneForWA(phone) {
-  phone = (phone || '').replace(/[^0-9]/g, '');
+  phone = String(phone || '').replace(/[^0-9]/g, '');
   if (phone.charAt(0) === '0') phone = '972' + phone.substring(1);
   return phone;
 }
@@ -675,7 +675,7 @@ function handleCorrectToPass(p) {
       sheet.getRange(i + 1, 8).setValue('עבר');     // column H = עבר/נכשל
       // Mark as corrected
       sheet.getRange(i + 1, 21).setValue(true);      // column U = תוקן?
-      // Regenerate WhatsApp link with pass status
+      // Regenerate WhatsApp link — corrected result shows only "עבר" (no score/errors)
       var phone = formatPhoneForWA(data[i][3]);
       var waMsg = '*🚗 אישור תוצאת מבחן תאוריה חיצוני*\n\n' +
         'שם: ' + data[i][2] + '\n' +
@@ -683,8 +683,7 @@ function handleCorrectToPass(p) {
         'דרגה: ' + data[i][4] + '\n' +
         (data[i][19] ? 'אוכלוסיה: ' + data[i][19] + '\n' : '') +
         'תאריך: ' + data[i][0] + '\n' +
-        'תוצאה: *עבר* (' + data[i][5] + ')\n' +
-        'זמן: ' + data[i][8] + '\n';
+        'תוצאה: *עבר*\n';
       var waLink = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(waMsg);
       sheet.getRange(i + 1, 19).setValue(waLink);    // column S = קישור וואטסאפ
       SpreadsheetApp.flush();
