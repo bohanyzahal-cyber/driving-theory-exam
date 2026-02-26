@@ -1,5 +1,5 @@
 // Service Worker for Examiner PWA
-var CACHE_NAME = 'examiner-v1';
+var CACHE_NAME = 'examiner-v2';
 
 // Install — cache the examiner page shell
 self.addEventListener('install', function(e) {
@@ -32,8 +32,8 @@ self.addEventListener('fetch', function(e) {
   var url = e.request.url;
   // Always go to network for API calls
   if (url.indexOf('script.google.com') !== -1) return;
-  // Always go to network for QR generators
-  if (url.indexOf('chart.googleapis.com') !== -1 || url.indexOf('qrserver.com') !== -1) return;
+  // Always go to network for QR fallback API
+  if (url.indexOf('qrserver.com') !== -1) return;
 
   e.respondWith(
     fetch(e.request).then(function(response) {
