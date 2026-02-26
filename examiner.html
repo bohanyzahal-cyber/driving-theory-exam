@@ -9,6 +9,7 @@
   <meta name="apple-mobile-web-app-title" content="לוח בוחן"/>
   <link rel="manifest" href="manifest-examiner.json"/>
   <link rel="apple-touch-icon" href="logo.png"/>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
   <title>לוח בוחן — מבחן חיצוני</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
@@ -1858,15 +1859,21 @@
     var urlInput = document.getElementById('examineeUrlInput');
     urlInput.value = url;
 
-    // Simple: use Google Charts API to generate QR image (no CDN needed)
-    qrImg.src = 'https://chart.googleapis.com/chart?cht=qr&chs=300x300&chl=' + encodeURIComponent(url) + '&choe=UTF-8';
+    // Client-side QR generation (no deprecated external API dependency)
+    if (typeof qrcode === 'function') {
+      try {
+        var qr = qrcode(0, 'M');
+        qr.addData(url);
+        qr.make();
+        qrImg.src = qr.createDataURL(4, 0);
+        section.style.display = 'block';
+        return;
+      } catch(e) { console.log('[QR] Client-side generation failed:', e); }
+    }
+    // Fallback: qrserver API (if CDN library failed to load)
+    qrImg.src = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=' + encodeURIComponent(url);
     qrImg.onload = function() { section.style.display = 'block'; };
-    qrImg.onerror = function() {
-      // Fallback to qrserver API
-      qrImg.src = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=' + encodeURIComponent(url);
-      qrImg.onload = function() { section.style.display = 'block'; };
-      qrImg.onerror = function() { section.style.display = 'none'; };
-    };
+    qrImg.onerror = function() { section.style.display = 'none'; };
   }
 
   window.copyExamineeUrl = function() {
