@@ -478,7 +478,10 @@
     clearExamineeState();
     // Clear pending result for CURRENT examinee only (in-flight retries for others may still need it)
     if (examineeData.idNumber) {
-      try { localStorage.removeItem('pendingResult_' + examineeData.idNumber); } catch(e) {}
+      try {
+        localStorage.removeItem('pendingResult_' + examineeData.idNumber);
+        localStorage.removeItem('pendingWrongAnswers_' + examineeData.idNumber);
+      } catch(e) {}
     }
     examInProgress = false;
     examSubmitted = false;
@@ -1883,7 +1886,12 @@
     // Wrong answers sent separately via POST (GET URL would be too long on mobile)
 
     // Save result to localStorage BEFORE sending — safety net for network failures
-    try { localStorage.setItem('pendingResult_' + payload.idNumber, JSON.stringify(payload)); } catch(e2) {}
+    try {
+      localStorage.setItem('pendingResult_' + payload.idNumber, JSON.stringify(payload));
+      if (wrongData && wrongData.length > 0) {
+        localStorage.setItem('pendingWrongAnswers_' + payload.idNumber, JSON.stringify(wrongData));
+      }
+    } catch(e2) {}
 
     submitWithRetry(payload, 3, wrongData);
 
@@ -1932,7 +1940,10 @@
         debugEl.innerHTML = '<span style="color:green;">&#x2705; Result submitted successfully</span>' +
           '<br>Session: ' + payload.sessionCode + ' | ID: ' + payload.idNumber + ' | Score: ' + payload.score + '/' + payload.total;
         // Clear pending from localStorage — successfully sent
-        try { localStorage.removeItem('pendingResult_' + payload.idNumber); } catch(e3) {}
+        try {
+          localStorage.removeItem('pendingResult_' + payload.idNumber);
+          localStorage.removeItem('pendingWrongAnswers_' + payload.idNumber);
+        } catch(e3) {}
         // Now send wrong answers AFTER result row exists on server
         if (wrongData && wrongData.length > 0) {
           sendWrongAnswers(wrongData, payload.idNumber);
@@ -2010,7 +2021,13 @@
               if (doneScreen) doneScreen.appendChild(debugEl);
             }
             debugEl.innerHTML = '⏳ שולח תוצאה שנשמרה מניסיון קודם...';
-            submitWithRetry(pending, 3, null);
+            // Load saved wrong answers if available
+            var savedWrong = null;
+            try {
+              var wrongStr = localStorage.getItem('pendingWrongAnswers_' + pending.idNumber);
+              if (wrongStr) savedWrong = JSON.parse(wrongStr);
+            } catch(ew) {}
+            submitWithRetry(pending, 3, savedWrong);
             return; // handle one at a time
           }
         }
