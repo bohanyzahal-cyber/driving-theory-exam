@@ -943,7 +943,7 @@
       // Build WA link directly
       var phone = formatPhone(r.phone);
       var passTextWA = isDQ ? '\u05E4\u05E1\u05D5\u05DC' : (isPassed ? '\u05E2\u05D1\u05E8' : '\u05E0\u05DB\u05E9\u05DC');
-      var shortMsg = '\u05E9\u05DC\u05D5\u05DD ' + r.name + ', \u05EA\u05D5\u05E6\u05D0\u05EA \u05D4\u05DE\u05D1\u05D7\u05DF: ' + passTextWA + ' (' + (r.score || '') + ')';
+      var shortMsg = '\u05E9\u05DC\u05D5\u05DD ' + r.name + ', \u05EA\u05D5\u05E6\u05D0\u05EA \u05D4\u05DE\u05D1\u05D7\u05DF: ' + passTextWA + (isCorrected ? '' : ' (' + (r.score || '') + ')');
       var waUrl = phone ? ('https://wa.me/' + phone + '?text=' + encodeURIComponent(shortMsg)) : '#';
 
       html += '<tr>' +
@@ -1099,28 +1099,32 @@
     var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === '\u05E4\u05E1\u05D5\u05DC';
     var isPassed = !isDQ && (r.passed === '\u05E2\u05D1\u05E8' || r.passed === true);
     var isCorrected = r.corrected === true || r.corrected === 'TRUE';
-    var passText = isDQ ? '\u05E4\u05E1\u05D5\u05DC' : (isPassed ? (isCorrected ? '\u05E2\u05D1\u05E8 (\u05EA\u05D5\u05E7\u05DF)' : '\u05E2\u05D1\u05E8') : '\u05E0\u05DB\u05E9\u05DC');
+    // PDF for examinee: corrected = just "עבר", no score details
+    var passText = isDQ ? '\u05E4\u05E1\u05D5\u05DC' : (isPassed ? '\u05E2\u05D1\u05E8' : '\u05E0\u05DB\u05E9\u05DC');
 
-    // Parse wrong answers
-    var wrongItems = parseWrongDetails(r.wrongDetails);
+    // Parse wrong answers (skip for corrected — examinee shouldn't see errors)
+    var wrongItems = [];
     var tableRows = '';
-    for (var i = 0; i < wrongItems.length; i++) {
-      var bg = i % 2 === 0 ? '#f8fafc' : '#ffffff';
-      tableRows += '<tr style="background:' + bg + ';">' +
-        '<td style="border:1px solid #94a3b8;padding:8px;text-align:center;width:5%;">' + (i + 1) + '</td>' +
-        '<td style="border:1px solid #94a3b8;padding:8px;width:35%;">' + escHtml(wrongItems[i].question) + '</td>' +
-        '<td style="border:1px solid #94a3b8;padding:8px;width:30%;">' + escHtml(wrongItems[i].yourAnswer) + '</td>' +
-        '<td style="border:1px solid #94a3b8;padding:8px;width:30%;">' + escHtml(wrongItems[i].correctAnswer) + '</td>' +
-        '</tr>';
+    if (!isCorrected) {
+      wrongItems = parseWrongDetails(r.wrongDetails);
+      for (var i = 0; i < wrongItems.length; i++) {
+        var bg = i % 2 === 0 ? '#f8fafc' : '#ffffff';
+        tableRows += '<tr style="background:' + bg + ';">' +
+          '<td style="border:1px solid #94a3b8;padding:8px;text-align:center;width:5%;">' + (i + 1) + '</td>' +
+          '<td style="border:1px solid #94a3b8;padding:8px;width:35%;">' + escHtml(wrongItems[i].question) + '</td>' +
+          '<td style="border:1px solid #94a3b8;padding:8px;width:30%;">' + escHtml(wrongItems[i].yourAnswer) + '</td>' +
+          '<td style="border:1px solid #94a3b8;padding:8px;width:30%;">' + escHtml(wrongItems[i].correctAnswer) + '</td>' +
+          '</tr>';
+      }
     }
 
     // Only show "all correct" if score is actually perfect (e.g. 30/30), not just because wrongDetails is empty
     var scoreNum = 0, totalNum = 0;
     var scoreParts = String(r.score || '').split('/');
     if (scoreParts.length === 2) { scoreNum = parseInt(scoreParts[0]) || 0; totalNum = parseInt(scoreParts[1]) || 30; }
-    var isAllCorrect = wrongItems.length === 0 && scoreNum === totalNum && scoreNum > 0;
+    var isAllCorrect = !isCorrected && wrongItems.length === 0 && scoreNum === totalNum && scoreNum > 0;
     var allCorrectMsg = isAllCorrect ? '<p style="color:#16a34a;font-weight:bold;font-size:16px;text-align:center;">\u05DB\u05DC \u05D4\u05EA\u05E9\u05D5\u05D1\u05D5\u05EA \u05E0\u05DB\u05D5\u05E0\u05D5\u05EA!</p>' : '';
-    if (!isAllCorrect && wrongItems.length === 0 && scoreNum < totalNum) {
+    if (!isCorrected && !isAllCorrect && wrongItems.length === 0 && scoreNum < totalNum) {
       allCorrectMsg = '<p style="color:#94a3b8;font-size:13px;text-align:center;">\u05E4\u05D9\u05E8\u05D5\u05D8 \u05E9\u05D0\u05DC\u05D5\u05EA \u05E9\u05D2\u05D5\u05D9\u05D5\u05EA \u05DC\u05D0 \u05D6\u05DE\u05D9\u05DF</p>';
     }
 
@@ -1158,11 +1162,12 @@
       '<div><span class="label">\u05D0\u05EA\u05E8: </span><span class="val">' + escHtml(r.site || currentSite) + '</span></div>' +
       '<div><span class="label">\u05DE\u05E1\' \u05D1\u05D5\u05D7\u05DF: </span><span class="val">' + escHtml(examinerData.examinerNumber || r.examiner || examinerData.name) + '</span></div>' +
       (r.population ? '<div><span class="label">\u05D0\u05D5\u05DB\u05DC\u05D5\u05E1\u05D9\u05D4: </span><span class="val">' + escHtml(r.population) + '</span></div>' : '') +
-      '<div><span class="label">\u05EA\u05E9\u05D5\u05D1\u05D5\u05EA \u05E9\u05D2\u05D5\u05D9\u05D5\u05EA: </span><span class="val">' + wrongItems.length + '</span></div>' +
+      (!isCorrected ? '<div><span class="label">\u05EA\u05E9\u05D5\u05D1\u05D5\u05EA \u05E9\u05D2\u05D5\u05D9\u05D5\u05EA: </span><span class="val">' + wrongItems.length + '</span></div>' : '') +
       '<div><span class="label">\u05EA\u05D5\u05E6\u05D0\u05D4: </span><span class="val">' + passText + '</span></div>' +
-      (isCorrected ? '<div><span class="label">\u05EA\u05D5\u05E7\u05DF: </span><span class="val" style="color:#f59e0b;">\u05DB\u05DF</span></div>' : '') +
       '</div>' +
-      '<div class="result-badge ' + (isPassed ? 'pass' : 'fail') + '">' + escHtml(String(r.score || '')) + ' (' + escHtml(formatPercent(r.percent)) + ')</div>';
+      (isCorrected
+        ? '<div class="result-badge pass">\u05E2\u05D1\u05E8</div>'
+        : '<div class="result-badge ' + (isPassed ? 'pass' : 'fail') + '">' + escHtml(String(r.score || '')) + ' (' + escHtml(formatPercent(r.percent)) + ')</div>');
 
     if (wrongItems.length > 0) {
       html += '<table><thead><tr>' +
