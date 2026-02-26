@@ -65,6 +65,19 @@ function jsonResponse(obj) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
+// Verify examiner owns the session (for sensitive actions)
+function verifyExaminerForSession(sessionCode, examinerId) {
+  if (!examinerId) return false;
+  var sheet = getSheet('סשנים');
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]).trim() === String(sessionCode).trim()) {
+      return normalizeId(data[i][1]) === normalizeId(examinerId);
+    }
+  }
+  return false;
+}
+
 function countAttempts(idNumber, license) {
   var sheet = getSheet('תוצאות');
   var data = sheet.getDataRange().getValues();
@@ -483,6 +496,9 @@ function handleCheckApproval(p) {
 }
 
 function handleApproveExaminee(p) {
+  if (p.examinerId && !verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+    return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
+  }
   var sheet = getSheet('ממתינים');
   var data = sheet.getDataRange().getValues();
   for (var i = data.length - 1; i >= 1; i--) {
@@ -505,6 +521,9 @@ function findStatus(data, p) {
 }
 
 function handleRejectExaminee(p) {
+  if (p.examinerId && !verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+    return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
+  }
   var sheet = getSheet('ממתינים');
   var data = sheet.getDataRange().getValues();
   for (var i = data.length - 1; i >= 1; i--) {
@@ -590,6 +609,10 @@ function handleExaminerDashboard(p) {
 }
 
 function handleDisqualify(p) {
+  // Verify examiner if provided (examinee-side DQ doesn't send examinerId)
+  if (p.examinerId && !verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+    return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
+  }
   // ALWAYS remove from ממתינים first (so examinee leaves "active" list)
   var pendSheet = getSheet('ממתינים');
   var pendData = pendSheet.getDataRange().getValues();
@@ -646,6 +669,9 @@ function handleDisqualify(p) {
 }
 
 function handleResetExaminee(p) {
+  if (p.examinerId && !verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+    return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
+  }
   var sheet = getSheet('ממתינים');
   var data = sheet.getDataRange().getValues();
   for (var i = data.length - 1; i >= 1; i--) {
@@ -662,6 +688,9 @@ function handleResetExaminee(p) {
 }
 
 function handleCorrectToPass(p) {
+  if (p.examinerId && !verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+    return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
+  }
   var sheet = getSheet('תוצאות');
   var data = sheet.getDataRange().getValues();
   for (var i = data.length - 1; i >= 1; i--) {
