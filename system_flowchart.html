@@ -154,6 +154,18 @@
         <div class="outcome no">&#x2718; לא &larr; הודעת שגיאה</div>
       </div>
     </div>
+    <div class="arrow-down">&#x25BC;</div>
+    <div class="flow-step">
+      <div class="step-marker auto-m">&#x2699;</div>
+      <div class="step-content">
+        <div class="title">טעינת סשנים פעילים <span class="api">action=listSessions</span></div>
+        <div class="detail">
+          אם לבוחן יש סשנים פעילים שלא פג תוקפם — הם מוצגים כרשימת כרטיסיות מתחת לטופס "פתיחת סשן חדש"<br>
+          &#x2022; מציג: קוד סשן | אתר | כיתה | דרגה | זמן שנותר<br>
+          &#x2022; לחיצה על כרטיסייה &rarr; חזרה לדשבורד של הסשן הקודם (כולל כל התוצאות)
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -189,7 +201,7 @@
       <div class="step-marker examiner-m">&#x1F464;</div>
       <div class="step-content">
         <div class="title">דשבורד הבוחן נפתח <span class="screen">מסך דשבורד</span></div>
-        <div class="detail">מציג את קוד הסשן בגדול | הבוחן מודיע את הקוד לנבחנים | מתעדכן כל 5 שניות</div>
+        <div class="detail">מציג את קוד הסשן בגדול + QR Code (נוצר בצד לקוח עם fallback ל-API) | הבוחן מודיע את הקוד לנבחנים | מתעדכן כל 5 שניות</div>
       </div>
     </div>
   </div>
@@ -383,10 +395,12 @@
         <div class="title">הגנות נגד העתקה ומעבר טאבים</div>
         <div class="detail">
           &#x2022; חסימת: לחיצה ימנית | העתקה | גזירה | סימון טקסט<br>
-          &#x2022; <strong>זיהוי מעבר טאב (visibilitychange):</strong> אם הנבחן עובר לטאב אחר — פסילה מיידית אוטומטית<br>
+          &#x2022; <strong>זיהוי מעבר טאב (visibilitychange) — עם תקופת חסד:</strong><br>
+          &nbsp;&nbsp;&#x25B8; <strong>מעבר ראשון:</strong> תקופת חסד של 10 שניות. חזר בזמן? &rarr; אזהרה אדומה + ממשיך. לא חזר? &rarr; פסילה אוטומטית<br>
+          &nbsp;&nbsp;&#x25B8; <strong>מעבר שני:</strong> פסילה מיידית, ללא חסד<br>
           &#x2022; הפסילה נשלחת באמצעות keepalive fetch + גיבוי עם Image fallback לאמינות מקסימלית<br>
-          &#x2022; כשהנבחן חוזר לטאב — רואה מסך פסילה (&#x26D4;) ולא יכול להמשיך<br>
-          &#x2022; סגירת דפדפן = נכשל אוטומטית (sendBeacon)
+          &#x2022; סגירת דפדפן = נכשל אוטומטית (beforeunload + fetch keepalive)<br>
+          &#x2022; רענון באמצע מבחן = נכשל + מסך ברור "המבחן הסתיים" / "המבחן נפסל" (לפי localStorage flag)
         </div>
       </div>
     </div>
@@ -442,8 +456,8 @@
         <div class="detail">
           ציון, אחוז, עבר/נכשל, זמן, שם בוחן, אתר, כיתה, <strong>audioMode</strong> | נשמר בגיליון "תוצאות" | מנסה 3 פעמים אם נכשל<br>
           <strong>שאלות שגויות:</strong> נשלחות כפרמטר wrongAnswers (מחרוזת JSON) בתוך אותו GET request<br>
-          <em>תיקון באג:</em> POST עם no-cors איבד את ה-body בגלל 302 redirect של Apps Script — לכן הכל עבר ל-GET<br>
-          השרת מפענח את ה-JSON בצד doGet (שורה 191 ב-Apps Script)
+          <strong>Auto-retry:</strong> אם השליחה נכשלה — התוצאה + שאלות שגויות נשמרות ב-localStorage ונשלחות מחדש בטעינה הבאה של הדף<br>
+          השרת מפענח את ה-JSON בצד doGet
         </div>
       </div>
     </div>
@@ -468,8 +482,9 @@
       <div class="step-content">
         <div class="title">צפייה בתוצאות <span class="screen">אזור "תוצאות" בדשבורד</span></div>
         <div class="detail">
-          טבלה עם: שם | ת.ז | ניסיון | ציון | תוצאה (עבר/נכשל/פסול) | זמן | פעולות<br>
-          שורת סטטיסטיקה: סה"כ | עברו (ירוק) | נכשלו (אדום) | אחוז מעבר
+          טבלה עם: שם | ת.ז | אוכלוסיה | ניסיון | ציון | תוצאה (עבר/נכשל/פסול) | זמן | פעולות<br>
+          שורת סטטיסטיקה: סה"כ | עברו (ירוק) | נכשלו (אדום, כולל פסולים) | אחוז הצלחה<br>
+          <strong>פסולים נספרים כנכשלים</strong> בכל הסטטיסטיקות (דשבורד, דו"ח, WA)
         </div>
       </div>
     </div>
@@ -492,7 +507,11 @@
       <div class="step-content">
         <div class="title">פעולות מרוכזות</div>
         <div class="detail">
-          <strong>&#x1F4E8; סיכום למנהל אתר:</strong> הודעת WhatsApp מרוכזת עם כל התוצאות לטלפון מנהל האתר<br>
+          <strong>&#x1F4E8; סיכום למנהל אתר:</strong> הודעת WhatsApp <strong>סטטיסטית</strong> (ללא שמות) לטלפון מנהל האתר:<br>
+          &nbsp;&nbsp;&#x25B8; כמות עברו/נכשלו + אחוז הצלחה<br>
+          &nbsp;&nbsp;&#x25B8; פילוח לפי אוכלוסיה (צבא/קד"צ/ווצ'ר) עם אחוזים<br>
+          &nbsp;&nbsp;&#x25B8; פילוח נכשלים לפי כמות שגיאות (1-3 / 4-6 / 7+)<br>
+          &nbsp;&nbsp;&#x25B8; "דו"ח מפורט ישלח בנפרד"<br>
           <strong>&#x1F4E4; שליחה לכל הנבחנים:</strong> פתיחת WhatsApp לכל נבחן בנפרד
         </div>
       </div>
@@ -581,7 +600,7 @@
           <div class="step-content">
             <div class="title">שליחת הדו"ח</div>
             <div class="detail">
-              <strong>&#x1F4F1; WhatsApp לרב בוחן:</strong> כפתור שליחה לטלפון ברירת מחדל (0529282016) | אפשר לשנות את המספר<br>
+              <strong>&#x1F4F1; WhatsApp לרב בוחן:</strong> כפתור שליחה לטלפון מנהל האתר (נטען מגיליון "אתרים") | אפשר לשנות את המספר<br>
               <strong>&#x1F5A8; הדפסה:</strong> הדפסת הדו"ח ישירות מהחלון
             </div>
           </div>
@@ -606,10 +625,12 @@
     <div class="flow-step" style="margin-top:8px;">
       <div class="step-marker auto-m">&#x26D4;</div>
       <div class="step-content">
-        <div class="title">מעבר לטאב אחר באמצע מבחן (Tab Switch)</div>
+        <div class="title">מעבר לטאב אחר באמצע מבחן (Tab Switch) — עם תקופת חסד</div>
         <div class="detail">
-          זיהוי באמצעות visibilitychange | פסילה מיידית אוטומטית | נשלח באמצעות keepalive fetch + Image fallback<br>
-          כשהנבחן חוזר לטאב — רואה מסך &#x26D4; פסילה ולא יכול להמשיך
+          זיהוי באמצעות visibilitychange<br>
+          &#x2022; <strong>מעבר ראשון:</strong> 10 שניות חסד. חזר בזמן &rarr; באנר אזהרה אדום (מעבר נוסף = פסילה!). לא חזר &rarr; פסילה אוטומטית<br>
+          &#x2022; <strong>מעבר שני:</strong> פסילה מיידית, ללא חסד<br>
+          נשלח באמצעות keepalive fetch + Image fallback | כשהנבחן חוזר לטאב אחרי פסילה — רואה מסך &#x26D4;
         </div>
       </div>
     </div>
@@ -623,8 +644,12 @@
     <div class="flow-step" style="margin-top:8px;">
       <div class="step-marker auto-m">&#x1F504;</div>
       <div class="step-content">
-        <div class="title">רענון דף באמצע המתנה/הוראות</div>
-        <div class="detail">sessionStorage שומר את המצב | חוזר למסך הנכון אוטומטית | לא חוזר לתוך מבחן פעיל (אנטי-רמאות)</div>
+        <div class="title">רענון דף באמצע מבחן/המתנה</div>
+        <div class="detail">
+          &#x2022; <strong>רענון באמצע מבחן:</strong> beforeunload שולח "נכשל" + localStorage flag מסומן &rarr; בטעינה מחדש מוצג מסך ברור "המבחן הסתיים" או "המבחן נפסל" (לא מסך המתנה מבלבל)<br>
+          &#x2022; <strong>רענון באמצע המתנה/הוראות:</strong> sessionStorage שומר את המצב | חוזר למסך הנכון אוטומטית<br>
+          &#x2022; לא חוזר לתוך מבחן פעיל (אנטי-רמאות)
+        </div>
       </div>
     </div>
     <div class="flow-step" style="margin-top:8px;">
@@ -653,6 +678,23 @@
       <div class="step-content">
         <div class="title">סגירת סשן</div>
         <div class="detail">בוחן לוחץ "סגור סשן" או שפג התוקף (8 שעות) | נבחנים חדשים לא יכולים להיכנס | מבחנים פעילים ממשיכים</div>
+      </div>
+    </div>
+    <div class="flow-step" style="margin-top:8px;">
+      <div class="step-marker auto-m">&#x1F510;</div>
+      <div class="step-content">
+        <div class="title">ערפול סיסמאות ב-localStorage</div>
+        <div class="detail">"זכור אותי" שומר סיסמה מוערפלת (XOR + base64) במקום טקסט גלוי | תאימות לאחור עם ערכים ישנים</div>
+      </div>
+    </div>
+    <div class="flow-step" style="margin-top:8px;">
+      <div class="step-marker server-m">&#x1F6E1;</div>
+      <div class="step-content">
+        <div class="title">אימות זהות בוחן לפעולות רגישות</div>
+        <div class="detail">
+          פעולות: אישור | דחייה | פסילה | תיקון ציון | איפוס נבחן<br>
+          השרת מוודא שה-examinerId תואם ליוצר הסשן בגיליון "סשנים" | מונע מאדם אחר לבצע פעולות בסשן שלא שלו
+        </div>
       </div>
     </div>
   </div>
