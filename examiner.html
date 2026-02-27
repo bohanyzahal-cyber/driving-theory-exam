@@ -1248,7 +1248,7 @@
     msg += '\u05EA\u05D0\u05E8\u05D9\u05DA: ' + dateStr + '\n';
     msg += '\u05DB\u05D9\u05EA\u05D4: ' + currentClassroom + '\n\n';
 
-    var passCount = 0, failCount = 0;
+    var passCount = 0, failCount = 0, dqCount = 0;
     for (var i = 0; i < completedResults.length; i++) {
       var r = completedResults[i];
       var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === '\u05E4\u05E1\u05D5\u05DC';
@@ -1260,6 +1260,8 @@
       var popStr = r.population ? ' [' + r.population + ']' : '';
       if (isDQ) {
         msg += '\u26D4 ' + r.name + popStr + ' (...' + id4 + ')' + attemptStr + ' \u2014 \u05E4\u05E1\u05D5\u05DC\n';
+        dqCount++;
+        failCount++;
       } else if (isPassed) {
         msg += '\u2705 ' + r.name + popStr + ' (...' + id4 + ')' + attemptStr + ' \u2014 ' + (isCorrected ? '\u05E2\u05D1\u05E8' : r.score) + '\n';
         passCount++;
@@ -1268,7 +1270,9 @@
         failCount++;
       }
     }
-    msg += '\n*\u05E1\u05D4"\u05DB: ' + completedResults.length + ' | \u05E2\u05D1\u05E8\u05D5: ' + passCount + ' | \u05E0\u05DB\u05E9\u05DC\u05D5: ' + failCount + '*';
+    var totalWA = passCount + failCount;
+    var rateWA = totalWA > 0 ? Math.round((passCount / totalWA) * 100) : 0;
+    msg += '\n*\u05E1\u05D4"\u05DB: ' + totalWA + ' | \u05E2\u05D1\u05E8\u05D5: ' + passCount + ' | \u05E0\u05DB\u05E9\u05DC\u05D5: ' + failCount + (dqCount > 0 ? ' (' + dqCount + ' \u05E4\u05E1\u05D5\u05DC\u05D9\u05DD)' : '') + ' | ' + rateWA + '%*';
 
     window.open('https://wa.me/' + phone + '?text=' + encodeURIComponent(msg), '_blank');
   };
@@ -1336,21 +1340,19 @@
       else if (isPassed) passCount++;
       else failCount++;
 
-      if (!isDQ && pop) {
+      if (pop) {
         if (!popStats[pop]) popStats[pop] = { total: 0, passed: 0, failed: 0 };
         popStats[pop].total++;
         if (isPassed) popStats[pop].passed++;
-        else popStats[pop].failed++;
+        else popStats[pop].failed++; // DQ counts as failed
       }
-      // Map to execution categories PER LICENSE
-      if (!isDQ) {
-        var ex = getExecForLicense(rLic);
-        var mk = mapPop(pop);
-        ex.total++;
-        if (r.audioMode === 'on') ex.audio++;
-        if (isPassed) ex.pa[mk]++;
-        else ex.fa[mk]++;
-      }
+      // Map to execution categories PER LICENSE (DQ counts as failed)
+      var ex = getExecForLicense(rLic);
+      var mk = mapPop(pop);
+      ex.total++;
+      if (r.audioMode === 'on') ex.audio++;
+      if (isPassed) ex.pa[mk]++;
+      else ex.fa[mk]++;
 
       rows += '<tr style="background:' + rowBg + ';">' +
         '<td style="font-weight:bold;">' + (i + 1) + '</td>' +
@@ -1364,7 +1366,7 @@
         '<td style="font-weight:bold;color:' + resultColor + ';">' + resultText + '</td></tr>';
     }
 
-    var total = passCount + failCount;
+    var total = passCount + failCount + dqCount;
     var rate = total > 0 ? Math.round((passCount / total) * 100) : 0;
 
     // Population breakdown rows for summary table
@@ -1381,8 +1383,9 @@
         '<td style="color:#27ae60;font-weight:600;">' + ps.passed + '</td>' +
         '<td style="color:#c0392b;font-weight:600;">' + ps.failed + '</td><td>' + pr + '%</td></tr>';
     }
+    var failTotal = failCount + dqCount;
     popRows += '<tr style="border-top:2px solid #34495e;font-weight:bold;"><td>\u05E1\u05D4"\u05DB</td><td>' + total + '</td>' +
-      '<td style="color:#27ae60;">' + passCount + '</td><td style="color:#c0392b;">' + failCount + '</td><td>' + rate + '%</td></tr>';
+      '<td style="color:#27ae60;">' + passCount + '</td><td style="color:#c0392b;">' + failTotal + (dqCount > 0 ? ' <span style="font-weight:400;font-size:11px;">(' + dqCount + ' \u05E4\u05E1\u05D5\u05DC\u05D9\u05DD)</span>' : '') + '</td><td>' + rate + '%</td></tr>';
 
     // Stamp
     var stampHtml = '';
@@ -1661,10 +1664,10 @@
     H.push('msg+="\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\n";');
     H.push('msg+=\'' + waResultsEsc + '\';');
     H.push('msg+="\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\u2501\\n\\n";');
+    var failTotalReport = failCount + dqCount;
     H.push('msg+="*\\u05E1\\u05D9\\u05DB\\u05D5\\u05DD:*\\n";');
-    H.push('msg+="\\u05E1\\u05D4\\"\\u05DB: ' + total + ' | \\u05E2\\u05D1\\u05E8\\u05D5: ' + passCount + ' | \\u05E0\\u05DB\\u05E9\\u05DC\\u05D5: ' + failCount + '\\n";');
+    H.push('msg+="\\u05E1\\u05D4\\"\\u05DB: ' + total + ' | \\u05E2\\u05D1\\u05E8\\u05D5: ' + passCount + ' | \\u05E0\\u05DB\\u05E9\\u05DC\\u05D5: ' + failTotalReport + (dqCount > 0 ? ' (' + dqCount + ' \\u05E4\\u05E1\\u05D5\\u05DC\\u05D9\\u05DD)' : '') + '\\n";');
     H.push('msg+="\\u05D0\\u05D7\\u05D5\\u05D6 \\u05D4\\u05E6\\u05DC\\u05D7\\u05D4: ' + rate + '%\\n";');
-    if (dqCount > 0) H.push('msg+="\\u05E4\\u05E1\\u05D5\\u05DC\\u05D9\\u05DD: ' + dqCount + '\\n";');
     H.push('msg+=\'' + waPopLines + '\';');
     H.push('window.open("https://wa.me/"+p+"?text="+encodeURIComponent(msg),"_blank");');
     H.push('}catch(e){alert("\\u05E9\\u05D2\\u05D9\\u05D0\\u05D4 \\u05D1\\u05E9\\u05DC\\u05D9\\u05D7\\u05EA \\u05D3\\u05D5\\"\\u05D7: "+e.message);}');
