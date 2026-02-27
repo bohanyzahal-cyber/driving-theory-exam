@@ -1012,13 +1012,13 @@
     html += '</tbody></table></div>';
     area.innerHTML = html;
 
-    // Stats
+    // Stats (DQ counts as failed)
     var total = completed.length;
-    var validTotal = passCount + failCount;
+    var failTotal = failCount + dqCount;
     document.getElementById('statTotal').textContent = total;
     document.getElementById('statPass').textContent = passCount;
-    document.getElementById('statFail').textContent = failCount;
-    document.getElementById('statRate').textContent = validTotal > 0 ? Math.round((passCount / validTotal) * 100) + '%' : '0%';
+    document.getElementById('statFail').textContent = failTotal;
+    document.getElementById('statRate').textContent = total > 0 ? Math.round((passCount / total) * 100) + '%' : '0%';
     document.getElementById('statsBar').style.display = 'flex';
     document.getElementById('bulkActions').style.display = 'flex';
   }
@@ -1546,10 +1546,9 @@
     H.push('<div class="summary-bar">');
     H.push('<div class="summary-item si-total"><span class="num">' + total + '</span><span class="lbl">\u05E1\u05D4"\u05DB</span></div>');
     H.push('<div class="summary-item si-passed"><span class="num">' + passCount + '</span><span class="lbl">\u05E2\u05D1\u05E8\u05D5</span></div>');
-    H.push('<div class="summary-item si-failed"><span class="num">' + failCount + '</span><span class="lbl">\u05E0\u05DB\u05E9\u05DC\u05D5</span></div>');
+    H.push('<div class="summary-item si-failed"><span class="num">' + failTotalReport + '</span><span class="lbl">\u05E0\u05DB\u05E9\u05DC\u05D5' + (dqCount > 0 ? ' (' + dqCount + ' \u05E4\u05E1\u05D5\u05DC\u05D9\u05DD)' : '') + '</span></div>');
     H.push('<div class="summary-item si-rate"><span class="num">' + rate + '%</span><span class="lbl">\u05D0\u05D7\u05D5\u05D6 \u05D4\u05E6\u05DC\u05D7\u05D4</span></div>');
     H.push('</div>');
-    if (dqCount > 0) H.push('<div style="text-align:center;color:#d4ac0d;font-weight:700;margin-top:4px;">\u05E4\u05E1\u05D5\u05DC\u05D9\u05DD: ' + dqCount + '</div>');
     // Pop breakdown
     if (orderedPops.length > 0) {
       H.push('<div style="margin-top:18px;"><h4 style="font-size:14px;color:#1a5276;margin-bottom:8px;">\uD83D\uDCCA \u05E4\u05D9\u05E8\u05D5\u05D8 \u05DC\u05E4\u05D9 \u05D0\u05D5\u05DB\u05DC\u05D5\u05E1\u05D9\u05D4</h4>');
