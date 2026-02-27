@@ -280,6 +280,12 @@
     </div>
     <div class="form-error" id="setupError"></div>
     <button id="createSessionBtn" style="display:block; width:100%; padding:14px; font-size:17px; margin-top:12px;">פתח סשן</button>
+
+    <!-- Previous active sessions -->
+    <div id="prevSessionsArea" style="display:none; margin-top:24px; border-top:2px solid #e2e8f0; padding-top:20px;">
+      <h3 style="font-size:16px; color:#334155; margin:0 0 12px; font-weight:800;">📋 סשנים פעילים — חזרה לסשן קודם</h3>
+      <div id="prevSessionsList"></div>
+    </div>
   </section>
 
   <!-- ===== Screen 3: Dashboard ===== -->
@@ -545,6 +551,7 @@
         document.getElementById('setupExaminerName').textContent = 'שלום, ' + examinerData.name;
         showScreen('screenSetup');
         fetchSites();
+        fetchPreviousSessions();
       } else {
         errEl.textContent = data.message || 'שגיאת כניסה';
         errEl.style.display = 'block';
@@ -568,6 +575,82 @@
     document.getElementById('rememberMe').checked = false;
     showScreen('screenLogin');
   };
+
+  // ========== Fetch Previous Sessions ==========
+  function fetchPreviousSessions() {
+    if (!examinerData || !examinerData.id) return;
+    var area = document.getElementById('prevSessionsArea');
+    var list = document.getElementById('prevSessionsList');
+    area.style.display = 'none';
+    list.innerHTML = '';
+
+    apiGet({ action: 'listSessions', examinerId: examinerData.id }).then(function(data) {
+      if (data.status !== 'ok' || !data.sessions) return;
+
+      // Filter only active sessions that haven't expired
+      var now = new Date();
+      var active = [];
+      for (var i = 0; i < data.sessions.length; i++) {
+        var s = data.sessions[i];
+        if (!s.active) continue;
+        var valid = s.validUntil ? new Date(s.validUntil) : null;
+        if (valid && now > valid) continue;
+        active.push(s);
+      }
+
+      if (active.length === 0) return;
+
+      area.style.display = 'block';
+      for (var j = 0; j < active.length; j++) {
+        (function(sess) {
+          var remaining = '';
+          if (sess.validUntil) {
+            var ms = new Date(sess.validUntil).getTime() - now.getTime();
+            var mins = Math.max(0, Math.floor(ms / 60000));
+            var h = Math.floor(mins / 60);
+            var m = mins % 60;
+            remaining = h + ':' + (m < 10 ? '0' : '') + m + ' נותרו';
+          }
+
+          var licLabel = LICENSE_LABELS[sess.license] || sess.license || '';
+          var card = document.createElement('div');
+          card.style.cssText = 'background:#f0f9ff;border:2px solid #93c5fd;border-radius:12px;padding:14px 18px;margin-bottom:10px;cursor:pointer;transition:all 0.2s;display:flex;justify-content:space-between;align-items:center;';
+          card.onmouseenter = function() { card.style.borderColor = '#3b82f6'; card.style.background = '#dbeafe'; };
+          card.onmouseleave = function() { card.style.borderColor = '#93c5fd'; card.style.background = '#f0f9ff'; };
+
+          card.innerHTML =
+            '<div>' +
+              '<div style="font-weight:800;font-size:18px;color:#1e40af;margin-bottom:4px;">סשן ' + escHtml(sess.code) + '</div>' +
+              '<div style="font-size:13px;color:#475569;">' + escHtml(sess.site) + ' | כיתה ' + escHtml(sess.classroom) + ' | ' + escHtml(licLabel) + '</div>' +
+            '</div>' +
+            '<div style="text-align:left;">' +
+              '<div style="font-size:12px;color:#64748b;">⏱ ' + remaining + '</div>' +
+              '<div style="font-size:13px;color:#3b82f6;font-weight:700;margin-top:4px;">חזור לסשן ←</div>' +
+            '</div>';
+
+          card.onclick = function() { resumeSession(sess); };
+          list.appendChild(card);
+        })(active[j]);
+      }
+    }).catch(function() {});
+  }
+
+  function resumeSession(sess) {
+    sessionCode = sess.code;
+    currentSite = sess.site || '';
+    currentClassroom = sess.classroom || '';
+    currentLicense = sess.license || 'B';
+    currentLanguage = sess.language || 'he';
+    currentAudioMode = sess.audioMode || 'off';
+    currentSiteManagerPhone = sess.managerPhone || '';
+    sessionValidUntil = sess.validUntil ? new Date(sess.validUntil) : null;
+
+    saveState();
+    renderDashboard();
+    showScreen('screenDashboard');
+    startDashboardPolling();
+    startCountdown();
+  }
 
   // ========== Fetch Sites ==========
   function fetchSites() {
