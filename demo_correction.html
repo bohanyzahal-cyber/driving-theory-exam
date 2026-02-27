@@ -917,19 +917,18 @@ tr.row-dq td { font-style: italic; }
     var total = examinees.length;
     var passed = 0, failed = 0, dq = 0;
     for (var i = 0; i < examinees.length; i++) {
-      if (examinees[i].status === 'dq') dq++;
+      if (examinees[i].status === 'dq') { dq++; failed++; }
       else if (examinees[i].status === 'pass' || examinees[i].corrected) passed++;
       else failed++;
     }
-    var validExams = total - dq;
-    var rate = validExams > 0 ? Math.round((passed / validExams) * 100) : 0;
+    var rate = total > 0 ? Math.round((passed / total) * 100) : 0;
+    var failLabel = dq > 0 ? '&#1504;&#1499;&#1513;&#1500;&#1493; (' + dq + ' &#1508;&#1505;&#1493;&#1500;&#1497;&#1501;)' : '&#1504;&#1499;&#1513;&#1500;&#1493;';
 
     document.getElementById('statsBar').innerHTML =
       '<div class="stat-card total"><div class="stat-number">' + total + '</div><div class="stat-label">&#1505;&#1492;"&#1499; &#1504;&#1489;&#1495;&#1504;&#1497;&#1501;</div></div>' +
       '<div class="stat-card passed"><div class="stat-number" id="statPassed">' + passed + '</div><div class="stat-label">&#1506;&#1489;&#1512;&#1493;</div></div>' +
-      '<div class="stat-card failed"><div class="stat-number" id="statFailed">' + failed + '</div><div class="stat-label">&#1504;&#1499;&#1513;&#1500;&#1493;</div></div>' +
-      '<div class="stat-card dq"><div class="stat-number">' + dq + '</div><div class="stat-label">&#1508;&#1505;&#1493;&#1500;&#1497;&#1501;</div></div>' +
-      '<div class="stat-card rate"><div class="stat-number" id="statRate">' + rate + '%</div><div class="stat-label">&#1488;&#1495;&#1493;&#1494; &#1502;&#1506;&#1489;&#1512;</div></div>';
+      '<div class="stat-card failed"><div class="stat-number" id="statFailed">' + failed + '</div><div class="stat-label">' + failLabel + '</div></div>' +
+      '<div class="stat-card rate"><div class="stat-number" id="statRate">' + rate + '%</div><div class="stat-label">&#1488;&#1495;&#1493;&#1494; &#1492;&#1510;&#1500;&#1495;&#1492;</div></div>';
   }
 
   /* ═══════ RENDER TABLE ═══════ */
