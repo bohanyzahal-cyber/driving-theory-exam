@@ -327,7 +327,9 @@ function handleListSessions(p) {
         classroom: data[i][4] || '',
         license: data[i][5] || '',
         language: data[i][6] || 'he',
+        audioMode: data[i][7] || 'off',
         created: data[i][8] || '',
+        validUntil: data[i][9] || '',
         active: data[i][10] === true || String(data[i][10]).toUpperCase() === 'TRUE',
         managerPhone: sitesMap[siteName] ? sitesMap[siteName].managerPhone : ''
       });
