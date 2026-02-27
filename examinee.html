@@ -982,7 +982,7 @@
   var tabSwitchDQConfirmed = false;   // true once DQ was actually sent to server
   var tabSwitchGraceTimer = null;
   var tabSwitchWarnings = 0;          // how many times user returned within grace
-  var TAB_SWITCH_GRACE_MS = 3000;     // 3 second grace on first offense
+  var TAB_SWITCH_GRACE_MS = 10000;    // 10 second grace on first offense
   var TAB_SWITCH_MAX_WARNINGS = 1;    // allow 1 return; 2nd switch = immediate DQ
 
   function setupTabSwitchDetection() {
