@@ -300,7 +300,10 @@
         <img id="qrImage" style="display:block; margin:0 auto; width:200px; height:200px; border-radius:12px; border:3px solid #e2e8f0;" alt="QR Code">
         <div style="margin-top:8px;">
           <input type="text" id="examineeUrlInput" style="width:100%; max-width:400px; padding:8px 12px; border:1px solid #cbd5e1; border-radius:8px; font-size:12px; text-align:center; direction:ltr; color:#64748b;" readonly>
-          <button onclick="copyExamineeUrl()" style="margin-top:4px; font-size:12px; padding:4px 14px; background:#64748b;">העתק קישור</button>
+          <div style="display:flex; gap:8px; justify-content:center; margin-top:6px;">
+            <button onclick="copyExamineeUrl(this)" style="font-size:12px; padding:4px 14px; background:#64748b;">העתק קישור</button>
+            <button onclick="printQR()" style="font-size:12px; padding:4px 14px; background:#1e40af;">🖨️ הדפס QR</button>
+          </div>
         </div>
       </div>
     </div>
@@ -2030,14 +2033,93 @@
     qrImg.onerror = function() { section.style.display = 'none'; };
   }
 
-  window.copyExamineeUrl = function() {
+  window.copyExamineeUrl = function(btn) {
     var input = document.getElementById('examineeUrlInput');
     input.select();
     document.execCommand('copy');
-    var btn = input.nextElementSibling;
+    if (!btn) return;
     var orig = btn.textContent;
     btn.textContent = '\u05D4\u05D5\u05E2\u05EA\u05E7!'; // הועתק!
     setTimeout(function() { btn.textContent = orig; }, 1500);
+  };
+
+  // ========== Print QR — A4 page for classroom entrance ==========
+  window.printQR = function() {
+    var qrImg = document.getElementById('qrImage');
+    var qrSrc = qrImg ? qrImg.src : '';
+    if (!qrSrc) { alert('\u05D0\u05D9\u05DF QR \u05DC\u05D4\u05D3\u05E4\u05E1\u05D4'); return; }
+    var site = currentSite || '';
+    var classroom = currentClassroom || '';
+    var license = currentLicense || '';
+    var code = sessionCode || '';
+
+    var w = window.open('', '_blank');
+    if (!w) { alert('\u05D7\u05E1\u05D5\u05DD \u05D7\u05DC\u05D5\u05DF \u05E7\u05D5\u05E4\u05E5 \u2014 \u05D0\u05E4\u05E9\u05E8 \u05E4\u05EA\u05D9\u05D7\u05EA \u05D7\u05DC\u05D5\u05E0\u05D5\u05EA \u05E7\u05D5\u05E4\u05E6\u05D9\u05DD'); return; }
+    var H = [];
+    H.push('<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"/>');
+    H.push('<title>\u05D1\u05E8\u05E7\u05D5\u05D3 \u05DB\u05E0\u05D9\u05E1\u05D4 \u05DC\u05DE\u05D1\u05D7\u05DF</title>');
+    H.push('<style>');
+    H.push('*{box-sizing:border-box;margin:0;padding:0}');
+    H.push('body{font-family:"Segoe UI",Tahoma,Arial,sans-serif;direction:rtl;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:30px;background:#fff}');
+    H.push('.top-bar{background:linear-gradient(135deg,#0a1628,#1e3a5f);color:#fff;padding:18px 40px;border-radius:14px;text-align:center;width:100%;max-width:600px;margin-bottom:30px}');
+    H.push('.top-bar h1{font-size:22px;font-weight:800;margin-bottom:4px}');
+    H.push('.top-bar .sub{font-size:13px;opacity:.7}');
+    H.push('.qr-box{text-align:center;margin-bottom:24px}');
+    H.push('.qr-box img{width:320px;height:320px;border:4px solid #1e3a5f;border-radius:16px}');
+    H.push('.code-box{text-align:center;margin-bottom:24px}');
+    H.push('.code-box .label{font-size:16px;color:#64748b;font-weight:600;margin-bottom:6px}');
+    H.push('.code-box .code{font-size:64px;font-weight:900;letter-spacing:12px;color:#0a1628;direction:ltr;font-family:"Consolas","Courier New",monospace}');
+    H.push('.info-row{display:flex;gap:20px;justify-content:center;flex-wrap:wrap;margin-bottom:24px}');
+    H.push('.info-item{background:#f1f5f9;padding:10px 24px;border-radius:10px;text-align:center}');
+    H.push('.info-item .lbl{font-size:12px;color:#64748b;font-weight:600}');
+    H.push('.info-item .val{font-size:18px;font-weight:800;color:#1e293b}');
+    H.push('.instructions{background:#f0f9ff;border:2px solid #bfdbfe;border-radius:12px;padding:18px 28px;max-width:520px;width:100%;text-align:center}');
+    H.push('.instructions h3{font-size:16px;color:#1e40af;margin-bottom:10px}');
+    H.push('.instructions ol{text-align:right;font-size:15px;color:#334155;line-height:2;padding-right:20px}');
+    H.push('.footer{margin-top:24px;font-size:11px;color:#94a3b8}');
+    H.push('@media print{body{padding:20px}@page{margin:15mm}}');
+    H.push('</style></head><body>');
+
+    // Header
+    H.push('<div class="top-bar">');
+    H.push('<h1>\uD83D\uDE97 \u05DE\u05D1\u05D7\u05DF \u05EA\u05D0\u05D5\u05E8\u05D9\u05D4 \u05D7\u05D9\u05E6\u05D5\u05E0\u05D9 \u2014 \u05E6\u05D4"\u05DC</h1>');
+    H.push('<div class="sub">\u05E2\u05E0\u05E3 \u05D4\u05D3\u05E8\u05DB\u05D4 \u05D5\u05DE\u05D1\u05D7\u05E0\u05D9\u05DD</div>');
+    H.push('</div>');
+
+    // QR
+    H.push('<div class="qr-box">');
+    H.push('<img src="' + qrSrc + '" alt="QR Code">');
+    H.push('</div>');
+
+    // Session code
+    H.push('<div class="code-box">');
+    H.push('<div class="label">\u05D0\u05D5 \u05D4\u05E7\u05DC\u05D9\u05D3\u05D5 \u05E7\u05D5\u05D3:</div>');
+    H.push('<div class="code">' + code + '</div>');
+    H.push('</div>');
+
+    // Site & classroom info
+    H.push('<div class="info-row">');
+    if (site) H.push('<div class="info-item"><div class="lbl">\u05D0\u05EA\u05E8</div><div class="val">' + site + '</div></div>');
+    if (classroom) H.push('<div class="info-item"><div class="lbl">\u05DB\u05D9\u05EA\u05D4</div><div class="val">' + classroom + '</div></div>');
+    H.push('<div class="info-item"><div class="lbl">\u05E1\u05D5\u05D2 \u05E8\u05D9\u05E9\u05D9\u05D5\u05DF</div><div class="val">' + license + '</div></div>');
+    H.push('</div>');
+
+    // Instructions
+    H.push('<div class="instructions">');
+    H.push('<h3>\uD83D\uDCF1 \u05D4\u05D5\u05E8\u05D0\u05D5\u05EA \u05DC\u05E0\u05D1\u05D7\u05DF</h3>');
+    H.push('<ol>');
+    H.push('<li>\u05E1\u05E8\u05E7\u05D5 \u05D0\u05EA \u05D4\u05D1\u05E8\u05E7\u05D5\u05D3 \u05E2\u05DD \u05D4\u05DE\u05E6\u05DC\u05DE\u05D4 \u05D0\u05D5 \u05D4\u05E7\u05DC\u05D9\u05D3\u05D5 \u05D0\u05EA \u05D4\u05E7\u05D5\u05D3</li>');
+    H.push('<li>\u05D4\u05D6\u05D9\u05E0\u05D5 \u05E4\u05E8\u05D8\u05D9\u05DD \u05D0\u05D9\u05E9\u05D9\u05D9\u05DD (\u05EA.\u05D6., \u05E9\u05DD, \u05D8\u05DC\u05E4\u05D5\u05DF)</li>');
+    H.push('<li>\u05D4\u05DE\u05EA\u05D9\u05E0\u05D5 \u05DC\u05D0\u05D9\u05E9\u05D5\u05E8 \u05D4\u05D1\u05D5\u05D7\u05DF</li>');
+    H.push('</ol>');
+    H.push('</div>');
+
+    H.push('<div class="footer">\u05DE\u05E2\u05E8\u05DB\u05EA \u05DE\u05D1\u05D7\u05DF \u05EA\u05D0\u05D5\u05E8\u05D9\u05D4 \u05D7\u05D9\u05E6\u05D5\u05E0\u05D9 \u2014 \u05E6\u05D4"\u05DC</div>');
+    H.push('</body></html>');
+
+    w.document.write(H.join(''));
+    w.document.close();
+    setTimeout(function() { w.print(); }, 400);
   };
 
   // ========== PWA: Service Worker + Install Prompt ==========
