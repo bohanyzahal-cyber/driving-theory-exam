@@ -2069,6 +2069,9 @@
     H.push('.code-box{text-align:center;margin-bottom:24px}');
     H.push('.code-box .label{font-size:16px;color:#64748b;font-weight:600;margin-bottom:6px}');
     H.push('.code-box .code{font-size:64px;font-weight:900;letter-spacing:12px;color:#0a1628;direction:ltr;font-family:"Consolas","Courier New",monospace}');
+    H.push('.url-box{text-align:center;margin-bottom:24px}');
+    H.push('.url-box .label{font-size:14px;color:#64748b;font-weight:600;margin-bottom:4px}');
+    H.push('.url-box .url{font-size:16px;font-weight:700;color:#1e40af;direction:ltr;font-family:"Consolas","Courier New",monospace;background:#f0f9ff;padding:8px 20px;border-radius:8px;border:2px dashed #93c5fd;display:inline-block}');
     H.push('.info-row{display:flex;gap:20px;justify-content:center;flex-wrap:wrap;margin-bottom:24px}');
     H.push('.info-item{background:#f1f5f9;padding:10px 24px;border-radius:10px;text-align:center}');
     H.push('.info-item .lbl{font-size:12px;color:#64748b;font-weight:600}');
@@ -2097,6 +2100,12 @@
     H.push('<div class="code">' + code + '</div>');
     H.push('</div>');
 
+    // URL for manual entry
+    H.push('<div class="url-box">');
+    H.push('<div class="label">\u05DB\u05EA\u05D5\u05D1\u05EA \u05DB\u05E0\u05D9\u05E1\u05D4:</div>');
+    H.push('<div class="url">' + EXAMINEE_BASE_URL + '</div>');
+    H.push('</div>');
+
     // Site & classroom info
     H.push('<div class="info-row">');
     if (site) H.push('<div class="info-item"><div class="lbl">\u05D0\u05EA\u05E8</div><div class="val">' + site + '</div></div>');
@@ -2108,7 +2117,7 @@
     H.push('<div class="instructions">');
     H.push('<h3>\uD83D\uDCF1 \u05D4\u05D5\u05E8\u05D0\u05D5\u05EA \u05DC\u05E0\u05D1\u05D7\u05DF</h3>');
     H.push('<ol>');
-    H.push('<li>\u05E1\u05E8\u05E7\u05D5 \u05D0\u05EA \u05D4\u05D1\u05E8\u05E7\u05D5\u05D3 \u05E2\u05DD \u05D4\u05DE\u05E6\u05DC\u05DE\u05D4 \u05D0\u05D5 \u05D4\u05E7\u05DC\u05D9\u05D3\u05D5 \u05D0\u05EA \u05D4\u05E7\u05D5\u05D3</li>');
+    H.push('<li>\u05E1\u05E8\u05E7\u05D5 \u05D0\u05EA \u05D4\u05D1\u05E8\u05E7\u05D5\u05D3 \u05E2\u05DD \u05D4\u05DE\u05E6\u05DC\u05DE\u05D4 <strong>\u05D0\u05D5</strong> \u05D2\u05DC\u05E9\u05D5 \u05DC\u05DB\u05EA\u05D5\u05D1\u05EA \u05D4\u05DB\u05E0\u05D9\u05E1\u05D4 \u05D5\u05D4\u05E7\u05DC\u05D9\u05D3\u05D5 \u05D0\u05EA \u05D4\u05E7\u05D5\u05D3</li>');
     H.push('<li>\u05D4\u05D6\u05D9\u05E0\u05D5 \u05E4\u05E8\u05D8\u05D9\u05DD \u05D0\u05D9\u05E9\u05D9\u05D9\u05DD (\u05EA.\u05D6., \u05E9\u05DD, \u05D8\u05DC\u05E4\u05D5\u05DF)</li>');
     H.push('<li>\u05D4\u05DE\u05EA\u05D9\u05E0\u05D5 \u05DC\u05D0\u05D9\u05E9\u05D5\u05E8 \u05D4\u05D1\u05D5\u05D7\u05DF</li>');
     H.push('</ol>');
