@@ -835,11 +835,18 @@
         if (item.audioMode === 'on') {
           audioBadge = ' <span style="background:#fef9c3;color:#854d0e;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">🔊 שמע</span>';
         }
+        var repeatBadge = '';
+        var repeatWarning = '';
+        if (item.todayExams && item.todayExams.length > 0) {
+          var details = item.todayExams.map(function(e) { return e.license + ' - ' + e.passed + ' (' + e.score + ')'; }).join(', ');
+          repeatBadge = ' <div style="background:#fef2f2;color:#991b1b;padding:3px 8px;border-radius:8px;font-size:0.8em;font-weight:600;margin-top:4px;">\u26A0\uFE0F \u05DB\u05D1\u05E8 \u05E0\u05D1\u05D7\u05DF \u05D4\u05D9\u05D5\u05DD: ' + escHtml(details) + '</div>';
+          repeatWarning = '\u26A0\uFE0F \u05E0\u05D1\u05D7\u05DF \u05D6\u05D4 \u05DB\u05D1\u05E8 \u05E2\u05E9\u05D4 \u05DE\u05D1\u05D7\u05DF \u05D4\u05D9\u05D5\u05DD (' + details + ').\n\u05DC\u05D0\u05E9\u05E8 \u05D7\u05E8\u05D9\u05D2?';
+        }
         var isApproved = item.status === 'approved';
         var statusBadge = isApproved ? ' <span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:8px;font-size:0.8em;font-weight:600;">✓ מאושר</span>' : '';
         li.innerHTML =
           '<div class="person-info"><div class="person-name">' + escHtml(item.name) + statusBadge + langBadge + popBadge + licBadge + audioBadge + '</div>' +
-          '<div class="person-meta">ת.ז. ....' + id4 + ' | ' + escHtml(item.phone) + '</div></div>' +
+          '<div class="person-meta">ת.ז. ....' + id4 + ' | ' + escHtml(item.phone) + '</div>' + repeatBadge + '</div>' +
           '<div class="person-actions"></div>';
         var actions = li.querySelector('.person-actions');
 
@@ -849,6 +856,7 @@
           approveBtn.className = 'btn-approve';
           approveBtn.textContent = 'אשר';
           approveBtn.addEventListener('click', function() {
+            if (repeatWarning && !confirm(repeatWarning)) return;
             approveBtn.disabled = true;
             approveBtn.textContent = 'מאשר...';
             apiGet({ action: 'approveExaminee', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
