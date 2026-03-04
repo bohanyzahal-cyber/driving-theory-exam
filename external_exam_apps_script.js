@@ -237,6 +237,13 @@ function doGet(e) {
       case 'getUploadResult':
         return handleGetUploadResult(p);
 
+      case 'viewResult':
+        var resultId = p.id;
+        if (!resultId) return HtmlService.createHtmlOutput('<h1 style="text-align:center;padding:40px;font-family:Arial;">Missing ID</h1>');
+        var cachedHtml = CacheService.getScriptCache().get('result_' + resultId);
+        if (!cachedHtml) return HtmlService.createHtmlOutput('<h1 style="text-align:center;padding:40px;font-family:Arial;direction:rtl;">\u05D4\u05E7\u05D9\u05E9\u05D5\u05E8 \u05E4\u05D2 \u05EA\u05D5\u05E7\u05E3</h1>');
+        return HtmlService.createHtmlOutput(cachedHtml).setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+
       default:
         return jsonResponse({ status: 'ok', message: 'External Exam API is running' });
     }
@@ -1040,45 +1047,29 @@ function handleSubmitFailOnClose(data) {
 // ========== העלאת תוצאה ל-Google Drive ==========
 
 function handleUploadResultHtml(data) {
-  if (!data.html || !data.fileName) {
-    return jsonResponse({ status: 'error', message: 'Missing html or fileName' });
+  if (!data.html || !data.requestId) {
+    return jsonResponse({ status: 'error', message: 'Missing html or requestId' });
   }
 
   try {
-    // מוצא או יוצר תיקיית תוצאות
-    var folderName = '\u05EA\u05D5\u05E6\u05D0\u05D5\u05EA \u05DE\u05D1\u05D7\u05E0\u05D9\u05DD';
-    var folders = DriveApp.getFoldersByName(folderName);
-    var folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(folderName);
+    // שומר HTML ב-CacheService (עד 6 שעות, ללא צורך בהרשאות Drive)
+    var cache = CacheService.getScriptCache();
+    cache.put('result_' + data.requestId, data.html, 21600);
 
-    // יוצר קובץ HTML בדרייב
-    var blob = Utilities.newBlob(data.html, 'text/html', data.fileName + '.html');
-    var file = folder.createFile(blob);
+    // בונה קישור לצפייה דרך doGet
+    var viewLink = ScriptApp.getService().getUrl() + '?action=viewResult&id=' + data.requestId;
 
-    // שיתוף: כל מי שיש לו קישור יכול לצפות
-    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    // שומר תוצאה ב-ScriptProperties כדי שה-client יוכל לקרוא דרך GET polling
+    var props = PropertiesService.getScriptProperties();
+    props.setProperty('upload_' + data.requestId, JSON.stringify({ link: viewLink }));
 
-    var fileId = file.getId();
-    var viewLink = 'https://drive.google.com/file/d/' + fileId + '/preview';
-
-    // שומר תוצאה ב-ScriptProperties כדי שה-client יוכל לקרוא דרך GET
-    if (data.requestId) {
-      var props = PropertiesService.getScriptProperties();
-      props.setProperty('upload_' + data.requestId, JSON.stringify({
-        link: viewLink,
-        fileId: fileId
-      }));
-    }
-
-    return jsonResponse({ status: 'ok', link: viewLink, fileId: fileId });
+    return jsonResponse({ status: 'ok', link: viewLink });
   } catch (err) {
-    // שומר שגיאה ב-properties כדי שה-client יקבל אותה
     if (data.requestId) {
       var props2 = PropertiesService.getScriptProperties();
-      props2.setProperty('upload_' + data.requestId, JSON.stringify({
-        error: err.toString()
-      }));
+      props2.setProperty('upload_' + data.requestId, JSON.stringify({ error: err.toString() }));
     }
-    return jsonResponse({ status: 'error', message: 'Drive error: ' + err.toString() });
+    return jsonResponse({ status: 'error', message: err.toString() });
   }
 }
 
@@ -1097,5 +1088,5 @@ function handleGetUploadResult(p) {
   if (result.error) {
     return jsonResponse({ status: 'error', message: result.error });
   }
-  return jsonResponse({ status: 'ok', link: result.link, fileId: result.fileId });
+  return jsonResponse({ status: 'ok', link: result.link });
 }

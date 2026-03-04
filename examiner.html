@@ -1376,9 +1376,6 @@
     var isCorrected = r.corrected === true || r.corrected === 'TRUE';
     var passText = isDQ ? '\u05E4\u05E1\u05D5\u05DC' : (isPassed ? '\u05E2\u05D1\u05E8' : '\u05E0\u05DB\u05E9\u05DC');
 
-    var dateStr = formatDate(r.date).replace(/\//g, '-');
-    var fileName = '\u05EA\u05D5\u05E6\u05D0\u05D4_' + r.name.replace(/\s+/g, '_') + '_' + dateStr;
-
     var requestId = 'req_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
 
     // Fire-and-forget POST (no-cors because Apps Script redirect blocks CORS response)
@@ -1389,7 +1386,6 @@
       body: JSON.stringify({
         action: 'uploadResultHtml',
         html: html,
-        fileName: fileName,
         requestId: requestId
       })
     });
