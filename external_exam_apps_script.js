@@ -240,9 +240,20 @@ function doGet(e) {
       case 'viewResult':
         var resultId = p.id;
         if (!resultId) return HtmlService.createHtmlOutput('<h1 style="text-align:center;padding:40px;font-family:Arial;">Missing ID</h1>');
-        var cachedHtml = CacheService.getScriptCache().get('result_' + resultId);
-        if (!cachedHtml) return HtmlService.createHtmlOutput('<h1 style="text-align:center;padding:40px;font-family:Arial;direction:rtl;">\u05D4\u05E7\u05D9\u05E9\u05D5\u05E8 \u05E4\u05D2 \u05EA\u05D5\u05E7\u05E3</h1>');
-        return HtmlService.createHtmlOutput(cachedHtml).setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+        var vc = CacheService.getScriptCache();
+        var metaStr = vc.get('result_' + resultId + '_meta');
+        if (!metaStr) return HtmlService.createHtmlOutput('<h1 style="text-align:center;padding:40px;font-family:Arial;direction:rtl;">\u05D4\u05E7\u05D9\u05E9\u05D5\u05E8 \u05E4\u05D2 \u05EA\u05D5\u05E7\u05E3</h1>');
+        var numChunks = parseInt(metaStr, 10);
+        var keys = [];
+        for (var ci = 0; ci < numChunks; ci++) keys.push('result_' + resultId + '_' + ci);
+        var chunkMap = vc.getAll(keys);
+        var fullHtml = '';
+        for (var ci2 = 0; ci2 < numChunks; ci2++) {
+          var chunk = chunkMap['result_' + resultId + '_' + ci2];
+          if (!chunk) return HtmlService.createHtmlOutput('<h1 style="text-align:center;padding:40px;font-family:Arial;direction:rtl;">\u05D4\u05E7\u05D9\u05E9\u05D5\u05E8 \u05E4\u05D2 \u05EA\u05D5\u05E7\u05E3</h1>');
+          fullHtml += chunk;
+        }
+        return HtmlService.createHtmlOutput(fullHtml).setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 
       default:
         return jsonResponse({ status: 'ok', message: 'External Exam API is running' });
@@ -1057,7 +1068,7 @@ function handleSubmitFailOnClose(data) {
   return jsonResponse({ status: 'ok' });
 }
 
-// ========== העלאת תוצאה ל-Google Drive ==========
+// ========== שיתוף תוצאה דרך CacheService ==========
 
 function handleUploadResultHtml(data) {
   if (!data.html || !data.requestId) {
@@ -1065,9 +1076,18 @@ function handleUploadResultHtml(data) {
   }
 
   try {
-    // שומר HTML ב-CacheService (עד 6 שעות, ללא צורך בהרשאות Drive)
     var cache = CacheService.getScriptCache();
-    cache.put('result_' + data.requestId, data.html, 21600);
+    var html = data.html;
+    var CHUNK_SIZE = 90000; // 90KB per chunk (limit is 100KB)
+    var numChunks = Math.ceil(html.length / CHUNK_SIZE);
+
+    // שומר HTML בחלקים ב-CacheService (עד 6 שעות)
+    var chunks = {};
+    for (var i = 0; i < numChunks; i++) {
+      chunks['result_' + data.requestId + '_' + i] = html.substring(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+    }
+    chunks['result_' + data.requestId + '_meta'] = String(numChunks);
+    cache.putAll(chunks, 21600);
 
     // בונה קישור לצפייה דרך doGet
     var viewLink = ScriptApp.getService().getUrl() + '?action=viewResult&id=' + data.requestId;
