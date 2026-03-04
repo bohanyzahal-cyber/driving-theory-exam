@@ -234,6 +234,9 @@ function doGet(e) {
         };
         return handleSubmitFailOnClose(failData);
 
+      case 'getUploadResult':
+        return handleGetUploadResult(p);
+
       default:
         return jsonResponse({ status: 'ok', message: 'External Exam API is running' });
     }
@@ -260,6 +263,8 @@ function doPost(e) {
       return handleSubmitFailOnClose(data);
     } else if (action === 'submitWrongAnswers') {
       return handleSubmitWrongAnswersBulk(data);
+    } else if (action === 'uploadResultHtml') {
+      return handleUploadResultHtml(data);
     } else {
       return jsonResponse({ status: 'error', message: 'Unknown POST action: ' + action });
     }
@@ -1030,4 +1035,67 @@ function handleSubmitFailOnClose(data) {
   markPendingCompleted(data.sessionCode, data.idNumber);
 
   return jsonResponse({ status: 'ok' });
+}
+
+// ========== העלאת תוצאה ל-Google Drive ==========
+
+function handleUploadResultHtml(data) {
+  if (!data.html || !data.fileName) {
+    return jsonResponse({ status: 'error', message: 'Missing html or fileName' });
+  }
+
+  try {
+    // מוצא או יוצר תיקיית תוצאות
+    var folderName = '\u05EA\u05D5\u05E6\u05D0\u05D5\u05EA \u05DE\u05D1\u05D7\u05E0\u05D9\u05DD';
+    var folders = DriveApp.getFoldersByName(folderName);
+    var folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(folderName);
+
+    // יוצר קובץ HTML בדרייב
+    var blob = Utilities.newBlob(data.html, 'text/html', data.fileName + '.html');
+    var file = folder.createFile(blob);
+
+    // שיתוף: כל מי שיש לו קישור יכול לצפות
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+    var fileId = file.getId();
+    var viewLink = 'https://drive.google.com/file/d/' + fileId + '/preview';
+
+    // שומר תוצאה ב-ScriptProperties כדי שה-client יוכל לקרוא דרך GET
+    if (data.requestId) {
+      var props = PropertiesService.getScriptProperties();
+      props.setProperty('upload_' + data.requestId, JSON.stringify({
+        link: viewLink,
+        fileId: fileId
+      }));
+    }
+
+    return jsonResponse({ status: 'ok', link: viewLink, fileId: fileId });
+  } catch (err) {
+    // שומר שגיאה ב-properties כדי שה-client יקבל אותה
+    if (data.requestId) {
+      var props2 = PropertiesService.getScriptProperties();
+      props2.setProperty('upload_' + data.requestId, JSON.stringify({
+        error: err.toString()
+      }));
+    }
+    return jsonResponse({ status: 'error', message: 'Drive error: ' + err.toString() });
+  }
+}
+
+function handleGetUploadResult(p) {
+  var requestId = p.requestId;
+  if (!requestId) return jsonResponse({ status: 'error', message: 'Missing requestId' });
+
+  var props = PropertiesService.getScriptProperties();
+  var stored = props.getProperty('upload_' + requestId);
+  if (!stored) return jsonResponse({ status: 'pending' });
+
+  // ניקוי
+  props.deleteProperty('upload_' + requestId);
+
+  var result = JSON.parse(stored);
+  if (result.error) {
+    return jsonResponse({ status: 'error', message: result.error });
+  }
+  return jsonResponse({ status: 'ok', link: result.link, fileId: result.fileId });
 }

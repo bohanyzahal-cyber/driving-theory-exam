@@ -405,6 +405,17 @@
   </div>
 </div>
 
+<!-- Share dialog -->
+<div id="shareDialog" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:400;align-items:center;justify-content:center;">
+  <div style="background:white;border-radius:16px;padding:24px;max-width:420px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,0.2);text-align:center;">
+    <h3 id="shareDialogTitle" style="margin:0 0 8px;font-size:1.1em;">\u05E9\u05D9\u05EA\u05D5\u05E3 \u05EA\u05D5\u05E6\u05D0\u05D4</h3>
+    <div id="shareDialogContent">
+      <div style="font-size:14px;color:#64748b;padding:20px 0;">\u23F3 \u05DE\u05E2\u05DC\u05D4 \u05DC\u05D3\u05E8\u05D9\u05D9\u05D1...</div>
+    </div>
+    <button onclick="closeShareDialog()" style="margin-top:12px;background:#64748b;color:white;padding:8px 20px;font-size:13px;border:none;border-radius:8px;cursor:pointer;">\u05E1\u05D2\u05D5\u05E8</button>
+  </div>
+</div>
+
 <!-- Offline banner -->
 <div class="offline-banner" id="offlineBanner">אין חיבור לשרת. מנסה שוב...</div>
 
@@ -1099,6 +1110,7 @@
         '<td>' + escHtml(formatTime(r.time)) + '</td>' +
         '<td style="white-space:nowrap;">' +
           '<button class="wa-btn" style="background:#ef4444;margin-left:4px;" onclick="openExamineePDF(' + i + ')">\u{1F4C4} PDF</button>' +
+          '<button class="wa-btn" style="background:#7c3aed;margin-left:4px;" onclick="shareResult(' + i + ')">\u{1F4E4} \u05E9\u05EA\u05E3</button>' +
           '<a href="' + waUrl + '" target="_blank" class="wa-btn" onclick="markSentWA(' + i + ')" style="margin-left:4px;">\u{1F4F1} WA</a>' +
           '<a href="' + smsUrl + '" class="wa-btn" style="background:#2563eb;margin-left:4px;">\u{1F4E9} SMS</a>' +
           (!isDQ ? ' <button class="btn-disqualify" onclick="disqualifyResult(' + i + ')">\u05E4\u05E1\u05D5\u05DC</button>' : '') +
@@ -1235,18 +1247,16 @@
     return items;
   }
 
-  // Open PDF report for a specific examinee
-  window.openExamineePDF = function(idx) {
+  // Build result HTML (shared between PDF popup and Drive share)
+  function buildResultHtml(idx) {
     var r = completedResults[idx];
-    if (!r) return;
+    if (!r) return null;
 
     var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === '\u05E4\u05E1\u05D5\u05DC';
     var isPassed = !isDQ && (r.passed === '\u05E2\u05D1\u05E8' || r.passed === true);
     var isCorrected = r.corrected === true || r.corrected === 'TRUE';
-    // PDF for examinee: corrected = just "עבר", no score details
     var passText = isDQ ? '\u05E4\u05E1\u05D5\u05DC' : (isPassed ? '\u05E2\u05D1\u05E8' : '\u05E0\u05DB\u05E9\u05DC');
 
-    // Parse wrong answers (skip for corrected — examinee shouldn't see errors)
     var wrongItems = [];
     var tableRows = '';
     if (!isCorrected) {
@@ -1262,7 +1272,6 @@
       }
     }
 
-    // Only show "all correct" if score is actually perfect (e.g. 30/30), not just because wrongDetails is empty
     var scoreNum = 0, totalNum = 0;
     var scoreParts = String(r.score || '').split('/');
     if (scoreParts.length === 2) { scoreNum = parseInt(scoreParts[0]) || 0; totalNum = parseInt(scoreParts[1]) || 30; }
@@ -1293,7 +1302,7 @@
       '@media print{body{margin:10px 15px;} .no-print{display:none!important;}}' +
       '</style></head><body>' +
       (logoBase64 ? '<div style="text-align:center;margin-bottom:8px;"><img src="' + logoBase64 + '" style="height:80px;" alt="\u05E1\u05DE\u05DB\u05D5\u05EA \u05E8\u05D9\u05E9\u05D5\u05D9 \u05E6\u05D4\u05DC"/></div>' : '<div style="text-align:center;margin-bottom:8px;font-size:20px;font-weight:900;color:#8B6914;">\u05E1\u05DE\u05DB\u05D5\u05EA \u05E8\u05D9\u05E9\u05D5\u05D9 \u05E6\u05D4"\u05DC</div>') +
-      '<h1>\u05D0\u05D9\u05E9\u05D5\u05E8 \u05EA\u05D5\u05E6\u05D0\u05EA \u05D1\u05D7\u05D9\u05E0\u05D4 \u05E2\u05D9\u05D5\u05E0\u05D9\u05EA \u05D7\u05D9\u05E6\u05D5\u05E0\u05D9\u05EA</h1>' +
+      '<h1>\u05D0\u05D9\u05E9\u05D5\u05E8 \u05EA\u05D5\u05E6\u05D0\u05D5\u05EA \u05D1\u05D7\u05D9\u05E0\u05D4 \u05E2\u05D9\u05D5\u05E0\u05D9\u05EA \u05D7\u05D9\u05E6\u05D5\u05E0\u05D9\u05EA</h1>' +
       '<div class="info-grid">' +
       '<div><span class="label">\u05E9\u05DD: </span><span class="val">' + escHtml(r.name) + '</span></div>' +
       '<div><span class="label">\u05EA.\u05D6.: </span><span class="val">' + escHtml(r.idNumber) + '</span></div>' +
@@ -1323,14 +1332,135 @@
     }
     html += allCorrectMsg;
     html += footerMsg;
-    html += '<div class="no-print" style="text-align:center;margin-top:20px;">' +
-      '<button onclick="window.print()" style="padding:12px 30px;font-size:16px;font-weight:800;background:#1a73e8;color:white;border:none;border-radius:10px;cursor:pointer;">\uD83D\uDDA8\uFE0F \u05D4\u05D3\u05E4\u05E1 / \u05E9\u05DE\u05D5\u05E8 PDF</button>' +
-      '<p style="font-size:13px;color:#94a3b8;margin-top:8px;">\u05E9\u05DE\u05D5\u05E8 \u05DB-PDF \u05D5\u05E6\u05E8\u05E3 \u05DC\u05D4\u05D5\u05D3\u05E2\u05EA \u05D5\u05D5\u05D0\u05D8\u05E1\u05D0\u05E4</p></div>';
     html += '</body></html>';
+
+    return html;
+  }
+
+  // Open PDF report for a specific examinee
+  window.openExamineePDF = function(idx) {
+    var html = buildResultHtml(idx);
+    if (!html) return;
+
+    // Add print button for popup version
+    html = html.replace('</body></html>',
+      '<div class="no-print" style="text-align:center;margin-top:20px;">' +
+      '<button onclick="window.print()" style="padding:12px 30px;font-size:16px;font-weight:800;background:#1a73e8;color:white;border:none;border-radius:10px;cursor:pointer;">\uD83D\uDDA8\uFE0F \u05D4\u05D3\u05E4\u05E1 / \u05E9\u05DE\u05D5\u05E8 PDF</button>' +
+      '<p style="font-size:13px;color:#94a3b8;margin-top:8px;">\u05E9\u05DE\u05D5\u05E8 \u05DB-PDF \u05D5\u05E6\u05E8\u05E3 \u05DC\u05D4\u05D5\u05D3\u05E2\u05EA \u05D5\u05D5\u05D0\u05D8\u05E1\u05D0\u05E4</p></div>' +
+      '</body></html>');
 
     var w = window.open('', '_blank');
     if (w) { w.document.write(html); w.document.close(); }
     else { alert('\u05D7\u05E1\u05D5\u05DD popup \u05E0\u05D7\u05E1\u05DD. \u05D0\u05E4\u05E9\u05E8 \u05D7\u05DC\u05D5\u05DF popup \u05DC\u05D0\u05EA\u05E8 \u05D6\u05D4.'); }
+  };
+
+  // ========== Share result via Google Drive ==========
+  window.shareResult = function(idx) {
+    var r = completedResults[idx];
+    if (!r) return;
+
+    // Show loading dialog
+    var dlg = document.getElementById('shareDialog');
+    document.getElementById('shareDialogTitle').textContent = '\u05E9\u05D9\u05EA\u05D5\u05E3 \u05EA\u05D5\u05E6\u05D0\u05D4 \u2014 ' + r.name;
+    document.getElementById('shareDialogContent').innerHTML = '<div style="font-size:14px;color:#64748b;padding:20px 0;">\u23F3 \u05DE\u05E2\u05DC\u05D4 \u05DC\u05D3\u05E8\u05D9\u05D9\u05D1...</div>';
+    dlg.style.display = 'flex';
+
+    var html = buildResultHtml(idx);
+    if (!html) {
+      document.getElementById('shareDialogContent').innerHTML = '<div style="color:#ef4444;">\u05E9\u05D2\u05D9\u05D0\u05D4 \u05D1\u05D9\u05E6\u05D9\u05E8\u05EA HTML</div>';
+      return;
+    }
+
+    var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === '\u05E4\u05E1\u05D5\u05DC';
+    var isPassed = !isDQ && (r.passed === '\u05E2\u05D1\u05E8' || r.passed === true);
+    var isCorrected = r.corrected === true || r.corrected === 'TRUE';
+    var passText = isDQ ? '\u05E4\u05E1\u05D5\u05DC' : (isPassed ? '\u05E2\u05D1\u05E8' : '\u05E0\u05DB\u05E9\u05DC');
+
+    var dateStr = formatDate(r.date).replace(/\//g, '-');
+    var fileName = '\u05EA\u05D5\u05E6\u05D0\u05D4_' + r.name.replace(/\s+/g, '_') + '_' + dateStr;
+
+    var requestId = 'req_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+
+    // Fire-and-forget POST (no-cors because Apps Script redirect blocks CORS response)
+    fetch(API_URL, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({
+        action: 'uploadResultHtml',
+        html: html,
+        fileName: fileName,
+        requestId: requestId
+      })
+    });
+
+    // Poll for result via GET
+    var attempts = 0;
+    var maxAttempts = 20;
+    var pollInterval = setInterval(function() {
+      attempts++;
+      apiGet({ action: 'getUploadResult', requestId: requestId }).then(function(data) {
+        if (data.status === 'ok' && data.link) {
+          clearInterval(pollInterval);
+          showShareLinks(r, data.link, passText, isCorrected);
+        } else if (data.status === 'error') {
+          clearInterval(pollInterval);
+          document.getElementById('shareDialogContent').innerHTML =
+            '<div style="color:#ef4444;">\u05E9\u05D2\u05D9\u05D0\u05D4: ' + escHtml(data.message || '') + '</div>';
+        } else if (attempts >= maxAttempts) {
+          clearInterval(pollInterval);
+          document.getElementById('shareDialogContent').innerHTML =
+            '<div style="color:#ef4444;">\u05D4\u05D6\u05DE\u05DF \u05D4\u05DE\u05EA\u05E0\u05D4 \u05E2\u05D1\u05E8. \u05E0\u05E1\u05D4 \u05E9\u05D5\u05D1.</div>';
+        }
+      }).catch(function() {
+        if (attempts >= maxAttempts) {
+          clearInterval(pollInterval);
+          document.getElementById('shareDialogContent').innerHTML =
+            '<div style="color:#ef4444;">\u05E9\u05D2\u05D9\u05D0\u05EA \u05EA\u05E7\u05E9\u05D5\u05E8\u05EA</div>';
+        }
+      });
+    }, 1500);
+  };
+
+  function showShareLinks(r, link, passText, isCorrected) {
+    var phone = formatPhone(r.phone);
+    var msgText = '\u05E9\u05DC\u05D5\u05DD ' + r.name + ', \u05EA\u05D5\u05E6\u05D0\u05EA \u05D4\u05DE\u05D1\u05D7\u05DF: ' + passText +
+      (isCorrected ? '' : ' (' + (r.score || '') + ')') +
+      '\n\u05E6\u05E4\u05D4 \u05D1\u05EA\u05D5\u05E6\u05D0\u05D4: ' + link;
+
+    var waUrl = phone ? ('https://wa.me/' + phone + '?text=' + encodeURIComponent(msgText)) : '#';
+    var smsUrl = phone ? ('sms:+' + phone + '?body=' + encodeURIComponent(msgText)) : '#';
+
+    var content = '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px;margin:12px 0;word-break:break-all;font-size:13px;direction:ltr;text-align:left;">' + escHtml(link) + '</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:12px;">' +
+      '<a href="' + waUrl + '" target="_blank" style="flex:1;min-width:100px;padding:10px 12px;border-radius:10px;font-size:14px;font-weight:700;text-decoration:none;text-align:center;color:white;background:#25D366;">\u{1F4F1} WA</a>' +
+      '<a href="' + smsUrl + '" style="flex:1;min-width:100px;padding:10px 12px;border-radius:10px;font-size:14px;font-weight:700;text-decoration:none;text-align:center;color:white;background:#2563eb;">\u{1F4E9} SMS</a>' +
+      '<button onclick="copyShareLink(this,\'' + link.replace(/'/g, "\\'") + '\')" style="flex:1;min-width:100px;padding:10px 12px;border-radius:10px;font-size:14px;font-weight:700;text-align:center;color:white;background:#64748b;border:none;cursor:pointer;">\u{1F4CB} \u05D4\u05E2\u05EA\u05E7</button>' +
+      '</div>';
+
+    document.getElementById('shareDialogContent').innerHTML = content;
+  }
+
+  window.closeShareDialog = function() {
+    document.getElementById('shareDialog').style.display = 'none';
+  };
+
+  window.copyShareLink = function(btn, link) {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(link).then(function() {
+        btn.textContent = '\u2713 \u05D4\u05D5\u05E2\u05EA\u05E7!';
+        setTimeout(function() { btn.textContent = '\u{1F4CB} \u05D4\u05E2\u05EA\u05E7'; }, 2000);
+      });
+    } else {
+      var ta = document.createElement('textarea');
+      ta.value = link;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      btn.textContent = '\u2713 \u05D4\u05D5\u05E2\u05EA\u05E7!';
+      setTimeout(function() { btn.textContent = '\u{1F4CB} \u05D4\u05E2\u05EA\u05E7'; }, 2000);
+    }
   };
 
   window.sendBulkToManager = function() {
