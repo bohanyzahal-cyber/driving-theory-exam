@@ -529,6 +529,11 @@
     if (submitDbg) submitDbg.parentNode.removeChild(submitDbg);
     var tabWarn = document.getElementById('tabSwitchWarning');
     if (tabWarn) tabWarn.parentNode.removeChild(tabWarn);
+    // Reset silent mode checkbox — each examinee must confirm independently
+    var airCb = document.getElementById('airplaneCheckbox');
+    if (airCb) { airCb.checked = false; }
+    var startBtn = document.getElementById('startExamBtn');
+    if (startBtn) { startBtn.disabled = true; startBtn.style.opacity = '0.5'; }
     // Reset instructions screen phases (prevent stale approval from showing instructions)
     document.getElementById('waitingPhase').style.display = 'block';
     document.getElementById('instructionsPhase').style.display = 'none';
