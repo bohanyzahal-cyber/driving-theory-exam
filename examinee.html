@@ -359,7 +359,7 @@
         </div>
       </div>
       <label id="silentModeCheck" style="display:flex; align-items:center; gap:10px; justify-content:center; margin-bottom:14px; padding:12px 16px; background:#fef3c7; border:2px solid #f59e0b; border-radius:12px; cursor:pointer; font-size:14px; font-weight:600; color:#92400e;">
-        <input type="checkbox" id="airplaneCheckbox" style="width:20px; height:20px; accent-color:#f59e0b; cursor:pointer;">
+        <input type="checkbox" id="airplaneCheckbox" autocomplete="off" style="width:20px; height:20px; accent-color:#f59e0b; cursor:pointer;">
         <span>&#x1F515; השתקתי את הטלפון</span>
       </label>
       <button class="btn-start-exam" id="startExamBtn" disabled style="opacity:0.5;">התחל מבחן</button>
@@ -404,6 +404,14 @@
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
     e.preventDefault();
   }, true);
+
+  // ========== Reset checkbox on page load (prevent browser form restore) ==========
+  (function() {
+    var cb = document.getElementById('airplaneCheckbox');
+    if (cb) { cb.checked = false; }
+    var btn = document.getElementById('startExamBtn');
+    if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
+  })();
 
   // ========== CONFIG ==========
   // *** שנה את ה-URL הזה ל-URL של ה-Apps Script החדש ***
