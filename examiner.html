@@ -1086,6 +1086,7 @@
       var passTextWA = isDQ ? '\u05E4\u05E1\u05D5\u05DC' : (isPassed ? '\u05E2\u05D1\u05E8' : '\u05E0\u05DB\u05E9\u05DC');
       var shortMsg = '\u05E9\u05DC\u05D5\u05DD ' + r.name + ', \u05EA\u05D5\u05E6\u05D0\u05EA \u05D4\u05DE\u05D1\u05D7\u05DF: ' + passTextWA + (isCorrected ? '' : ' (' + (r.score || '') + ')');
       var waUrl = phone ? ('https://wa.me/' + phone + '?text=' + encodeURIComponent(shortMsg)) : '#';
+      var smsUrl = phone ? ('sms:+' + phone + '?body=' + encodeURIComponent(shortMsg)) : '#';
 
       html += '<tr>' +
         '<td>' + (i + 1) + '</td>' +
@@ -1099,6 +1100,7 @@
         '<td style="white-space:nowrap;">' +
           '<button class="wa-btn" style="background:#ef4444;margin-left:4px;" onclick="openExamineePDF(' + i + ')">\u{1F4C4} PDF</button>' +
           '<a href="' + waUrl + '" target="_blank" class="wa-btn" onclick="markSentWA(' + i + ')" style="margin-left:4px;">\u{1F4F1} WA</a>' +
+          '<a href="' + smsUrl + '" class="wa-btn" style="background:#2563eb;margin-left:4px;">\u{1F4E9} SMS</a>' +
           (!isDQ ? ' <button class="btn-disqualify" onclick="disqualifyResult(' + i + ')">\u05E4\u05E1\u05D5\u05DC</button>' : '') +
           (canCorrect ? ' <button style="background:#f59e0b;color:white;padding:4px 10px;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;margin-left:4px;" onclick="correctToPass(' + i + ')">\u05EA\u05E7\u05DF</button>' : '') +
         '</td></tr>';
