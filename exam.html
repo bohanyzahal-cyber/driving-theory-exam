@@ -557,6 +557,13 @@
     var structure = EXAM_STRUCTURE[license];
     if (!structure) return [];
     var pool = getFilteredQuestions(license);
+    // Deduplicate by question ID - keep first occurrence only
+    var seenIds = {};
+    pool = pool.filter(function(q) {
+      if (seenIds[q.id]) return false;
+      seenIds[q.id] = true;
+      return true;
+    });
     var byTopic = {};
     for (var t in structure) byTopic[t] = [];
     pool.forEach(function(q) {
@@ -564,11 +571,20 @@
       if (byTopic[topic]) byTopic[topic].push(q);
     });
     var selected = [];
+    var usedIds = {};
     for (var topic in structure) {
       var needed = structure[topic];
       var available = shuffle(byTopic[topic] || []);
       if (available.length < needed) return [];
-      for (var i = 0; i < needed; i++) selected.push(available[i]);
+      var count = 0;
+      for (var i = 0; i < available.length && count < needed; i++) {
+        if (!usedIds[available[i].id]) {
+          usedIds[available[i].id] = true;
+          selected.push(available[i]);
+          count++;
+        }
+      }
+      if (count < needed) return [];
     }
     return shuffle(selected);
   }
