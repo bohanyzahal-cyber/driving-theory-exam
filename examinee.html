@@ -1672,7 +1672,7 @@
     var examLang = getExamLang();
     if (examLang === 'ar') {
       qTextEl.dir = 'rtl';
-    } else if (examLang !== 'he' && examLang !== 'ru') {
+    } else if (examLang !== 'he') {
       qTextEl.dir = 'ltr';
       qTextEl.style.textAlign = 'left';
     }
@@ -1727,7 +1727,7 @@
         // Set text direction for LTR/RTL based on exam language
         if (examLang === 'ar') {
           ansText.dir = 'rtl';
-        } else if (examLang !== 'he' && examLang !== 'ru') {
+        } else if (examLang !== 'he') {
           ansText.dir = 'ltr';
           ansText.style.textAlign = 'left';
         }
