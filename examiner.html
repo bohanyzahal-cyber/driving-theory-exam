@@ -849,7 +849,8 @@
         var repeatBadge = '';
         var repeatWarning = '';
         if (item.todayExams && item.todayExams.length > 0) {
-          var details = item.todayExams.map(function(e) { return e.license + ' - ' + e.passed + ' (' + e.score + ')'; }).join(', ');
+          var langMap = { he: '\u05E2\u05D1', ru: '\u05E8\u05D5', ar: '\u05E2\u05E8', en: 'EN', fr: 'FR', es: 'ES' };
+          var details = item.todayExams.map(function(e) { return e.license + (e.language ? '/' + (langMap[e.language] || e.language) : '') + ' - ' + e.passed + ' (' + e.score + ')'; }).join(', ');
           repeatBadge = ' <div style="background:#fef2f2;color:#991b1b;padding:3px 8px;border-radius:8px;font-size:0.8em;font-weight:600;margin-top:4px;">\u26A0\uFE0F \u05DB\u05D1\u05E8 \u05E0\u05D1\u05D7\u05DF \u05D4\u05D9\u05D5\u05DD: ' + escHtml(details) + '</div>';
           repeatWarning = '\u26A0\uFE0F \u05E0\u05D1\u05D7\u05DF \u05D6\u05D4 \u05DB\u05D1\u05E8 \u05E2\u05E9\u05D4 \u05DE\u05D1\u05D7\u05DF \u05D4\u05D9\u05D5\u05DD (' + details + ').\n\u05DC\u05D0\u05E9\u05E8 \u05D7\u05E8\u05D9\u05D2?';
         }

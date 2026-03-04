@@ -610,12 +610,25 @@ function handleExaminerDashboard(p) {
   }
 
   // Flag repeat examinees: check if any pending examinee already tested today (any session)
-  var todayDate = todayStr().split(' ')[0]; // "DD/MM/YYYY"
+  var now = new Date();
+  var todayDD = ('0' + now.getDate()).slice(-2);
+  var todayMM = ('0' + (now.getMonth() + 1)).slice(-2);
+  var todayYYYY = now.getFullYear();
+  var todayDate = todayDD + '/' + todayMM + '/' + todayYYYY; // "DD/MM/YYYY"
   for (var pi = 0; pi < pending.length; pi++) {
     var todayExams = [];
     for (var ri = 1; ri < resData.length; ri++) {
-      if (normalizeId(resData[ri][1]) === normalizeId(pending[pi].idNumber) && String(resData[ri][0]).indexOf(todayDate) === 0) {
-        todayExams.push({ license: String(resData[ri][4]), score: String(resData[ri][5]), passed: String(resData[ri][7]) });
+      if (normalizeId(resData[ri][1]) !== normalizeId(pending[pi].idNumber)) continue;
+      // Handle both Date objects and string dates from Sheets
+      var cellDate = resData[ri][0];
+      var dateStr = '';
+      if (cellDate instanceof Date) {
+        dateStr = ('0' + cellDate.getDate()).slice(-2) + '/' + ('0' + (cellDate.getMonth() + 1)).slice(-2) + '/' + cellDate.getFullYear();
+      } else {
+        dateStr = String(cellDate);
+      }
+      if (dateStr.indexOf(todayDate) === 0) {
+        todayExams.push({ license: String(resData[ri][4]), score: String(resData[ri][5]), passed: String(resData[ri][7]), language: String(resData[ri][12] || '') });
       }
     }
     if (todayExams.length > 0) {
@@ -812,10 +825,10 @@ function handleDebugResults() {
 function handleSubmitResult(data) {
   var sheet = getSheet('תוצאות');
 
-  // Duplicate protection: check if result already exists for this session+ID+license
+  // Duplicate protection: check if result already exists for this session+ID+license+language
   var existingData = sheet.getDataRange().getValues();
   for (var d = 1; d < existingData.length; d++) {
-    if (String(existingData[d][13]) === String(data.sessionCode) && normalizeId(existingData[d][1]) === normalizeId(data.idNumber) && String(existingData[d][4]) === String(data.license)) {
+    if (String(existingData[d][13]) === String(data.sessionCode) && normalizeId(existingData[d][1]) === normalizeId(data.idNumber) && String(existingData[d][4]) === String(data.license) && String(existingData[d][12]) === String(data.language || 'he')) {
       // Already submitted — still update pending status so examinee doesn't stay stuck in "in_exam"
       markPendingCompleted(data.sessionCode, data.idNumber);
       return jsonResponse({ status: 'ok', waLink: existingData[d][18] || '', duplicate: true });
@@ -1003,10 +1016,10 @@ function handleSubmitWrongAnswersBulk(data) {
 function handleSubmitFailOnClose(data) {
   var sheet = getSheet('תוצאות');
 
-  // Duplicate protection: check if result already exists for this session+ID+license
+  // Duplicate protection: check if result already exists for this session+ID+license+language
   var existingData = sheet.getDataRange().getValues();
   for (var d = 1; d < existingData.length; d++) {
-    if (String(existingData[d][13]) === String(data.sessionCode) && normalizeId(existingData[d][1]) === normalizeId(data.idNumber) && String(existingData[d][4]) === String(data.license)) {
+    if (String(existingData[d][13]) === String(data.sessionCode) && normalizeId(existingData[d][1]) === normalizeId(data.idNumber) && String(existingData[d][4]) === String(data.license) && String(existingData[d][12]) === String(data.language || 'he')) {
       markPendingCompleted(data.sessionCode, data.idNumber);
       return jsonResponse({ status: 'ok', duplicate: true });
     }
