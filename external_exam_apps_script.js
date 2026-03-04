@@ -597,6 +597,20 @@ function handleExaminerDashboard(p) {
     });
   }
 
+  // Flag repeat examinees: check if any pending examinee already tested today (any session)
+  var todayDate = todayStr().split(' ')[0]; // "DD/MM/YYYY"
+  for (var pi = 0; pi < pending.length; pi++) {
+    var todayExams = [];
+    for (var ri = 1; ri < resData.length; ri++) {
+      if (normalizeId(resData[ri][1]) === normalizeId(pending[pi].idNumber) && String(resData[ri][0]).indexOf(todayDate) === 0) {
+        todayExams.push({ license: String(resData[ri][4]), score: String(resData[ri][5]), passed: String(resData[ri][7]) });
+      }
+    }
+    if (todayExams.length > 0) {
+      pending[pi].todayExams = todayExams;
+    }
+  }
+
   // Cross-reference registration times from ממתינים for completed results
   for (var c = 0; c < completed.length; c++) {
     for (var p2 = pendData.length - 1; p2 >= 1; p2--) {
@@ -786,11 +800,12 @@ function handleDebugResults() {
 function handleSubmitResult(data) {
   var sheet = getSheet('תוצאות');
 
-  // Duplicate protection: check if result already exists for this session+ID
+  // Duplicate protection: check if result already exists for this session+ID+license
   var existingData = sheet.getDataRange().getValues();
   for (var d = 1; d < existingData.length; d++) {
-    if (String(existingData[d][13]) === String(data.sessionCode) && normalizeId(existingData[d][1]) === normalizeId(data.idNumber)) {
-      // Already submitted — return existing WA link
+    if (String(existingData[d][13]) === String(data.sessionCode) && normalizeId(existingData[d][1]) === normalizeId(data.idNumber) && String(existingData[d][4]) === String(data.license)) {
+      // Already submitted — still update pending status so examinee doesn't stay stuck in "in_exam"
+      markPendingCompleted(data.sessionCode, data.idNumber);
       return jsonResponse({ status: 'ok', waLink: existingData[d][18] || '', duplicate: true });
     }
   }
@@ -864,16 +879,21 @@ function handleSubmitResult(data) {
   ]);
 
   // Update pending status to completed
+  markPendingCompleted(data.sessionCode, data.idNumber);
+
+  return jsonResponse({ status: 'ok', waLink: waLink });
+}
+
+// Helper: mark the latest pending row for this session+ID as completed
+function markPendingCompleted(sessionCode, idNumber) {
   var pendSheet = getSheet('ממתינים');
   var pendData = pendSheet.getDataRange().getValues();
   for (var j = pendData.length - 1; j >= 1; j--) {
-    if (String(pendData[j][0]) === String(data.sessionCode) && normalizeId(pendData[j][1]) === normalizeId(data.idNumber) && (String(pendData[j][5]).trim() === 'in_exam' || String(pendData[j][5]).trim() === 'approved')) {
+    if (String(pendData[j][0]) === String(sessionCode) && normalizeId(pendData[j][1]) === normalizeId(idNumber) && (String(pendData[j][5]).trim() === 'in_exam' || String(pendData[j][5]).trim() === 'approved')) {
       pendSheet.getRange(j + 1, 6).setValue('completed');
       break;
     }
   }
-
-  return jsonResponse({ status: 'ok', waLink: waLink });
 }
 
 function handleSubmitWrongAnswers(p) {
@@ -971,10 +991,11 @@ function handleSubmitWrongAnswersBulk(data) {
 function handleSubmitFailOnClose(data) {
   var sheet = getSheet('תוצאות');
 
-  // Duplicate protection: check if result already exists for this session+ID
+  // Duplicate protection: check if result already exists for this session+ID+license
   var existingData = sheet.getDataRange().getValues();
   for (var d = 1; d < existingData.length; d++) {
-    if (String(existingData[d][13]) === String(data.sessionCode) && normalizeId(existingData[d][1]) === normalizeId(data.idNumber)) {
+    if (String(existingData[d][13]) === String(data.sessionCode) && normalizeId(existingData[d][1]) === normalizeId(data.idNumber) && String(existingData[d][4]) === String(data.license)) {
+      markPendingCompleted(data.sessionCode, data.idNumber);
       return jsonResponse({ status: 'ok', duplicate: true });
     }
   }
@@ -1006,17 +1027,7 @@ function handleSubmitFailOnClose(data) {
     data.audioMode || 'off'
   ]);
 
-  var pendSheet = getSheet('ממתינים');
-  var pendData = pendSheet.getDataRange().getValues();
-  for (var j = pendData.length - 1; j >= 1; j--) {
-    if (String(pendData[j][0]) === String(data.sessionCode) && normalizeId(pendData[j][1]) === normalizeId(data.idNumber)) {
-      var s = pendData[j][5];
-      if (s === 'in_exam' || s === 'approved') {
-        pendSheet.getRange(j + 1, 6).setValue('completed');
-        break;
-      }
-    }
-  }
+  markPendingCompleted(data.sessionCode, data.idNumber);
 
   return jsonResponse({ status: 'ok' });
 }

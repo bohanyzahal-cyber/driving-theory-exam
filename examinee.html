@@ -344,6 +344,7 @@
       <ul class="instruction-list">
         <li><span class="icon">&#x1F4DD;</span> המבחן כולל 30 שאלות. יש לענות נכון על לפחות 26 כדי לעבור.</li>
         <li><span class="icon">&#x23F1;</span> זמן המבחן: 40 דקות.</li>
+        <li><span class="icon">&#x1F515;</span> <strong>העבר את הטלפון למצב שקט / "נא לא להפריע".</strong> שיחה במהלך מבחן = פסילה.</li>
         <li><span class="icon">&#x1F6AB;</span> <strong>אסור לסגור את הדפדפן</strong> במהלך המבחן. סגירה = נכשל אוטומטית.</li>
         <li><span class="icon">&#x1F6AB;</span> אסור להעתיק, לצלם מסך או להשתמש בחומר עזר.</li>
         <li><span class="icon">&#x1F504;</span> ניתן לחזור לשאלות קודמות ולשנות תשובות. יש ללחוץ "סיים מבחן" בסוף.</li>
@@ -357,7 +358,11 @@
           <div><span class="label">אתר:</span><br><span class="value" id="infoSite"></span></div>
         </div>
       </div>
-      <button class="btn-start-exam" id="startExamBtn">התחל מבחן</button>
+      <label id="silentModeCheck" style="display:flex; align-items:center; gap:10px; justify-content:center; margin-bottom:14px; padding:12px 16px; background:#fef3c7; border:2px solid #f59e0b; border-radius:12px; cursor:pointer; font-size:14px; font-weight:600; color:#92400e;">
+        <input type="checkbox" id="airplaneCheckbox" style="width:20px; height:20px; accent-color:#f59e0b; cursor:pointer;">
+        <span>&#x1F515; השתקתי את הטלפון</span>
+      </label>
+      <button class="btn-start-exam" id="startExamBtn" disabled style="opacity:0.5;">התחל מבחן</button>
       <div style="text-align:center; margin-top:12px;">
         <a href="#" id="changeSelectionInstructions" style="font-size:13px; color:#64748b; text-decoration:underline; cursor:pointer;">טעיתי בבחירה? שנה שפה/דרגה</a>
       </div>
@@ -919,6 +924,13 @@
     renderQuestion();
   }
 
+  // Airplane mode checkbox enables start button
+  document.getElementById('airplaneCheckbox').addEventListener('change', function() {
+    var btn = document.getElementById('startExamBtn');
+    btn.disabled = !this.checked;
+    btn.style.opacity = this.checked ? '1' : '0.5';
+  });
+
   document.getElementById('startExamBtn').addEventListener('click', function() {
     if (!translationLoaded) {
       // Translation file still loading — wait for it
@@ -982,7 +994,9 @@
   var tabSwitchDQConfirmed = false;   // true once DQ was actually sent to server
   var tabSwitchGraceTimer = null;
   var tabSwitchWarnings = 0;          // how many times user returned within grace
+  var tabHiddenAt = 0;                // timestamp when tab was hidden
   var TAB_SWITCH_GRACE_MS = 10000;    // 10 second grace on first offense
+  var TAB_SWITCH_CALL_MS = 5000;      // 5+ seconds away = phone call → immediate DQ
   var TAB_SWITCH_MAX_WARNINGS = 1;    // allow 1 return; 2nd switch = immediate DQ
 
   function setupTabSwitchDetection() {
@@ -1013,6 +1027,7 @@
     if (!examInProgress || examSubmitted) return;
 
     if (document.visibilityState === 'hidden') {
+      tabHiddenAt = Date.now();
       if (tabSwitchWarnings >= TAB_SWITCH_MAX_WARNINGS) {
         // Already used their chance — immediate DQ, no grace
         tabSwitchDQConfirmed = true;
@@ -1032,34 +1047,48 @@
     }
 
     if (document.visibilityState === 'visible') {
+      var awayMs = tabHiddenAt ? (Date.now() - tabHiddenAt) : 0;
+
       if (tabSwitchDQConfirmed) {
         // DQ was sent (grace expired or 2nd offense) — show DQ screen
-        if (tabSwitchGraceTimer) { clearTimeout(tabSwitchGraceTimer); tabSwitchGraceTimer = null; }
-        document.removeEventListener('visibilitychange', onTabSwitch);
-        stopSpeaking();
-        stopTimer();
-        examInProgress = false;
-        examSubmitted = true;
-
-        clearExamineeState();
-        var examArea = document.getElementById('examArea');
-        examArea.innerHTML =
-          '<div style="text-align:center; padding:40px 20px;">' +
-            '<div style="font-size:60px; margin-bottom:16px;">\u26D4</div>' +
-            '<h2 style="color:#dc2626; margin:0 0 12px;">\u05D4\u05DE\u05D1\u05D7\u05DF \u05E0\u05E4\u05E1\u05DC</h2>' +
-            '<p style="color:#64748b; font-size:15px;">\u05D6\u05D5\u05D4\u05D4 \u05DE\u05E2\u05D1\u05E8 \u05DC\u05DE\u05E1\u05DA \u05D0\u05D7\u05E8 \u05D0\u05D5 \u05D0\u05E4\u05DC\u05D9\u05E7\u05E6\u05D9\u05D4 \u05D0\u05D7\u05E8\u05EA.</p>' +
-            '<p style="color:#64748b; font-size:15px;">\u05D0\u05D9\u05DF \u05DC\u05E6\u05D0\u05EA \u05DE\u05DE\u05E1\u05DA \u05D4\u05DE\u05D1\u05D7\u05DF \u05D1\u05DE\u05D4\u05DC\u05DA \u05D4\u05DE\u05D1\u05D7\u05DF.</p>' +
-            '<p style="color:#94a3b8; font-size:13px; margin-top:20px;">\u05E4\u05E0\u05D4 \u05DC\u05D1\u05D5\u05D7\u05DF \u05DC\u05E7\u05D1\u05DC\u05EA \u05D4\u05E0\u05D7\u05D9\u05D5\u05EA.</p>' +
-            '<button onclick="resetForNextExaminee()" style="margin-top:24px; display:block; width:100%; padding:14px; font-size:17px; background:#0f172a; color:white; border:none; border-radius:10px; cursor:pointer; font-weight:700;">\u05E0\u05D1\u05D7\u05DF \u05D4\u05D1\u05D0 \u2190</button>' +
-          '</div>';
+        showDQScreen();
+      } else if (tabSwitchGraceTimer && awayMs >= TAB_SWITCH_CALL_MS) {
+        // Away 5+ seconds = phone call detected — immediate DQ
+        clearTimeout(tabSwitchGraceTimer);
+        tabSwitchGraceTimer = null;
+        tabSwitchDQConfirmed = true;
+        try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+        sendDQToServer();
+        showDQScreen();
       } else if (tabSwitchGraceTimer) {
-        // Returned within grace period — cancel DQ, show warning
+        // Returned quickly (< 5 seconds) — cancel DQ, show warning
         clearTimeout(tabSwitchGraceTimer);
         tabSwitchGraceTimer = null;
         tabSwitchWarnings++;
         showTabSwitchWarning();
       }
     }
+  }
+
+  function showDQScreen() {
+    if (tabSwitchGraceTimer) { clearTimeout(tabSwitchGraceTimer); tabSwitchGraceTimer = null; }
+    document.removeEventListener('visibilitychange', onTabSwitch);
+    stopSpeaking();
+    stopTimer();
+    examInProgress = false;
+    examSubmitted = true;
+
+    clearExamineeState();
+    var examArea = document.getElementById('examArea');
+    examArea.innerHTML =
+      '<div style="text-align:center; padding:40px 20px;">' +
+        '<div style="font-size:60px; margin-bottom:16px;">\u26D4</div>' +
+        '<h2 style="color:#dc2626; margin:0 0 12px;">\u05D4\u05DE\u05D1\u05D7\u05DF \u05E0\u05E4\u05E1\u05DC</h2>' +
+        '<p style="color:#64748b; font-size:15px;">\u05D6\u05D5\u05D4\u05D4 \u05DE\u05E2\u05D1\u05E8 \u05DC\u05DE\u05E1\u05DA \u05D0\u05D7\u05E8 \u05D0\u05D5 \u05D0\u05E4\u05DC\u05D9\u05E7\u05E6\u05D9\u05D4 \u05D0\u05D7\u05E8\u05EA.</p>' +
+        '<p style="color:#64748b; font-size:15px;">\u05D0\u05D9\u05DF \u05DC\u05E6\u05D0\u05EA \u05DE\u05DE\u05E1\u05DA \u05D4\u05DE\u05D1\u05D7\u05DF \u05D1\u05DE\u05D4\u05DC\u05DA \u05D4\u05DE\u05D1\u05D7\u05DF.</p>' +
+        '<p style="color:#94a3b8; font-size:13px; margin-top:20px;">\u05E4\u05E0\u05D4 \u05DC\u05D1\u05D5\u05D7\u05DF \u05DC\u05E7\u05D1\u05DC\u05EA \u05D4\u05E0\u05D7\u05D9\u05D5\u05EA.</p>' +
+        '<button onclick="resetForNextExaminee()" style="margin-top:24px; display:block; width:100%; padding:14px; font-size:17px; background:#0f172a; color:white; border:none; border-radius:10px; cursor:pointer; font-weight:700;">\u05E0\u05D1\u05D7\u05DF \u05D4\u05D1\u05D0 \u2190</button>' +
+      '</div>';
   }
 
   function showTabSwitchWarning() {
