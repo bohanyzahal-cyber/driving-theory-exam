@@ -432,6 +432,9 @@
   // *** שנה את ה-URL הזה ל-URL של ה-Apps Script החדש ***
   var API_URL = 'https://script.google.com/macros/s/AKfycbzOI0zrDEngP-GvlRblhOk8tQsYBvWZ2gGliIQHTpS67WrDZl4la8NPpwtJr_Vjsh3Gzg/exec';
 
+  // *** כתובת Cloudflare Worker לשיתוף תוצאות ***
+  var RESULTS_URL = 'https://exam-results.bohanyzahal.workers.dev';
+
   var LICENSE_LABELS = { 'B': 'B (פרטי)', '1': '1 (טרקטור)', 'C1': 'C1 (משא קל)', 'C': 'C/E (משא כבד)', 'D': 'D (ציבורי)' };
   var LANG_LABELS = { 'he': 'עברית', 'ru': 'רוסית', 'en': 'אנגלית', 'ar': 'ערבית', 'fr': 'צרפתית', 'es': 'ספרדית' };
 
@@ -1355,7 +1358,7 @@
     else { alert('\u05D7\u05E1\u05D5\u05DD popup \u05E0\u05D7\u05E1\u05DD. \u05D0\u05E4\u05E9\u05E8 \u05D7\u05DC\u05D5\u05DF popup \u05DC\u05D0\u05EA\u05E8 \u05D6\u05D4.'); }
   };
 
-  // ========== Share result via Google Drive ==========
+  // ========== Share result via Cloudflare Worker ==========
   window.shareResult = function(idx) {
     var r = completedResults[idx];
     if (!r) return;
@@ -1363,7 +1366,7 @@
     // Show loading dialog
     var dlg = document.getElementById('shareDialog');
     document.getElementById('shareDialogTitle').textContent = '\u05E9\u05D9\u05EA\u05D5\u05E3 \u05EA\u05D5\u05E6\u05D0\u05D4 \u2014 ' + r.name;
-    document.getElementById('shareDialogContent').innerHTML = '<div style="font-size:14px;color:#64748b;padding:20px 0;">\u23F3 \u05DE\u05E2\u05DC\u05D4 \u05DC\u05D3\u05E8\u05D9\u05D9\u05D1...</div>';
+    document.getElementById('shareDialogContent').innerHTML = '<div style="font-size:14px;color:#64748b;padding:20px 0;">\u23F3 \u05DE\u05E2\u05DC\u05D4...</div>';
     dlg.style.display = 'flex';
 
     var html = buildResultHtml(idx);
@@ -1377,46 +1380,25 @@
     var isCorrected = r.corrected === true || r.corrected === 'TRUE';
     var passText = isDQ ? '\u05E4\u05E1\u05D5\u05DC' : (isPassed ? '\u05E2\u05D1\u05E8' : '\u05E0\u05DB\u05E9\u05DC');
 
-    var requestId = 'req_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
-
-    // Fire-and-forget POST (no-cors because Apps Script redirect blocks CORS response)
-    fetch(API_URL, {
+    // Direct POST to Cloudflare Worker (CORS supported — returns link immediately)
+    fetch(RESULTS_URL, {
       method: 'POST',
-      mode: 'no-cors',
-      headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify({
-        action: 'uploadResultHtml',
-        html: html,
-        requestId: requestId
-      })
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ html: html })
+    })
+    .then(function(response) { return response.json(); })
+    .then(function(data) {
+      if (data.status === 'ok' && data.link) {
+        showShareLinks(r, data.link, passText, isCorrected);
+      } else {
+        document.getElementById('shareDialogContent').innerHTML =
+          '<div style="color:#ef4444;">\u05E9\u05D2\u05D9\u05D0\u05D4: ' + escHtml(data.message || 'Unknown error') + '</div>';
+      }
+    })
+    .catch(function(err) {
+      document.getElementById('shareDialogContent').innerHTML =
+        '<div style="color:#ef4444;">\u05E9\u05D2\u05D9\u05D0\u05EA \u05EA\u05E7\u05E9\u05D5\u05E8\u05EA: ' + escHtml(err.message || '') + '</div>';
     });
-
-    // Poll for result via GET
-    var attempts = 0;
-    var maxAttempts = 20;
-    var pollInterval = setInterval(function() {
-      attempts++;
-      apiGet({ action: 'getUploadResult', requestId: requestId }).then(function(data) {
-        if (data.status === 'ok' && data.link) {
-          clearInterval(pollInterval);
-          showShareLinks(r, data.link, passText, isCorrected);
-        } else if (data.status === 'error') {
-          clearInterval(pollInterval);
-          document.getElementById('shareDialogContent').innerHTML =
-            '<div style="color:#ef4444;">\u05E9\u05D2\u05D9\u05D0\u05D4: ' + escHtml(data.message || '') + '</div>';
-        } else if (attempts >= maxAttempts) {
-          clearInterval(pollInterval);
-          document.getElementById('shareDialogContent').innerHTML =
-            '<div style="color:#ef4444;">\u05D4\u05D6\u05DE\u05DF \u05D4\u05DE\u05EA\u05E0\u05D4 \u05E2\u05D1\u05E8. \u05E0\u05E1\u05D4 \u05E9\u05D5\u05D1.</div>';
-        }
-      }).catch(function() {
-        if (attempts >= maxAttempts) {
-          clearInterval(pollInterval);
-          document.getElementById('shareDialogContent').innerHTML =
-            '<div style="color:#ef4444;">\u05E9\u05D2\u05D9\u05D0\u05EA \u05EA\u05E7\u05E9\u05D5\u05E8\u05EA</div>';
-        }
-      });
-    }, 1500);
   };
 
   function showShareLinks(r, link, passText, isCorrected) {
