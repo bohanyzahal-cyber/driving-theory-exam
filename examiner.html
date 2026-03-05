@@ -1117,6 +1117,7 @@
           '<button class="wa-btn" style="background:#7c3aed;margin-left:4px;" onclick="shareResult(' + i + ')">\u{1F4E4} \u05E9\u05EA\u05E3</button>' +
           '<a href="' + waUrl + '" target="_blank" class="wa-btn" onclick="markSentWA(' + i + ')" style="margin-left:4px;">\u{1F4F1} WA</a>' +
           '<a href="' + smsUrl + '" class="wa-btn" style="background:#2563eb;margin-left:4px;">\u{1F4E9} SMS</a>' +
+          '<button class="wa-btn" style="background:#64748b;margin-left:4px;" onclick="editPhone(' + i + ')" title="\u05E2\u05E8\u05D5\u05DA \u05D8\u05DC\u05E4\u05D5\u05DF">\u270E\u{1F4F1}</button>' +
           (!isDQ ? ' <button class="btn-disqualify" onclick="disqualifyResult(' + i + ')">\u05E4\u05E1\u05D5\u05DC</button>' : '') +
           (canCorrect ? ' <button style="background:#f59e0b;color:white;padding:4px 10px;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;margin-left:4px;" onclick="correctToPass(' + i + ')">\u05EA\u05E7\u05DF</button>' : '') +
         '</td></tr>';
@@ -1134,6 +1135,18 @@
     document.getElementById('statsBar').style.display = 'flex';
     document.getElementById('bulkActions').style.display = 'flex';
   }
+
+  // ========== Edit examinee phone ==========
+  window.editPhone = function(idx) {
+    var r = completedResults[idx];
+    if (!r) return;
+    var current = r.phone || '';
+    var newPhone = prompt('\u05DE\u05E1\u05E4\u05E8 \u05D8\u05DC\u05E4\u05D5\u05DF \u05E0\u05D5\u05DB\u05D7\u05D9 \u05E2\u05D1\u05D5\u05E8 ' + r.name + ':', current);
+    if (newPhone === null || newPhone.trim() === '') return;
+    newPhone = newPhone.trim();
+    r.phone = newPhone;
+    renderResults();
+  };
 
   // ========== Formatting helpers ==========
   function formatPhone(phone) {
