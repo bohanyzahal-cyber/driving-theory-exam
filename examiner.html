@@ -1145,7 +1145,10 @@
     if (newPhone === null || newPhone.trim() === '') return;
     newPhone = newPhone.trim();
     r.phone = newPhone;
-    renderDashboard();
+    // Re-render only the results table (not full dashboard which would trigger polling)
+    var savedCount = prevCompletedCount;
+    updateCompletedList(completedResults);
+    prevCompletedCount = savedCount; // Prevent notification sound on re-render
   };
 
   // ========== Formatting helpers ==========
