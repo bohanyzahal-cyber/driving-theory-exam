@@ -983,7 +983,10 @@ tr.row-dq td { font-style: italic; }
       var actionsHtml = '';
       if (!isDQ) {
         actionsHtml += '<button class="btn-sm btn-pdf">&#128196; PDF</button>';
+        actionsHtml += '<button class="btn-sm" style="background:#7c3aed;color:white;" onclick="alert(\'שיתוף תוצאה — הקישור נוצר דרך Cloudflare Worker ונשלח ב-WA/SMS\')">&#128228; שתף</button>';
         actionsHtml += '<button class="btn-sm btn-wa">&#128241; WA</button>';
+        actionsHtml += '<button class="btn-sm" style="background:#2563eb;color:white;">&#128233; SMS</button>';
+        actionsHtml += '<button class="btn-sm" style="background:#64748b;color:white;" onclick="alert(\'עריכת טלפון — מאפשר לבוחן לתקן מספר טלפון שגוי של הנבחן\')">&#9998;&#128241;</button>';
       }
       if (canCorrect) {
         actionsHtml += '<button class="btn-sm btn-correct" data-idx="' + i + '">&#9889; &#1514;&#1511;&#1503;</button>';
