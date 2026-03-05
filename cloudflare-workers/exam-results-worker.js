@@ -1,7 +1,7 @@
 /**
  * Cloudflare Worker: exam-results
  * מאחסן ומגיש דפי תוצאות מבחן דרך KV
- * Deploy at: exam-results.bohanyzahal.workers.dev
+ * Deploy at: steep-night-dd06.bohanyzahal.workers.dev
  *
  * KV Binding: EXAM_RESULTS
  *
