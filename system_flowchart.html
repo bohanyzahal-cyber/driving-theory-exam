@@ -118,6 +118,11 @@
       <div class="name">שרת (Google Sheets)</div>
       <div class="desc">מאחסן בוחנים, אתרים, סשנים, ממתינים, תוצאות. מטפל בכל הבקשות.</div>
     </div>
+    <div class="actor-card" style="background:#fff4e6; border:2px solid #f97316;">
+      <div class="icon">&#x26A1;</div>
+      <div class="name">Cloudflare Workers</div>
+      <div class="desc">TTS (הקראת שאלות) + שיתוף תוצאות מבחן (KV storage). עובד בכל מכשיר כולל נייד.</div>
+    </div>
   </div>
   <div class="legend" style="margin-top:16px;">
     <div class="legend-item"><div class="legend-dot ex"></div> פעולת בוחן</div>
@@ -495,7 +500,10 @@
         <div class="title">פעולות לכל תוצאה</div>
         <div class="detail">
           <strong>&#x1F4C4; PDF:</strong> דו"ח מפורט עם לוגו + פרטי נבחן + ציון + שאלות שגויות &larr; הדפסה<br>
-          <strong>&#x1F4F1; WhatsApp:</strong> שליחת תוצאה אישית לנבחן (כולל פירוט שגויות אם נכשל)<br>
+          <strong>&#x1F4E4; שיתוף תוצאה:</strong> יוצר דף HTML מלא עם תוצאות + טבלת שאלות שגויות, שומר ב-Cloudflare Worker (KV) ומייצר קישור ישיר. הקישור נשלח ב-WA/SMS/העתק. <strong>תקף 24 שעות</strong><br>
+          <strong>&#x1F4F1; WhatsApp:</strong> שליחת תוצאה אישית לנבחן<br>
+          <strong>&#x1F4E9; SMS:</strong> שליחת תוצאה ב-SMS<br>
+          <strong>&#x270E;&#x1F4F1; עריכת טלפון:</strong> תיקון מספר טלפון של נבחן שטעה בהקלדה — מעדכן את כל הקישורים (WA/SMS/שיתוף) מיידית<br>
           <strong>&#x26D4; פסילה:</strong> סימון תוצאה כפסולה (במקרה של רמאות וכד')<br>
           <strong>&#x270E; תיקון ציון:</strong> כפתור צהוב "תקן" — ראה פירוט בהמשך
         </div>
@@ -513,6 +521,75 @@
           &nbsp;&nbsp;&#x25B8; פילוח נכשלים לפי כמות שגיאות (1-3 / 4-6 / 7+)<br>
           &nbsp;&nbsp;&#x25B8; "דו"ח מפורט ישלח בנפרד"<br>
           <strong>&#x1F4E4; שליחה לכל הנבחנים:</strong> פתיחת WhatsApp לכל נבחן בנפרד
+        </div>
+      </div>
+    </div>
+
+    <!-- Sub-section: Result Sharing -->
+    <div class="sub-section">
+      <h3>&#x1F4E4; שיתוף תוצאה (Cloudflare Worker + KV)</h3>
+      <div class="flow">
+        <div class="flow-step">
+          <div class="step-marker examiner-m">&#x1F464;</div>
+          <div class="step-content">
+            <div class="title">בוחן לוחץ "&#x1F4E4; שתף" ליד תוצאה</div>
+            <div class="detail">המערכת בונה דף HTML מלא עם: לוגו + פרטי נבחן + ציון + טבלת שאלות שגויות (שאלה, תשובת הנבחן, תשובה נכונה)</div>
+          </div>
+        </div>
+        <div class="arrow-down">&#x25BC;</div>
+        <div class="flow-step">
+          <div class="step-marker auto-m">&#x26A1;</div>
+          <div class="step-content">
+            <div class="title">POST ל-Cloudflare Worker <span class="api">steep-night-dd06.workers.dev</span></div>
+            <div class="detail">
+              &#x2022; ה-HTML נשלח ישירות ל-Worker (CORS)<br>
+              &#x2022; Worker מייצר UUID ייחודי ושומר ב-KV (TTL: 24 שעות)<br>
+              &#x2022; מחזיר קישור מיידית (בלי polling!) &rarr; <code>https://steep-night-dd06.workers.dev/{uuid}</code>
+            </div>
+          </div>
+        </div>
+        <div class="arrow-down">&#x25BC;</div>
+        <div class="flow-step">
+          <div class="step-marker examiner-m">&#x1F464;</div>
+          <div class="step-content">
+            <div class="title">בוחן רואה דיאלוג שיתוף עם 3 כפתורים</div>
+            <div class="detail">
+              <strong>&#x1F4F1; WA:</strong> פתיחת WhatsApp עם הודעה + קישור<br>
+              <strong>&#x1F4E9; SMS:</strong> שליחת SMS עם הודעה + קישור<br>
+              <strong>&#x1F4CB; העתק:</strong> העתקת הקישור ללוח
+            </div>
+          </div>
+        </div>
+        <div class="arrow-down">&#x25BC;</div>
+        <div class="flow-step">
+          <div class="step-marker examinee-m">&#x1F4DD;</div>
+          <div class="step-content">
+            <div class="title">נבחן פותח את הקישור בטלפון</div>
+            <div class="detail">
+              Worker מגיש את ה-HTML ישירות (Content-Type: text/html) &mdash; <strong>ללא iframe!</strong><br>
+              &#x2022; עובד בכל דפדפן ובכל מכשיר כולל נייד<br>
+              &#x2022; הקישור תקף ל-24 שעות
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sub-section: Phone Edit -->
+    <div class="sub-section">
+      <h3>&#x270E;&#x1F4F1; עריכת מספר טלפון</h3>
+      <div class="flow">
+        <div class="flow-step">
+          <div class="step-marker examiner-m">&#x1F464;</div>
+          <div class="step-content">
+            <div class="title">בוחן לוחץ "&#x270E;&#x1F4F1;" ליד תוצאה</div>
+            <div class="detail">
+              &#x2022; נפתח prompt עם המספר הנוכחי<br>
+              &#x2022; הבוחן מזין מספר חדש ומאשר<br>
+              &#x2022; המספר מתעדכן <strong>מיידית</strong> בכל הקישורים (WA/SMS/שתף)<br>
+              &#x2022; השינוי נשמר גם אחרי רענוני polling (כל 5 שניות)
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -688,6 +765,27 @@
       </div>
     </div>
     <div class="flow-step" style="margin-top:8px;">
+      <div class="step-marker examinee-m">&#x1F515;</div>
+      <div class="step-content">
+        <div class="title">איפוס "השתקתי את הטלפון" בין נבחנים</div>
+        <div class="detail">ה-checkbox מתאפס אוטומטית בטעינת הדף ובמעבר לנבחן הבא | autocomplete=off מונע שחזור דפדפן | כפתור "התחל מבחן" מושבת עד סימון מחדש</div>
+      </div>
+    </div>
+    <div class="flow-step" style="margin-top:8px;">
+      <div class="step-marker auto-m">&#x1F500;</div>
+      <div class="step-content">
+        <div class="title">מניעת כפילויות שאלות במבחן</div>
+        <div class="detail">שכבת דדופליקציה כפולה: סינון שאלות כפולות מהמאגר + מעקב אחרי IDs שכבר נבחרו | מבטיח ש-30 השאלות ייחודיות</div>
+      </div>
+    </div>
+    <div class="flow-step" style="margin-top:8px;">
+      <div class="step-marker server-m">&#x26A0;</div>
+      <div class="step-content">
+        <div class="title">זיהוי נבחן חוזר באותו יום</div>
+        <div class="detail">בודק לפי ת.ז + דרגה + <strong>שפה</strong> + קוד סשן | מציג התראה לבוחן עם פרטי המבחנים הקודמים | הבוחן מחליט אם לאשר</div>
+      </div>
+    </div>
+    <div class="flow-step" style="margin-top:8px;">
       <div class="step-marker server-m">&#x1F6E1;</div>
       <div class="step-content">
         <div class="title">אימות זהות בוחן לפעולות רגישות</div>
@@ -743,7 +841,7 @@
 </div>
 
 <p style="text-align:center; color:#94a3b8; font-size:12px; margin-top:32px;">
-  נוצר אוטומטית | מערכת מבחן תאוריה חיצוני | סמכות רישוי צה"ל | עדכון אחרון: פברואר 2026
+  נוצר אוטומטית | מערכת מבחן תאוריה חיצוני | סמכות רישוי צה"ל | עדכון אחרון: מרץ 2026
 </p>
 
 </body>
