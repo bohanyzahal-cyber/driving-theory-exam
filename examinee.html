@@ -83,7 +83,7 @@
       padding: 10px 14px; margin-bottom: 8px; border-radius: 10px;
       background: #f8fafc; border: 1px solid #e2e8f0; font-size: 14px; font-weight: 600;
     }
-    .instruction-list li .icon { margin-left: 8px; }
+    .instruction-list li .icon { margin-inline-end: 8px; }
     .session-info-box {
       background: #0f172a; color: #f8fafc; border-radius: 12px; padding: 14px 18px;
       margin: 12px 0; font-size: 14px;
@@ -379,10 +379,10 @@
   <!-- ===== Screen 5: Done ===== -->
   <section class="card screen" id="screenDone">
     <div class="exam-done">
-      <h2>המבחן הסתיים</h2>
-      <p>תודה, <strong id="doneNameDisplay"></strong>.</p>
-      <p>התוצאות יימסרו לך ע"י הבוחן.</p>
-      <p class="muted">ניתן לפנות את המקום.</p>
+      <h2 id="doneTitle">המבחן הסתיים</h2>
+      <p><span id="doneThankText">תודה,</span> <strong id="doneNameDisplay"></strong>.</p>
+      <p id="doneResultsText">התוצאות יימסרו לך ע"י הבוחן.</p>
+      <p class="muted" id="doneLeaveText">ניתן לפנות את המקום.</p>
       <div id="doneTimeUpMsg" style="display:none;"></div>
       <button id="nextExamineeBtn" onclick="resetForNextExaminee()" style="margin-top:24px; display:block; width:100%; padding:14px; font-size:17px; background:#0f172a;">נבחן הבא ←</button>
     </div>
@@ -433,6 +433,277 @@
 
   var LICENSE_LABELS = { 'B': 'B (פרטי)', '1': '1 (טרקטור)', 'C1': 'C1 (משא קל)', 'C': 'C/E (משא כבד)', 'D': 'D (ציבורי)' };
   var LANG_LABELS = { 'he': 'עברית', 'ru': 'רוסית', 'en': 'אנגלית', 'ar': 'ערבית', 'fr': 'צרפתית', 'es': 'ספרדית', 'am': 'אמהרית' };
+
+  // ========== UI Translations ==========
+  var UI_STRINGS = {
+    'he': {
+      instrTitle: 'הוראות לפני המבחן',
+      instrQuestions: 'המבחן כולל 30 שאלות. יש לענות נכון על לפחות 26 כדי לעבור.',
+      instrTime: 'זמן המבחן: 40 דקות.',
+      instrSilent: 'העבר את הטלפון למצב שקט / "נא לא להפריע". שיחה במהלך מבחן = פסילה.',
+      instrNoBrowser: 'אסור לסגור את הדפדפן במהלך המבחן. סגירה = נכשל אוטומטית.',
+      instrNoCopy: 'אסור להעתיק, לצלם מסך או להשתמש בחומר עזר.',
+      instrNav: 'ניתן לחזור לשאלות קודמות ולשנות תשובות. יש ללחוץ "סיים מבחן" בסוף.',
+      instrResults: 'התוצאות יימסרו לך ע"י הבוחן, ולא יוצגו על המסך.',
+      instrAudio: 'המבחן כולל הקראה בקול. ודא שהרמקול/אוזניות פעילים.',
+      lblLicense: 'דרגת רישיון:',
+      lblLang: 'שפה:',
+      lblSite: 'אתר:',
+      silentCheck: '\uD83D\uDD15 השתקתי את הטלפון',
+      startExam: 'התחל מבחן',
+      changeSelection: 'טעיתי בבחירה? שנה שפה/דרגה',
+      doneTitle: 'המבחן הסתיים',
+      doneThank: 'תודה,',
+      doneResults: 'התוצאות יימסרו לך ע"י הבוחן.',
+      doneLeave: 'ניתן לפנות את המקום.',
+      nextExaminee: 'נבחן הבא \u2190',
+      rejected: 'הבוחן דחה את הכניסה שלך. פנה לבוחן.',
+      changeConfirm: 'לחזור לטופס הרישום כדי לשנות שפה או דרגה?\nהבוחן יצטרך לאשר אותך שוב.'
+    },
+    'ru': {
+      instrTitle: 'Инструкции перед экзаменом',
+      instrQuestions: 'Экзамен содержит 30 вопросов. Для сдачи необходимо правильно ответить минимум на 26.',
+      instrTime: 'Время экзамена: 40 минут.',
+      instrSilent: 'Переведите телефон в беззвучный режим. Звонок во время экзамена = дисквалификация.',
+      instrNoBrowser: 'Запрещено закрывать браузер во время экзамена. Закрытие = автоматический провал.',
+      instrNoCopy: 'Запрещено копировать, делать скриншоты или использовать вспомогательные материалы.',
+      instrNav: 'Можно возвращаться к предыдущим вопросам и менять ответы. В конце нажмите «Завершить экзамен».',
+      instrResults: 'Результаты вам сообщит экзаменатор, они не будут показаны на экране.',
+      instrAudio: 'Экзамен включает голосовое чтение. Убедитесь, что динамик/наушники включены.',
+      lblLicense: 'Категория:',
+      lblLang: 'Язык:',
+      lblSite: 'Площадка:',
+      silentCheck: '\uD83D\uDD15 Я выключил звук телефона',
+      startExam: 'Начать экзамен',
+      changeSelection: 'Ошиблись? Сменить язык/категорию',
+      doneTitle: 'Экзамен завершён',
+      doneThank: 'Спасибо,',
+      doneResults: 'Результаты вам сообщит экзаменатор.',
+      doneLeave: 'Можете освободить место.',
+      nextExaminee: 'Следующий \u2190',
+      rejected: 'Экзаменатор отклонил ваш вход. Обратитесь к экзаменатору.',
+      changeConfirm: 'Вернуться к форме регистрации, чтобы изменить язык или категорию?\nЭкзаменатор должен будет одобрить вас снова.'
+    },
+    'en': {
+      instrTitle: 'Instructions Before the Exam',
+      instrQuestions: 'The exam contains 30 questions. You must answer at least 26 correctly to pass.',
+      instrTime: 'Exam duration: 40 minutes.',
+      instrSilent: 'Put your phone on silent / "Do Not Disturb". A phone call during the exam = disqualification.',
+      instrNoBrowser: 'Do not close the browser during the exam. Closing = automatic failure.',
+      instrNoCopy: 'No copying, screenshots, or reference materials allowed.',
+      instrNav: 'You can go back to previous questions and change answers. Press "Finish Exam" at the end.',
+      instrResults: 'Results will be given to you by the examiner and will not appear on screen.',
+      instrAudio: 'The exam includes audio reading. Make sure your speaker/headphones are on.',
+      lblLicense: 'License type:',
+      lblLang: 'Language:',
+      lblSite: 'Site:',
+      silentCheck: '\uD83D\uDD15 I silenced my phone',
+      startExam: 'Start Exam',
+      changeSelection: 'Wrong selection? Change language/license',
+      doneTitle: 'Exam Completed',
+      doneThank: 'Thank you,',
+      doneResults: 'Results will be given to you by the examiner.',
+      doneLeave: 'You may leave your seat.',
+      nextExaminee: 'Next examinee \u2190',
+      rejected: 'The examiner rejected your entry. Contact the examiner.',
+      changeConfirm: 'Go back to the registration form to change language or license type?\nThe examiner will need to approve you again.'
+    },
+    'ar': {
+      instrTitle: '\u062A\u0639\u0644\u064A\u0645\u0627\u062A \u0642\u0628\u0644 \u0627\u0644\u0627\u0645\u062A\u062D\u0627\u0646',
+      instrQuestions: '\u064A\u062A\u0636\u0645\u0646 \u0627\u0644\u0627\u0645\u062A\u062D\u0627\u0646 30 \u0633\u0624\u0627\u0644\u0627\u064B. \u064A\u062C\u0628 \u0627\u0644\u0625\u062C\u0627\u0628\u0629 \u0628\u0634\u0643\u0644 \u0635\u062D\u064A\u062D \u0639\u0644\u0649 26 \u0633\u0624\u0627\u0644\u0627\u064B \u0639\u0644\u0649 \u0627\u0644\u0623\u0642\u0644 \u0644\u0644\u0646\u062C\u0627\u062D.',
+      instrTime: '\u0645\u062F\u0629 \u0627\u0644\u0627\u0645\u062A\u062D\u0627\u0646: 40 \u062F\u0642\u064A\u0642\u0629.',
+      instrSilent: '\u0636\u0639 \u0647\u0627\u062A\u0641\u0643 \u0639\u0644\u0649 \u0627\u0644\u0635\u0627\u0645\u062A. \u0645\u0643\u0627\u0644\u0645\u0629 \u0623\u062B\u0646\u0627\u0621 \u0627\u0644\u0627\u0645\u062A\u062D\u0627\u0646 = \u0625\u0642\u0635\u0627\u0621.',
+      instrNoBrowser: '\u0645\u0645\u0646\u0648\u0639 \u0625\u063A\u0644\u0627\u0642 \u0627\u0644\u0645\u062A\u0635\u0641\u062D \u0623\u062B\u0646\u0627\u0621 \u0627\u0644\u0627\u0645\u062A\u062D\u0627\u0646. \u0627\u0644\u0625\u063A\u0644\u0627\u0642 = \u0631\u0633\u0648\u0628 \u062A\u0644\u0642\u0627\u0626\u064A.',
+      instrNoCopy: '\u0645\u0645\u0646\u0648\u0639 \u0627\u0644\u0646\u0633\u062E \u0623\u0648 \u062A\u0635\u0648\u064A\u0631 \u0627\u0644\u0634\u0627\u0634\u0629 \u0623\u0648 \u0627\u0633\u062A\u062E\u062F\u0627\u0645 \u0645\u0648\u0627\u062F \u0645\u0633\u0627\u0639\u062F\u0629.',
+      instrNav: '\u064A\u0645\u0643\u0646\u0643 \u0627\u0644\u0639\u0648\u062F\u0629 \u0644\u0644\u0623\u0633\u0626\u0644\u0629 \u0627\u0644\u0633\u0627\u0628\u0642\u0629 \u0648\u062A\u063A\u064A\u064A\u0631 \u0627\u0644\u0625\u062C\u0627\u0628\u0627\u062A. \u0627\u0636\u063A\u0637 "\u0625\u0646\u0647\u0627\u0621 \u0627\u0644\u0627\u0645\u062A\u062D\u0627\u0646" \u0641\u064A \u0627\u0644\u0646\u0647\u0627\u064A\u0629.',
+      instrResults: '\u0627\u0644\u0646\u062A\u0627\u0626\u062C \u0633\u064A\u0628\u0644\u063A\u0643 \u0628\u0647\u0627 \u0627\u0644\u0641\u0627\u062D\u0635\u060C \u0648\u0644\u0646 \u062A\u0638\u0647\u0631 \u0639\u0644\u0649 \u0627\u0644\u0634\u0627\u0634\u0629.',
+      instrAudio: '\u0627\u0644\u0627\u0645\u062A\u062D\u0627\u0646 \u064A\u062A\u0636\u0645\u0646 \u0642\u0631\u0627\u0621\u0629 \u0635\u0648\u062A\u064A\u0629. \u062A\u0623\u0643\u062F \u0645\u0646 \u062A\u0634\u063A\u064A\u0644 \u0627\u0644\u0633\u0645\u0627\u0639\u0627\u062A/\u0627\u0644\u0645\u0643\u0628\u0631.',
+      lblLicense: '\u0646\u0648\u0639 \u0627\u0644\u0631\u062E\u0635\u0629:',
+      lblLang: '\u0627\u0644\u0644\u063A\u0629:',
+      lblSite: '\u0627\u0644\u0645\u0648\u0642\u0639:',
+      silentCheck: '\uD83D\uDD15 \u0623\u0633\u0643\u062A\u0651 \u0647\u0627\u062A\u0641\u064A',
+      startExam: '\u0627\u0628\u062F\u0623 \u0627\u0644\u0627\u0645\u062A\u062D\u0627\u0646',
+      changeSelection: '\u0627\u062E\u062A\u064A\u0627\u0631 \u062E\u0627\u0637\u0626\u061F \u063A\u064A\u0651\u0631 \u0627\u0644\u0644\u063A\u0629/\u0627\u0644\u0631\u062E\u0635\u0629',
+      doneTitle: '\u0627\u0646\u062A\u0647\u0649 \u0627\u0644\u0627\u0645\u062A\u062D\u0627\u0646',
+      doneThank: '\u0634\u0643\u0631\u0627\u064B\u060C',
+      doneResults: '\u0627\u0644\u0646\u062A\u0627\u0626\u062C \u0633\u064A\u0628\u0644\u063A\u0643 \u0628\u0647\u0627 \u0627\u0644\u0641\u0627\u062D\u0635.',
+      doneLeave: '\u064A\u0645\u0643\u0646\u0643 \u0625\u062E\u0644\u0627\u0621 \u0645\u0643\u0627\u0646\u0643.',
+      nextExaminee: '\u0627\u0644\u062A\u0627\u0644\u064A \u2190',
+      rejected: '\u0631\u0641\u0636 \u0627\u0644\u0641\u0627\u062D\u0635 \u062F\u062E\u0648\u0644\u0643. \u062A\u0648\u0627\u0635\u0644 \u0645\u0639 \u0627\u0644\u0641\u0627\u062D\u0635.',
+      changeConfirm: '\u0627\u0644\u0639\u0648\u062F\u0629 \u0644\u0646\u0645\u0648\u0630\u062C \u0627\u0644\u062A\u0633\u062C\u064A\u0644 \u0644\u062A\u063A\u064A\u064A\u0631 \u0627\u0644\u0644\u063A\u0629 \u0623\u0648 \u0627\u0644\u0631\u062E\u0635\u0629\u061F\n\u0627\u0644\u0641\u0627\u062D\u0635 \u0633\u064A\u062D\u062A\u0627\u062C \u0644\u0644\u0645\u0648\u0627\u0641\u0642\u0629 \u0639\u0644\u064A\u0643 \u0645\u062C\u062F\u062F\u0627\u064B.'
+    },
+    'fr': {
+      instrTitle: 'Instructions avant l\'examen',
+      instrQuestions: 'L\'examen comporte 30 questions. Vous devez r\u00E9pondre correctement \u00E0 au moins 26 pour r\u00E9ussir.',
+      instrTime: 'Dur\u00E9e de l\'examen : 40 minutes.',
+      instrSilent: 'Mettez votre t\u00E9l\u00E9phone en mode silencieux. Un appel pendant l\'examen = disqualification.',
+      instrNoBrowser: 'Ne fermez pas le navigateur pendant l\'examen. Fermeture = \u00E9chec automatique.',
+      instrNoCopy: 'Il est interdit de copier, de faire des captures d\'\u00E9cran ou d\'utiliser des supports.',
+      instrNav: 'Vous pouvez revenir aux questions pr\u00E9c\u00E9dentes et modifier vos r\u00E9ponses. Cliquez sur \u00AB Terminer l\'examen \u00BB \u00E0 la fin.',
+      instrResults: 'Les r\u00E9sultats vous seront communiqu\u00E9s par l\'examinateur et n\'appara\u00EEtront pas \u00E0 l\'\u00E9cran.',
+      instrAudio: 'L\'examen comprend une lecture audio. Assurez-vous que le haut-parleur/les \u00E9couteurs sont activ\u00E9s.',
+      lblLicense: 'Cat\u00E9gorie :',
+      lblLang: 'Langue :',
+      lblSite: 'Site :',
+      silentCheck: '\uD83D\uDD15 J\'ai mis mon t\u00E9l\u00E9phone en silencieux',
+      startExam: 'Commencer l\'examen',
+      changeSelection: 'Erreur ? Changer la langue/cat\u00E9gorie',
+      doneTitle: 'Examen termin\u00E9',
+      doneThank: 'Merci,',
+      doneResults: 'Les r\u00E9sultats vous seront communiqu\u00E9s par l\'examinateur.',
+      doneLeave: 'Vous pouvez lib\u00E9rer votre place.',
+      nextExaminee: 'Suivant \u2190',
+      rejected: 'L\'examinateur a refus\u00E9 votre entr\u00E9e. Contactez l\'examinateur.',
+      changeConfirm: 'Revenir au formulaire d\'inscription pour changer la langue ou la cat\u00E9gorie ?\nL\'examinateur devra vous approuver \u00E0 nouveau.'
+    },
+    'es': {
+      instrTitle: 'Instrucciones antes del examen',
+      instrQuestions: 'El examen contiene 30 preguntas. Debes responder correctamente al menos 26 para aprobar.',
+      instrTime: 'Duraci\u00F3n del examen: 40 minutos.',
+      instrSilent: 'Pon tu tel\u00E9fono en silencio. Una llamada durante el examen = descalificaci\u00F3n.',
+      instrNoBrowser: 'No cierres el navegador durante el examen. Cerrarlo = fallo autom\u00E1tico.',
+      instrNoCopy: 'Prohibido copiar, hacer capturas de pantalla o usar material de apoyo.',
+      instrNav: 'Puedes volver a preguntas anteriores y cambiar respuestas. Pulsa "Finalizar examen" al final.',
+      instrResults: 'Los resultados te los dar\u00E1 el examinador y no aparecer\u00E1n en pantalla.',
+      instrAudio: 'El examen incluye lectura en voz alta. Aseg\u00FArate de que el altavoz/auriculares est\u00E9n activados.',
+      lblLicense: 'Tipo de licencia:',
+      lblLang: 'Idioma:',
+      lblSite: 'Centro:',
+      silentCheck: '\uD83D\uDD15 He silenciado mi tel\u00E9fono',
+      startExam: 'Iniciar examen',
+      changeSelection: '\u00BFSelecci\u00F3n incorrecta? Cambiar idioma/licencia',
+      doneTitle: 'Examen finalizado',
+      doneThank: 'Gracias,',
+      doneResults: 'Los resultados te los dar\u00E1 el examinador.',
+      doneLeave: 'Puedes dejar tu lugar.',
+      nextExaminee: 'Siguiente \u2190',
+      rejected: 'El examinador rechaz\u00F3 tu entrada. Contacta al examinador.',
+      changeConfirm: '\u00BFVolver al formulario de registro para cambiar idioma o tipo de licencia?\nEl examinador deber\u00E1 aprobarte nuevamente.'
+    },
+    'am': {
+      instrTitle: '\u12A8\u1348\u1270\u1293 \u1260\u134A\u1275 \u1218\u1218\u122A\u12EB\u12CE\u127D',
+      instrQuestions: '\u1348\u1270\u1293\u12CD 30 \u1325\u12EB\u1244\u12CE\u127D \u12EB\u1208\u12CD\u1362 \u1208\u121B\u1208\u134D 26 \u1325\u12EB\u1244\u12CE\u127D\u1295 \u1260\u1275\u12AD\u12AD\u120D \u1218\u1218\u1208\u1235 \u12EB\u1235\u1348\u120D\u130B\u120D\u1362',
+      instrTime: '\u12E8\u1348\u1270\u1293 \u130A\u12DC: 40 \u12F0\u1242\u1243\u12CE\u127D\u1362',
+      instrSilent: '\u1235\u120D\u12AD\u12CE\u1295 \u1260\u12DD\u121D\u1273 (\u1233\u12ED\u1208\u1295\u1275) \u121B\u12F5\u1228\u130D\u1362 \u1260\u1348\u1270\u1293 \u12CB\u1293 \u1235\u120D\u12AD \u1218\u12F0\u12C8\u120D = \u121D\u12F5\u1263 \u12A0\u12ED\u1218\u1208\u12A8\u1275\u121D\u1362',
+      instrNoBrowser: '\u1260\u1348\u1270\u1293 \u12CB\u1293 \u12E8\u12F5\u1229 \u1308\u133D\u12CD\u1295 (\u1265\u122B\u12CD\u12D8\u122D) \u1218\u12DD\u130B\u1275 \u12A0\u12ED\u1348\u1240\u12F5\u121D\u1362 \u1218\u12DD\u130B\u1275 = \u12A0\u12CD\u1276\u121B\u1272\u12AD \u12CD\u12F5\u1240\u1275\u1362',
+      instrNoCopy: '\u1218\u1245\u12F3\u1275\u1363 \u1235\u12AD\u122A\u1295\u123E\u1275 \u121B\u1295\u1233\u1275 \u12C8\u12ED\u121D \u12E8\u12F5\u122D \u121B\u1270\u122A\u12EB\u120D \u1218\u1320\u1240\u121D \u12A0\u12ED\u1348\u1240\u12F5\u121D\u1362',
+      instrNav: '\u12C8\u12F0 \u1240\u12F0\u121D \u1325\u12EB\u1244\u12CE\u127D \u1218\u1218\u1208\u1235 \u12A5\u1293 \u1218\u120D\u1236\u127D\u1295 \u1218\u1240\u12E8\u122D \u12ED\u127B\u120B\u120D\u1362 \u1260\u1218\u1328\u1228\u123B \u201C\u1348\u1270\u1293 \u1320\u122D\u1235\u201D \u12ED\u132B\u1291\u1362',
+      instrResults: '\u12CD\u1324\u1276\u127D \u1260\u1260\u1254\u129D (\u1348\u1273\u129D) \u12ED\u1290\u130D\u122E\u1275\u1363 \u1260\u121B\u12E8\u130D \u120B\u12ED \u12A0\u12ED\u1273\u12E9\u121D\u1362',
+      instrAudio: '\u1348\u1270\u1293\u12CD \u12E8\u12F5\u121D\u133D \u121B\u1295\u1260\u1265 \u12EB\u12AB\u1275\u1273\u120D\u1362 \u12F5\u121D\u133B\u129D/\u12E8\u1325\u12F5 \u121B\u12F3\u1218\u1325 \u1218\u12AB\u1291\u1295 \u12EB\u1228\u130B\u130D\u1321\u1362',
+      lblLicense: '\u12E8\u1218\u1295\u12F3\u1275 \u12D8\u122D\u134D:',
+      lblLang: '\u1245\u134D:',
+      lblSite: '\u12A0\u1273\u122D:',
+      silentCheck: '\uD83D\uDD15 \u1235\u120D\u12AB\u1294\u1295 \u12A0\u12DD\u121D\u1274\u12EB\u1208\u1201',
+      startExam: '\u1348\u1270\u1293 \u1320\u1218\u122D',
+      changeSelection: '\u1235\u1205\u1270\u1275 \u1290\u12CD? \u1245\u134D/\u12F0\u1228\u1303 \u1240\u12ED\u122D',
+      doneTitle: '\u1348\u1270\u1293\u12CD \u1270\u1320\u1293\u1240\u1240',
+      doneThank: '\u12A0\u1218\u1230\u130D\u1293\u1208\u1201\u1363',
+      doneResults: '\u12CD\u1324\u1276\u127D \u1260\u1260\u1254\u129D \u12ED\u1290\u130D\u122E\u1275\u1362',
+      doneLeave: '\u1245\u121B\u12CE\u1295 \u1218\u120D\u1240\u1235 \u12ED\u127B\u120B\u120D\u1362',
+      nextExaminee: '\u1240\u1323\u12ED \u1270\u1348\u1273\u129D \u2190',
+      rejected: '\u1348\u1273\u129D\u12CD \u1218\u130D\u1262\u12EB\u12CE\u1295 \u12A0\u120D\u1270\u1240\u1260\u1209\u121D\u1362 \u12A8\u1348\u1273\u129D \u130B\u122D \u12ED\u130E\u12A9\u1362',
+      changeConfirm: '\u1245\u134D \u12C8\u12ED\u121D \u12F0\u1228\u1303 \u1208\u1218\u1240\u12E8\u122D \u12C8\u12F0 \u121D\u12DD\u1308\u1263 \u1240\u133D \u1218\u1218\u1208\u1235 \u12ED\u1348\u120D\u130B\u1209?\n\u1348\u1273\u129D\u12CD \u12A5\u1295\u12F0\u1308\u1293 \u121B\u133D\u12F0\u1245 \u12ED\u1308\u1263\u12CD\u1362'
+    }
+  };
+
+  function getUIString(key) {
+    var lang = getExamLang();
+    var strings = UI_STRINGS[lang] || UI_STRINGS['he'];
+    return strings[key] || UI_STRINGS['he'][key] || '';
+  }
+
+  // Waiting phase translations (added separately to keep blocks clean)
+  UI_STRINGS['he'].waitingTitle = '\u05DE\u05DE\u05EA\u05D9\u05DF \u05DC\u05D0\u05D9\u05E9\u05D5\u05E8 \u05D4\u05D1\u05D5\u05D7\u05DF...';
+  UI_STRINGS['he'].waitingSub = '\u05D4\u05D1\u05D5\u05D7\u05DF \u05D9\u05D0\u05E9\u05E8 \u05D0\u05EA \u05D4\u05DB\u05E0\u05D9\u05E1\u05D4 \u05E9\u05DC\u05DA. \u05D0\u05E0\u05D0 \u05D4\u05DE\u05EA\u05DF.';
+  UI_STRINGS['ru'].waitingTitle = '\u041E\u0436\u0438\u0434\u0430\u043D\u0438\u0435 \u043E\u0434\u043E\u0431\u0440\u0435\u043D\u0438\u044F \u044D\u043A\u0437\u0430\u043C\u0435\u043D\u0430\u0442\u043E\u0440\u0430...';
+  UI_STRINGS['ru'].waitingSub = '\u042D\u043A\u0437\u0430\u043C\u0435\u043D\u0430\u0442\u043E\u0440 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442 \u0432\u0430\u0448 \u0432\u0445\u043E\u0434. \u041F\u043E\u0436\u0430\u043B\u0443\u0439\u0441\u0442\u0430, \u043F\u043E\u0434\u043E\u0436\u0434\u0438\u0442\u0435.';
+  UI_STRINGS['en'].waitingTitle = 'Waiting for examiner approval...';
+  UI_STRINGS['en'].waitingSub = 'The examiner will confirm your entry. Please wait.';
+  UI_STRINGS['ar'].waitingTitle = '\u0641\u064A \u0627\u0646\u062A\u0638\u0627\u0631 \u0645\u0648\u0627\u0641\u0642\u0629 \u0627\u0644\u0641\u0627\u062D\u0635...';
+  UI_STRINGS['ar'].waitingSub = '\u0627\u0644\u0641\u0627\u062D\u0635 \u0633\u064A\u0624\u0643\u062F \u062F\u062E\u0648\u0644\u0643. \u064A\u0631\u062C\u0649 \u0627\u0644\u0627\u0646\u062A\u0638\u0627\u0631.';
+  UI_STRINGS['fr'].waitingTitle = "En attente de l'approbation de l'examinateur...";
+  UI_STRINGS['fr'].waitingSub = "L'examinateur confirmera votre entr\u00E9e. Veuillez patienter.";
+  UI_STRINGS['es'].waitingTitle = 'Esperando aprobaci\u00F3n del examinador...';
+  UI_STRINGS['es'].waitingSub = 'El examinador confirmar\u00E1 tu ingreso. Por favor espera.';
+  UI_STRINGS['am'].waitingTitle = '\u12E8\u1348\u1273\u129D \u1348\u1243\u12F5 \u1260\u1218\u1320\u1260\u1245 \u120B\u12ED...';
+  UI_STRINGS['am'].waitingSub = '\u1348\u1273\u129D \u12E8\u12A5\u122D\u1235\u12CE\u1295 \u1218\u130D\u1262\u12EB \u12EB\u1228\u130B\u130D\u1323\u120D\u1362 \u12A5\u1263\u12AD\u12CE \u12ED\u1320\u1265\u1241\u1362';
+
+  function applyUITranslations() {
+    var lang = getExamLang();
+    var isRTL = (lang === 'he' || lang === 'ar');
+    var dir = isRTL ? 'rtl' : 'ltr';
+
+    // Set direction on translated screen containers
+    var instrScreen = document.getElementById('screenInstructions');
+    if (instrScreen) instrScreen.dir = dir;
+    var doneScreenEl = document.getElementById('screenDone');
+    if (doneScreenEl) doneScreenEl.dir = dir;
+
+    // --- Waiting phase ---
+    var waitTitle = document.querySelector('#waitingPhase h2');
+    if (waitTitle) waitTitle.textContent = getUIString('waitingTitle');
+    var waitSub = document.querySelector('#waitingPhase .muted');
+    if (waitSub) waitSub.textContent = getUIString('waitingSub');
+    var changeWaiting = document.getElementById('changeSelectionWaiting');
+    if (changeWaiting) changeWaiting.textContent = getUIString('changeSelection');
+
+    // --- Instructions phase ---
+    var instrTitle = document.querySelector('#instructionsPhase > h2');
+    if (instrTitle) instrTitle.textContent = getUIString('instrTitle');
+
+    // Instruction list items (fixed order matches keys)
+    var instrItems = document.querySelectorAll('#instructionsPhase .instruction-list li');
+    var instrKeys = ['instrQuestions', 'instrTime', 'instrSilent', 'instrNoBrowser', 'instrNoCopy', 'instrNav', 'instrResults'];
+    for (var i = 0; i < instrItems.length && i < instrKeys.length; i++) {
+      var iconEl = instrItems[i].querySelector('.icon');
+      var iconHTML = iconEl ? iconEl.outerHTML : '';
+      var text = getUIString(instrKeys[i]);
+      if (instrKeys[i] === 'instrSilent' || instrKeys[i] === 'instrNoBrowser') {
+        instrItems[i].innerHTML = iconHTML + ' <strong>' + escHtml(text) + '</strong>';
+      } else {
+        instrItems[i].innerHTML = iconHTML + ' ' + escHtml(text);
+      }
+    }
+
+    // Audio mode notice
+    var audioNotice = document.getElementById('audioModeNotice');
+    if (audioNotice) audioNotice.textContent = getUIString('instrAudio');
+
+    // Session info labels
+    var labels = document.querySelectorAll('.session-info-box .label');
+    var labelKeys = ['lblLicense', 'lblLang', 'lblSite'];
+    for (var j = 0; j < labels.length && j < labelKeys.length; j++) {
+      labels[j].textContent = getUIString(labelKeys[j]);
+    }
+
+    // Silent checkbox text
+    var silentSpan = document.querySelector('#silentModeCheck > span');
+    if (silentSpan) silentSpan.textContent = getUIString('silentCheck');
+
+    // Start button
+    var startBtn = document.getElementById('startExamBtn');
+    if (startBtn) startBtn.textContent = getUIString('startExam');
+
+    // Change selection link (instructions)
+    var changeInstr = document.getElementById('changeSelectionInstructions');
+    if (changeInstr) changeInstr.textContent = getUIString('changeSelection');
+
+    // Rejected message
+    var rejMsg = document.getElementById('rejectedMsg');
+    if (rejMsg) rejMsg.textContent = getUIString('rejected');
+
+    // --- Done screen ---
+    var doneTitleEl = document.getElementById('doneTitle');
+    if (doneTitleEl) doneTitleEl.textContent = getUIString('doneTitle');
+    var doneThankEl = document.getElementById('doneThankText');
+    if (doneThankEl) doneThankEl.textContent = getUIString('doneThank');
+    var doneResultsEl = document.getElementById('doneResultsText');
+    if (doneResultsEl) doneResultsEl.textContent = getUIString('doneResults');
+    var doneLeaveEl = document.getElementById('doneLeaveText');
+    if (doneLeaveEl) doneLeaveEl.textContent = getUIString('doneLeave');
+    var nextBtn = document.getElementById('nextExamineeBtn');
+    if (nextBtn) nextBtn.textContent = getUIString('nextExaminee');
+  }
 
   // ========== State ==========
   var sessionCode = '';
@@ -703,6 +974,7 @@
       if (data.status === 'ok') {
         saveExamineeState('screenInstructions');
         showScreen('screenInstructions');
+        applyUITranslations();
         startApprovalPolling();
       } else {
         registerError.textContent = data.message || 'שגיאה ברישום';
@@ -756,7 +1028,9 @@
         } else if (data.approval === 'rejected') {
           clearInterval(approvalInterval); approvalInterval = null;
           document.getElementById('waitingPhase').style.display = 'none';
-          document.getElementById('rejectedMsg').style.display = 'block';
+          var rejEl = document.getElementById('rejectedMsg');
+          rejEl.textContent = getUIString('rejected');
+          rejEl.style.display = 'block';
         }
         // else still 'waiting' — continue polling
       } else {
@@ -831,6 +1105,8 @@
     document.getElementById('waitingPhase').style.display = 'none';
     document.getElementById('instructionsPhase').style.display = 'block';
 
+    applyUITranslations();
+
     var displayLicense = examineeData.license || sessionData.license;
     var displayLanguage = examineeData.language || sessionData.language;
     document.getElementById('infoLicense').textContent = LICENSE_LABELS[displayLicense] || displayLicense;
@@ -848,7 +1124,7 @@
   // ========== Change Selection (cancel + go back to registration) ==========
   function cancelAndChangeSelection(e) {
     e.preventDefault();
-    if (!confirm('לחזור לטופס הרישום כדי לשנות שפה או דרגה?\nהבוחן יצטרך לאשר אותך שוב.')) return;
+    if (!confirm(getUIString('changeConfirm'))) return;
     // Stop approval polling
     if (approvalInterval) { clearInterval(approvalInterval); approvalInterval = null; }
     // Cancel registration on server
@@ -860,6 +1136,9 @@
       document.getElementById('waitingPhase').style.display = 'block';
       document.getElementById('instructionsPhase').style.display = 'none';
       document.getElementById('audioModeNotice').style.display = 'none';
+      // Restore RTL direction for Hebrew registration form
+      var instrScreen = document.getElementById('screenInstructions');
+      if (instrScreen) instrScreen.dir = 'rtl';
       var langSel = document.getElementById('langSelect');
       if (langSel) langSel.value = sessionData._defaultLanguage || 'he';
       var licSel = document.getElementById('licenseSelect');
@@ -1962,6 +2241,7 @@
 
     // Show done screen - NO score
     clearExamineeState();
+    applyUITranslations();
     document.getElementById('doneNameDisplay').textContent = examineeData.fullName;
     if (timeRemaining <= 0) {
       var msg = document.getElementById('doneTimeUpMsg');
@@ -2076,6 +2356,7 @@
     } else if (saved.screen === 'screenInstructions' && examineeData.idNumber) {
       // Was waiting for approval or in instructions — go back to waiting
       showScreen('screenInstructions');
+      applyUITranslations();
       startApprovalPolling();
     } else if (saved.screen === 'screenIdForm') {
       showScreen('screenIdForm');
