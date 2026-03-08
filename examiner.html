@@ -1277,15 +1277,153 @@
     return items;
   }
 
+  // ========== PDF Translation Strings ==========
+  var PDF_STRINGS = {
+    'he': {
+      pdfTitle: '\u05D0\u05D9\u05E9\u05D5\u05E8 \u05EA\u05D5\u05E6\u05D0\u05D5\u05EA \u05D1\u05D7\u05D9\u05E0\u05D4 \u05E2\u05D9\u05D5\u05E0\u05D9\u05EA \u05D7\u05D9\u05E6\u05D5\u05E0\u05D9\u05EA',
+      lblName: '\u05E9\u05DD: ', lblId: '\u05EA.\u05D6.: ', lblLicense: '\u05D3\u05E8\u05D2\u05EA \u05E8\u05D9\u05E9\u05D9\u05D5\u05DF: ',
+      lblRegDate: '\u05EA\u05D0\u05E8\u05D9\u05DA \u05E8\u05D9\u05E9\u05D5\u05DD: ', lblRegTime: '\u05E9\u05E2\u05EA \u05E7\u05D1\u05DC\u05D4: ',
+      lblExamDate: '\u05EA\u05D0\u05E8\u05D9\u05DA \u05E1\u05D9\u05D5\u05DD \u05D1\u05D7\u05D9\u05E0\u05D4: ', lblAttempt: '\u05E0\u05D9\u05E1\u05D9\u05D5\u05DF: ',
+      lblDuration: '\u05D6\u05DE\u05DF \u05DE\u05D1\u05D7\u05DF: ', lblSite: '\u05D0\u05EA\u05E8: ',
+      lblExaminer: '\u05DE\u05E1\' \u05D1\u05D5\u05D7\u05DF: ', lblPopulation: '\u05D0\u05D5\u05DB\u05DC\u05D5\u05E1\u05D9\u05D4: ',
+      lblWrongCount: '\u05EA\u05E9\u05D5\u05D1\u05D5\u05EA \u05E9\u05D2\u05D5\u05D9\u05D5\u05EA: ', lblResult: '\u05EA\u05D5\u05E6\u05D0\u05D4: ',
+      passed: '\u05E2\u05D1\u05E8', failed: '\u05E0\u05DB\u05E9\u05DC', disqualified: '\u05E4\u05E1\u05D5\u05DC',
+      thQuestion: '\u05EA\u05D9\u05D0\u05D5\u05E8 \u05D4\u05E9\u05D0\u05DC\u05D4', thWrongAnswer: '\u05EA\u05E9\u05D5\u05D1\u05D4 \u05E9\u05D2\u05D5\u05D9\u05D4', thCorrectAnswer: '\u05EA\u05E9\u05D5\u05D1\u05D4 \u05E0\u05DB\u05D5\u05E0\u05D4',
+      allCorrect: '\u05DB\u05DC \u05D4\u05EA\u05E9\u05D5\u05D1\u05D5\u05EA \u05E0\u05DB\u05D5\u05E0\u05D5\u05EA!',
+      noDetails: '\u05E4\u05D9\u05E8\u05D5\u05D8 \u05E9\u05D0\u05DC\u05D5\u05EA \u05E9\u05D2\u05D5\u05D9\u05D5\u05EA \u05DC\u05D0 \u05D6\u05DE\u05D9\u05DF',
+      appealFooter: '\u05D4\u05E0\u05DA \u05E8\u05E9\u05D0\u05D9 \u05DC\u05E2\u05E8\u05E2\u05E8 \u05E2\u05DC \u05EA\u05D5\u05E6\u05D0\u05EA \u05D4\u05DE\u05D1\u05D7\u05DF \u05D1\u05D0\u05DE\u05E6\u05E2\u05D5\u05EA \u05D8\u05D5\u05E4\u05E1 \u05E2\u05E8\u05E2\u05D5\u05E8 \u05DE\u05E7\u05D5\u05D5\u05DF \u05D1\u05D0\u05EA\u05E8 \u05D4\u05D0\u05D9\u05E0\u05D8\u05E8\u05E0\u05D8',
+      printBtn: '\uD83D\uDDA8\uFE0F \u05D4\u05D3\u05E4\u05E1 / \u05E9\u05DE\u05D5\u05E8 PDF',
+      printHint: '\u05E9\u05DE\u05D5\u05E8 \u05DB-PDF \u05D5\u05E6\u05E8\u05E3 \u05DC\u05D4\u05D5\u05D3\u05E2\u05EA \u05D5\u05D5\u05D0\u05D8\u05E1\u05D0\u05E4',
+      shareMsg: '\u05E9\u05DC\u05D5\u05DD {name}, \u05EA\u05D5\u05E6\u05D0\u05EA \u05D4\u05DE\u05D1\u05D7\u05DF: {result}\n\u05E6\u05E4\u05D4 \u05D1\u05EA\u05D5\u05E6\u05D0\u05D4: {link}'
+    },
+    'ru': {
+      pdfTitle: '\u0420\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442\u044B \u0442\u0435\u043E\u0440\u0435\u0442\u0438\u0447\u0435\u0441\u043A\u043E\u0433\u043E \u044D\u043A\u0437\u0430\u043C\u0435\u043D\u0430',
+      lblName: '\u0418\u043C\u044F: ', lblId: '\u0423\u0434. \u043B\u0438\u0447\u043D\u043E\u0441\u0442\u0438: ', lblLicense: '\u041A\u0430\u0442\u0435\u0433\u043E\u0440\u0438\u044F: ',
+      lblRegDate: '\u0414\u0430\u0442\u0430 \u0440\u0435\u0433\u0438\u0441\u0442\u0440\u0430\u0446\u0438\u0438: ', lblRegTime: '\u0412\u0440\u0435\u043C\u044F \u043F\u0440\u0438\u0451\u043C\u0430: ',
+      lblExamDate: '\u0414\u0430\u0442\u0430 \u043E\u043A\u043E\u043D\u0447\u0430\u043D\u0438\u044F: ', lblAttempt: '\u041F\u043E\u043F\u044B\u0442\u043A\u0430: ',
+      lblDuration: '\u0412\u0440\u0435\u043C\u044F \u044D\u043A\u0437\u0430\u043C\u0435\u043D\u0430: ', lblSite: '\u041F\u043B\u043E\u0449\u0430\u0434\u043A\u0430: ',
+      lblExaminer: '\u2116 \u044D\u043A\u0437\u0430\u043C\u0435\u043D\u0430\u0442\u043E\u0440\u0430: ', lblPopulation: '\u041A\u0430\u0442\u0435\u0433\u043E\u0440\u0438\u044F: ',
+      lblWrongCount: '\u041E\u0448\u0438\u0431\u043A\u0438: ', lblResult: '\u0420\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442: ',
+      passed: '\u0421\u0434\u0430\u043B', failed: '\u041D\u0435 \u0441\u0434\u0430\u043B', disqualified: '\u0414\u0438\u0441\u043A\u0432\u0430\u043B\u0438\u0444\u0438\u043A\u0430\u0446\u0438\u044F',
+      thQuestion: '\u0412\u043E\u043F\u0440\u043E\u0441', thWrongAnswer: '\u041D\u0435\u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u044B\u0439 \u043E\u0442\u0432\u0435\u0442', thCorrectAnswer: '\u041F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u044B\u0439 \u043E\u0442\u0432\u0435\u0442',
+      allCorrect: '\u0412\u0441\u0435 \u043E\u0442\u0432\u0435\u0442\u044B \u043F\u0440\u0430\u0432\u0438\u043B\u044C\u043D\u044B\u0435!',
+      noDetails: '\u041F\u043E\u0434\u0440\u043E\u0431\u043D\u043E\u0441\u0442\u0438 \u043E\u0448\u0438\u0431\u043E\u043A \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u044B',
+      appealFooter: '\u0412\u044B \u043C\u043E\u0436\u0435\u0442\u0435 \u043E\u0431\u0436\u0430\u043B\u043E\u0432\u0430\u0442\u044C \u0440\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442 \u044D\u043A\u0437\u0430\u043C\u0435\u043D\u0430 \u0447\u0435\u0440\u0435\u0437 \u043E\u043D\u043B\u0430\u0439\u043D-\u0444\u043E\u0440\u043C\u0443 \u0430\u043F\u0435\u043B\u043B\u044F\u0446\u0438\u0438',
+      printBtn: '\uD83D\uDDA8\uFE0F \u041F\u0435\u0447\u0430\u0442\u044C / PDF',
+      printHint: '\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u0435 \u043A\u0430\u043A PDF \u0438 \u043F\u0440\u0438\u043A\u0440\u0435\u043F\u0438\u0442\u0435 \u043A WhatsApp',
+      shareMsg: '\u0417\u0434\u0440\u0430\u0432\u0441\u0442\u0432\u0443\u0439\u0442\u0435 {name}, \u0440\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442 \u044D\u043A\u0437\u0430\u043C\u0435\u043D\u0430: {result}\n\u0421\u043C\u043E\u0442\u0440\u0438\u0442\u0435: {link}'
+    },
+    'en': {
+      pdfTitle: 'Theoretical Exam Results Certificate',
+      lblName: 'Name: ', lblId: 'ID: ', lblLicense: 'License type: ',
+      lblRegDate: 'Registration date: ', lblRegTime: 'Reception time: ',
+      lblExamDate: 'Exam completion date: ', lblAttempt: 'Attempt: ',
+      lblDuration: 'Exam duration: ', lblSite: 'Site: ',
+      lblExaminer: 'Examiner no.: ', lblPopulation: 'Population: ',
+      lblWrongCount: 'Wrong answers: ', lblResult: 'Result: ',
+      passed: 'Passed', failed: 'Failed', disqualified: 'Disqualified',
+      thQuestion: 'Question', thWrongAnswer: 'Wrong answer', thCorrectAnswer: 'Correct answer',
+      allCorrect: 'All answers are correct!',
+      noDetails: 'Wrong answer details not available',
+      appealFooter: 'You may appeal the exam result through the online appeal form',
+      printBtn: '\uD83D\uDDA8\uFE0F Print / Save PDF',
+      printHint: 'Save as PDF and attach to WhatsApp message',
+      shareMsg: 'Hello {name}, exam result: {result}\nView result: {link}'
+    },
+    'ar': {
+      pdfTitle: '\u0646\u062A\u0627\u0626\u062C \u0627\u0644\u0627\u0645\u062A\u062D\u0627\u0646 \u0627\u0644\u0646\u0638\u0631\u064A',
+      lblName: '\u0627\u0644\u0627\u0633\u0645: ', lblId: '\u0631\u0642\u0645 \u0627\u0644\u0647\u0648\u064A\u0629: ', lblLicense: '\u0646\u0648\u0639 \u0627\u0644\u0631\u062E\u0635\u0629: ',
+      lblRegDate: '\u062A\u0627\u0631\u064A\u062E \u0627\u0644\u062A\u0633\u062C\u064A\u0644: ', lblRegTime: '\u0648\u0642\u062A \u0627\u0644\u0627\u0633\u062A\u0642\u0628\u0627\u0644: ',
+      lblExamDate: '\u062A\u0627\u0631\u064A\u062E \u0627\u0646\u062A\u0647\u0627\u0621 \u0627\u0644\u0627\u0645\u062A\u062D\u0627\u0646: ', lblAttempt: '\u0627\u0644\u0645\u062D\u0627\u0648\u0644\u0629: ',
+      lblDuration: '\u0645\u062F\u0629 \u0627\u0644\u0627\u0645\u062A\u062D\u0627\u0646: ', lblSite: '\u0627\u0644\u0645\u0648\u0642\u0639: ',
+      lblExaminer: '\u0631\u0642\u0645 \u0627\u0644\u0641\u0627\u062D\u0635: ', lblPopulation: '\u0627\u0644\u0641\u0626\u0629: ',
+      lblWrongCount: '\u0625\u062C\u0627\u0628\u0627\u062A \u062E\u0627\u0637\u0626\u0629: ', lblResult: '\u0627\u0644\u0646\u062A\u064A\u062C\u0629: ',
+      passed: '\u0646\u062C\u062D', failed: '\u0631\u0633\u0628', disqualified: '\u0625\u0642\u0635\u0627\u0621',
+      thQuestion: '\u0627\u0644\u0633\u0624\u0627\u0644', thWrongAnswer: '\u0625\u062C\u0627\u0628\u0629 \u062E\u0627\u0637\u0626\u0629', thCorrectAnswer: '\u0625\u062C\u0627\u0628\u0629 \u0635\u062D\u064A\u062D\u0629',
+      allCorrect: '\u062C\u0645\u064A\u0639 \u0627\u0644\u0625\u062C\u0627\u0628\u0627\u062A \u0635\u062D\u064A\u062D\u0629!',
+      noDetails: '\u062A\u0641\u0627\u0635\u064A\u0644 \u0627\u0644\u0623\u062E\u0637\u0627\u0621 \u063A\u064A\u0631 \u0645\u062A\u0627\u062D\u0629',
+      appealFooter: '\u064A\u0645\u0643\u0646\u0643 \u0627\u0644\u0627\u0639\u062A\u0631\u0627\u0636 \u0639\u0644\u0649 \u0646\u062A\u064A\u062C\u0629 \u0627\u0644\u0627\u0645\u062A\u062D\u0627\u0646 \u0639\u0628\u0631 \u0646\u0645\u0648\u0630\u062C \u0627\u0644\u0627\u0633\u062A\u0626\u0646\u0627\u0641 \u0627\u0644\u0625\u0644\u0643\u062A\u0631\u0648\u0646\u064A',
+      printBtn: '\uD83D\uDDA8\uFE0F \u0637\u0628\u0627\u0639\u0629 / \u062D\u0641\u0638 PDF',
+      printHint: '\u0627\u062D\u0641\u0638 \u0643-PDF \u0648\u0623\u0631\u0641\u0642 \u0628\u0631\u0633\u0627\u0644\u0629 \u0648\u0627\u062A\u0633\u0627\u0628',
+      shareMsg: '\u0645\u0631\u062D\u0628\u0627 {name}\u060C \u0646\u062A\u064A\u062C\u0629 \u0627\u0644\u0627\u0645\u062A\u062D\u0627\u0646: {result}\n\u0634\u0627\u0647\u062F: {link}'
+    },
+    'fr': {
+      pdfTitle: 'R\u00E9sultats de l\'examen th\u00E9orique',
+      lblName: 'Nom : ', lblId: 'N\u00B0 identit\u00E9 : ', lblLicense: 'Cat\u00E9gorie : ',
+      lblRegDate: 'Date d\'inscription : ', lblRegTime: 'Heure d\'accueil : ',
+      lblExamDate: 'Date de fin d\'examen : ', lblAttempt: 'Tentative : ',
+      lblDuration: 'Dur\u00E9e : ', lblSite: 'Site : ',
+      lblExaminer: 'N\u00B0 examinateur : ', lblPopulation: 'Population : ',
+      lblWrongCount: 'R\u00E9ponses fausses : ', lblResult: 'R\u00E9sultat : ',
+      passed: 'R\u00E9ussi', failed: '\u00C9chou\u00E9', disqualified: 'Disqualifi\u00E9',
+      thQuestion: 'Question', thWrongAnswer: 'R\u00E9ponse donn\u00E9e', thCorrectAnswer: 'Bonne r\u00E9ponse',
+      allCorrect: 'Toutes les r\u00E9ponses sont correctes\u00A0!',
+      noDetails: 'D\u00E9tails des erreurs non disponibles',
+      appealFooter: 'Vous pouvez contester le r\u00E9sultat via le formulaire d\'appel en ligne',
+      printBtn: '\uD83D\uDDA8\uFE0F Imprimer / PDF',
+      printHint: 'Enregistrer en PDF et joindre \u00E0 WhatsApp',
+      shareMsg: 'Bonjour {name}, r\u00E9sultat de l\'examen : {result}\nVoir : {link}'
+    },
+    'es': {
+      pdfTitle: 'Resultados del examen te\u00F3rico',
+      lblName: 'Nombre: ', lblId: 'ID: ', lblLicense: 'Tipo de licencia: ',
+      lblRegDate: 'Fecha de registro: ', lblRegTime: 'Hora de recepci\u00F3n: ',
+      lblExamDate: 'Fecha de finalizaci\u00F3n: ', lblAttempt: 'Intento: ',
+      lblDuration: 'Duraci\u00F3n: ', lblSite: 'Centro: ',
+      lblExaminer: 'N\u00BA examinador: ', lblPopulation: 'Poblaci\u00F3n: ',
+      lblWrongCount: 'Respuestas incorrectas: ', lblResult: 'Resultado: ',
+      passed: 'Aprobado', failed: 'Reprobado', disqualified: 'Descalificado',
+      thQuestion: 'Pregunta', thWrongAnswer: 'Respuesta dada', thCorrectAnswer: 'Respuesta correcta',
+      allCorrect: '\u00A1Todas las respuestas son correctas!',
+      noDetails: 'Detalles de errores no disponibles',
+      appealFooter: 'Puede apelar el resultado del examen a trav\u00E9s del formulario en l\u00EDnea',
+      printBtn: '\uD83D\uDDA8\uFE0F Imprimir / PDF',
+      printHint: 'Guardar como PDF y adjuntar a WhatsApp',
+      shareMsg: 'Hola {name}, resultado del examen: {result}\nVer: {link}'
+    },
+    'am': {
+      pdfTitle: '\u12E8\u1275\u12EE\u122A \u1348\u1270\u1293 \u12CD\u1324\u1276\u127D',
+      lblName: '\u1235\u121D: ', lblId: '\u1218\u1273\u12C8\u1242\u12EB: ', lblLicense: '\u12E8\u1218\u1295\u12F3\u1275 \u12D8\u122D\u134D: ',
+      lblRegDate: '\u12E8\u121D\u12DD\u1308\u1263 \u1240\u1295: ', lblRegTime: '\u12E8\u1218\u1245\u1260\u12EB \u1230\u12D3\u1275: ',
+      lblExamDate: '\u1348\u1270\u1293 \u12E8\u1270\u1320\u1293\u1240\u1240\u1260\u1275 \u1240\u1295: ', lblAttempt: '\u1219\u12AD\u122B: ',
+      lblDuration: '\u12E8\u1348\u1270\u1293 \u130A\u12DC: ', lblSite: '\u12A0\u1273\u122D: ',
+      lblExaminer: '\u12E8\u1348\u1273\u129D \u1241\u1325\u122D: ', lblPopulation: '\u12E8\u1205\u12DD\u1265 \u12AD\u134D\u120D: ',
+      lblWrongCount: '\u1235\u1205\u1270\u1275 \u1218\u120D\u1236\u127D: ', lblResult: '\u12CD\u1324\u1275: ',
+      passed: '\u12A0\u120D\u134E', failed: '\u12C8\u12F5\u1247', disqualified: '\u1270\u12A0\u130D\u12F7\u120D',
+      thQuestion: '\u1325\u12EB\u1244', thWrongAnswer: '\u1235\u1205\u1270\u1275 \u1218\u120D\u1235', thCorrectAnswer: '\u1275\u12AD\u12AD\u120D \u1218\u120D\u1235',
+      allCorrect: '\u1201\u1209\u121D \u1218\u120D\u1236\u127D \u1275\u12AD\u12AD\u120D \u1293\u1278\u12CD!',
+      noDetails: '\u12E8\u1235\u1205\u1270\u1275 \u12DD\u122D\u12DD\u122D \u12A0\u12ED\u1308\u129D\u121D',
+      appealFooter: '\u1260\u12A6\u1295\u120B\u12ED\u1295 \u1245\u133D \u1260\u1218\u1320\u1240\u121D \u12CD\u1324\u1271\u1295 \u1218\u1240\u12E8\u122D \u12ED\u127B\u120B\u120D',
+      printBtn: '\uD83D\uDDA8\uFE0F \u12A0\u1235\u1270\u121B / PDF',
+      printHint: '\u12A5\u1295\u12F0 PDF \u12EB\u12DD\u1291 \u12A5\u1293 \u1208\u12CB\u1275\u1233\u1355 \u12EB\u12EB\u12D9',
+      shareMsg: '\u1230\u120B\u121D {name}\u1363 \u12E8\u1348\u1270\u1293 \u12CD\u1324\u1275: {result}\n\u12ED\u1218\u120D\u12A8\u1271: {link}'
+    }
+  };
+
+  function getPdfString(key, lang) {
+    var strings = PDF_STRINGS[lang] || PDF_STRINGS['he'];
+    return strings[key] || PDF_STRINGS['he'][key] || '';
+  }
+
   // Build result HTML (shared between PDF popup and Drive share)
   function buildResultHtml(idx) {
     var r = completedResults[idx];
     if (!r) return null;
 
+    var lang = r.language || 'he';
+    var isRTL = (lang === 'he' || lang === 'ar');
+    var dirAttr = isRTL ? 'rtl' : 'ltr';
+    var p = function(key) { return getPdfString(key, lang); };
+
     var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === '\u05E4\u05E1\u05D5\u05DC';
     var isPassed = !isDQ && (r.passed === '\u05E2\u05D1\u05E8' || r.passed === true);
     var isCorrected = r.corrected === true || r.corrected === 'TRUE';
-    var passText = isDQ ? '\u05E4\u05E1\u05D5\u05DC' : (isPassed ? '\u05E2\u05D1\u05E8' : '\u05E0\u05DB\u05E9\u05DC');
+
+    // Pass text in examinee's language + Hebrew in parentheses (for non-Hebrew)
+    var passKey = isDQ ? 'disqualified' : (isPassed ? 'passed' : 'failed');
+    var passTextHe = isDQ ? '\u05E4\u05E1\u05D5\u05DC' : (isPassed ? '\u05E2\u05D1\u05E8' : '\u05E0\u05DB\u05E9\u05DC');
+    var passTextLang = p(passKey);
+    var passText = (lang === 'he') ? passTextHe : passTextLang + ' (' + passTextHe + ')';
 
     var wrongItems = [];
     var tableRows = '';
@@ -1306,20 +1444,23 @@
     var scoreParts = String(r.score || '').split('/');
     if (scoreParts.length === 2) { scoreNum = parseInt(scoreParts[0]) || 0; totalNum = parseInt(scoreParts[1]) || 30; }
     var isAllCorrect = !isCorrected && wrongItems.length === 0 && scoreNum === totalNum && scoreNum > 0;
-    var allCorrectMsg = isAllCorrect ? '<p style="color:#16a34a;font-weight:bold;font-size:16px;text-align:center;">\u05DB\u05DC \u05D4\u05EA\u05E9\u05D5\u05D1\u05D5\u05EA \u05E0\u05DB\u05D5\u05E0\u05D5\u05EA!</p>' : '';
+    var allCorrectMsg = isAllCorrect ? '<p style="color:#16a34a;font-weight:bold;font-size:16px;text-align:center;">' + escHtml(p('allCorrect')) + '</p>' : '';
     if (!isCorrected && !isAllCorrect && wrongItems.length === 0 && scoreNum < totalNum) {
-      allCorrectMsg = '<p style="color:#94a3b8;font-size:13px;text-align:center;">\u05E4\u05D9\u05E8\u05D5\u05D8 \u05E9\u05D0\u05DC\u05D5\u05EA \u05E9\u05D2\u05D5\u05D9\u05D5\u05EA \u05DC\u05D0 \u05D6\u05DE\u05D9\u05DF</p>';
+      allCorrectMsg = '<p style="color:#94a3b8;font-size:13px;text-align:center;">' + escHtml(p('noDetails')) + '</p>';
     }
 
     var footerMsg = '';
     if (!isPassed || isDQ) {
-      footerMsg = '<div class="footer">\u05D4\u05E0\u05DA \u05E8\u05E9\u05D0\u05D9 \u05DC\u05E2\u05E8\u05E2\u05E8 \u05E2\u05DC \u05EA\u05D5\u05E6\u05D0\u05EA \u05D4\u05DE\u05D1\u05D7\u05DF \u05D1\u05D0\u05DE\u05E6\u05E2\u05D5\u05EA \u05D8\u05D5\u05E4\u05E1 \u05E2\u05E8\u05E2\u05D5\u05E8 \u05DE\u05E7\u05D5\u05D5\u05DF \u05D1\u05D0\u05EA\u05E8 \u05D4\u05D0\u05D9\u05E0\u05D8\u05E8\u05E0\u05D8</div>';
+      footerMsg = '<div class="footer">' + escHtml(p('appealFooter')) + '</div>';
     }
 
-    var html = '<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"/>' +
-      '<title>\u05D0\u05D9\u05E9\u05D5\u05E8 \u05EA\u05D5\u05E6\u05D0\u05D5\u05EA \u05D1\u05D7\u05D9\u05E0\u05D4 - ' + escHtml(r.name) + '</title>' +
+    // Badge text: translated pass/fail + Hebrew for non-Hebrew
+    var badgePassText = (lang === 'he') ? '\u05E2\u05D1\u05E8' : p('passed') + ' (\u05E2\u05D1\u05E8)';
+
+    var html = '<!doctype html><html lang="' + lang + '" dir="' + dirAttr + '"><head><meta charset="utf-8"/>' +
+      '<title>' + escHtml(p('pdfTitle')) + ' - ' + escHtml(r.name) + '</title>' +
       '<style>' +
-      'body{font-family:Arial,"Segoe UI",sans-serif;margin:20px 30px;color:#1e293b;line-height:1.6;direction:rtl;}' +
+      'body{font-family:Arial,"Segoe UI",sans-serif;margin:20px 30px;color:#1e293b;line-height:1.6;direction:' + dirAttr + ';}' +
       'h1{font-size:18px;text-align:center;margin-bottom:4px;color:#0f172a;}' +
       '.info-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 30px;margin:14px 0;font-size:13px;border:1px solid #cbd5e1;padding:10px 14px;border-radius:8px;background:#f8fafc;}' +
       '.info-grid .label{color:#64748b;font-weight:400;} .info-grid .val{font-weight:700;}' +
@@ -1332,32 +1473,32 @@
       '@media print{body{margin:10px 15px;} .no-print{display:none!important;}}' +
       '</style></head><body>' +
       (logoBase64 ? '<div style="text-align:center;margin-bottom:8px;"><img src="' + logoBase64 + '" style="height:80px;" alt="\u05E1\u05DE\u05DB\u05D5\u05EA \u05E8\u05D9\u05E9\u05D5\u05D9 \u05E6\u05D4\u05DC"/></div>' : '<div style="text-align:center;margin-bottom:8px;font-size:20px;font-weight:900;color:#8B6914;">\u05E1\u05DE\u05DB\u05D5\u05EA \u05E8\u05D9\u05E9\u05D5\u05D9 \u05E6\u05D4"\u05DC</div>') +
-      '<h1>\u05D0\u05D9\u05E9\u05D5\u05E8 \u05EA\u05D5\u05E6\u05D0\u05D5\u05EA \u05D1\u05D7\u05D9\u05E0\u05D4 \u05E2\u05D9\u05D5\u05E0\u05D9\u05EA \u05D7\u05D9\u05E6\u05D5\u05E0\u05D9\u05EA</h1>' +
+      '<h1>' + escHtml(p('pdfTitle')) + '</h1>' +
       '<div class="info-grid">' +
-      '<div><span class="label">\u05E9\u05DD: </span><span class="val">' + escHtml(r.name) + '</span></div>' +
-      '<div><span class="label">\u05EA.\u05D6.: </span><span class="val">' + escHtml(r.idNumber) + '</span></div>' +
-      '<div><span class="label">\u05D3\u05E8\u05D2\u05EA \u05E8\u05D9\u05E9\u05D9\u05D5\u05DF: </span><span class="val">' + escHtml(r.license || '') + '</span></div>' +
-      '<div><span class="label">\u05EA\u05D0\u05E8\u05D9\u05DA \u05E8\u05D9\u05E9\u05D5\u05DD: </span><span class="val">' + escHtml(r.registrationTime ? formatRegDate(r.registrationTime) : formatDate(r.date)) + '</span></div>' +
-      '<div><span class="label">\u05E9\u05E2\u05EA \u05E7\u05D1\u05DC\u05D4: </span><span class="val">' + escHtml(formatRegTime(r.registrationTime) || '-') + '</span></div>' +
-      '<div><span class="label">\u05EA\u05D0\u05E8\u05D9\u05DA \u05E1\u05D9\u05D5\u05DD \u05D1\u05D7\u05D9\u05E0\u05D4: </span><span class="val">' + escHtml(formatDate(r.date)) + ' ' + escHtml(extractExamHour(r.date) || '') + '</span></div>' +
-      '<div><span class="label">\u05E0\u05D9\u05E1\u05D9\u05D5\u05DF: </span><span class="val">' + (r.attempt || 1) + '</span></div>' +
-      '<div><span class="label">\u05D6\u05DE\u05DF \u05DE\u05D1\u05D7\u05DF: </span><span class="val">' + escHtml(formatTime(r.time)) + '</span></div>' +
-      '<div><span class="label">\u05D0\u05EA\u05E8: </span><span class="val">' + escHtml(r.site || currentSite) + '</span></div>' +
-      '<div><span class="label">\u05DE\u05E1\' \u05D1\u05D5\u05D7\u05DF: </span><span class="val">' + escHtml(examinerData.examinerNumber || r.examiner || examinerData.name) + '</span></div>' +
-      (r.population ? '<div><span class="label">\u05D0\u05D5\u05DB\u05DC\u05D5\u05E1\u05D9\u05D4: </span><span class="val">' + escHtml(r.population) + '</span></div>' : '') +
-      (!isCorrected ? '<div><span class="label">\u05EA\u05E9\u05D5\u05D1\u05D5\u05EA \u05E9\u05D2\u05D5\u05D9\u05D5\u05EA: </span><span class="val">' + wrongItems.length + '</span></div>' : '') +
-      '<div><span class="label">\u05EA\u05D5\u05E6\u05D0\u05D4: </span><span class="val">' + passText + '</span></div>' +
+      '<div><span class="label">' + escHtml(p('lblName')) + '</span><span class="val">' + escHtml(r.name) + '</span></div>' +
+      '<div><span class="label">' + escHtml(p('lblId')) + '</span><span class="val">' + escHtml(r.idNumber) + '</span></div>' +
+      '<div><span class="label">' + escHtml(p('lblLicense')) + '</span><span class="val">' + escHtml(r.license || '') + '</span></div>' +
+      '<div><span class="label">' + escHtml(p('lblRegDate')) + '</span><span class="val">' + escHtml(r.registrationTime ? formatRegDate(r.registrationTime) : formatDate(r.date)) + '</span></div>' +
+      '<div><span class="label">' + escHtml(p('lblRegTime')) + '</span><span class="val">' + escHtml(formatRegTime(r.registrationTime) || '-') + '</span></div>' +
+      '<div><span class="label">' + escHtml(p('lblExamDate')) + '</span><span class="val">' + escHtml(formatDate(r.date)) + ' ' + escHtml(extractExamHour(r.date) || '') + '</span></div>' +
+      '<div><span class="label">' + escHtml(p('lblAttempt')) + '</span><span class="val">' + (r.attempt || 1) + '</span></div>' +
+      '<div><span class="label">' + escHtml(p('lblDuration')) + '</span><span class="val">' + escHtml(formatTime(r.time)) + '</span></div>' +
+      '<div><span class="label">' + escHtml(p('lblSite')) + '</span><span class="val">' + escHtml(r.site || currentSite) + '</span></div>' +
+      '<div><span class="label">' + escHtml(p('lblExaminer')) + '</span><span class="val">' + escHtml(examinerData.examinerNumber || r.examiner || examinerData.name) + '</span></div>' +
+      (r.population ? '<div><span class="label">' + escHtml(p('lblPopulation')) + '</span><span class="val">' + escHtml(r.population) + '</span></div>' : '') +
+      (!isCorrected ? '<div><span class="label">' + escHtml(p('lblWrongCount')) + '</span><span class="val">' + wrongItems.length + '</span></div>' : '') +
+      '<div><span class="label">' + escHtml(p('lblResult')) + '</span><span class="val">' + escHtml(passText) + '</span></div>' +
       '</div>' +
       (isCorrected
-        ? '<div class="result-badge pass">\u05E2\u05D1\u05E8</div>'
+        ? '<div class="result-badge pass">' + escHtml(badgePassText) + '</div>'
         : '<div class="result-badge ' + (isPassed ? 'pass' : 'fail') + '">' + escHtml(String(r.score || '')) + ' (' + escHtml(formatPercent(r.percent)) + ')</div>');
 
     if (wrongItems.length > 0) {
       html += '<table><thead><tr>' +
         '<th style="width:5%;">#</th>' +
-        '<th style="width:35%;">\u05EA\u05D9\u05D0\u05D5\u05E8 \u05D4\u05E9\u05D0\u05DC\u05D4</th>' +
-        '<th style="width:30%;">\u05EA\u05E9\u05D5\u05D1\u05D4 \u05E9\u05D2\u05D5\u05D9\u05D4</th>' +
-        '<th style="width:30%;">\u05EA\u05E9\u05D5\u05D1\u05D4 \u05E0\u05DB\u05D5\u05E0\u05D4</th>' +
+        '<th style="width:35%;">' + escHtml(p('thQuestion')) + '</th>' +
+        '<th style="width:30%;">' + escHtml(p('thWrongAnswer')) + '</th>' +
+        '<th style="width:30%;">' + escHtml(p('thCorrectAnswer')) + '</th>' +
         '</tr></thead><tbody>' + tableRows + '</tbody></table>';
     }
     html += allCorrectMsg;
@@ -1369,14 +1510,16 @@
 
   // Open PDF report for a specific examinee
   window.openExamineePDF = function(idx) {
+    var r = completedResults[idx];
     var html = buildResultHtml(idx);
     if (!html) return;
 
+    var pdfLang = (r && r.language) || 'he';
     // Add print button for popup version
     html = html.replace('</body></html>',
       '<div class="no-print" style="text-align:center;margin-top:20px;">' +
-      '<button onclick="window.print()" style="padding:12px 30px;font-size:16px;font-weight:800;background:#1a73e8;color:white;border:none;border-radius:10px;cursor:pointer;">\uD83D\uDDA8\uFE0F \u05D4\u05D3\u05E4\u05E1 / \u05E9\u05DE\u05D5\u05E8 PDF</button>' +
-      '<p style="font-size:13px;color:#94a3b8;margin-top:8px;">\u05E9\u05DE\u05D5\u05E8 \u05DB-PDF \u05D5\u05E6\u05E8\u05E3 \u05DC\u05D4\u05D5\u05D3\u05E2\u05EA \u05D5\u05D5\u05D0\u05D8\u05E1\u05D0\u05E4</p></div>' +
+      '<button onclick="window.print()" style="padding:12px 30px;font-size:16px;font-weight:800;background:#1a73e8;color:white;border:none;border-radius:10px;cursor:pointer;">' + escHtml(getPdfString('printBtn', pdfLang)) + '</button>' +
+      '<p style="font-size:13px;color:#94a3b8;margin-top:8px;">' + escHtml(getPdfString('printHint', pdfLang)) + '</p></div>' +
       '</body></html>');
 
     var w = window.open('', '_blank');
@@ -1404,7 +1547,10 @@
     var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === '\u05E4\u05E1\u05D5\u05DC';
     var isPassed = !isDQ && (r.passed === '\u05E2\u05D1\u05E8' || r.passed === true);
     var isCorrected = r.corrected === true || r.corrected === 'TRUE';
-    var passText = isDQ ? '\u05E4\u05E1\u05D5\u05DC' : (isPassed ? '\u05E2\u05D1\u05E8' : '\u05E0\u05DB\u05E9\u05DC');
+    var shareLang = r.language || 'he';
+    var passKey = isDQ ? 'disqualified' : (isPassed ? 'passed' : 'failed');
+    var passTextHe = isDQ ? '\u05E4\u05E1\u05D5\u05DC' : (isPassed ? '\u05E2\u05D1\u05E8' : '\u05E0\u05DB\u05E9\u05DC');
+    var passText = (shareLang === 'he') ? passTextHe : getPdfString(passKey, shareLang) + ' (' + passTextHe + ')';
 
     // Direct POST to Cloudflare Worker (CORS supported — returns link immediately)
     fetch(RESULTS_URL, {
@@ -1429,9 +1575,12 @@
 
   function showShareLinks(r, link, passText, isCorrected) {
     var phone = formatPhone(r.phone);
-    var msgText = '\u05E9\u05DC\u05D5\u05DD ' + r.name + ', \u05EA\u05D5\u05E6\u05D0\u05EA \u05D4\u05DE\u05D1\u05D7\u05DF: ' + passText +
-      (isCorrected ? '' : ' (' + (r.score || '') + ')') +
-      '\n\u05E6\u05E4\u05D4 \u05D1\u05EA\u05D5\u05E6\u05D0\u05D4: ' + link;
+    var shareLang = r.language || 'he';
+    var resultWithScore = passText + (isCorrected ? '' : ' (' + (r.score || '') + ')');
+    var msgText = getPdfString('shareMsg', shareLang)
+      .replace('{name}', r.name)
+      .replace('{result}', resultWithScore)
+      .replace('{link}', link);
 
     var waUrl = phone ? ('https://wa.me/' + phone + '?text=' + encodeURIComponent(msgText)) : '#';
     var smsUrl = phone ? ('sms:+' + phone + '?body=' + encodeURIComponent(msgText)) : '#';
