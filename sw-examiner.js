@@ -1,5 +1,5 @@
 // Service Worker for Examiner PWA
-var CACHE_NAME = 'examiner-v17';
+var CACHE_NAME = 'examiner-v19';
 
 // Install — cache the examiner page shell
 self.addEventListener('install', function(e) {
