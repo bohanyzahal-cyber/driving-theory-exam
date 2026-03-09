@@ -361,6 +361,7 @@
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#1a73e8;" onclick="sendToAllExaminees()">שלח לכל הנבחנים</button>
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#1a5276;" onclick="generateExaminerReport()">&#x1f4cb; דו"ח בוחן</button>
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#0e4a6e;" onclick="generateSiteManagerReport()">&#x1f4ca; דו"ח מנהל אתר</button>
+        <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#7c3aed;" onclick="shareSiteManagerReport()">&#x1f4e4; שתף דו"ח למנהל</button>
       </div>
     </div>
 
@@ -2362,11 +2363,10 @@
   };
 
   // ========== Site Manager Report (דו"ח מנהל אתר) ==========
-  window.generateSiteManagerReport = function() {
-    if (!completedResults || completedResults.length === 0) {
-      alert('\u05D0\u05D9\u05DF \u05EA\u05D5\u05E6\u05D0\u05D5\u05EA \u05DC\u05D4\u05E6\u05D2\u05D4 \u05D1\u05D3\u05D5"\u05D7'); return;
-    }
-    try {
+  // Build site manager report HTML (reused by popup and share)
+  function buildSiteManagerReportHtml() {
+    if (!completedResults || completedResults.length === 0) return null;
+
     var today = new Date();
     var dateStr = today.getDate() + '/' + (today.getMonth() + 1) + '/' + today.getFullYear();
     var site = currentSite || '';
@@ -2606,15 +2606,88 @@
     H.push('</div>');
 
     H.push('</div></body></html>');
+    return H.join('');
+  }
 
-    var w = window.open('', '_blank');
-    if (w) { w.document.write(H.join('')); w.document.close(); }
-    else { alert('\u05D7\u05E1\u05D5\u05DD popup'); }
+  window.generateSiteManagerReport = function() {
+    if (!completedResults || completedResults.length === 0) {
+      alert('\u05D0\u05D9\u05DF \u05EA\u05D5\u05E6\u05D0\u05D5\u05EA \u05DC\u05D4\u05E6\u05D2\u05D4 \u05D1\u05D3\u05D5"\u05D7'); return;
+    }
+    try {
+      var html = buildSiteManagerReportHtml();
+      if (!html) { alert('\u05E9\u05D2\u05D9\u05D0\u05D4 \u05D1\u05D9\u05E6\u05D9\u05E8\u05EA \u05D3\u05D5"\u05D7'); return; }
+      var w = window.open('', '_blank');
+      if (w) { w.document.write(html); w.document.close(); }
+      else { alert('\u05D7\u05E1\u05D5\u05DD popup'); }
     } catch(e) {
       alert('\u05E9\u05D2\u05D9\u05D0\u05D4: ' + e.message);
       console.error('[SITE_MANAGER_REPORT]', e);
     }
   };
+
+  window.shareSiteManagerReport = function() {
+    if (!completedResults || completedResults.length === 0) {
+      alert('\u05D0\u05D9\u05DF \u05EA\u05D5\u05E6\u05D0\u05D5\u05EA \u05DC\u05E9\u05D9\u05EA\u05D5\u05E3'); return;
+    }
+    if (!currentSiteManagerPhone) {
+      alert('\u05DC\u05D0 \u05D4\u05D5\u05D2\u05D3\u05E8 \u05DE\u05E1\u05E4\u05E8 \u05DE\u05E0\u05D4\u05DC \u05D0\u05EA\u05E8'); return;
+    }
+    try {
+      var html = buildSiteManagerReportHtml();
+      if (!html) { alert('\u05E9\u05D2\u05D9\u05D0\u05D4 \u05D1\u05D9\u05E6\u05D9\u05E8\u05EA \u05D3\u05D5"\u05D7'); return; }
+
+      // Show loading dialog
+      var dlg = document.getElementById('shareDialog');
+      document.getElementById('shareDialogTitle').textContent = '\u05E9\u05D9\u05EA\u05D5\u05E3 \u05D3\u05D5"\u05D7 \u05DE\u05E0\u05D4\u05DC \u05D0\u05EA\u05E8';
+      document.getElementById('shareDialogContent').innerHTML = '<div style="font-size:14px;color:#64748b;padding:20px 0;">\u23F3 \u05DE\u05E2\u05DC\u05D4...</div>';
+      dlg.style.display = 'flex';
+
+      // Upload to Cloudflare Worker
+      fetch(RESULTS_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ html: html })
+      })
+      .then(function(response) { return response.json(); })
+      .then(function(data) {
+        if (data.status === 'ok' && data.link) {
+          showManagerShareLinks(data.link);
+        } else {
+          document.getElementById('shareDialogContent').innerHTML =
+            '<div style="color:#ef4444;">\u05E9\u05D2\u05D9\u05D0\u05D4: ' + escHtml(data.message || 'Unknown error') + '</div>';
+        }
+      })
+      .catch(function(err) {
+        document.getElementById('shareDialogContent').innerHTML =
+          '<div style="color:#ef4444;">\u05E9\u05D2\u05D9\u05D0\u05EA \u05EA\u05E7\u05E9\u05D5\u05E8\u05EA: ' + escHtml(err.message || '') + '</div>';
+      });
+    } catch(e) {
+      alert('\u05E9\u05D2\u05D9\u05D0\u05D4: ' + e.message);
+      console.error('[SHARE_MANAGER_REPORT]', e);
+    }
+  };
+
+  function showManagerShareLinks(link) {
+    var phone = formatPhone(currentSiteManagerPhone);
+    var today = new Date();
+    var dateStr = today.getDate() + '/' + (today.getMonth() + 1) + '/' + today.getFullYear();
+
+    var msgText = '*\uD83D\uDCCA \u05D3\u05D5"\u05D7 \u05E1\u05D9\u05DB\u05D5\u05DD \u05D9\u05D5\u05DE\u05D9*\n' +
+      '\u05D0\u05EA\u05E8: ' + (currentSite || '') + '\n' +
+      '\u05D1\u05D5\u05D7\u05DF: ' + (examinerData.name || '') + '\n' +
+      '\u05EA\u05D0\u05E8\u05D9\u05DA: ' + dateStr + '\n\n' +
+      '\uD83D\uDCCE \u05E6\u05E4\u05D4 \u05D1\u05D3\u05D5"\u05D7 \u05D4\u05DE\u05DC\u05D0:\n' + link;
+
+    var waUrl = phone ? ('https://wa.me/' + phone + '?text=' + encodeURIComponent(msgText)) : '#';
+
+    var content = '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px;margin:12px 0;word-break:break-all;font-size:13px;direction:ltr;text-align:left;">' + escHtml(link) + '</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:12px;">' +
+      '<a href="' + waUrl + '" target="_blank" style="flex:1;min-width:120px;padding:10px 12px;border-radius:10px;font-size:14px;font-weight:700;text-decoration:none;text-align:center;color:white;background:#25D366;">\uD83D\uDCF1 WA \u05DC\u05DE\u05E0\u05D4\u05DC</a>' +
+      '<button onclick="copyShareLink(this,\'' + link.replace(/'/g, "\\'") + '\')" style="flex:1;min-width:120px;padding:10px 12px;border-radius:10px;font-size:14px;font-weight:700;text-align:center;color:white;background:#64748b;border:none;cursor:pointer;">\uD83D\uDCCB \u05D4\u05E2\u05EA\u05E7 \u05E7\u05D9\u05E9\u05D5\u05E8</button>' +
+      '</div>';
+
+    document.getElementById('shareDialogContent').innerHTML = content;
+  }
 
   window.disqualifyResult = function(idx) {
     var r = completedResults[idx];
