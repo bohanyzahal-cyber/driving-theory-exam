@@ -360,6 +360,7 @@
         <button class="wa-btn" style="padding:8px 16px; font-size:14px;" onclick="sendBulkToManager()">שלח סיכום למנהל אתר</button>
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#1a73e8;" onclick="sendToAllExaminees()">שלח לכל הנבחנים</button>
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#1a5276;" onclick="generateExaminerReport()">&#x1f4cb; דו"ח בוחן</button>
+        <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#0e4a6e;" onclick="generateSiteManagerReport()">&#x1f4ca; דו"ח מנהל אתר</button>
       </div>
     </div>
 
@@ -2022,53 +2023,6 @@
     popRows += '<tr style="border-top:2px solid #34495e;font-weight:bold;"><td>\u05E1\u05D4"\u05DB</td><td>' + total + '</td>' +
       '<td style="color:#27ae60;">' + passCount + '</td><td style="color:#c0392b;">' + failTotal + (dqCount > 0 ? ' <span style="font-weight:400;font-size:11px;">(' + dqCount + ' \u05E4\u05E1\u05D5\u05DC\u05D9\u05DD)</span>' : '') + '</td><td>' + rate + '%</td></tr>';
 
-    // === Category analysis (aggregate) ===
-    // Determine dominant license for structure
-    var dominantLicense = license || (licenseOrder.length > 0 ? licenseOrder[0] : 'B');
-    var structure = EXAM_STRUCTURE[dominantLicense] || EXAM_STRUCTURE['B'];
-    var catTotals = {}; // total questions per category across all non-DQ examinees
-    var catWrong = {}; // total wrong per category
-    var hasCatData = false;
-    var perExamineeCats = []; // for heatmap: [{name, cats: {catKey: {correct, total}}, score, passed}]
-
-    for (var ci = 0; ci < completedResults.length; ci++) {
-      var rc = completedResults[ci];
-      var isDQc = rc.disqualified === true || rc.disqualified === 'TRUE' || rc.passed === '\u05E4\u05E1\u05D5\u05DC';
-      var isPassedC = !isDQc && (rc.passed === '\u05E2\u05D1\u05E8' || rc.passed === true);
-      var isCorrectedC = rc.corrected === true || rc.corrected === 'TRUE';
-
-      if (isDQc || isCorrectedC) {
-        perExamineeCats.push({ name: rc.name, isDQ: true, score: rc.score, passed: rc.passed });
-        continue;
-      }
-      var wd = parseWrongDetails(rc.wrongDetails);
-      var wrongByCat = {};
-      var examHasCats = false;
-      for (var wc = 0; wc < wd.length; wc++) {
-        if (wd[wc].category) {
-          examHasCats = true;
-          hasCatData = true;
-          if (!wrongByCat[wd[wc].category]) wrongByCat[wd[wc].category] = 0;
-          wrongByCat[wd[wc].category]++;
-        }
-      }
-      var eCats = {};
-      if (examHasCats) {
-        var rLicC = String(rc.license || dominantLicense);
-        var structC = EXAM_STRUCTURE[rLicC] || structure;
-        for (var ck in structC) {
-          var tQ = structC[ck];
-          var wQ = wrongByCat[ck] || 0;
-          eCats[ck] = { correct: tQ - wQ, total: tQ };
-          if (!catTotals[ck]) catTotals[ck] = 0;
-          if (!catWrong[ck]) catWrong[ck] = 0;
-          catTotals[ck] += tQ;
-          catWrong[ck] += wQ;
-        }
-      }
-      perExamineeCats.push({ name: rc.name, isDQ: false, cats: eCats, hasCats: examHasCats, score: rc.score, passed: isPassedC });
-    }
-
     // Stamp
     var stampHtml = '';
     if (examinerNum) {
@@ -2240,100 +2194,6 @@
     }
     H.push('</div>');
 
-    // === Category Analysis Section (aggregate weak topics + heatmap) ===
-    if (hasCatData) {
-      H.push('<div class="section">');
-      H.push('<div class="section-title"><span class="icon">\uD83D\uDD34</span> \u05E0\u05D5\u05E9\u05D0\u05D9\u05DD \u05D7\u05DC\u05E9\u05D9\u05DD (\u05DE\u05E6\u05D8\u05D1\u05E8 \u05DB\u05DC \u05D4\u05E0\u05D1\u05D7\u05E0\u05D9\u05DD)</div>');
-
-      // Build sorted categories (worst to best)
-      var catArr = [];
-      for (var ck2 in catTotals) {
-        var cTotal = catTotals[ck2];
-        var cWrong = catWrong[ck2] || 0;
-        var cCorrect = cTotal - cWrong;
-        var cPct = cTotal > 0 ? Math.round((cCorrect / cTotal) * 100) : 0;
-        catArr.push({ key: ck2, total: cTotal, wrong: cWrong, correct: cCorrect, pct: cPct });
-      }
-      catArr.sort(function(a, b) { return a.pct - b.pct; }); // worst first
-
-      for (var ca = 0; ca < catArr.length; ca++) {
-        var ct = catArr[ca];
-        var barColor = ct.pct >= 80 ? '#22c55e' : (ct.pct >= 50 ? '#f59e0b' : '#ef4444');
-        var bgColor = ct.pct >= 80 ? '#f0fdf4' : (ct.pct >= 50 ? '#fffbeb' : '#fef2f2');
-        var rank = ca + 1;
-        var rkBg = rank <= 2 ? '#dc2626' : (rank <= 3 ? '#f59e0b' : '#94a3b8');
-        H.push('<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #f1f5f9;">');
-        H.push('<div style="width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:13px;color:white;flex-shrink:0;background:' + rkBg + ';">' + rank + '</div>');
-        H.push('<div style="flex:1;"><div style="font-weight:700;font-size:13px;color:#1e293b;">' + escHtml(ct.key) + '</div>');
-        H.push('<div style="font-size:11px;color:#64748b;">' + ct.wrong + ' \u05E9\u05D2\u05D9\u05D0\u05D5\u05EA \u05DE\u05EA\u05D5\u05DA ' + ct.total + ' \u05E9\u05D0\u05DC\u05D5\u05EA</div></div>');
-        H.push('<div style="width:120px;height:20px;background:#f1f5f9;border-radius:6px;overflow:hidden;border:1px solid #e2e8f0;">');
-        H.push('<div style="height:100%;width:' + Math.max(ct.pct, 10) + '%;background:' + barColor + ';border-radius:6px;display:flex;align-items:center;justify-content:flex-end;padding-right:4px;font-size:10px;font-weight:700;color:white;">' + ct.pct + '%</div></div>');
-        H.push('</div>');
-      }
-      H.push('</div>');
-
-      // === Heatmap: Category × Examinee ===
-      H.push('<div class="section">');
-      H.push('<div class="section-title"><span class="icon">\uD83D\uDDFA\uFE0F</span> \u05DE\u05E4\u05EA \u05D7\u05D5\u05DD \u2014 \u05E0\u05D5\u05E9\u05D0 \u00D7 \u05E0\u05D1\u05D7\u05DF</div>');
-      H.push('<div class="tw"><table><thead><tr>');
-      H.push('<th>\u05E0\u05D1\u05D7\u05DF</th>');
-      // Header: category names + totals
-      var catKeys = [];
-      for (var ck3 in structure) catKeys.push(ck3);
-      for (var ch = 0; ch < catKeys.length; ch++) {
-        H.push('<th>' + escHtml(catKeys[ch]) + '<br>(' + structure[catKeys[ch]] + ')</th>');
-      }
-      H.push('<th>\u05E1\u05D4"\u05DB</th></tr></thead><tbody>');
-
-      for (var ei = 0; ei < perExamineeCats.length; ei++) {
-        var pe = perExamineeCats[ei];
-        H.push('<tr>');
-        H.push('<td style="font-weight:700;text-align:right;white-space:nowrap;">' + escHtml(pe.name) + '</td>');
-        if (pe.isDQ) {
-          H.push('<td colspan="' + catKeys.length + '" style="color:#92400e;font-weight:700;">\u26D4 \u05E4\u05E1\u05D5\u05DC</td>');
-          H.push('<td><span style="display:inline-block;padding:2px 10px;border-radius:20px;font-weight:700;font-size:11px;background:#fef3c7;color:#92400e;">\u05E4\u05E1\u05D5\u05DC</span></td>');
-        } else if (!pe.hasCats) {
-          H.push('<td colspan="' + catKeys.length + '" style="color:#94a3b8;font-size:11px;">\u05D0\u05D9\u05DF \u05E0\u05EA\u05D5\u05E0\u05D9 \u05E7\u05D8\u05D2\u05D5\u05E8\u05D9\u05D4</td>');
-          H.push('<td>' + escHtml(String(pe.score || '')) + '</td>');
-        } else {
-          for (var cj = 0; cj < catKeys.length; cj++) {
-            var cell = pe.cats[catKeys[cj]];
-            if (cell) {
-              var cellPct = cell.total > 0 ? Math.round((cell.correct / cell.total) * 100) : 0;
-              var cellBg = cellPct >= 80 ? '#dcfce7' : (cellPct >= 50 ? '#fefce8' : '#fef2f2');
-              var cellClr = cellPct >= 80 ? '#166534' : (cellPct >= 50 ? '#92400e' : '#991b1b');
-              H.push('<td style="background:' + cellBg + ';color:' + cellClr + ';font-weight:700;">' + cell.correct + '/' + cell.total + '</td>');
-            } else {
-              H.push('<td>-</td>');
-            }
-          }
-          var badgeBg = pe.passed ? '#dcfce7' : '#fef2f2';
-          var badgeClr = pe.passed ? '#166534' : '#991b1b';
-          var badgeTxt = pe.passed ? '\u05E2\u05D1\u05E8' : '\u05E0\u05DB\u05E9\u05DC';
-          H.push('<td><span style="display:inline-block;padding:2px 10px;border-radius:20px;font-weight:700;font-size:11px;background:' + badgeBg + ';color:' + badgeClr + ';">' + escHtml(String(pe.score || '')) + '</span></td>');
-        }
-        H.push('</tr>');
-      }
-
-      // Footer: averages
-      if (catArr.length > 0) {
-        H.push('<tr style="background:#f1f5f9;font-weight:900;">');
-        H.push('<td style="text-align:right;">\u05DE\u05DE\u05D5\u05E6\u05E2</td>');
-        for (var cf = 0; cf < catKeys.length; cf++) {
-          var avgPct = 0;
-          for (var ca2 = 0; ca2 < catArr.length; ca2++) {
-            if (catArr[ca2].key === catKeys[cf]) { avgPct = catArr[ca2].pct; break; }
-          }
-          var avgClr = avgPct >= 80 ? '#16a34a' : (avgPct >= 50 ? '#d97706' : '#dc2626');
-          H.push('<td style="color:' + avgClr + ';">' + avgPct + '%</td>');
-        }
-        var overallAvg = total > 0 ? rate : 0;
-        H.push('<td style="color:' + (overallAvg >= 80 ? '#16a34a' : '#dc2626') + ';">' + overallAvg + '%</td>');
-        H.push('</tr>');
-      }
-      H.push('</tbody></table></div></div>');
-    }
-
     // Signature
     H.push('<div class="section"><div class="signature-area">' + stampHtml);
     H.push('<div class="signature-line"></div>');
@@ -2456,6 +2316,261 @@
     } catch(reportErr) {
       alert('שגיאה ביצירת דו"ח: ' + reportErr.message);
       console.error('[REPORT]', reportErr);
+    }
+  };
+
+  // ========== Site Manager Report (דו"ח מנהל אתר) ==========
+  window.generateSiteManagerReport = function() {
+    if (!completedResults || completedResults.length === 0) {
+      alert('\u05D0\u05D9\u05DF \u05EA\u05D5\u05E6\u05D0\u05D5\u05EA \u05DC\u05D4\u05E6\u05D2\u05D4 \u05D1\u05D3\u05D5"\u05D7'); return;
+    }
+    try {
+    var today = new Date();
+    var dateStr = today.getDate() + '/' + (today.getMonth() + 1) + '/' + today.getFullYear();
+    var site = currentSite || '';
+    var classroom = currentClassroom || '';
+    var examiner = examinerData.name || '';
+    var license = currentLicense || '';
+
+    // === Compute stats ===
+    var passCount = 0, failCount = 0, dqCount = 0;
+    var scores = [];
+    for (var i = 0; i < completedResults.length; i++) {
+      var r = completedResults[i];
+      var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === '\u05E4\u05E1\u05D5\u05DC';
+      var isPassed = !isDQ && (r.passed === '\u05E2\u05D1\u05E8' || r.passed === true);
+      if (isDQ) dqCount++;
+      else if (isPassed) passCount++;
+      else failCount++;
+      if (!isDQ) {
+        var pctVal = typeof r.percent === 'number' ? Math.round(r.percent * 100) : parseInt(r.percent) || 0;
+        scores.push(pctVal);
+      }
+    }
+    var total = passCount + failCount + dqCount;
+    var rate = total > 0 ? Math.round((passCount / total) * 100) : 0;
+    var avgScore = scores.length > 0 ? Math.round(scores.reduce(function(a, b) { return a + b; }, 0) / scores.length) : 0;
+    scores.sort(function(a, b) { return a - b; });
+    var medianScore = scores.length > 0 ? scores[Math.floor(scores.length / 2)] : 0;
+
+    // === Category analysis ===
+    var dominantLicense = license || 'B';
+    for (var li = 0; li < completedResults.length; li++) {
+      if (completedResults[li].license) { dominantLicense = completedResults[li].license; break; }
+    }
+    var structure = EXAM_STRUCTURE[dominantLicense] || EXAM_STRUCTURE['B'];
+    var catTotals = {}, catWrong = {};
+    var hasCatData = false;
+    var perExamineeCats = [];
+
+    for (var ci = 0; ci < completedResults.length; ci++) {
+      var rc = completedResults[ci];
+      var isDQc = rc.disqualified === true || rc.disqualified === 'TRUE' || rc.passed === '\u05E4\u05E1\u05D5\u05DC';
+      var isPassedC = !isDQc && (rc.passed === '\u05E2\u05D1\u05E8' || rc.passed === true);
+      var isCorrectedC = rc.corrected === true || rc.corrected === 'TRUE';
+      if (isDQc || isCorrectedC) {
+        perExamineeCats.push({ name: rc.name, isDQ: true, score: rc.score, passed: rc.passed });
+        continue;
+      }
+      var wd = parseWrongDetails(rc.wrongDetails);
+      var wrongByCat = {};
+      var examHasCats = false;
+      for (var wc = 0; wc < wd.length; wc++) {
+        if (wd[wc].category) {
+          examHasCats = true; hasCatData = true;
+          if (!wrongByCat[wd[wc].category]) wrongByCat[wd[wc].category] = 0;
+          wrongByCat[wd[wc].category]++;
+        }
+      }
+      var eCats = {};
+      if (examHasCats) {
+        var rLicC = String(rc.license || dominantLicense);
+        var structC = EXAM_STRUCTURE[rLicC] || structure;
+        for (var ck in structC) {
+          var tQ = structC[ck];
+          var wQ = wrongByCat[ck] || 0;
+          eCats[ck] = { correct: tQ - wQ, total: tQ };
+          if (!catTotals[ck]) catTotals[ck] = 0;
+          if (!catWrong[ck]) catWrong[ck] = 0;
+          catTotals[ck] += tQ;
+          catWrong[ck] += wQ;
+        }
+      }
+      perExamineeCats.push({ name: rc.name, isDQ: false, cats: eCats, hasCats: examHasCats, score: rc.score, passed: isPassedC });
+    }
+
+    // === Build HTML ===
+    var H = [];
+    H.push('<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"/>');
+    H.push('<meta name="viewport" content="width=device-width,initial-scale=1"/>');
+    H.push('<title>\u05D3\u05D5"\u05D7 \u05DE\u05E0\u05D4\u05DC \u05D0\u05EA\u05E8</title>');
+    H.push('<style>');
+    H.push('*{box-sizing:border-box;margin:0;padding:0}');
+    H.push('body{font-family:"Segoe UI",Tahoma,Arial,sans-serif;background:#f0f2f5;color:#333;direction:rtl;padding:20px}');
+    H.push('.container{max-width:900px;margin:0 auto;background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.08);overflow:hidden}');
+    H.push('.header-bar{background:linear-gradient(135deg,#0e4a6e,#1a73e8);color:#fff;padding:20px 30px;text-align:center}');
+    H.push('.header-bar h1{font-size:22px;margin-bottom:4px}.header-bar p{font-size:13px;opacity:.85}');
+    H.push('.section{padding:20px 30px;border-bottom:1px solid #eee}');
+    H.push('.section-title{font-size:16px;font-weight:bold;color:#0e4a6e;margin-bottom:15px;padding-bottom:8px;border-bottom:2px solid #1a73e8;display:flex;align-items:center;gap:8px}');
+    H.push('.kpi-row{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}');
+    H.push('.kpi{text-align:center;padding:14px 10px;border-radius:12px;border:1px solid #e2e8f0}');
+    H.push('.kpi .num{font-size:28px;font-weight:900;line-height:1.1}.kpi .lbl{font-size:11px;color:#64748b;margin-top:2px}');
+    H.push('.kpi.blue{background:#eaf2f8}.kpi.blue .num{color:#2980b9}');
+    H.push('.kpi.green{background:#eafaf1}.kpi.green .num{color:#27ae60}');
+    H.push('.kpi.red{background:#fdedec}.kpi.red .num{color:#c0392b}');
+    H.push('.kpi.orange{background:#fef3c7}.kpi.orange .num{color:#d97706}');
+    H.push('.tw{overflow-x:auto}');
+    H.push('table{width:100%;border-collapse:collapse;font-size:12px}');
+    H.push('thead th{background:#2c3e50;color:#fff;padding:8px;font-weight:600;white-space:nowrap;font-size:11px;border:1px solid #1a252f}');
+    H.push('tbody td{padding:8px;text-align:center;vertical-align:middle;border:1px solid #eee}');
+    H.push('tbody tr:nth-child(even){background:#fafbfc}');
+    H.push('.badge{display:inline-block;padding:2px 10px;border-radius:20px;font-weight:700;font-size:11px}');
+    H.push('.badge.pass{background:#dcfce7;color:#166534}.badge.fail{background:#fef2f2;color:#991b1b}.badge.dq{background:#fef3c7;color:#92400e}');
+    H.push('.weak-topic{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #f1f5f9}');
+    H.push('.weak-topic:last-child{border-bottom:none}');
+    H.push('@media print{body{background:#fff;padding:0}.container{box-shadow:none;max-width:100%}.no-print{display:none!important}');
+    H.push('thead th,.kpi{-webkit-print-color-adjust:exact;print-color-adjust:exact}}');
+    H.push('</style></head><body><div class="container">');
+
+    // Header
+    H.push('<div class="header-bar"><h1>\uD83D\uDCCA \u05D3\u05D5"\u05D7 \u05E1\u05D9\u05DB\u05D5\u05DD \u05D9\u05D5\u05DE\u05D9 \u2014 \u05DE\u05E0\u05D4\u05DC \u05D0\u05EA\u05E8</h1>');
+    H.push('<p>' + escHtml(dateStr) + ' | ' + escHtml(site) + ' | \u05D1\u05D5\u05D7\u05DF: ' + escHtml(examiner) + '</p></div>');
+
+    // KPI Cards
+    H.push('<div class="section">');
+    H.push('<div class="kpi-row">');
+    H.push('<div class="kpi blue"><div class="num">' + total + '</div><div class="lbl">\u05E1\u05D4"\u05DB \u05E0\u05D1\u05D7\u05E0\u05D9\u05DD</div></div>');
+    H.push('<div class="kpi green"><div class="num">' + passCount + '</div><div class="lbl">\u05E2\u05D1\u05E8\u05D5 \u2705</div></div>');
+    H.push('<div class="kpi red"><div class="num">' + failCount + '</div><div class="lbl">\u05E0\u05DB\u05E9\u05DC\u05D5 \u274C</div></div>');
+    H.push('<div class="kpi orange"><div class="num">' + dqCount + '</div><div class="lbl">\u05E4\u05E1\u05D5\u05DC\u05D9\u05DD \u26D4</div></div>');
+    H.push('</div>');
+    // Score stats
+    H.push('<div style="text-align:center;font-size:13px;color:#64748b;margin-top:6px;">');
+    H.push('\u05D0\u05D7\u05D5\u05D6 \u05D4\u05E6\u05DC\u05D7\u05D4: <strong style="font-size:18px;color:' + (rate >= 50 ? '#16a34a' : '#dc2626') + ';">' + rate + '%</strong>');
+    H.push(' &nbsp;|&nbsp; \u05DE\u05DE\u05D5\u05E6\u05E2: <strong style="font-size:18px;color:' + (avgScore >= 50 ? '#2563eb' : '#dc2626') + ';">' + avgScore + '%</strong>');
+    H.push(' &nbsp;|&nbsp; \u05D7\u05E6\u05D9\u05D5\u05DF: <strong style="font-size:18px;color:' + (medianScore >= 50 ? '#2563eb' : '#dc2626') + ';">' + medianScore + '%</strong>');
+    H.push('</div></div>');
+
+    // Weak Topics (aggregate)
+    if (hasCatData) {
+      H.push('<div class="section">');
+      H.push('<div class="section-title"><span style="font-size:20px;">\uD83D\uDD34</span> \u05E0\u05D5\u05E9\u05D0\u05D9\u05DD \u05D7\u05DC\u05E9\u05D9\u05DD (\u05DE\u05E6\u05D8\u05D1\u05E8)</div>');
+      var catArr = [];
+      for (var ck2 in catTotals) {
+        var cTotal = catTotals[ck2]; var cWrong2 = catWrong[ck2] || 0;
+        var cCorrect = cTotal - cWrong2;
+        var cPct = cTotal > 0 ? Math.round((cCorrect / cTotal) * 100) : 0;
+        catArr.push({ key: ck2, total: cTotal, wrong: cWrong2, correct: cCorrect, pct: cPct });
+      }
+      catArr.sort(function(a, b) { return a.pct - b.pct; });
+      for (var ca = 0; ca < catArr.length; ca++) {
+        var ct = catArr[ca];
+        var barColor = ct.pct >= 80 ? '#22c55e' : (ct.pct >= 50 ? '#f59e0b' : '#ef4444');
+        var rank = ca + 1;
+        var rkBg = rank <= 2 ? '#dc2626' : (rank <= 3 ? '#f59e0b' : '#94a3b8');
+        H.push('<div class="weak-topic">');
+        H.push('<div style="width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:13px;color:white;flex-shrink:0;background:' + rkBg + ';">' + rank + '</div>');
+        H.push('<div style="flex:1;"><div style="font-weight:700;font-size:13px;color:#1e293b;">' + escHtml(ct.key) + '</div>');
+        H.push('<div style="font-size:11px;color:#64748b;">' + ct.wrong + ' \u05E9\u05D2\u05D9\u05D0\u05D5\u05EA \u05DE\u05EA\u05D5\u05DA ' + ct.total + ' \u05E9\u05D0\u05DC\u05D5\u05EA</div></div>');
+        H.push('<div style="width:120px;height:20px;background:#f1f5f9;border-radius:6px;overflow:hidden;border:1px solid #e2e8f0;">');
+        H.push('<div style="height:100%;width:' + Math.max(ct.pct, 10) + '%;background:' + barColor + ';border-radius:6px;display:flex;align-items:center;justify-content:flex-end;padding-right:4px;font-size:10px;font-weight:700;color:white;">' + ct.pct + '%</div></div>');
+        H.push('</div>');
+      }
+      H.push('</div>');
+
+      // Heatmap
+      H.push('<div class="section">');
+      H.push('<div class="section-title"><span style="font-size:20px;">\uD83D\uDDFA\uFE0F</span> \u05DE\u05E4\u05EA \u05D7\u05D5\u05DD \u2014 \u05E0\u05D5\u05E9\u05D0 \u00D7 \u05E0\u05D1\u05D7\u05DF</div>');
+      H.push('<div class="tw"><table><thead><tr>');
+      H.push('<th>\u05E0\u05D1\u05D7\u05DF</th>');
+      var catKeys = [];
+      for (var ck3 in structure) catKeys.push(ck3);
+      for (var ch = 0; ch < catKeys.length; ch++) {
+        H.push('<th>' + escHtml(catKeys[ch]) + '<br>(' + structure[catKeys[ch]] + ')</th>');
+      }
+      H.push('<th>\u05E1\u05D4"\u05DB</th></tr></thead><tbody>');
+      for (var ei = 0; ei < perExamineeCats.length; ei++) {
+        var pe = perExamineeCats[ei];
+        H.push('<tr>');
+        H.push('<td style="font-weight:700;text-align:right;white-space:nowrap;">' + escHtml(pe.name) + '</td>');
+        if (pe.isDQ) {
+          H.push('<td colspan="' + catKeys.length + '" style="color:#92400e;font-weight:700;">\u26D4 \u05E4\u05E1\u05D5\u05DC</td>');
+          H.push('<td><span class="badge dq">\u05E4\u05E1\u05D5\u05DC</span></td>');
+        } else if (!pe.hasCats) {
+          H.push('<td colspan="' + catKeys.length + '" style="color:#94a3b8;font-size:11px;">\u05D0\u05D9\u05DF \u05E0\u05EA\u05D5\u05E0\u05D9 \u05E7\u05D8\u05D2\u05D5\u05E8\u05D9\u05D4</td>');
+          H.push('<td>' + escHtml(String(pe.score || '')) + '</td>');
+        } else {
+          for (var cj = 0; cj < catKeys.length; cj++) {
+            var cell = pe.cats[catKeys[cj]];
+            if (cell) {
+              var cellPct = cell.total > 0 ? Math.round((cell.correct / cell.total) * 100) : 0;
+              var cellBg = cellPct >= 80 ? '#dcfce7' : (cellPct >= 50 ? '#fefce8' : '#fef2f2');
+              var cellClr = cellPct >= 80 ? '#166534' : (cellPct >= 50 ? '#92400e' : '#991b1b');
+              H.push('<td style="background:' + cellBg + ';color:' + cellClr + ';font-weight:700;">' + cell.correct + '/' + cell.total + '</td>');
+            } else { H.push('<td>-</td>'); }
+          }
+          var bBg = pe.passed ? '#dcfce7' : '#fef2f2'; var bClr = pe.passed ? '#166534' : '#991b1b';
+          H.push('<td><span class="badge" style="background:' + bBg + ';color:' + bClr + ';">' + escHtml(String(pe.score || '')) + '</span></td>');
+        }
+        H.push('</tr>');
+      }
+      // Averages footer
+      if (catArr.length > 0) {
+        H.push('<tr style="background:#f1f5f9;font-weight:900;">');
+        H.push('<td style="text-align:right;">\u05DE\u05DE\u05D5\u05E6\u05E2</td>');
+        for (var cf = 0; cf < catKeys.length; cf++) {
+          var avgP = 0;
+          for (var ca2 = 0; ca2 < catArr.length; ca2++) { if (catArr[ca2].key === catKeys[cf]) { avgP = catArr[ca2].pct; break; } }
+          var avgC = avgP >= 80 ? '#16a34a' : (avgP >= 50 ? '#d97706' : '#dc2626');
+          H.push('<td style="color:' + avgC + ';">' + avgP + '%</td>');
+        }
+        H.push('<td style="color:' + (rate >= 80 ? '#16a34a' : '#dc2626') + ';">' + rate + '%</td>');
+        H.push('</tr>');
+      }
+      H.push('</tbody></table></div></div>');
+    }
+
+    // Per-examinee table
+    H.push('<div class="section">');
+    H.push('<div class="section-title"><span style="font-size:20px;">\uD83D\uDC65</span> \u05E4\u05D9\u05E8\u05D5\u05D8 \u05DC\u05E4\u05D9 \u05E0\u05D1\u05D7\u05DF</div>');
+    H.push('<div class="tw"><table><thead><tr>');
+    H.push('<th>#</th><th>\u05E9\u05DD</th><th>\u05D3\u05E8\u05D2\u05D4</th><th>\u05E9\u05E4\u05D4</th><th>\u05E6\u05D9\u05D5\u05DF</th><th>\u05D0\u05D7\u05D5\u05D6</th><th>\u05EA\u05D5\u05E6\u05D0\u05D4</th><th>\u05D6\u05DE\u05DF</th>');
+    H.push('</tr></thead><tbody>');
+    for (var ti = 0; ti < completedResults.length; ti++) {
+      var tr = completedResults[ti];
+      var isDQt = tr.disqualified === true || tr.disqualified === 'TRUE' || tr.passed === '\u05E4\u05E1\u05D5\u05DC';
+      var isPassedT = !isDQt && (tr.passed === '\u05E2\u05D1\u05E8' || tr.passed === true);
+      var pctT = typeof tr.percent === 'number' ? Math.round(tr.percent * 100) + '%' : (tr.percent || '');
+      var badgeClass = isDQt ? 'dq' : (isPassedT ? 'pass' : 'fail');
+      var badgeText = isDQt ? '\u05E4\u05E1\u05D5\u05DC' : (isPassedT ? '\u05E2\u05D1\u05E8' : '\u05E0\u05DB\u05E9\u05DC');
+      var langFlag = { 'he': '\uD83C\uDDEE\uD83C\uDDF1', 'am': '\uD83C\uDDEA\uD83C\uDDF9', 'ru': '\uD83C\uDDF7\uD83C\uDDFA', 'en': '\uD83C\uDDEC\uD83C\uDDE7', 'ar': '\uD83C\uDDF8\uD83C\uDDE6', 'fr': '\uD83C\uDDEB\uD83C\uDDF7', 'es': '\uD83C\uDDEA\uD83C\uDDF8' };
+      var flag = langFlag[tr.language] || '';
+      H.push('<tr>');
+      H.push('<td>' + (ti + 1) + '</td>');
+      H.push('<td style="font-weight:700;text-align:right;">' + escHtml(tr.name) + '</td>');
+      H.push('<td>' + escHtml(tr.license || '') + '</td>');
+      H.push('<td>' + flag + ' ' + escHtml(tr.language || '') + '</td>');
+      H.push('<td>' + escHtml(String(tr.score || '')) + '</td>');
+      H.push('<td>' + escHtml(String(pctT)) + '</td>');
+      H.push('<td><span class="badge ' + badgeClass + '">' + badgeText + '</span></td>');
+      H.push('<td>' + escHtml(tr.time || '\u2014') + '</td>');
+      H.push('</tr>');
+    }
+    H.push('</tbody></table></div></div>');
+
+    // Print button
+    H.push('<div class="section no-print" style="text-align:center;">');
+    H.push('<button onclick="window.print()" style="padding:12px 30px;font-size:16px;font-weight:800;background:#1a73e8;color:white;border:none;border-radius:10px;cursor:pointer;">\uD83D\uDDA8\uFE0F \u05D4\u05D3\u05E4\u05E1 / \u05E9\u05DE\u05D5\u05E8 PDF</button>');
+    H.push('</div>');
+
+    H.push('</div></body></html>');
+
+    var w = window.open('', '_blank');
+    if (w) { w.document.write(H.join('')); w.document.close(); }
+    else { alert('\u05D7\u05E1\u05D5\u05DD popup'); }
+    } catch(e) {
+      alert('\u05E9\u05D2\u05D9\u05D0\u05D4: ' + e.message);
+      console.error('[SITE_MANAGER_REPORT]', e);
     }
   };
 
