@@ -177,6 +177,9 @@ function doGet(e) {
       case 'correctToPass':
         return handleCorrectToPass(p);
 
+      case 'forceComplete':
+        return handleForceComplete(p);
+
       case 'markSent':
         return handleMarkSent(p);
 
@@ -580,8 +583,60 @@ function handleExaminerDashboard(p) {
   var resSheet = getSheet('תוצאות');
 
   var pendData = pendSheet.getDataRange().getValues();
+  var resData = resSheet.getDataRange().getValues();
   var pending = [];
   var active = [];
+
+  // Auto-cleanup: detect stale in_exam entries that already have a result or are way past exam time
+  var now = new Date();
+  var MAX_EXAM_MS = 90 * 60 * 1000; // 90 minutes — very conservative threshold
+  for (var ci = 1; ci < pendData.length; ci++) {
+    if (String(pendData[ci][0]) !== code) continue;
+    if (String(pendData[ci][5]).trim() !== 'in_exam') continue;
+    var ciId = pendData[ci][1];
+    var regTime = pendData[ci][4] ? new Date(pendData[ci][4]) : null;
+    var isStale = regTime && (now.getTime() - regTime.getTime() > MAX_EXAM_MS);
+
+    // Check if result already exists for this examinee in this session
+    var hasResult = false;
+    for (var ri = 1; ri < resData.length; ri++) {
+      if (String(resData[ri][13]) === code && normalizeId(resData[ri][1]) === normalizeId(ciId)) {
+        hasResult = true;
+        break;
+      }
+    }
+
+    if (hasResult || isStale) {
+      // Fix dangling status — mark as completed
+      pendSheet.getRange(ci + 1, 6).setValue('completed');
+      pendData[ci][5] = 'completed'; // update local copy
+      if (isStale && !hasResult) {
+        // Create a timeout fail result
+        var sesData2 = getSheet('סשנים').getDataRange().getValues();
+        var license2 = pendData[ci][8] || '', site2 = '', classroom2 = '', examinerName2 = '', language2 = pendData[ci][6] || 'he';
+        for (var si = 1; si < sesData2.length; si++) {
+          if (String(sesData2[si][0]).trim() === code) {
+            examinerName2 = sesData2[si][2] || '';
+            site2 = sesData2[si][3] || '';
+            classroom2 = sesData2[si][4] || '';
+            if (!license2) license2 = sesData2[si][5] || '';
+            break;
+          }
+        }
+        var attemptNum2 = countAttempts(String(ciId), license2) + 1;
+        resSheet.appendRow([
+          todayStr(), ciId, pendData[ci][2] || '', pendData[ci][3] || '', license2,
+          '0/30', '0%', 'נכשל', '', examinerName2,
+          site2, classroom2, language2, code,
+          attemptNum2, 'ניתוק/טיימאאוט — הנבחן לא סיים את המבחן', false, false, '',
+          pendData[ci][7] || '', false, pendData[ci][9] || 'off'
+        ]);
+        // Refresh resData after append
+        resData = resSheet.getDataRange().getValues();
+      }
+    }
+  }
+
   for (var i = 1; i < pendData.length; i++) {
     if (String(pendData[i][0]) !== code) continue;
     var s = pendData[i][5];
@@ -591,7 +646,8 @@ function handleExaminerDashboard(p) {
     else if (s === 'in_exam') active.push(item);
   }
 
-  var resData = resSheet.getDataRange().getValues();
+  // Re-read resData in case cleanup added new results
+  resData = resSheet.getDataRange().getValues();
   var completed = [];
   for (var j = 1; j < resData.length; j++) {
     if (String(resData[j][13]) !== code) continue;
@@ -737,6 +793,67 @@ function handleResetExaminee(p) {
     }
   }
   return jsonResponse({ status: 'error', message: 'לא נמצא נבחן פעיל לאיפוס' });
+}
+
+// Force-complete a stuck in_exam examinee (examiner manual action)
+function handleForceComplete(p) {
+  if (p.examinerId && !verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+    return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
+  }
+  var pendSheet = getSheet('ממתינים');
+  var pendData = pendSheet.getDataRange().getValues();
+  var found = false;
+  var name = '', phone = '', population = '', examineeLicense = '', examineeAudio = 'off', language = 'he';
+  for (var j = pendData.length - 1; j >= 1; j--) {
+    if (String(pendData[j][0]) === String(p.sessionCode) && normalizeId(pendData[j][1]) === normalizeId(p.idNumber) && String(pendData[j][5]).trim() === 'in_exam') {
+      name = pendData[j][2] || '';
+      phone = pendData[j][3] || '';
+      language = pendData[j][6] || 'he';
+      population = pendData[j][7] || '';
+      examineeLicense = pendData[j][8] || '';
+      examineeAudio = pendData[j][9] || 'off';
+      pendSheet.getRange(j + 1, 6).setValue('completed');
+      found = true;
+      break;
+    }
+  }
+  if (!found) {
+    return jsonResponse({ status: 'error', message: 'לא נמצא נבחן עם סטטוס in_exam' });
+  }
+
+  // Check if result already exists — if so, just mark pending as completed (done above)
+  var resSheet = getSheet('תוצאות');
+  var resData = resSheet.getDataRange().getValues();
+  for (var i = resData.length - 1; i >= 1; i--) {
+    if (String(resData[i][13]) === String(p.sessionCode) && normalizeId(resData[i][1]) === normalizeId(p.idNumber)) {
+      SpreadsheetApp.flush();
+      return jsonResponse({ status: 'ok', message: 'נמצאה תוצאה קיימת — הסטטוס עודכן' });
+    }
+  }
+
+  // No result exists — create a fail result
+  var sesSheet = getSheet('סשנים');
+  var sesData = sesSheet.getDataRange().getValues();
+  var license = examineeLicense, site = '', classroom = '', examinerName = '';
+  for (var s = 1; s < sesData.length; s++) {
+    if (String(sesData[s][0]).trim() === String(p.sessionCode).trim()) {
+      examinerName = sesData[s][2] || '';
+      site = sesData[s][3] || '';
+      classroom = sesData[s][4] || '';
+      if (!license) license = sesData[s][5] || '';
+      break;
+    }
+  }
+  var attemptNum = countAttempts(String(p.idNumber), license) + 1;
+  resSheet.appendRow([
+    todayStr(), p.idNumber, name, phone, license,
+    '0/30', '0%', 'נכשל', '', examinerName,
+    site, classroom, language, String(p.sessionCode),
+    attemptNum, 'סיום ידני ע"י בוחן — ניתוק/תקלה', false, false, '',
+    population, false, examineeAudio
+  ]);
+  SpreadsheetApp.flush();
+  return jsonResponse({ status: 'ok', message: 'נבחן סומן כנכשל (ניתוק)' });
 }
 
 function handleCorrectToPass(p) {
