@@ -1265,14 +1265,15 @@
     var blocks = text.split('\n\n');
     for (var b = 0; b < blocks.length; b++) {
       var lines = blocks[b].trim().split('\n');
-      var q = '', yours = '', correct = '';
+      var q = '', yours = '', correct = '', category = '';
       for (var l = 0; l < lines.length; l++) {
         var line = lines[l].trim();
         if (line.indexOf('\u05E9\u05D0\u05DC\u05D4:') === 0) q = line.replace('\u05E9\u05D0\u05DC\u05D4:', '').trim();
         else if (line.indexOf('\u05EA\u05E9\u05D5\u05D1\u05EA \u05D4\u05E0\u05D1\u05D7\u05DF:') === 0) yours = line.replace('\u05EA\u05E9\u05D5\u05D1\u05EA \u05D4\u05E0\u05D1\u05D7\u05DF:', '').trim();
         else if (line.indexOf('\u05EA\u05E9\u05D5\u05D1\u05D4 \u05E0\u05DB\u05D5\u05E0\u05D4:') === 0) correct = line.replace('\u05EA\u05E9\u05D5\u05D1\u05D4 \u05E0\u05DB\u05D5\u05E0\u05D4:', '').trim();
+        else if (line.indexOf('\u05E7\u05D8\u05D2\u05D5\u05E8\u05D9\u05D4:') === 0) category = line.replace('\u05E7\u05D8\u05D2\u05D5\u05E8\u05D9\u05D4:', '').trim();
       }
-      if (q) items.push({ question: q, yourAnswer: yours, correctAnswer: correct });
+      if (q) items.push({ question: q, yourAnswer: yours, correctAnswer: correct, category: category });
     }
     return items;
   }
@@ -1405,6 +1406,204 @@
     return strings[key] || PDF_STRINGS['he'][key] || '';
   }
 
+  // ========== Exam structure per license (for category analysis) ==========
+  var EXAM_STRUCTURE = {
+    'B':  { '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA': 7, '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1': 7, '\u05D7\u05D5\u05E7': 7, '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD': 9 },
+    '1':  { '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA': 5, '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1': 5, '\u05D7\u05D5\u05E7': 6, '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD': 6, '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9': 8 },
+    'C1': { '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA': 5, '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1': 5, '\u05D7\u05D5\u05E7': 5, '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD': 5, '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9': 10 },
+    'C':  { '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA': 5, '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1': 5, '\u05D7\u05D5\u05E7': 5, '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD': 5, '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9': 10 },
+    'D':  { '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA': 5, '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1': 5, '\u05D7\u05D5\u05E7': 5, '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD': 5, '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9': 10 }
+  };
+
+  // ========== Recommendation strings (7 languages) ==========
+  var REC_STRINGS = {
+    'he': {
+      recTitle: '\u05E0\u05D9\u05EA\u05D5\u05D7 \u05D1\u05D9\u05E6\u05D5\u05E2 \u05DC\u05E4\u05D9 \u05E0\u05D5\u05E9\u05D0\u05D9\u05DD',
+      positiveTitle: '\u05E0\u05E7\u05D5\u05D3\u05D5\u05EA \u05D7\u05D9\u05D5\u05D1\u05D9\u05D5\u05EA',
+      improveTitle: '\u05E0\u05D5\u05E9\u05D0\u05D9\u05DD \u05DC\u05E9\u05D9\u05E4\u05D5\u05E8',
+      excellent: '\u05D1\u05D9\u05E6\u05D5\u05E2 \u05DE\u05E6\u05D5\u05D9\u05DF \u05D1{topic}',
+      good: '\u05E9\u05DC\u05D9\u05D8\u05D4 \u05D8\u05D5\u05D1\u05D4 \u05D1{topic}',
+      needsWork: '{topic} \u2014 \u05D9\u05E9 \u05DC\u05D7\u05D6\u05E7 \u05E0\u05D5\u05E9\u05D0 \u05D6\u05D4',
+      weak: '{topic} \u2014 \u05D3\u05D5\u05E8\u05E9 \u05DC\u05D9\u05DE\u05D5\u05D3 \u05DE\u05D7\u05D3\u05E9',
+      allGood: '\u05DB\u05DC \u05D4\u05E0\u05D5\u05E9\u05D0\u05D9\u05DD \u05D1\u05E8\u05DE\u05D4 \u05D8\u05D5\u05D1\u05D4. \u05DB\u05DC \u05D4\u05DB\u05D1\u05D5\u05D3!',
+      noMajorIssues: '\u05D0\u05D9\u05DF \u05E0\u05D5\u05E9\u05D0\u05D9\u05DD \u05D1\u05D5\u05DC\u05D8\u05D9\u05DD \u05DC\u05E9\u05D9\u05E4\u05D5\u05E8',
+      cats: { '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA': '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA', '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1': '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1', '\u05D7\u05D5\u05E7': '\u05D7\u05D5\u05E7', '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD': '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD', '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9': '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9 \u05DC\u05D3\u05E8\u05D2\u05D4' }
+    },
+    'ru': {
+      recTitle: '\u0410\u043D\u0430\u043B\u0438\u0437 \u0440\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442\u043E\u0432 \u043F\u043E \u0442\u0435\u043C\u0430\u043C',
+      positiveTitle: '\u0421\u0438\u043B\u044C\u043D\u044B\u0435 \u0441\u0442\u043E\u0440\u043E\u043D\u044B',
+      improveTitle: '\u0422\u0435\u043C\u044B \u0434\u043B\u044F \u0443\u043B\u0443\u0447\u0448\u0435\u043D\u0438\u044F',
+      excellent: '\u041E\u0442\u043B\u0438\u0447\u043D\u044B\u0439 \u0440\u0435\u0437\u0443\u043B\u044C\u0442\u0430\u0442: {topic}',
+      good: '\u0425\u043E\u0440\u043E\u0448\u0435\u0435 \u0432\u043B\u0430\u0434\u0435\u043D\u0438\u0435: {topic}',
+      needsWork: '{topic} \u2014 \u0442\u0440\u0435\u0431\u0443\u0435\u0442 \u0443\u043A\u0440\u0435\u043F\u043B\u0435\u043D\u0438\u044F',
+      weak: '{topic} \u2014 \u043D\u0443\u0436\u043D\u043E \u0438\u0437\u0443\u0447\u0438\u0442\u044C \u0437\u0430\u043D\u043E\u0432\u043E',
+      allGood: '\u0412\u0441\u0435 \u0442\u0435\u043C\u044B \u043D\u0430 \u0445\u043E\u0440\u043E\u0448\u0435\u043C \u0443\u0440\u043E\u0432\u043D\u0435!',
+      noMajorIssues: '\u041D\u0435\u0442 \u0437\u043D\u0430\u0447\u0438\u0442\u0435\u043B\u044C\u043D\u044B\u0445 \u0442\u0435\u043C \u0434\u043B\u044F \u0443\u043B\u0443\u0447\u0448\u0435\u043D\u0438\u044F',
+      cats: { '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA': '\u0411\u0435\u0437\u043E\u043F\u0430\u0441\u043D\u043E\u0441\u0442\u044C', '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1': '\u0417\u043D\u0430\u043D\u0438\u0435 \u0422\u0421', '\u05D7\u05D5\u05E7': '\u0417\u0430\u043A\u043E\u043D', '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD': '\u0417\u043D\u0430\u043A\u0438', '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9': '\u041F\u043E \u043A\u0430\u0442\u0435\u0433\u043E\u0440\u0438\u0438' }
+    },
+    'en': {
+      recTitle: 'Performance Analysis by Topic',
+      positiveTitle: 'Strengths',
+      improveTitle: 'Areas for Improvement',
+      excellent: 'Excellent performance in {topic}',
+      good: 'Good grasp of {topic}',
+      needsWork: '{topic} \u2014 needs reinforcement',
+      weak: '{topic} \u2014 requires restudy',
+      allGood: 'All topics at a good level. Well done!',
+      noMajorIssues: 'No major topics to improve',
+      cats: { '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA': 'Safety', '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1': 'Vehicle Knowledge', '\u05D7\u05D5\u05E7': 'Law', '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD': 'Traffic Signs', '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9': 'License-specific' }
+    },
+    'ar': {
+      recTitle: '\u062A\u062D\u0644\u064A\u0644 \u0627\u0644\u0623\u062F\u0627\u0621 \u062D\u0633\u0628 \u0627\u0644\u0645\u0648\u0636\u0648\u0639',
+      positiveTitle: '\u0646\u0642\u0627\u0637 \u0627\u0644\u0642\u0648\u0629',
+      improveTitle: '\u0645\u062C\u0627\u0644\u0627\u062A \u0644\u0644\u062A\u062D\u0633\u064A\u0646',
+      excellent: '\u0623\u062F\u0627\u0621 \u0645\u0645\u062A\u0627\u0632 \u0641\u064A {topic}',
+      good: '\u0625\u0644\u0645\u0627\u0645 \u062C\u064A\u062F \u0628{topic}',
+      needsWork: '{topic} \u2014 \u064A\u062D\u062A\u0627\u062C \u062A\u0639\u0632\u064A\u0632',
+      weak: '{topic} \u2014 \u064A\u062D\u062A\u0627\u062C \u062F\u0631\u0627\u0633\u0629 \u0645\u062C\u062F\u062F\u0629',
+      allGood: '\u062C\u0645\u064A\u0639 \u0627\u0644\u0645\u0648\u0627\u0636\u064A\u0639 \u0628\u0645\u0633\u062A\u0648\u0649 \u062C\u064A\u062F!',
+      noMajorIssues: '\u0644\u0627 \u062A\u0648\u062C\u062F \u0645\u0648\u0627\u0636\u064A\u0639 \u0628\u0627\u0631\u0632\u0629 \u0644\u0644\u062A\u062D\u0633\u064A\u0646',
+      cats: { '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA': '\u0627\u0644\u0633\u0644\u0627\u0645\u0629', '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1': '\u0645\u0639\u0631\u0641\u0629 \u0627\u0644\u0645\u0631\u0643\u0628\u0629', '\u05D7\u05D5\u05E7': '\u0627\u0644\u0642\u0627\u0646\u0648\u0646', '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD': '\u0625\u0634\u0627\u0631\u0627\u062A \u0627\u0644\u0645\u0631\u0648\u0631', '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9': '\u062E\u0627\u0635 \u0628\u0627\u0644\u0641\u0626\u0629' }
+    },
+    'fr': {
+      recTitle: 'Analyse des r\u00E9sultats par th\u00E8me',
+      positiveTitle: 'Points forts',
+      improveTitle: 'Points \u00E0 am\u00E9liorer',
+      excellent: 'Excellent en {topic}',
+      good: 'Bonne ma\u00EEtrise de {topic}',
+      needsWork: '{topic} \u2014 \u00E0 renforcer',
+      weak: '{topic} \u2014 \u00E0 r\u00E9\u00E9tudier',
+      allGood: 'Tous les th\u00E8mes sont bien ma\u00EEtris\u00E9s\u00A0!',
+      noMajorIssues: 'Pas de th\u00E8me majeur \u00E0 am\u00E9liorer',
+      cats: { '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA': 'S\u00E9curit\u00E9', '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1': 'Connaissance du v\u00E9hicule', '\u05D7\u05D5\u05E7': 'L\u00E9gislation', '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD': 'Panneaux', '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9': 'Sp\u00E9cifique' }
+    },
+    'es': {
+      recTitle: 'An\u00E1lisis de resultados por tema',
+      positiveTitle: 'Puntos fuertes',
+      improveTitle: 'Temas a mejorar',
+      excellent: 'Excelente en {topic}',
+      good: 'Buen dominio de {topic}',
+      needsWork: '{topic} \u2014 necesita refuerzo',
+      weak: '{topic} \u2014 requiere reestudio',
+      allGood: '\u00A1Todos los temas en buen nivel!',
+      noMajorIssues: 'No hay temas importantes a mejorar',
+      cats: { '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA': 'Seguridad', '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1': 'Conocimiento del veh\u00EDculo', '\u05D7\u05D5\u05E7': 'Ley', '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD': 'Se\u00F1ales', '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9': 'Espec\u00EDfico' }
+    },
+    'am': {
+      recTitle: '\u1260\u122D\u12D5\u1235 \u12E8\u12CD\u1324\u1275 \u1275\u1295\u1270\u1293',
+      positiveTitle: '\u1320\u1295\u12AB\u122B \u130E\u1296\u127D',
+      improveTitle: '\u121B\u123B\u123B\u120D \u12E8\u121A\u1308\u1263\u1278\u12CD \u122D\u12D5\u1236\u127D',
+      excellent: '\u1260{topic} \u12A5\u1305\u130D \u1325\u1229 \u12CD\u1324\u1275',
+      good: '\u1260{topic} \u1325\u1229 \u12CD\u1324\u1275',
+      needsWork: '{topic} \u2014 \u12ED\u1205\u1295 \u122D\u12D5\u1235 \u121B\u1320\u1293\u12A8\u122D \u12EB\u1235\u1348\u120D\u130B\u120D',
+      weak: '{topic} \u2014 \u12A5\u1295\u12F0\u1308\u1293 \u1218\u121B\u122D \u12EB\u1235\u1348\u120D\u130B\u120D',
+      allGood: '\u1201\u1209\u121D \u122D\u12D5\u1236\u127D \u1260\u1325\u1229 \u12F0\u1228\u1303 \u1293\u1278\u12CD!',
+      noMajorIssues: '\u1208\u121B\u123B\u123B\u120D \u130E\u120D\u1276 \u12E8\u121A\u1273\u12ED \u122D\u12D5\u1235 \u12E8\u1208\u121D',
+      cats: { '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA': '\u12F0\u1205\u1295\u1290\u1275', '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1': '\u1270\u123D\u12A8\u122D\u12AB\u122A \u12A5\u12CD\u1240\u1275', '\u05D7\u05D5\u05E7': '\u1215\u130D', '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD': '\u12E8\u1275\u122B\u134A\u12AD \u121D\u120D\u12AD\u1276\u127D', '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9': '\u120D\u12E9 \u1208\u12F0\u1228\u1303' }
+    }
+  };
+
+  function getRecString(key, lang) {
+    var s = REC_STRINGS[lang] || REC_STRINGS['he'];
+    return s[key] || REC_STRINGS['he'][key] || '';
+  }
+
+  function getRecCatName(hebrewCat, lang) {
+    var s = REC_STRINGS[lang] || REC_STRINGS['he'];
+    return (s.cats && s.cats[hebrewCat]) || hebrewCat;
+  }
+
+  // Build category analysis section for PDF
+  function buildCategoryAnalysisHtml(wrongItems, license, lang) {
+    var structure = EXAM_STRUCTURE[license];
+    if (!structure) return '';
+    // Check if any wrong item has category data
+    var hasCategories = false;
+    for (var i = 0; i < wrongItems.length; i++) {
+      if (wrongItems[i].category) { hasCategories = true; break; }
+    }
+    if (!hasCategories) return '';
+
+    // Count wrong per category
+    var wrongByCategory = {};
+    for (var cat in structure) wrongByCategory[cat] = 0;
+    for (var j = 0; j < wrongItems.length; j++) {
+      var c = wrongItems[j].category;
+      if (c && wrongByCategory[c] !== undefined) wrongByCategory[c]++;
+    }
+
+    // Build sorted array (best to worst)
+    var catArr = [];
+    for (var ck in structure) {
+      var total = structure[ck];
+      var wrong = wrongByCategory[ck] || 0;
+      var correct = total - wrong;
+      var pct = Math.round((correct / total) * 100);
+      catArr.push({ key: ck, total: total, wrong: wrong, correct: correct, pct: pct });
+    }
+    catArr.sort(function(a, b) { return b.pct - a.pct; });
+
+    var positives = [];
+    var improvements = [];
+
+    var html = '<div style="margin-top:18px;border:1.5px solid #cbd5e1;border-radius:10px;overflow:hidden;page-break-inside:avoid;">';
+    html += '<div style="margin:0;padding:10px 14px;font-size:14px;font-weight:700;text-align:center;background:#f1f5f9;border-bottom:1px solid #cbd5e1;color:#0f172a;">' + escHtml(getRecString('recTitle', lang)) + '</div>';
+    html += '<div style="padding:10px 14px;">';
+
+    for (var ci = 0; ci < catArr.length; ci++) {
+      var item = catArr[ci];
+      var catName = getRecCatName(item.key, lang);
+      var colorClass = item.pct >= 80 ? '#22c55e' : (item.pct >= 50 ? '#f59e0b' : '#ef4444');
+      var icon = item.pct >= 80 ? '\u2705' : (item.pct >= 50 ? '\u26A0\uFE0F' : '\u274C');
+      var barWidth = Math.max(item.pct, 12);
+
+      html += '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:12px;">';
+      html += '<div style="width:18px;text-align:center;flex-shrink:0;">' + icon + '</div>';
+      html += '<div style="width:100px;flex-shrink:0;font-weight:600;color:#334155;">' + escHtml(catName) + '</div>';
+      html += '<div style="flex:1;height:18px;background:#f1f5f9;border-radius:9px;overflow:hidden;border:1px solid #e2e8f0;">';
+      html += '<div style="height:100%;width:' + barWidth + '%;border-radius:9px;background:' + colorClass + ';display:flex;align-items:center;justify-content:flex-end;padding-right:6px;font-size:10px;font-weight:700;color:white;">' + item.pct + '%</div>';
+      html += '</div>';
+      html += '<div style="width:50px;flex-shrink:0;text-align:center;font-weight:700;font-size:11px;color:#475569;">' + item.correct + '/' + item.total + '</div>';
+      html += '</div>';
+
+      if (item.pct >= 80) {
+        positives.push(item.pct === 100 ? getRecString('excellent', lang).replace('{topic}', catName) : getRecString('good', lang).replace('{topic}', catName));
+      } else if (item.pct < 50) {
+        improvements.push(getRecString('weak', lang).replace('{topic}', catName));
+      } else {
+        improvements.push(getRecString('needsWork', lang).replace('{topic}', catName));
+      }
+    }
+    html += '</div>';
+
+    // Positive feedback
+    html += '<div style="padding:10px 14px;border-top:2px solid #22c55e;">';
+    html += '<div style="margin:0 0 6px;font-size:12px;font-weight:700;color:#166534;">' + escHtml(getRecString('positiveTitle', lang)) + '</div>';
+    if (positives.length > 0) {
+      html += '<ul style="margin:0;padding:0 18px;font-size:12px;color:#334155;">';
+      for (var pi = 0; pi < positives.length; pi++) html += '<li style="margin-bottom:3px;">' + escHtml(positives[pi]) + '</li>';
+      html += '</ul>';
+    } else {
+      html += '<div style="font-size:12px;color:#64748b;">' + escHtml(getRecString('allGood', lang)) + '</div>';
+    }
+    html += '</div>';
+
+    // Areas for improvement
+    html += '<div style="padding:10px 14px;border-top:2px solid #ef4444;">';
+    html += '<div style="margin:0 0 6px;font-size:12px;font-weight:700;color:#991b1b;">' + escHtml(getRecString('improveTitle', lang)) + '</div>';
+    if (improvements.length > 0) {
+      html += '<ul style="margin:0;padding:0 18px;font-size:12px;color:#334155;">';
+      for (var ii = improvements.length - 1; ii >= 0; ii--) html += '<li style="margin-bottom:3px;">' + escHtml(improvements[ii]) + '</li>';
+      html += '</ul>';
+    } else {
+      html += '<div style="font-size:12px;color:#64748b;">' + escHtml(getRecString('noMajorIssues', lang)) + '</div>';
+    }
+    html += '</div>';
+
+    html += '</div>';
+    return html;
+  }
+
   // Build result HTML (shared between PDF popup and Drive share)
   function buildResultHtml(idx) {
     var r = completedResults[idx];
@@ -1502,6 +1701,10 @@
         '</tr></thead><tbody>' + tableRows + '</tbody></table>';
     }
     html += allCorrectMsg;
+    // Category analysis / recommendations (only if category data exists)
+    if (!isCorrected && wrongItems.length > 0) {
+      html += buildCategoryAnalysisHtml(wrongItems, r.license, lang);
+    }
     html += footerMsg;
     html += '</body></html>';
 
@@ -1820,6 +2023,53 @@
     popRows += '<tr style="border-top:2px solid #34495e;font-weight:bold;"><td>\u05E1\u05D4"\u05DB</td><td>' + total + '</td>' +
       '<td style="color:#27ae60;">' + passCount + '</td><td style="color:#c0392b;">' + failTotal + (dqCount > 0 ? ' <span style="font-weight:400;font-size:11px;">(' + dqCount + ' \u05E4\u05E1\u05D5\u05DC\u05D9\u05DD)</span>' : '') + '</td><td>' + rate + '%</td></tr>';
 
+    // === Category analysis (aggregate) ===
+    // Determine dominant license for structure
+    var dominantLicense = license || (licenseOrder.length > 0 ? licenseOrder[0] : 'B');
+    var structure = EXAM_STRUCTURE[dominantLicense] || EXAM_STRUCTURE['B'];
+    var catTotals = {}; // total questions per category across all non-DQ examinees
+    var catWrong = {}; // total wrong per category
+    var hasCatData = false;
+    var perExamineeCats = []; // for heatmap: [{name, cats: {catKey: {correct, total}}, score, passed}]
+
+    for (var ci = 0; ci < completedResults.length; ci++) {
+      var rc = completedResults[ci];
+      var isDQc = rc.disqualified === true || rc.disqualified === 'TRUE' || rc.passed === '\u05E4\u05E1\u05D5\u05DC';
+      var isPassedC = !isDQc && (rc.passed === '\u05E2\u05D1\u05E8' || rc.passed === true);
+      var isCorrectedC = rc.corrected === true || rc.corrected === 'TRUE';
+
+      if (isDQc || isCorrectedC) {
+        perExamineeCats.push({ name: rc.name, isDQ: true, score: rc.score, passed: rc.passed });
+        continue;
+      }
+      var wd = parseWrongDetails(rc.wrongDetails);
+      var wrongByCat = {};
+      var examHasCats = false;
+      for (var wc = 0; wc < wd.length; wc++) {
+        if (wd[wc].category) {
+          examHasCats = true;
+          hasCatData = true;
+          if (!wrongByCat[wd[wc].category]) wrongByCat[wd[wc].category] = 0;
+          wrongByCat[wd[wc].category]++;
+        }
+      }
+      var eCats = {};
+      if (examHasCats) {
+        var rLicC = String(rc.license || dominantLicense);
+        var structC = EXAM_STRUCTURE[rLicC] || structure;
+        for (var ck in structC) {
+          var tQ = structC[ck];
+          var wQ = wrongByCat[ck] || 0;
+          eCats[ck] = { correct: tQ - wQ, total: tQ };
+          if (!catTotals[ck]) catTotals[ck] = 0;
+          if (!catWrong[ck]) catWrong[ck] = 0;
+          catTotals[ck] += tQ;
+          catWrong[ck] += wQ;
+        }
+      }
+      perExamineeCats.push({ name: rc.name, isDQ: false, cats: eCats, hasCats: examHasCats, score: rc.score, passed: isPassedC });
+    }
+
     // Stamp
     var stampHtml = '';
     if (examinerNum) {
@@ -1990,6 +2240,100 @@
       H.push('</tr></thead><tbody>' + popRows + '</tbody></table></div></div>');
     }
     H.push('</div>');
+
+    // === Category Analysis Section (aggregate weak topics + heatmap) ===
+    if (hasCatData) {
+      H.push('<div class="section">');
+      H.push('<div class="section-title"><span class="icon">\uD83D\uDD34</span> \u05E0\u05D5\u05E9\u05D0\u05D9\u05DD \u05D7\u05DC\u05E9\u05D9\u05DD (\u05DE\u05E6\u05D8\u05D1\u05E8 \u05DB\u05DC \u05D4\u05E0\u05D1\u05D7\u05E0\u05D9\u05DD)</div>');
+
+      // Build sorted categories (worst to best)
+      var catArr = [];
+      for (var ck2 in catTotals) {
+        var cTotal = catTotals[ck2];
+        var cWrong = catWrong[ck2] || 0;
+        var cCorrect = cTotal - cWrong;
+        var cPct = cTotal > 0 ? Math.round((cCorrect / cTotal) * 100) : 0;
+        catArr.push({ key: ck2, total: cTotal, wrong: cWrong, correct: cCorrect, pct: cPct });
+      }
+      catArr.sort(function(a, b) { return a.pct - b.pct; }); // worst first
+
+      for (var ca = 0; ca < catArr.length; ca++) {
+        var ct = catArr[ca];
+        var barColor = ct.pct >= 80 ? '#22c55e' : (ct.pct >= 50 ? '#f59e0b' : '#ef4444');
+        var bgColor = ct.pct >= 80 ? '#f0fdf4' : (ct.pct >= 50 ? '#fffbeb' : '#fef2f2');
+        var rank = ca + 1;
+        var rkBg = rank <= 2 ? '#dc2626' : (rank <= 3 ? '#f59e0b' : '#94a3b8');
+        H.push('<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #f1f5f9;">');
+        H.push('<div style="width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:13px;color:white;flex-shrink:0;background:' + rkBg + ';">' + rank + '</div>');
+        H.push('<div style="flex:1;"><div style="font-weight:700;font-size:13px;color:#1e293b;">' + escHtml(ct.key) + '</div>');
+        H.push('<div style="font-size:11px;color:#64748b;">' + ct.wrong + ' \u05E9\u05D2\u05D9\u05D0\u05D5\u05EA \u05DE\u05EA\u05D5\u05DA ' + ct.total + ' \u05E9\u05D0\u05DC\u05D5\u05EA</div></div>');
+        H.push('<div style="width:120px;height:20px;background:#f1f5f9;border-radius:6px;overflow:hidden;border:1px solid #e2e8f0;">');
+        H.push('<div style="height:100%;width:' + Math.max(ct.pct, 10) + '%;background:' + barColor + ';border-radius:6px;display:flex;align-items:center;justify-content:flex-end;padding-right:4px;font-size:10px;font-weight:700;color:white;">' + ct.pct + '%</div></div>');
+        H.push('</div>');
+      }
+      H.push('</div>');
+
+      // === Heatmap: Category × Examinee ===
+      H.push('<div class="section">');
+      H.push('<div class="section-title"><span class="icon">\uD83D\uDDFA\uFE0F</span> \u05DE\u05E4\u05EA \u05D7\u05D5\u05DD \u2014 \u05E0\u05D5\u05E9\u05D0 \u00D7 \u05E0\u05D1\u05D7\u05DF</div>');
+      H.push('<div class="tw"><table><thead><tr>');
+      H.push('<th>\u05E0\u05D1\u05D7\u05DF</th>');
+      // Header: category names + totals
+      var catKeys = [];
+      for (var ck3 in structure) catKeys.push(ck3);
+      for (var ch = 0; ch < catKeys.length; ch++) {
+        H.push('<th>' + escHtml(catKeys[ch]) + '<br>(' + structure[catKeys[ch]] + ')</th>');
+      }
+      H.push('<th>\u05E1\u05D4"\u05DB</th></tr></thead><tbody>');
+
+      for (var ei = 0; ei < perExamineeCats.length; ei++) {
+        var pe = perExamineeCats[ei];
+        H.push('<tr>');
+        H.push('<td style="font-weight:700;text-align:right;white-space:nowrap;">' + escHtml(pe.name) + '</td>');
+        if (pe.isDQ) {
+          H.push('<td colspan="' + catKeys.length + '" style="color:#92400e;font-weight:700;">\u26D4 \u05E4\u05E1\u05D5\u05DC</td>');
+          H.push('<td><span style="display:inline-block;padding:2px 10px;border-radius:20px;font-weight:700;font-size:11px;background:#fef3c7;color:#92400e;">\u05E4\u05E1\u05D5\u05DC</span></td>');
+        } else if (!pe.hasCats) {
+          H.push('<td colspan="' + catKeys.length + '" style="color:#94a3b8;font-size:11px;">\u05D0\u05D9\u05DF \u05E0\u05EA\u05D5\u05E0\u05D9 \u05E7\u05D8\u05D2\u05D5\u05E8\u05D9\u05D4</td>');
+          H.push('<td>' + escHtml(String(pe.score || '')) + '</td>');
+        } else {
+          for (var cj = 0; cj < catKeys.length; cj++) {
+            var cell = pe.cats[catKeys[cj]];
+            if (cell) {
+              var cellPct = cell.total > 0 ? Math.round((cell.correct / cell.total) * 100) : 0;
+              var cellBg = cellPct >= 80 ? '#dcfce7' : (cellPct >= 50 ? '#fefce8' : '#fef2f2');
+              var cellClr = cellPct >= 80 ? '#166534' : (cellPct >= 50 ? '#92400e' : '#991b1b');
+              H.push('<td style="background:' + cellBg + ';color:' + cellClr + ';font-weight:700;">' + cell.correct + '/' + cell.total + '</td>');
+            } else {
+              H.push('<td>-</td>');
+            }
+          }
+          var badgeBg = pe.passed ? '#dcfce7' : '#fef2f2';
+          var badgeClr = pe.passed ? '#166534' : '#991b1b';
+          var badgeTxt = pe.passed ? '\u05E2\u05D1\u05E8' : '\u05E0\u05DB\u05E9\u05DC';
+          H.push('<td><span style="display:inline-block;padding:2px 10px;border-radius:20px;font-weight:700;font-size:11px;background:' + badgeBg + ';color:' + badgeClr + ';">' + escHtml(String(pe.score || '')) + '</span></td>');
+        }
+        H.push('</tr>');
+      }
+
+      // Footer: averages
+      if (catArr.length > 0) {
+        H.push('<tr style="background:#f1f5f9;font-weight:900;">');
+        H.push('<td style="text-align:right;">\u05DE\u05DE\u05D5\u05E6\u05E2</td>');
+        for (var cf = 0; cf < catKeys.length; cf++) {
+          var avgPct = 0;
+          for (var ca2 = 0; ca2 < catArr.length; ca2++) {
+            if (catArr[ca2].key === catKeys[cf]) { avgPct = catArr[ca2].pct; break; }
+          }
+          var avgClr = avgPct >= 80 ? '#16a34a' : (avgPct >= 50 ? '#d97706' : '#dc2626');
+          H.push('<td style="color:' + avgClr + ';">' + avgPct + '%</td>');
+        }
+        var overallAvg = total > 0 ? rate : 0;
+        H.push('<td style="color:' + (overallAvg >= 80 ? '#16a34a' : '#dc2626') + ';">' + overallAvg + '%</td>');
+        H.push('</tr>');
+      }
+      H.push('</tbody></table></div></div>');
+    }
 
     // Signature
     H.push('<div class="section"><div class="signature-area">' + stampHtml);
