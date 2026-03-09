@@ -853,7 +853,9 @@ function handleSubmitResult(data) {
       var w = data.wrongAnswers[i];
       wrongDetails += 'שאלה: ' + w.question + '\n';
       wrongDetails += 'תשובת הנבחן: ' + w.yourAnswer + '\n';
-      wrongDetails += 'תשובה נכונה: ' + w.correctAnswer + '\n\n';
+      wrongDetails += 'תשובה נכונה: ' + w.correctAnswer + '\n';
+      if (w.category) wrongDetails += 'קטגוריה: ' + w.category + '\n';
+      wrongDetails += '\n';
 
       wrongForWA += '❌ ' + w.question + '\n';
       wrongForWA += 'ענית: ' + w.yourAnswer + '\n';
@@ -988,7 +990,9 @@ function handleSubmitWrongAnswersBulk(data) {
           var item = data.wrongAnswers[w];
           wrongDetails += 'שאלה: ' + item.question + '\n';
           wrongDetails += 'תשובת הנבחן: ' + item.yourAnswer + '\n';
-          wrongDetails += 'תשובה נכונה: ' + item.correctAnswer + '\n\n';
+          wrongDetails += 'תשובה נכונה: ' + item.correctAnswer + '\n';
+          if (item.category) wrongDetails += 'קטגוריה: ' + item.category + '\n';
+          wrongDetails += '\n';
           wrongForWA += '❌ ' + item.question + '\n';
           wrongForWA += 'ענית: ' + item.yourAnswer + '\n';
           wrongForWA += '✅ נכון: ' + item.correctAnswer + '\n\n';

@@ -2195,14 +2195,16 @@
         wrongData.push({
           question: getQText(uq),
           yourAnswer: '\u05DC\u05D0 \u05E0\u05E2\u05E0\u05EA\u05D4',
-          correctAnswer: so ? (wrongLabels[so.correctIdx] + ' - ' + translatedCorrect) : translatedCorrect
+          correctAnswer: so ? (wrongLabels[so.correctIdx] + ' - ' + translatedCorrect) : translatedCorrect,
+          category: classifyCategory(uq.category)
         });
       } else if (!userAnswers[w].isCorrect) {
         var a = userAnswers[w];
         wrongData.push({
           question: getQText(a.question),
           yourAnswer: wrongLabels[a.chosenIndex] + ' - ' + a.shuffledAnswers[a.chosenIndex],
-          correctAnswer: wrongLabels[a.shuffledCorrectIndex] + ' - ' + a.shuffledAnswers[a.shuffledCorrectIndex]
+          correctAnswer: wrongLabels[a.shuffledCorrectIndex] + ' - ' + a.shuffledAnswers[a.shuffledCorrectIndex],
+          category: classifyCategory(a.question.category)
         });
       }
     }
