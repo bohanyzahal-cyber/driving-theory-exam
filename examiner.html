@@ -973,11 +973,13 @@
         li.className = 'person-item';
         var id4 = String(item.idNumber).slice(-4);
         var elapsed = '';
+        var isOvertime = false;
         if (item.time) {
           var diff = Math.round((Date.now() - new Date(item.time).getTime()) / 1000);
           if (diff < 0) diff = 0;
           var em = Math.floor(diff / 60), es = diff % 60;
           elapsed = em + ':' + (es < 10 ? '0' : '') + es;
+          isOvertime = diff > 2400; // 40 minutes
         }
         var langBadge = '';
         if (item.language && item.language !== currentLanguage) {
@@ -995,11 +997,51 @@
         if (item.audioMode === 'on') {
           audioBadge = ' <span style="background:#fef9c3;color:#854d0e;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">🔊 שמע</span>';
         }
+        var overtimeWarning = '';
+        var elapsedStyle = '';
+        if (isOvertime) {
+          elapsedStyle = 'color:#dc2626;font-weight:700;';
+          overtimeWarning = ' <span style="color:#dc2626;font-size:0.85em;">⚠️ חריגה מזמן המבחן — כנראה ניתוק</span>';
+        }
         li.innerHTML =
           '<div class="person-info"><div class="person-name">' + escHtml(item.name) + langBadge + popBadge + licBadge + audioBadge + '</div>' +
-          '<div class="person-meta">ת.ז. ....' + id4 + (elapsed ? ' | זמן: ' + elapsed : '') + '</div></div>' +
+          '<div class="person-meta">ת.ז. ....' + id4 + (elapsed ? ' | <span style="' + elapsedStyle + '">זמן: ' + elapsed + '</span>' : '') + overtimeWarning + '</div></div>' +
           '<div class="person-actions"></div>';
+        if (isOvertime) {
+          li.style.borderColor = '#fca5a5';
+          li.style.background = '#fef2f2';
+        }
         var actions = li.querySelector('.person-actions');
+
+        // Force-complete button (only for overtime examinees)
+        if (isOvertime) {
+          var forceBtn = document.createElement('button');
+          forceBtn.style.cssText = 'background:#dc2626;color:#fff;border:none;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:0.85em;margin-left:6px;';
+          forceBtn.textContent = 'סיים ידנית';
+          forceBtn.title = 'הנבחן כנראה ניתק — סמן כנכשל וסיים';
+          forceBtn.addEventListener('click', function() {
+            if (confirm('לסמן את ' + item.name + ' כנכשל (ניתוק/תקלה)?\nהנבחן יועבר לרשימת הושלמו כנכשל.')) {
+              forceBtn.disabled = true;
+              forceBtn.textContent = 'מסיים...';
+              apiGet({ action: 'forceComplete', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
+                if (data.status === 'ok') {
+                  alert(item.name + ' סומן כנכשל (ניתוק).');
+                  pollDashboard();
+                } else {
+                  alert('שגיאה: ' + (data.message || 'לא ידוע'));
+                  forceBtn.disabled = false;
+                  forceBtn.textContent = 'סיים ידנית';
+                }
+              }).catch(function() {
+                alert('שגיאת תקשורת');
+                forceBtn.disabled = false;
+                forceBtn.textContent = 'סיים ידנית';
+              });
+            }
+          });
+          actions.appendChild(forceBtn);
+        }
+
         var dqBtn = document.createElement('button');
         dqBtn.className = 'btn-disqualify';
         dqBtn.textContent = 'פסול';
