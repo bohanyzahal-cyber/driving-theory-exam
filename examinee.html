@@ -774,6 +774,7 @@
     tabSwitchDQConfirmed = false;
     tabSwitchWarnings = 0;
     if (tabSwitchGraceTimer) { clearTimeout(tabSwitchGraceTimer); tabSwitchGraceTimer = null; }
+    teardownSplitScreenDetection();
     examStartTime = null;
     activeQuestions = [];
     currentIndex = 0;
@@ -1213,6 +1214,7 @@
 
     setupBeforeUnload();
     setupTabSwitchDetection();
+    setupSplitScreenDetection();
     startTimer();
     renderQuestion();
   }
@@ -1366,6 +1368,7 @@
   function showDQScreen() {
     if (tabSwitchGraceTimer) { clearTimeout(tabSwitchGraceTimer); tabSwitchGraceTimer = null; }
     document.removeEventListener('visibilitychange', onTabSwitch);
+    teardownSplitScreenDetection();
     stopSpeaking();
     stopTimer();
     examInProgress = false;
@@ -1416,6 +1419,89 @@
         }, 500);
       }
     }, 4000);
+  }
+
+  // ========== Split-screen / PiP detection ==========
+  var splitScreenInitW = 0;
+  var splitScreenInitH = 0;
+  var splitScreenBlurTimer = null;
+  var SPLIT_RESIZE_RATIO = 0.65; // trigger if window shrinks below 65% of original
+
+  function setupSplitScreenDetection() {
+    splitScreenInitW = window.innerWidth;
+    splitScreenInitH = window.innerHeight;
+    window.addEventListener('resize', onSplitResize);
+    window.addEventListener('blur', onWindowBlur);
+    window.addEventListener('focus', onWindowFocus);
+  }
+
+  function teardownSplitScreenDetection() {
+    window.removeEventListener('resize', onSplitResize);
+    window.removeEventListener('blur', onWindowBlur);
+    window.removeEventListener('focus', onWindowFocus);
+    if (splitScreenBlurTimer) { clearTimeout(splitScreenBlurTimer); splitScreenBlurTimer = null; }
+  }
+
+  function onSplitResize() {
+    if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
+    if (splitScreenInitW === 0) return;
+    var wRatio = window.innerWidth / splitScreenInitW;
+    var hRatio = window.innerHeight / splitScreenInitH;
+    // If either dimension drops significantly — split screen detected
+    if (wRatio < SPLIT_RESIZE_RATIO || hRatio < SPLIT_RESIZE_RATIO) {
+      // Treat as tab-switch — reuse existing DQ logic
+      tabSwitchDQConfirmed = true;
+      try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+      sendDQToServer();
+      showDQScreen();
+    }
+  }
+
+  function onWindowBlur() {
+    if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
+    // Window lost focus — could be split-screen tap on other app
+    // Use same grace/warning logic as tab switch
+    if (tabSwitchWarnings >= TAB_SWITCH_MAX_WARNINGS) {
+      // Already warned — immediate DQ
+      tabSwitchDQConfirmed = true;
+      try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+      sendDQToServer();
+      showDQScreen();
+    } else {
+      // Start grace timer (same as tab switch)
+      if (!tabSwitchGraceTimer && document.visibilityState === 'visible') {
+        tabHiddenAt = Date.now();
+        splitScreenBlurTimer = setTimeout(function() {
+          // Still blurred after grace — DQ
+          splitScreenBlurTimer = null;
+          if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
+          tabSwitchDQConfirmed = true;
+          try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+          sendDQToServer();
+          showDQScreen();
+        }, TAB_SWITCH_GRACE_MS);
+      }
+    }
+  }
+
+  function onWindowFocus() {
+    if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
+    if (splitScreenBlurTimer) {
+      clearTimeout(splitScreenBlurTimer);
+      var awayMs = tabHiddenAt ? (Date.now() - tabHiddenAt) : 0;
+      splitScreenBlurTimer = null;
+      if (awayMs >= TAB_SWITCH_CALL_MS) {
+        // Was away 5+ sec — DQ
+        tabSwitchDQConfirmed = true;
+        try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+        sendDQToServer();
+        showDQScreen();
+      } else {
+        // Quick return — warn
+        tabSwitchWarnings++;
+        showTabSwitchWarning();
+      }
+    }
   }
 
   function getElapsedTimeStr() {
@@ -2166,6 +2252,7 @@
   // ========== Exam done ==========
   function renderExamDone() {
     stopSpeaking(); stopTimer();
+    teardownSplitScreenDetection();
     examInProgress = false;
     examSubmitted = true;
 
