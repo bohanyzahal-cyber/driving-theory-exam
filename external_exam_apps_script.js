@@ -189,6 +189,9 @@ function doGet(e) {
       case 'debugResults':
         return handleDebugResults();
 
+      case 'commanderDashboard':
+        return handleCommanderDashboard(p);
+
       case 'submitResult':
         // Decode wrongAnswers from JSON string parameter
         var resultData = {
@@ -306,7 +309,7 @@ function handleLogin(p) {
     if (normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
       if (String(data[i][2]) === String(p.password)) {
         if (data[i][3] === 'כן' || data[i][3] === true || data[i][3] === 'TRUE') {
-          return jsonResponse({ status: 'ok', examiner: { name: data[i][0], id: normalizeId(data[i][1]), examinerNumber: String(data[i][4] || '') } });
+          return jsonResponse({ status: 'ok', examiner: { name: data[i][0], id: normalizeId(data[i][1]), examinerNumber: String(data[i][4] || ''), role: String(data[i][5] || 'בוחן') } });
         } else {
           return jsonResponse({ status: 'error', message: 'החשבון אינו פעיל' });
         }
@@ -1250,4 +1253,128 @@ function handleGetUploadResult(p) {
     return jsonResponse({ status: 'error', message: result.error });
   }
   return jsonResponse({ status: 'ok', link: result.link });
+}
+
+// ========== Commander Dashboard ==========
+
+function parseDateParam(str) {
+  if (!str) return null;
+  var parts = String(str).split('/');
+  if (parts.length !== 3) return null;
+  var d = parseInt(parts[0], 10);
+  var m = parseInt(parts[1], 10) - 1;
+  var y = parseInt(parts[2], 10);
+  if (isNaN(d) || isNaN(m) || isNaN(y)) return null;
+  return new Date(y, m, d);
+}
+
+function parseSheetDate(val) {
+  if (val instanceof Date) return val;
+  var s = String(val || '');
+  var match = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (match) return new Date(parseInt(match[3]), parseInt(match[2]) - 1, parseInt(match[1]));
+  var d = new Date(s);
+  if (!isNaN(d.getTime())) return d;
+  return null;
+}
+
+function handleCommanderDashboard(p) {
+  // Verify role
+  var exSheet = getSheet('בוחנים');
+  var exData = exSheet.getDataRange().getValues();
+  var role = '';
+  for (var i = 1; i < exData.length; i++) {
+    if (normalizeId(exData[i][1]) === normalizeId(p.examinerId)) {
+      role = String(exData[i][5] || 'בוחן');
+      break;
+    }
+  }
+  if (role !== 'מפקד') {
+    return jsonResponse({ status: 'error', message: 'אין הרשאת מפקד' });
+  }
+
+  // Parse date range
+  var dateFrom = parseDateParam(p.dateFrom);
+  var dateTo = parseDateParam(p.dateTo);
+  if (!dateFrom || !dateTo) {
+    return jsonResponse({ status: 'error', message: 'תאריכים לא תקינים' });
+  }
+  dateTo.setHours(23, 59, 59, 999);
+
+  // Read results
+  var resSheet = getSheet('תוצאות');
+  var resData = resSheet.getDataRange().getValues();
+
+  // Aggregate
+  var overall = { total: 0, passed: 0, failed: 0, disqualified: 0, scores: [] };
+  var byExaminer = {};
+  var bySite = {};
+  var byLicense = {};
+  var byPopulation = {};
+
+  for (var r = 1; r < resData.length; r++) {
+    var rowDate = parseSheetDate(resData[r][0]);
+    if (!rowDate || rowDate < dateFrom || rowDate > dateTo) continue;
+
+    var examinerName = String(resData[r][9] || '');
+    var siteName = String(resData[r][10] || '');
+    var license = String(resData[r][4] || '');
+    var population = String(resData[r][19] || '');
+    var passedStr = String(resData[r][7] || '');
+    var isDQ = resData[r][17] === true || String(resData[r][17]).toUpperCase() === 'TRUE' || passedStr === 'פסול';
+    var isPassed = !isDQ && (passedStr === 'עבר');
+
+    var pctVal = 0;
+    var pctStr = String(resData[r][6] || '');
+    if (pctStr.indexOf('%') !== -1) {
+      pctVal = parseFloat(pctStr.replace('%', '')) || 0;
+    } else {
+      var pctNum = Number(resData[r][6]);
+      if (!isNaN(pctNum)) {
+        pctVal = pctNum <= 1 ? pctNum * 100 : pctNum;
+      }
+    }
+
+    overall.total++;
+    if (isDQ) overall.disqualified++;
+    else if (isPassed) overall.passed++;
+    else overall.failed++;
+    overall.scores.push(pctVal);
+
+    addToGroup(byExaminer, examinerName || 'לא צוין', isPassed, isDQ, pctVal);
+    addToGroup(bySite, siteName || 'לא צוין', isPassed, isDQ, pctVal);
+    addToGroup(byLicense, license || 'לא צוין', isPassed, isDQ, pctVal);
+    addToGroup(byPopulation, population || 'לא צוין', isPassed, isDQ, pctVal);
+  }
+
+  function addToGroup(map, key, isPassed, isDQ, pctVal) {
+    if (!map[key]) map[key] = { total: 0, passed: 0, failed: 0, disqualified: 0, scores: [] };
+    map[key].total++;
+    if (isDQ) map[key].disqualified++;
+    else if (isPassed) map[key].passed++;
+    else map[key].failed++;
+    map[key].scores.push(pctVal);
+  }
+
+  function computeStats(obj) {
+    var avg = 0, median = 0;
+    if (obj.scores.length > 0) {
+      var sum = 0;
+      for (var s = 0; s < obj.scores.length; s++) sum += obj.scores[s];
+      avg = Math.round(sum / obj.scores.length);
+      var sorted = obj.scores.slice().sort(function(a, b) { return a - b; });
+      var mid = Math.floor(sorted.length / 2);
+      median = sorted.length % 2 !== 0 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+    }
+    var passRate = obj.total > 0 ? Math.round((obj.passed / obj.total) * 100) : 0;
+    return { total: obj.total, passed: obj.passed, failed: obj.failed, disqualified: obj.disqualified, passRate: passRate, avgScore: avg, medianScore: median };
+  }
+
+  var result = { overall: computeStats(overall), byExaminer: {}, bySite: {}, byLicense: {}, byPopulation: {} };
+  for (var ek in byExaminer) result.byExaminer[ek] = computeStats(byExaminer[ek]);
+  for (var sk in bySite) result.bySite[sk] = computeStats(bySite[sk]);
+  for (var lk in byLicense) result.byLicense[lk] = computeStats(byLicense[lk]);
+  for (var pk in byPopulation) result.byPopulation[pk] = computeStats(byPopulation[pk]);
+
+  return jsonResponse({ status: 'ok', data: result });
 }
