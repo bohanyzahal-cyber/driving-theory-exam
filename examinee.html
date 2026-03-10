@@ -1314,8 +1314,18 @@
 
   function sendDQToServer() {
     var url = buildDisqualifyUrl();
+    // Attempt 1: fetch with keepalive
     try { fetch(url, { keepalive: true }); } catch(ex) {}
+    // Attempt 2: Image pixel (immediate backup)
     try { new Image().src = url + '&_t=' + Date.now(); } catch(ex) {}
+    // Attempt 3: retry after 2 seconds
+    setTimeout(function() {
+      try { fetch(url + '&_retry=1', { keepalive: true }); } catch(ex) {}
+    }, 2000);
+    // Attempt 4: retry after 6 seconds
+    setTimeout(function() {
+      try { new Image().src = url + '&_retry=2&_t=' + Date.now(); } catch(ex) {}
+    }, 6000);
   }
 
   function onTabSwitch() {
