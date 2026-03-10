@@ -739,19 +739,24 @@ function handleDisqualify(p) {
     }
   }
 
-  // Check if result already exists in תוצאות
+  // Check if the LATEST result for this examinee in this session is already disqualified
+  // If so, this is a retry from sendDQToServer — skip (idempotent).
+  // If the latest result is NOT disqualified (e.g. examinee re-entered and got DQ'd again),
+  // fall through to create a new result row.
   var sheet = getSheet('תוצאות');
   var data = sheet.getDataRange().getValues();
   for (var i = data.length - 1; i >= 1; i--) {
     if (String(data[i][13]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
-      sheet.getRange(i + 1, 18).setValue(true);  // פסול? — column R (18)
-      sheet.getRange(i + 1, 8).setValue('פסול');
-      SpreadsheetApp.flush();
-      return jsonResponse({ status: 'ok' });
+      if (String(data[i][7]).trim() === 'פסול') {
+        // Latest result is already disqualified — this is a duplicate/retry, skip
+        return jsonResponse({ status: 'ok' });
+      }
+      // Latest result exists but is NOT disqualified — examinee re-entered, mark it and create new DQ row
+      break;
     }
   }
 
-  // No result yet — create disqualified result
+  // Create new disqualified result row
   var sesSheet = getSheet('סשנים');
   var sesData = sesSheet.getDataRange().getValues();
   var license = '', language = 'he', site = '', classroom = '', examinerName = '';
