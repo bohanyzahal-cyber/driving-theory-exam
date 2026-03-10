@@ -2249,7 +2249,7 @@
     var H = [];
     H.push('<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"/>');
     H.push('<meta name="viewport" content="width=device-width,initial-scale=1"/>');
-    H.push('<title>\u05D3\u05D5"\u05D7 \u05D1\u05D5\u05D7\u05DF \u2014 \u05DE\u05D1\u05D7\u05DF \u05EA\u05D0\u05D5\u05E8\u05D9\u05D4</title>');
+    H.push('<title>\u05D3\u05D5"\u05D7 \u05D1\u05D5\u05D7\u05DF \u2014 ' + escHtml(site) + ' \u2014 ' + escHtml(dateStr) + '</title>');
     H.push('<style>');
     H.push('*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}');
     H.push('body{font-family:"Segoe UI",Tahoma,Arial,sans-serif;background:#f0f2f5;color:#333;direction:rtl;padding:20px}');
@@ -2586,7 +2586,7 @@
     var H = [];
     H.push('<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"/>');
     H.push('<meta name="viewport" content="width=device-width,initial-scale=1"/>');
-    H.push('<title>\u05D3\u05D5"\u05D7 \u05DE\u05E0\u05D4\u05DC \u05D0\u05EA\u05E8</title>');
+    H.push('<title>\u05D3\u05D5"\u05D7 \u05DE\u05E0\u05D4\u05DC \u05D0\u05EA\u05E8 \u2014 ' + escHtml(site) + ' \u2014 ' + escHtml(dateStr) + '</title>');
     H.push('<style>');
     H.push('*{box-sizing:border-box;margin:0;padding:0}');
     H.push('body{font-family:"Segoe UI",Tahoma,Arial,sans-serif;background:#f0f2f5;color:#333;direction:rtl;padding:20px}');
@@ -3186,7 +3186,7 @@
 
     var H = [];
     H.push('<!DOCTYPE html><html dir="rtl" lang="he"><head><meta charset="UTF-8">');
-    H.push('<title>דו"ח מפקד — ' + dateLabel + '</title>');
+    H.push('<title>דו"ח מפקד — ' + escapeHtml(examinerData.name) + ' — ' + escapeHtml(dateLabel) + '</title>');
     H.push('<style>');
     H.push('body{font-family:Arial,sans-serif;direction:rtl;margin:20px;color:#1e293b;font-size:13px;}');
     H.push('.header{text-align:center;margin-bottom:16px;}');
