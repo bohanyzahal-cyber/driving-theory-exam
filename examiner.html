@@ -246,6 +246,12 @@
     .cmd-bar-fill { height: 100%; border-radius: 6px; transition: width .5s ease; background: linear-gradient(90deg, #1a73e8, #4fc3f7); }
     .cmd-bar-val { font-size: 12px; color: #475569; min-width: 45px; }
 
+    .cmd-action-btn {
+      padding: 10px 20px; font-size: 14px; font-weight: 700; color: white;
+      border: none; border-radius: 8px; cursor: pointer; min-width: 140px;
+    }
+    .cmd-action-btn:hover { opacity: 0.9; }
+
     @media (max-width: 600px) {
       .cmd-kpi { min-width: 80px; padding: 10px 6px; }
       .cmd-kpi-val { font-size: 1.2rem; }
@@ -473,6 +479,13 @@
     <div class="card" id="cmdComparison" style="display:none;">
       <h3 style="margin:0 0 12px;">השוואת בוחנים</h3>
       <div id="cmdComparisonContent"></div>
+    </div>
+
+    <div class="card" id="cmdActions" style="display:none;text-align:center;">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center;">
+        <button onclick="printCommanderReport()" class="cmd-action-btn" style="background:#1e40af;">🖨️ הדפס / שמור PDF</button>
+        <button onclick="shareCommanderReport()" class="cmd-action-btn" style="background:#25D366;">📤 שתף דו"ח</button>
+      </div>
     </div>
 
     <div class="card" style="text-align:center;">
@@ -3061,6 +3074,7 @@
     document.getElementById('cmdKPIs').style.display = 'none';
     document.getElementById('cmdBreakdowns').style.display = 'none';
     document.getElementById('cmdComparison').style.display = 'none';
+    document.getElementById('cmdActions').style.display = 'none';
 
     apiGet({
       action: 'commanderDashboard',
@@ -3077,6 +3091,7 @@
         document.getElementById('cmdKPIs').style.display = '';
         document.getElementById('cmdBreakdowns').style.display = '';
         document.getElementById('cmdComparison').style.display = '';
+        document.getElementById('cmdActions').style.display = '';
       } else {
         document.getElementById('cmdDateLabel').textContent = resp.message || 'שגיאה בטעינת נתונים';
       }
@@ -3158,6 +3173,187 @@
       html += '</div>';
     }
     document.getElementById('cmdComparisonContent').innerHTML = html;
+  }
+
+  // ========== Commander Report Build / Print / Share ==========
+  function buildCommanderReportHtml() {
+    if (!cmdData || !cmdData.overall) return null;
+    var o = cmdData.overall;
+    var dateLabel = document.getElementById('cmdDateLabel').textContent || '';
+    var now = new Date();
+    var ts = now.getDate() + '/' + (now.getMonth() + 1) + '/' + now.getFullYear() + ' ' +
+      ('0' + now.getHours()).slice(-2) + ':' + ('0' + now.getMinutes()).slice(-2);
+
+    var H = [];
+    H.push('<!DOCTYPE html><html dir="rtl" lang="he"><head><meta charset="UTF-8">');
+    H.push('<title>דו"ח מפקד — ' + dateLabel + '</title>');
+    H.push('<style>');
+    H.push('body{font-family:Arial,sans-serif;direction:rtl;margin:20px;color:#1e293b;font-size:13px;}');
+    H.push('.header{text-align:center;margin-bottom:16px;}');
+    H.push('.header img{height:70px;}');
+    H.push('.header h1{font-size:18px;margin:8px 0 2px;}');
+    H.push('.header .sub{font-size:12px;color:#64748b;}');
+    H.push('.kpis{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:12px 0;}');
+    H.push('.kpi{text-align:center;flex:1;min-width:70px;padding:10px 6px;background:#f0f4f8;border-radius:8px;}');
+    H.push('.kpi-val{font-size:1.3rem;font-weight:700;}');
+    H.push('.kpi-lbl{font-size:10px;color:#64748b;margin-top:2px;}');
+    H.push('.kpi-pass{background:#dcfce7;} .kpi-pass .kpi-val{color:#16a34a;}');
+    H.push('.kpi-fail{background:#fee2e2;} .kpi-fail .kpi-val{color:#dc2626;}');
+    H.push('.kpi-rate{background:#dbeafe;} .kpi-rate .kpi-val{color:#1a73e8;}');
+    H.push('h2{font-size:15px;margin:18px 0 6px;border-bottom:2px solid #e2e8f0;padding-bottom:4px;}');
+    H.push('table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:12px;}');
+    H.push('th{background:#f1f5f9;padding:6px 8px;text-align:right;font-weight:600;border-bottom:2px solid #e2e8f0;}');
+    H.push('td{padding:6px 8px;border-bottom:1px solid #f1f5f9;text-align:right;}');
+    H.push('.good{color:#16a34a;font-weight:600;} .bad{color:#dc2626;font-weight:600;}');
+    H.push('.bar-row{display:flex;align-items:center;gap:8px;margin:4px 0;}');
+    H.push('.bar-label{min-width:80px;font-size:12px;text-align:right;}');
+    H.push('.bar-container{flex:1;height:18px;background:#e2e8f0;border-radius:4px;overflow:hidden;}');
+    H.push('.bar-fill{height:100%;border-radius:4px;background:linear-gradient(90deg,#1a73e8,#4fc3f7);}');
+    H.push('.bar-val{font-size:11px;color:#475569;min-width:40px;}');
+    H.push('.footer{text-align:center;font-size:10px;color:#94a3b8;margin-top:16px;border-top:1px solid #e2e8f0;padding-top:8px;}');
+    H.push('@media print{body{margin:10px;} @page{size:A4;margin:10mm;}}');
+    H.push('</style></head><body>');
+
+    // Header
+    H.push('<div class="header">');
+    if (logoBase64) {
+      H.push('<img src="' + logoBase64 + '" alt="לוגו"/>');
+    }
+    H.push('<h1>דו"ח סיכום מפקד</h1>');
+    H.push('<div class="sub">תקופה: ' + escapeHtml(dateLabel) + ' | הופק: ' + ts + '</div>');
+    H.push('<div class="sub">מפקד: ' + escapeHtml(examinerData.name) + '</div>');
+    H.push('</div>');
+
+    // KPIs
+    H.push('<div class="kpis">');
+    H.push('<div class="kpi"><div class="kpi-val">' + o.total + '</div><div class="kpi-lbl">סה"כ נבחנים</div></div>');
+    H.push('<div class="kpi kpi-pass"><div class="kpi-val">' + o.passed + '</div><div class="kpi-lbl">עברו</div></div>');
+    H.push('<div class="kpi kpi-fail"><div class="kpi-val">' + o.failed + '</div><div class="kpi-lbl">נכשלו</div></div>');
+    H.push('<div class="kpi"><div class="kpi-val">' + o.disqualified + '</div><div class="kpi-lbl">פסולים</div></div>');
+    H.push('<div class="kpi kpi-rate"><div class="kpi-val">' + o.passRate + '%</div><div class="kpi-lbl">אחוז הצלחה</div></div>');
+    H.push('<div class="kpi"><div class="kpi-val">' + o.avgScore + '%</div><div class="kpi-lbl">ממוצע</div></div>');
+    H.push('<div class="kpi"><div class="kpi-val">' + o.medianScore + '%</div><div class="kpi-lbl">חציון</div></div>');
+    H.push('</div>');
+
+    // Breakdown tables
+    var tabs = [
+      { key: 'byExaminer', label: 'פירוט לפי בוחן' },
+      { key: 'bySite', label: 'פירוט לפי אתר' },
+      { key: 'byLicense', label: 'פירוט לפי דרגה' },
+      { key: 'byPopulation', label: 'פירוט לפי אוכלוסיה' }
+    ];
+    for (var t = 0; t < tabs.length; t++) {
+      var section = cmdData[tabs[t].key];
+      if (!section) continue;
+      var keys = Object.keys(section);
+      if (keys.length === 0) continue;
+      H.push('<h2>' + tabs[t].label + '</h2>');
+      H.push('<table><thead><tr>');
+      H.push('<th>' + tabs[t].label.replace('פירוט לפי ', '') + '</th>');
+      H.push('<th>סה"כ</th><th>עברו</th><th>נכשלו</th><th>פסולים</th><th>% הצלחה</th><th>ממוצע</th><th>חציון</th>');
+      H.push('</tr></thead><tbody>');
+      for (var i = 0; i < keys.length; i++) {
+        var row = section[keys[i]];
+        var rc = row.passRate >= 60 ? 'good' : (row.passRate < 40 ? 'bad' : '');
+        H.push('<tr>');
+        H.push('<td style="font-weight:600;">' + escapeHtml(keys[i]) + '</td>');
+        H.push('<td>' + row.total + '</td>');
+        H.push('<td class="good">' + row.passed + '</td>');
+        H.push('<td class="bad">' + row.failed + '</td>');
+        H.push('<td>' + row.disqualified + '</td>');
+        H.push('<td class="' + rc + '">' + row.passRate + '%</td>');
+        H.push('<td>' + row.avgScore + '%</td>');
+        H.push('<td>' + row.medianScore + '%</td>');
+        H.push('</tr>');
+      }
+      H.push('</tbody></table>');
+    }
+
+    // Examiner comparison bars
+    if (cmdData.byExaminer) {
+      var exKeys = Object.keys(cmdData.byExaminer);
+      if (exKeys.length > 0) {
+        exKeys.sort(function(a, b) { return cmdData.byExaminer[b].passRate - cmdData.byExaminer[a].passRate; });
+        var maxT = 0;
+        for (var i = 0; i < exKeys.length; i++) {
+          if (cmdData.byExaminer[exKeys[i]].total > maxT) maxT = cmdData.byExaminer[exKeys[i]].total;
+        }
+        H.push('<h2>השוואת בוחנים</h2>');
+        for (var i = 0; i < exKeys.length; i++) {
+          var row = cmdData.byExaminer[exKeys[i]];
+          var pct = maxT > 0 ? Math.round((row.total / maxT) * 100) : 0;
+          H.push('<div class="bar-row">');
+          H.push('<div class="bar-label">' + escapeHtml(exKeys[i]) + '</div>');
+          H.push('<div class="bar-container"><div class="bar-fill" style="width:' + pct + '%;"></div></div>');
+          H.push('<div class="bar-val">' + row.total + ' | ' + row.passRate + '%</div>');
+          H.push('</div>');
+        }
+      }
+    }
+
+    H.push('<div class="footer">דו"ח זה הופק אוטומטית ממערכת מבחני התאוריה</div>');
+    H.push('</body></html>');
+    return H.join('\n');
+  }
+
+  window.printCommanderReport = function() {
+    if (!cmdData) { alert('אין נתונים להדפסה'); return; }
+    var html = buildCommanderReportHtml();
+    if (!html) { alert('שגיאה ביצירת הדו"ח'); return; }
+
+    var printWin = window.open('', '_blank');
+    if (!printWin) { alert('חלון הדפסה נחסם — אפשר חלונות קופצים'); return; }
+    printWin.document.write(html);
+    printWin.document.close();
+    setTimeout(function() { printWin.print(); }, 400);
+  };
+
+  window.shareCommanderReport = function() {
+    if (!cmdData) { alert('אין נתונים לשיתוף'); return; }
+    var html = buildCommanderReportHtml();
+    if (!html) { alert('שגיאה ביצירת הדו"ח'); return; }
+
+    var dlg = document.getElementById('shareDialog');
+    document.getElementById('shareDialogTitle').textContent = 'שיתוף דו"ח מפקד';
+    document.getElementById('shareDialogContent').innerHTML = '<div style="font-size:14px;color:#64748b;padding:20px 0;">\u23F3 מעלה...</div>';
+    dlg.style.display = 'flex';
+
+    fetch(RESULTS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ html: html })
+    })
+    .then(function(response) { return response.json(); })
+    .then(function(data) {
+      if (data.status === 'ok' && data.link) {
+        showCommanderShareLinks(data.link);
+      } else {
+        document.getElementById('shareDialogContent').innerHTML =
+          '<div style="color:#ef4444;">\u05E9\u05D2\u05D9\u05D0\u05D4: ' + escHtml(data.message || 'Unknown error') + '</div>';
+      }
+    })
+    .catch(function(err) {
+      document.getElementById('shareDialogContent').innerHTML =
+        '<div style="color:#ef4444;">\u05E9\u05D2\u05D9\u05D0\u05EA \u05EA\u05E7\u05E9\u05D5\u05E8\u05EA: ' + escHtml(err.message || '') + '</div>';
+    });
+  };
+
+  function showCommanderShareLinks(link) {
+    var dateLabel = document.getElementById('cmdDateLabel').textContent || '';
+    var msgText = '*\uD83D\uDCCA \u05D3\u05D5"\u05D7 \u05E1\u05D9\u05DB\u05D5\u05DD \u05DE\u05E4\u05E7\u05D3*\n' +
+      '\u05EA\u05E7\u05D5\u05E4\u05D4: ' + dateLabel + '\n' +
+      '\u05DE\u05E4\u05E7\u05D3: ' + (examinerData.name || '') + '\n\n' +
+      '\uD83D\uDCCE \u05E6\u05E4\u05D4 \u05D1\u05D3\u05D5"\u05D7:\n' + link;
+
+    var waUrl = 'https://wa.me/?text=' + encodeURIComponent(msgText);
+
+    var content = '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px;margin:12px 0;word-break:break-all;font-size:13px;direction:ltr;text-align:left;">' + escHtml(link) + '</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:12px;">' +
+      '<a href="' + waUrl + '" target="_blank" style="flex:1;min-width:120px;padding:10px 12px;border-radius:10px;font-size:14px;font-weight:700;text-decoration:none;text-align:center;color:white;background:#25D366;">\uD83D\uDCF1 WhatsApp</a>' +
+      '<button onclick="copyShareLink(this,\'' + link.replace(/'/g, "\\'") + '\')" style="flex:1;min-width:120px;padding:10px 12px;border-radius:10px;font-size:14px;font-weight:700;text-align:center;color:white;background:#64748b;border:none;cursor:pointer;">\uD83D\uDCCB \u05D4\u05E2\u05EA\u05E7 \u05E7\u05D9\u05E9\u05D5\u05E8</button>' +
+      '</div>';
+
+    document.getElementById('shareDialogContent').innerHTML = content;
   }
 
   window.switchToExaminer = function() {
