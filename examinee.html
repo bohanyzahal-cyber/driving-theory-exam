@@ -1312,20 +1312,56 @@
     return API_URL + '?' + qs.join('&');
   }
 
+  var dqServerConfirmed = false;
+
   function sendDQToServer() {
     var url = buildDisqualifyUrl();
-    // Attempt 1: fetch with keepalive
-    try { fetch(url, { keepalive: true }); } catch(ex) {}
-    // Attempt 2: Image pixel (immediate backup)
-    try { new Image().src = url + '&_t=' + Date.now(); } catch(ex) {}
-    // Attempt 3: retry after 2 seconds
+    dqServerConfirmed = false;
+
+    // Method 1: sendBeacon with JSON body (most reliable for background/closing pages)
+    try {
+      if (navigator.sendBeacon) {
+        var beaconData = JSON.stringify({
+          action: 'disqualify',
+          sessionCode: sessionCode,
+          idNumber: examineeData.idNumber
+        });
+        navigator.sendBeacon(API_URL, new Blob([beaconData], { type: 'application/json' }));
+      }
+    } catch(ex) {}
+
+    // Method 2: fetch with redirect follow + confirmation
+    function tryFetch(suffix) {
+      try {
+        fetch(url + (suffix || ''))
+          .then(function(resp) { if (resp.ok || resp.type === 'opaque') dqServerConfirmed = true; })
+          .catch(function() {});
+      } catch(ex) {}
+    }
+    tryFetch('&_m=fetch1');
+
+    // Method 3: Image pixel (immediate backup)
+    try { new Image().src = url + '&_m=img1&_t=' + Date.now(); } catch(ex) {}
+
+    // Method 4: retry fetch after 2 seconds
+    setTimeout(function() { tryFetch('&_m=fetch2&_retry=1'); }, 2000);
+
+    // Method 5: retry Image after 4 seconds
     setTimeout(function() {
-      try { fetch(url + '&_retry=1', { keepalive: true }); } catch(ex) {}
-    }, 2000);
-    // Attempt 4: retry after 6 seconds
+      try { new Image().src = url + '&_m=img2&_retry=2&_t=' + Date.now(); } catch(ex) {}
+    }, 4000);
+
+    // Method 6: open a tiny popup/redirect as last resort after 8 seconds
     setTimeout(function() {
-      try { new Image().src = url + '&_retry=2&_t=' + Date.now(); } catch(ex) {}
-    }, 6000);
+      if (dqServerConfirmed) return;
+      try {
+        var iframe = document.createElement('iframe');
+        iframe.style.display = 'none';
+        iframe.src = url + '&_m=iframe&_retry=3';
+        document.body.appendChild(iframe);
+        setTimeout(function() { try { document.body.removeChild(iframe); } catch(ex) {} }, 10000);
+      } catch(ex) {}
+    }, 8000);
   }
 
   function onTabSwitch() {

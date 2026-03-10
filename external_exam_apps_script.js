@@ -286,6 +286,8 @@ function doPost(e) {
       return handleSubmitWrongAnswersBulk(data);
     } else if (action === 'uploadResultHtml') {
       return handleUploadResultHtml(data);
+    } else if (action === 'disqualify') {
+      return handleDisqualify(data);
     } else {
       return jsonResponse({ status: 'error', message: 'Unknown POST action: ' + action });
     }
