@@ -3071,17 +3071,21 @@
     }
     document.getElementById('cmdDateLabel').textContent = dateFrom + ' — ' + dateTo;
     document.getElementById('cmdLoading').style.display = 'block';
+    document.getElementById('cmdLoading').textContent = 'טוען נתונים...';
+    document.getElementById('cmdLoading').style.color = '#64748b';
     document.getElementById('cmdKPIs').style.display = 'none';
     document.getElementById('cmdBreakdowns').style.display = 'none';
     document.getElementById('cmdComparison').style.display = 'none';
     document.getElementById('cmdActions').style.display = 'none';
 
+    console.log('[CMD] fetching', dateFrom, dateTo);
     apiGet({
       action: 'commanderDashboard',
       examinerId: examinerData.id,
       dateFrom: dateFrom,
       dateTo: dateTo
     }).then(function(resp) {
+      console.log('[CMD] response', resp);
       document.getElementById('cmdLoading').style.display = 'none';
       if (resp.status === 'ok') {
         cmdData = resp.data;
@@ -3093,11 +3097,15 @@
         document.getElementById('cmdComparison').style.display = '';
         document.getElementById('cmdActions').style.display = '';
       } else {
-        document.getElementById('cmdDateLabel').textContent = resp.message || 'שגיאה בטעינת נתונים';
+        document.getElementById('cmdLoading').style.display = 'block';
+        document.getElementById('cmdLoading').textContent = resp.message || 'שגיאה בטעינת נתונים';
+        document.getElementById('cmdLoading').style.color = '#ef4444';
       }
-    }).catch(function() {
-      document.getElementById('cmdLoading').style.display = 'none';
-      document.getElementById('cmdDateLabel').textContent = 'שגיאת תקשורת';
+    }).catch(function(err) {
+      console.error('[CMD] error', err);
+      document.getElementById('cmdLoading').style.display = 'block';
+      document.getElementById('cmdLoading').textContent = 'שגיאת תקשורת: ' + (err.message || 'נסה שוב');
+      document.getElementById('cmdLoading').style.color = '#ef4444';
     });
   };
 
