@@ -195,6 +195,62 @@
       text-align: center; padding: 20px; font-size: 13px; color: #94a3b8;
       border-top: 1px solid #e2e8f0; margin-top: 30px;
     }
+
+    /* Commander dashboard */
+    .cmd-period-btn {
+      background: #e2e8f0; border: none; color: #475569; padding: 8px 16px;
+      border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600;
+      transition: background .2s, color .2s;
+    }
+    .cmd-period-btn:hover { background: #cbd5e1; }
+    .cmd-period-btn.active { background: #1a73e8; color: white; }
+
+    .cmd-kpi {
+      text-align: center; flex: 1; min-width: 100px; padding: 16px 12px;
+      background: #f0f4f8; border-radius: 12px;
+    }
+    .cmd-kpi-val { font-size: 1.6rem; font-weight: 700; color: #1e293b; }
+    .cmd-kpi-lbl { font-size: 12px; color: #64748b; margin-top: 4px; }
+    .cmd-kpi-pass { background: #dcfce7; }
+    .cmd-kpi-pass .cmd-kpi-val { color: #16a34a; }
+    .cmd-kpi-fail { background: #fee2e2; }
+    .cmd-kpi-fail .cmd-kpi-val { color: #dc2626; }
+    .cmd-kpi-rate { background: #dbeafe; }
+    .cmd-kpi-rate .cmd-kpi-val { color: #1a73e8; }
+
+    .cmd-tab-btn {
+      background: #e2e8f0; border: none; color: #475569; padding: 6px 14px;
+      border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600;
+      transition: background .2s, color .2s;
+    }
+    .cmd-tab-btn:hover { background: #cbd5e1; }
+    .cmd-tab-btn.active { background: #1a73e8; color: white; }
+
+    .cmd-table {
+      width: 100%; border-collapse: collapse; font-size: 13px; direction: rtl;
+    }
+    .cmd-table th {
+      background: #f1f5f9; padding: 8px 10px; text-align: right; font-weight: 600;
+      color: #475569; border-bottom: 2px solid #e2e8f0;
+    }
+    .cmd-table td {
+      padding: 8px 10px; border-bottom: 1px solid #f1f5f9; text-align: right;
+    }
+    .cmd-table tr:hover { background: #f8fafc; }
+    .cmd-table .good { color: #16a34a; font-weight: 600; }
+    .cmd-table .bad { color: #dc2626; font-weight: 600; }
+
+    .cmd-bar-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+    .cmd-bar-label { min-width: 100px; font-size: 13px; text-align: right; color: #334155; }
+    .cmd-bar-container { flex: 1; height: 22px; background: #e2e8f0; border-radius: 6px; overflow: hidden; position: relative; }
+    .cmd-bar-fill { height: 100%; border-radius: 6px; transition: width .5s ease; background: linear-gradient(90deg, #1a73e8, #4fc3f7); }
+    .cmd-bar-val { font-size: 12px; color: #475569; min-width: 45px; }
+
+    @media (max-width: 600px) {
+      .cmd-kpi { min-width: 80px; padding: 10px 6px; }
+      .cmd-kpi-val { font-size: 1.2rem; }
+      .cmd-bar-label { min-width: 70px; font-size: 12px; }
+    }
   </style>
 </head>
 <body>
@@ -281,6 +337,7 @@
     </div>
     <div class="form-error" id="setupError"></div>
     <button id="createSessionBtn" style="display:block; width:100%; padding:14px; font-size:17px; margin-top:12px;">פתח סשן</button>
+    <button id="backToCommanderSetup" onclick="switchToCommander()" style="display:none; width:100%; padding:12px; font-size:15px; margin-top:8px; background:#0d47a1;">חזרה ללוח מפקד</button>
 
     <!-- Previous active sessions -->
     <div id="prevSessionsArea" style="display:none; margin-top:24px; border-top:2px solid #e2e8f0; padding-top:20px;">
@@ -320,6 +377,7 @@
       <div style="margin-right:auto;"></div>
       <button style="font-size:13px; padding:6px 12px; background:#64748b;" onclick="openSettingsModal()">שנה הגדרות</button>
       <button style="font-size:13px; padding:6px 12px; background:#ef4444;" onclick="confirmCloseSession()">סגור סשן</button>
+      <button id="backToCommanderBtn" style="display:none; font-size:13px; padding:6px 12px; background:#0d47a1;" onclick="switchToCommander()">חזרה למפקד</button>
     </div>
 
     <!-- Pending -->
@@ -365,6 +423,61 @@
       </div>
     </div>
 
+  </div>
+
+  <!-- ===== Screen 4: Commander Dashboard ===== -->
+  <div class="screen" id="screenCommander">
+    <div class="card" style="text-align:center;">
+      <h2 style="margin:0 0 12px;">לוח מפקד — סיכום נתונים</h2>
+      <div id="cmdPeriodBtns" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:12px 0;">
+        <button class="cmd-period-btn active" data-period="daily">יומי</button>
+        <button class="cmd-period-btn" data-period="weekly">שבועי</button>
+        <button class="cmd-period-btn" data-period="monthly">חודשי</button>
+        <button class="cmd-period-btn" data-period="quarterly">תלת חודשי</button>
+        <button class="cmd-period-btn" data-period="yearly">שנתי</button>
+        <button class="cmd-period-btn" data-period="custom">מותאם</button>
+      </div>
+      <div id="cmdCustomRange" style="display:none;margin:12px auto;max-width:400px;">
+        <div style="display:flex;gap:8px;align-items:center;justify-content:center;">
+          <label style="font-size:13px;">מ-<input type="date" id="cmdDateFrom" style="padding:6px;border-radius:6px;border:1px solid #cbd5e1;"></label>
+          <label style="font-size:13px;">עד<input type="date" id="cmdDateTo" style="padding:6px;border-radius:6px;border:1px solid #cbd5e1;"></label>
+          <button onclick="fetchCommanderData()" style="padding:6px 16px;font-size:13px;background:#1a73e8;color:white;border:none;border-radius:6px;cursor:pointer;">הצג</button>
+        </div>
+      </div>
+      <div id="cmdDateLabel" style="font-size:13px;color:#64748b;margin-top:4px;"></div>
+      <div id="cmdLoading" style="display:none;margin:12px 0;color:#64748b;">טוען נתונים...</div>
+    </div>
+
+    <div id="cmdKPIs" class="card" style="display:none;">
+      <div style="display:flex;gap:16px;flex-wrap:wrap;justify-content:center;">
+        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdTotal">0</div><div class="cmd-kpi-lbl">סה"כ נבחנים</div></div>
+        <div class="cmd-kpi cmd-kpi-pass"><div class="cmd-kpi-val" id="cmdPassed">0</div><div class="cmd-kpi-lbl">עברו</div></div>
+        <div class="cmd-kpi cmd-kpi-fail"><div class="cmd-kpi-val" id="cmdFailed">0</div><div class="cmd-kpi-lbl">נכשלו</div></div>
+        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdDQ">0</div><div class="cmd-kpi-lbl">פסולים</div></div>
+        <div class="cmd-kpi cmd-kpi-rate"><div class="cmd-kpi-val" id="cmdPassRate">0%</div><div class="cmd-kpi-lbl">אחוז הצלחה</div></div>
+        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdAvg">0%</div><div class="cmd-kpi-lbl">ציון ממוצע</div></div>
+        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdMedian">0%</div><div class="cmd-kpi-lbl">חציון</div></div>
+      </div>
+    </div>
+
+    <div class="card" id="cmdBreakdowns" style="display:none;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+        <button class="cmd-tab-btn active" data-tab="byExaminer">לפי בוחן</button>
+        <button class="cmd-tab-btn" data-tab="bySite">לפי אתר</button>
+        <button class="cmd-tab-btn" data-tab="byLicense">לפי דרגה</button>
+        <button class="cmd-tab-btn" data-tab="byPopulation">לפי אוכלוסיה</button>
+      </div>
+      <div id="cmdBreakdownContent" style="overflow-x:auto;"></div>
+    </div>
+
+    <div class="card" id="cmdComparison" style="display:none;">
+      <h3 style="margin:0 0 12px;">השוואת בוחנים</h3>
+      <div id="cmdComparisonContent"></div>
+    </div>
+
+    <div class="card" style="text-align:center;">
+      <button onclick="switchToExaminer()" style="padding:12px 24px;font-size:15px;background:#0d47a1;color:white;border:none;border-radius:8px;cursor:pointer;">מעבר ללוח בוחן (פתיחת סשן)</button>
+    </div>
   </div>
 
 </main>
@@ -473,6 +586,9 @@
   var prevPendingIds = {};
   var completedResults = [];
   var phoneOverrides = {}; // idNumber → corrected phone
+  var userRole = 'בוחן';
+  var cmdData = null; // cached commander dashboard data
+  var cmdCurrentTab = 'byExaminer';
 
   // ========== Session persistence ==========
   function saveState() {
@@ -564,16 +680,24 @@
       btn.disabled = false; btn.textContent = 'כניסה';
       if (data.status === 'ok') {
         examinerData = data.examiner;
+        userRole = examinerData.role || 'בוחן';
         // Save credentials if "remember me" is checked
         if (document.getElementById('rememberMe').checked) {
           try { localStorage.setItem('ext_examiner_remember', JSON.stringify({ id: id, pass: obfuscate(pass) })); } catch(e) {}
         }
         document.getElementById('topbarInfo').textContent = examinerData.name;
         document.getElementById('logoutBtn').style.display = 'inline-block';
-        document.getElementById('setupExaminerName').textContent = 'שלום, ' + examinerData.name;
-        showScreen('screenSetup');
-        fetchSites();
-        fetchPreviousSessions();
+        if (userRole === 'מפקד') {
+          document.querySelector('.topbar h1').textContent = 'לוח בקרה — מפקד';
+          showScreen('screenCommander');
+          initCommanderDashboard();
+        } else {
+          document.querySelector('.topbar h1').textContent = 'לוח בקרה — בוחן';
+          document.getElementById('setupExaminerName').textContent = 'שלום, ' + examinerData.name;
+          showScreen('screenSetup');
+          fetchSites();
+          fetchPreviousSessions();
+        }
       } else {
         errEl.textContent = data.message || 'שגיאת כניסה';
         errEl.style.display = 'block';
@@ -589,9 +713,10 @@
     stopDashboardPolling();
     clearState();
     try { localStorage.removeItem('ext_examiner_remember'); } catch(e) {}
-    examinerData = null; sessionCode = '';
+    examinerData = null; sessionCode = ''; userRole = 'בוחן'; cmdData = null;
     document.getElementById('logoutBtn').style.display = 'none';
     document.getElementById('topbarInfo').textContent = '';
+    document.querySelector('.topbar h1').textContent = 'לוח בקרה — בוחן';
     document.getElementById('loginId').value = '';
     document.getElementById('loginPass').value = '';
     document.getElementById('rememberMe').checked = false;
@@ -782,6 +907,9 @@
     if (sessionCode && /^\d{6}$/.test(sessionCode)) {
       showQR(sessionCode);
     }
+    // Show "back to commander" button if user is a commander
+    var bcBtn = document.getElementById('backToCommanderBtn');
+    if (bcBtn) bcBtn.style.display = (examinerData && examinerData.role === 'מפקד') ? '' : 'none';
   }
 
   function startDashboardPolling() {
@@ -2840,24 +2968,240 @@
     return EXAMINEE_BASE_URL + '?code=' + code;
   }
 
+  // ========== Commander Dashboard ==========
+  function getDateRange(period) {
+    var now = new Date();
+    var to = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    var from;
+    switch (period) {
+      case 'daily':
+        from = new Date(to);
+        break;
+      case 'weekly':
+        from = new Date(to);
+        from.setDate(from.getDate() - 7);
+        break;
+      case 'monthly':
+        from = new Date(to);
+        from.setMonth(from.getMonth() - 1);
+        break;
+      case 'quarterly':
+        from = new Date(to);
+        from.setMonth(from.getMonth() - 3);
+        break;
+      case 'yearly':
+        from = new Date(to);
+        from.setFullYear(from.getFullYear() - 1);
+        break;
+      default:
+        from = new Date(to);
+    }
+    return { from: from, to: to };
+  }
+
+  function fmtDateDDMMYYYY(d) {
+    var dd = ('0' + d.getDate()).slice(-2);
+    var mm = ('0' + (d.getMonth() + 1)).slice(-2);
+    return dd + '/' + mm + '/' + d.getFullYear();
+  }
+
+  function fmtDateLabel(d) {
+    return d.getDate() + '/' + (d.getMonth() + 1) + '/' + d.getFullYear();
+  }
+
+  function initCommanderDashboard() {
+    var btns = document.querySelectorAll('#cmdPeriodBtns .cmd-period-btn');
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].addEventListener('click', function() {
+        var allBtns = document.querySelectorAll('#cmdPeriodBtns .cmd-period-btn');
+        for (var j = 0; j < allBtns.length; j++) allBtns[j].classList.remove('active');
+        this.classList.add('active');
+        var period = this.getAttribute('data-period');
+        if (period === 'custom') {
+          document.getElementById('cmdCustomRange').style.display = 'block';
+        } else {
+          document.getElementById('cmdCustomRange').style.display = 'none';
+          fetchCommanderData(period);
+        }
+      });
+    }
+    // Tab buttons
+    var tabBtns = document.querySelectorAll('.cmd-tab-btn');
+    for (var i = 0; i < tabBtns.length; i++) {
+      tabBtns[i].addEventListener('click', function() {
+        var allTabs = document.querySelectorAll('.cmd-tab-btn');
+        for (var j = 0; j < allTabs.length; j++) allTabs[j].classList.remove('active');
+        this.classList.add('active');
+        cmdCurrentTab = this.getAttribute('data-tab');
+        if (cmdData) renderBreakdownTable(cmdData, cmdCurrentTab);
+      });
+    }
+    // Load default (daily)
+    fetchCommanderData('daily');
+  }
+
+  window.fetchCommanderData = function(period) {
+    var dateFrom, dateTo;
+    if (period && period !== 'custom') {
+      var range = getDateRange(period);
+      dateFrom = fmtDateDDMMYYYY(range.from);
+      dateTo = fmtDateDDMMYYYY(range.to);
+    } else {
+      // Custom range
+      var fromInput = document.getElementById('cmdDateFrom').value;
+      var toInput = document.getElementById('cmdDateTo').value;
+      if (!fromInput || !toInput) return;
+      var fd = new Date(fromInput);
+      var td = new Date(toInput);
+      dateFrom = fmtDateDDMMYYYY(fd);
+      dateTo = fmtDateDDMMYYYY(td);
+    }
+    document.getElementById('cmdDateLabel').textContent = dateFrom + ' — ' + dateTo;
+    document.getElementById('cmdLoading').style.display = 'block';
+    document.getElementById('cmdKPIs').style.display = 'none';
+    document.getElementById('cmdBreakdowns').style.display = 'none';
+    document.getElementById('cmdComparison').style.display = 'none';
+
+    apiGet({
+      action: 'commanderDashboard',
+      examinerId: examinerData.id,
+      dateFrom: dateFrom,
+      dateTo: dateTo
+    }).then(function(resp) {
+      document.getElementById('cmdLoading').style.display = 'none';
+      if (resp.status === 'ok') {
+        cmdData = resp.data;
+        renderCommanderKPIs(cmdData.overall);
+        renderBreakdownTable(cmdData, cmdCurrentTab);
+        renderExaminerComparison(cmdData.byExaminer);
+        document.getElementById('cmdKPIs').style.display = '';
+        document.getElementById('cmdBreakdowns').style.display = '';
+        document.getElementById('cmdComparison').style.display = '';
+      } else {
+        document.getElementById('cmdDateLabel').textContent = resp.message || 'שגיאה בטעינת נתונים';
+      }
+    }).catch(function() {
+      document.getElementById('cmdLoading').style.display = 'none';
+      document.getElementById('cmdDateLabel').textContent = 'שגיאת תקשורת';
+    });
+  };
+
+  function renderCommanderKPIs(o) {
+    if (!o) return;
+    document.getElementById('cmdTotal').textContent = o.total;
+    document.getElementById('cmdPassed').textContent = o.passed;
+    document.getElementById('cmdFailed').textContent = o.failed;
+    document.getElementById('cmdDQ').textContent = o.disqualified;
+    document.getElementById('cmdPassRate').textContent = o.passRate + '%';
+    document.getElementById('cmdAvg').textContent = o.avgScore + '%';
+    document.getElementById('cmdMedian').textContent = o.medianScore + '%';
+  }
+
+  function renderBreakdownTable(data, tab) {
+    var section = data[tab];
+    if (!section) { document.getElementById('cmdBreakdownContent').innerHTML = '<p style="color:#94a3b8;">אין נתונים</p>'; return; }
+    var keys = Object.keys(section);
+    if (keys.length === 0) { document.getElementById('cmdBreakdownContent').innerHTML = '<p style="color:#94a3b8;">אין נתונים</p>'; return; }
+
+    var tabLabels = { byExaminer: 'בוחן', bySite: 'אתר', byLicense: 'דרגה', byPopulation: 'אוכלוסיה' };
+    var html = '<table class="cmd-table"><thead><tr>';
+    html += '<th>' + (tabLabels[tab] || '') + '</th>';
+    html += '<th>סה"כ</th><th>עברו</th><th>נכשלו</th><th>פסולים</th><th>% הצלחה</th><th>ממוצע</th><th>חציון</th>';
+    html += '</tr></thead><tbody>';
+
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      var row = section[k];
+      var rateClass = row.passRate >= 60 ? 'good' : (row.passRate < 40 ? 'bad' : '');
+      html += '<tr>';
+      html += '<td style="font-weight:600;">' + escapeHtml(k) + '</td>';
+      html += '<td>' + row.total + '</td>';
+      html += '<td class="good">' + row.passed + '</td>';
+      html += '<td class="bad">' + row.failed + '</td>';
+      html += '<td>' + row.disqualified + '</td>';
+      html += '<td class="' + rateClass + '">' + row.passRate + '%</td>';
+      html += '<td>' + row.avgScore + '%</td>';
+      html += '<td>' + row.medianScore + '%</td>';
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+    document.getElementById('cmdBreakdownContent').innerHTML = html;
+  }
+
+  function escapeHtml(str) {
+    var div = document.createElement('div');
+    div.appendChild(document.createTextNode(str));
+    return div.innerHTML;
+  }
+
+  function renderExaminerComparison(byExaminer) {
+    if (!byExaminer) { document.getElementById('cmdComparisonContent').innerHTML = ''; return; }
+    var keys = Object.keys(byExaminer);
+    if (keys.length < 1) { document.getElementById('cmdComparisonContent').innerHTML = '<p style="color:#94a3b8;">אין מספיק נתונים להשוואה</p>'; return; }
+
+    // Sort by passRate descending
+    keys.sort(function(a, b) { return byExaminer[b].passRate - byExaminer[a].passRate; });
+    var maxTotal = 0;
+    for (var i = 0; i < keys.length; i++) {
+      if (byExaminer[keys[i]].total > maxTotal) maxTotal = byExaminer[keys[i]].total;
+    }
+
+    var html = '';
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      var row = byExaminer[k];
+      var pct = maxTotal > 0 ? Math.round((row.total / maxTotal) * 100) : 0;
+      html += '<div class="cmd-bar-row">';
+      html += '<div class="cmd-bar-label">' + escapeHtml(k) + '</div>';
+      html += '<div class="cmd-bar-container"><div class="cmd-bar-fill" style="width:' + pct + '%;"></div></div>';
+      html += '<div class="cmd-bar-val">' + row.total + ' | ' + row.passRate + '%</div>';
+      html += '</div>';
+    }
+    document.getElementById('cmdComparisonContent').innerHTML = html;
+  }
+
+  window.switchToExaminer = function() {
+    document.querySelector('.topbar h1').textContent = 'לוח בקרה — בוחן';
+    document.getElementById('setupExaminerName').textContent = 'שלום, ' + examinerData.name;
+    showScreen('screenSetup');
+    fetchSites();
+    fetchPreviousSessions();
+    // Show "back to commander" on setup screen
+    document.getElementById('backToCommanderSetup').style.display = '';
+  };
+
+  window.switchToCommander = function() {
+    showScreen('screenCommander');
+    document.querySelector('.topbar h1').textContent = 'לוח בקרה — מפקד';
+  };
+
   // ========== Auto-restore on page load ==========
   if (loadState()) {
+    userRole = (examinerData && examinerData.role) || 'בוחן';
     // We have a saved session — check if it's still valid
     if (sessionValidUntil && new Date() < sessionValidUntil) {
       document.getElementById('topbarInfo').textContent = examinerData.name + ' | ' + currentSite + ' | \u05DB\u05D9\u05EA\u05D4 ' + currentClassroom;
       document.getElementById('logoutBtn').style.display = 'inline-block';
+      document.querySelector('.topbar h1').textContent = 'לוח בקרה — בוחן';
       renderDashboard();
       showScreen('screenDashboard');
       startDashboardPolling();
       startCountdown();
     } else {
-      // Session expired — go to setup screen with examiner logged in
+      // Session expired — go to appropriate screen based on role
       document.getElementById('topbarInfo').textContent = examinerData.name;
       document.getElementById('logoutBtn').style.display = 'inline-block';
-      document.getElementById('setupExaminerName').textContent = '\u05E9\u05DC\u05D5\u05DD, ' + examinerData.name;
       clearState();
-      showScreen('screenSetup');
-      fetchSites();
+      if (userRole === 'מפקד') {
+        document.querySelector('.topbar h1').textContent = 'לוח בקרה — מפקד';
+        showScreen('screenCommander');
+        initCommanderDashboard();
+      } else {
+        document.querySelector('.topbar h1').textContent = 'לוח בקרה — בוחן';
+        document.getElementById('setupExaminerName').textContent = '\u05E9\u05DC\u05D5\u05DD, ' + examinerData.name;
+        showScreen('screenSetup');
+        fetchSites();
+      }
     }
   } else {
     // No active session — try "remember me" auto-login
