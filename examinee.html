@@ -2685,10 +2685,12 @@
       for (var ki = 0; ki < keysToRetry.length; ki++) {
         var pending = JSON.parse(localStorage.getItem(keysToRetry[ki]));
         if (pending && pending.action === 'submitResult' && pending.sessionCode) {
-          // If a different examinee is currently active, just retry silently in background
-          var isSameExaminee = !currentId || currentId === pending.idNumber;
+          // If a different examinee is active or arriving via QR, retry silently
+          var hasUrlCode = false;
+          try { hasUrlCode = !!(new URLSearchParams(window.location.search).get('code')); } catch(ue) {}
+          var isSameExaminee = currentId && currentId === pending.idNumber;
           console.log('[RETRY] Found pending result for ' + pending.idNumber + (isSameExaminee ? ' (current)' : ' (other)') + ', retrying...');
-          if (isSameExaminee && !hasRestoredSession) {
+          if (isSameExaminee && !hasRestoredSession && !hasUrlCode) {
             // Only show done screen if no other session is active
             var nameEl = document.getElementById('doneNameDisplay');
             if (nameEl) nameEl.textContent = pending.fullName || '';
