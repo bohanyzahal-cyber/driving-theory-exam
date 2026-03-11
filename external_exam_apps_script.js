@@ -11,7 +11,7 @@ var SHEET_HEADERS = {
   'אתרים': ['שם אתר', 'מזהה', 'טלפון מנהל', 'כיתות'],
   'סשנים': ['קוד', 'בוחן ת.ז.', 'שם בוחן', 'אתר', 'כיתה', 'דרגה', 'שפה', 'מצב שמע', 'זמן יצירה', 'תקף עד', 'פעיל'],
   'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה', 'דרגה', 'שמע', 'הארכת זמן'],
-  'תוצאות': ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר', 'כיתה', 'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ', 'אוכלוסיה', 'תוקן?', 'שמע']
+  'תוצאות': ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר', 'כיתה', 'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ', 'אוכלוסיה', 'תוקן?', 'שמע', 'מאומת', 'חשוד', 'dqEventId']
 };
 
 function getSheet(name) {
@@ -907,19 +907,18 @@ function handleDisqualify(p) {
     }
   }
 
-  // Check if the LATEST result for this examinee in this session is already disqualified
-  // If so, this is a retry from sendDQToServer — skip (idempotent).
-  // If the latest result is NOT disqualified (e.g. examinee re-entered and got DQ'd again),
-  // fall through to create a new result row.
+  // Idempotency: if the latest result is already "פסול" with the SAME dqEventId, this is a retry — skip.
+  // Different dqEventId or no dqEventId = new DQ event → create new row.
+  var dqEventId = String(p.dqEventId || '');
   var sheet = getSheet('תוצאות');
   var data = sheet.getDataRange().getValues();
   for (var i = data.length - 1; i >= 1; i--) {
     if (String(data[i][13]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
-      if (String(data[i][7]).trim() === 'פסול') {
-        // Latest result is already disqualified — this is a duplicate/retry, skip
+      if (String(data[i][7]).trim() === 'פסול' && dqEventId && String(data[i][24] || '') === dqEventId) {
+        // Same DQ event — retry from sendDQToServer, skip
         return jsonResponse({ status: 'ok' });
       }
-      // Latest result exists but is NOT disqualified — examinee re-entered, mark it and create new DQ row
+      // Either latest is not "פסול", or different/missing dqEventId → new attempt, create new row
       break;
     }
   }
@@ -945,7 +944,7 @@ function handleDisqualify(p) {
     '0/30', '0%', 'פסול', '', examinerName,
     site, classroom, language, String(p.sessionCode),
     attemptNum, '', false, true, '',
-    population, false, examineeAudio
+    population, false, examineeAudio, '', '', dqEventId
   ]);
   SpreadsheetApp.flush();
   return jsonResponse({ status: 'ok' });
@@ -969,16 +968,20 @@ function handleCancelDisqualify(p) {
     }
   }
 
-  // 2. Delete the latest DQ result row (פסול) for this session+ID
+  // 2. Delete the DQ result row matching this dqEventId (or latest פסול if no eventId)
+  var dqEventId = String(p.dqEventId || '');
   var resSheet = getSheet('תוצאות');
   var resData = resSheet.getDataRange().getValues();
   for (var i = resData.length - 1; i >= 1; i--) {
     if (String(resData[i][13]) === sc && normalizeId(resData[i][1]) === id) {
       if (String(resData[i][7]).trim() === 'פסול') {
-        resSheet.deleteRow(i + 1);
-        break;
+        // Only delete if dqEventId matches (or if no eventId provided for backwards compat)
+        if (!dqEventId || String(resData[i][24] || '') === dqEventId) {
+          resSheet.deleteRow(i + 1);
+          break;
+        }
       }
-      // If latest result is NOT פסול, the DQ was already overwritten or never created — stop
+      // If latest result is NOT פסול or eventId doesn't match — stop
       break;
     }
   }

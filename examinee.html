@@ -800,7 +800,8 @@
         examDeadline: examDeadline,
         examStartTime: examStartTime,
         autoReadEnabled: autoReadEnabled,
-        examTimeMinutes: examTimeMinutes
+        examTimeMinutes: examTimeMinutes,
+        currentDQEventId: currentDQEventId
       }));
     } catch(e) {}
   }
@@ -1362,7 +1363,8 @@
               navigator.sendBeacon(API_URL, new Blob([JSON.stringify({
                 action: 'disqualify',
                 sessionCode: sessionCode,
-                idNumber: examineeData.idNumber
+                idNumber: examineeData.idNumber,
+                dqEventId: currentDQEventId
               })], { type: 'application/json' }));
             }
           } catch(ex) {}
@@ -1424,7 +1426,8 @@
     var params = {
       action: 'disqualify',
       sessionCode: sessionCode,
-      idNumber: examineeData.idNumber
+      idNumber: examineeData.idNumber,
+      dqEventId: currentDQEventId
     };
     var qs = [];
     for (var k in params) {
@@ -1435,6 +1438,7 @@
 
   var dqServerConfirmed = false;
   var provisionalDQSent = false;  // true when provisional DQ was sent (waiting for grace timer)
+  var currentDQEventId = '';      // unique ID per DQ event — allows server to distinguish retries from new attempts
 
   function sendDQToServer() {
     var url = buildDisqualifyUrl();
@@ -1446,7 +1450,8 @@
         var beaconData = JSON.stringify({
           action: 'disqualify',
           sessionCode: sessionCode,
-          idNumber: examineeData.idNumber
+          idNumber: examineeData.idNumber,
+          dqEventId: currentDQEventId
         });
         navigator.sendBeacon(API_URL, new Blob([beaconData], { type: 'application/json' }));
       }
@@ -1488,18 +1493,20 @@
 
   // Cancel a provisional DQ — called when examinee returns within grace period
   function sendCancelDQToServer() {
+    var eid = currentDQEventId;
     try {
       if (navigator.sendBeacon) {
         navigator.sendBeacon(API_URL, new Blob([JSON.stringify({
           action: 'cancelDisqualify',
           sessionCode: sessionCode,
-          idNumber: examineeData.idNumber
+          idNumber: examineeData.idNumber,
+          dqEventId: eid
         })], { type: 'application/json' }));
       }
     } catch(ex) {}
     // Also try fetch as backup
     try {
-      var params = 'action=cancelDisqualify&sessionCode=' + encodeURIComponent(sessionCode) + '&idNumber=' + encodeURIComponent(examineeData.idNumber);
+      var params = 'action=cancelDisqualify&sessionCode=' + encodeURIComponent(sessionCode) + '&idNumber=' + encodeURIComponent(examineeData.idNumber) + '&dqEventId=' + encodeURIComponent(eid);
       fetch(API_URL + '?' + params).catch(function() {});
     } catch(ex) {}
   }
@@ -1513,6 +1520,7 @@
         // Already used their chance — immediate final DQ, no grace
         tabSwitchDQConfirmed = true;
         provisionalDQSent = false;
+        currentDQEventId = Date.now() + '_' + Math.random().toString(36).substr(2, 6);
         try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
         sendDQToServer();
       } else {
@@ -1520,6 +1528,7 @@
         // then start grace timer; if user returns in time, cancel the DQ
         provisionalDQSent = true;
         tabSwitchDQConfirmed = false;
+        currentDQEventId = Date.now() + '_' + Math.random().toString(36).substr(2, 6);
         sendDQToServer();
         tabSwitchGraceTimer = setTimeout(function() {
           // Grace expired while still hidden — confirm DQ (server already has it)
@@ -1661,6 +1670,7 @@
     if (wRatio < SPLIT_RESIZE_RATIO || hRatio < SPLIT_RESIZE_RATIO) {
       // Treat as tab-switch — reuse existing DQ logic
       tabSwitchDQConfirmed = true;
+      currentDQEventId = Date.now() + '_' + Math.random().toString(36).substr(2, 6);
       try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
       sendDQToServer();
       showDQScreen();
@@ -1675,6 +1685,7 @@
       // Already warned — immediate final DQ
       tabSwitchDQConfirmed = true;
       provisionalDQSent = false;
+      currentDQEventId = Date.now() + '_' + Math.random().toString(36).substr(2, 6);
       try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
       sendDQToServer();
       showDQScreen();
@@ -1683,6 +1694,7 @@
       if (!tabSwitchGraceTimer && !provisionalDQSent && document.visibilityState === 'visible') {
         tabHiddenAt = Date.now();
         provisionalDQSent = true;
+        currentDQEventId = Date.now() + '_' + Math.random().toString(36).substr(2, 6);
         sendDQToServer();
         splitScreenBlurTimer = setTimeout(function() {
           // Still blurred after grace — confirm DQ (server already has it)
@@ -2673,6 +2685,7 @@
         examStartTime = activeExam.examStartTime;
         autoReadEnabled = activeExam.autoReadEnabled || false;
         if (activeExam.examTimeMinutes) examTimeMinutes = activeExam.examTimeMinutes;
+        if (activeExam.currentDQEventId) currentDQEventId = activeExam.currentDQEventId;
         timeRemaining = Math.max(0, Math.ceil(msLeft / 1000));
         examInProgress = true;
         examSubmitted = false;
