@@ -1012,14 +1012,27 @@
         }
         var isApproved = item.status === 'approved';
         var statusBadge = isApproved ? ' <span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:8px;font-size:0.8em;font-weight:600;">✓ מאושר</span>' : '';
+        var timeBadge = '';
+        if (item.timeExtension === '1.25') {
+          timeBadge = ' <span style="background:#ede9fe;color:#6d28d9;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">⏱ +25%</span>';
+        } else if (item.timeExtension === '1.5') {
+          timeBadge = ' <span style="background:#ede9fe;color:#6d28d9;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">⏱ +50%</span>';
+        }
         li.innerHTML =
-          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + statusBadge + langBadge + popBadge + licBadge + audioBadge + '</div>' +
+          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + statusBadge + timeBadge + langBadge + popBadge + licBadge + audioBadge + '</div>' +
           '<div class="person-meta">ת.ז. ....' + id4 + ' | ' + escHtml(item.phone) + '</div>' + repeatBadge + '</div>' +
           '<div class="person-actions"></div>';
         var actions = li.querySelector('.person-actions');
 
         if (!isApproved) {
           // Waiting — show approve/reject buttons
+          // Time extension dropdown
+          var timeSelect = document.createElement('select');
+          timeSelect.style.cssText = 'padding:6px 8px;border-radius:8px;border:1px solid #d1d5db;font-size:0.85em;margin-left:6px;cursor:pointer;';
+          timeSelect.innerHTML = '<option value="">ללא הארכה</option><option value="1.25">+25% (50 דק\')</option><option value="1.5">+50% (60 דק\')</option>';
+          timeSelect.title = 'תוספת זמן לנבחן';
+          actions.appendChild(timeSelect);
+
           var approveBtn = document.createElement('button');
           approveBtn.className = 'btn-approve';
           approveBtn.textContent = 'אשר';
@@ -1027,7 +1040,9 @@
             if (repeatWarning && !confirm(repeatWarning)) return;
             approveBtn.disabled = true;
             approveBtn.textContent = 'מאשר...';
-            apiGet({ action: 'approveExaminee', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
+            var params = { action: 'approveExaminee', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id };
+            if (timeSelect.value) params.timeExtension = timeSelect.value;
+            apiGet(params).then(function(data) {
               if (data.status === 'ok') {
                 approveBtn.textContent = '✓ אושר';
                 // Auto-disable audio after approving (examinee already captured it)
@@ -1128,7 +1143,10 @@
           if (diff < 0) diff = 0;
           var em = Math.floor(diff / 60), es = diff % 60;
           elapsed = em + ':' + (es < 10 ? '0' : '') + es;
-          isOvertime = diff > 2400; // 40 minutes
+          var examSec = 2400; // default 40 minutes
+          if (item.timeExtension === '1.25') examSec = 3000; // 50 min
+          else if (item.timeExtension === '1.5') examSec = 3600; // 60 min
+          isOvertime = diff > examSec;
         }
         var langBadge = '';
         if (item.language && item.language !== currentLanguage) {
@@ -1146,6 +1164,12 @@
         if (item.audioMode === 'on') {
           audioBadge = ' <span style="background:#fef9c3;color:#854d0e;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">🔊 שמע</span>';
         }
+        var timeBadge = '';
+        if (item.timeExtension === '1.25') {
+          timeBadge = ' <span style="background:#ede9fe;color:#6d28d9;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">⏱ +25%</span>';
+        } else if (item.timeExtension === '1.5') {
+          timeBadge = ' <span style="background:#ede9fe;color:#6d28d9;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">⏱ +50%</span>';
+        }
         var overtimeWarning = '';
         var elapsedStyle = '';
         if (isOvertime) {
@@ -1153,7 +1177,7 @@
           overtimeWarning = ' <span style="color:#dc2626;font-size:0.85em;">⚠️ חריגה מזמן המבחן — כנראה ניתוק</span>';
         }
         li.innerHTML =
-          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + langBadge + popBadge + licBadge + audioBadge + '</div>' +
+          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + timeBadge + langBadge + popBadge + licBadge + audioBadge + '</div>' +
           '<div class="person-meta">ת.ז. ....' + id4 + (elapsed ? ' | <span style="' + elapsedStyle + '">זמן: ' + elapsed + '</span>' : '') + overtimeWarning + '</div></div>' +
           '<div class="person-actions"></div>';
         if (isOvertime) {
