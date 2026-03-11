@@ -2540,6 +2540,7 @@
 
     if (endedReason && examineeData.idNumber) {
       // Exam already ended — show clear "exam ended" screen instead of confusing waiting screen
+      var endedName = examineeData.fullName || '';
       clearExamineeState();
       var isDQ = endedReason === 'dq';
       var examArea = document.getElementById('examArea');
@@ -2547,6 +2548,7 @@
         '<div style="text-align:center; padding:40px 20px;">' +
           '<div style="font-size:50px; margin-bottom:12px;">' + (isDQ ? '\u26D4' : '\uD83D\uDCCB') + '</div>' +
           '<h2 style="color:' + (isDQ ? '#dc2626' : '#334155') + '; margin:0 0 12px;">' + (isDQ ? '\u05D4\u05DE\u05D1\u05D7\u05DF \u05E0\u05E4\u05E1\u05DC' : '\u05D4\u05DE\u05D1\u05D7\u05DF \u05D4\u05E1\u05EA\u05D9\u05D9\u05DD') + '</h2>' +
+          (endedName ? '<p style="font-size:18px; font-weight:700; margin:0 0 8px;">' + escHtml(endedName) + '</p>' : '') +
           '<p style="color:#64748b; font-size:15px;">' + (isDQ ? '\u05D4\u05DE\u05D1\u05D7\u05DF \u05E0\u05E4\u05E1\u05DC \u05E2\u05E7\u05D1 \u05D9\u05E6\u05D9\u05D0\u05D4 \u05DE\u05DE\u05E1\u05DA \u05D4\u05DE\u05D1\u05D7\u05DF.' : '\u05D4\u05EA\u05D5\u05E6\u05D0\u05D4 \u05E0\u05E9\u05DC\u05D7\u05D4 \u05DC\u05D1\u05D5\u05D7\u05DF.') + '</p>' +
           '<p style="color:#94a3b8; font-size:13px; margin-top:12px;">\u05E4\u05E0\u05D4 \u05DC\u05D1\u05D5\u05D7\u05DF \u05DC\u05E7\u05D1\u05DC\u05EA \u05D4\u05E0\u05D7\u05D9\u05D5\u05EA.</p>' +
           '<button onclick="resetForNextExaminee()" style="margin-top:24px; display:block; width:100%; padding:14px; font-size:17px; background:#0f172a; color:white; border:none; border-radius:10px; cursor:pointer; font-weight:700;">\u05E0\u05D1\u05D7\u05DF \u05D4\u05D1\u05D0 \u2190</button>' +
@@ -2564,15 +2566,25 @@
   })();
 
   // ========== Auto-retry pending results on page load ==========
+  // Only retry if there's no active session for a DIFFERENT examinee
   (function() {
     try {
+      var currentId = (examineeData && examineeData.idNumber) ? examineeData.idNumber : '';
+      var keysToRetry = [];
       for (var k = 0; k < localStorage.length; k++) {
         var key = localStorage.key(k);
         if (key && key.indexOf('pendingResult_') === 0) {
-          var pending = JSON.parse(localStorage.getItem(key));
-          if (pending && pending.action === 'submitResult' && pending.sessionCode) {
-            console.log('[RETRY] Found pending result for ' + pending.idNumber + ', retrying...');
-            // Show done screen with retry indicator
+          keysToRetry.push(key);
+        }
+      }
+      for (var ki = 0; ki < keysToRetry.length; ki++) {
+        var pending = JSON.parse(localStorage.getItem(keysToRetry[ki]));
+        if (pending && pending.action === 'submitResult' && pending.sessionCode) {
+          // If a different examinee is currently active, just retry silently in background
+          var isSameExaminee = !currentId || currentId === pending.idNumber;
+          console.log('[RETRY] Found pending result for ' + pending.idNumber + (isSameExaminee ? ' (current)' : ' (other)') + ', retrying...');
+          if (isSameExaminee && !hasRestoredSession) {
+            // Only show done screen if no other session is active
             var nameEl = document.getElementById('doneNameDisplay');
             if (nameEl) nameEl.textContent = pending.fullName || '';
             showScreen('screenDone');
@@ -2584,16 +2596,16 @@
               var doneScreen = document.getElementById('screenDone');
               if (doneScreen) doneScreen.appendChild(debugEl);
             }
-            debugEl.innerHTML = '⏳ שולח תוצאה שנשמרה מניסיון קודם...';
-            // Load saved wrong answers if available
-            var savedWrong = null;
-            try {
-              var wrongStr = localStorage.getItem('pendingWrongAnswers_' + pending.idNumber);
-              if (wrongStr) savedWrong = JSON.parse(wrongStr);
-            } catch(ew) {}
-            submitWithRetry(pending, 3, savedWrong);
-            return; // handle one at a time
+            debugEl.innerHTML = '\u23F3 \u05E9\u05D5\u05DC\u05D7 \u05EA\u05D5\u05E6\u05D0\u05D4 \u05E9\u05E0\u05E9\u05DE\u05E8\u05D4 \u05DE\u05E0\u05D9\u05E1\u05D9\u05D5\u05DF \u05E7\u05D5\u05D3\u05DD...';
           }
+          // Retry submission (silently if different examinee)
+          var savedWrong = null;
+          try {
+            var wrongStr = localStorage.getItem('pendingWrongAnswers_' + pending.idNumber);
+            if (wrongStr) savedWrong = JSON.parse(wrongStr);
+          } catch(ew) {}
+          submitWithRetry(pending, 3, savedWrong);
+          return; // handle one at a time
         }
       }
     } catch(e) { console.log('[RETRY] Error:', e); }
