@@ -2670,6 +2670,10 @@
     if (endedReason && examineeData.idNumber) {
       // Exam already ended — show clear "exam ended" screen instead of confusing waiting screen
       var endedName = examineeData.fullName || '';
+      // Retry DQ notification to server (in case original request failed)
+      if (endedReason === 'dq' && sessionCode && examineeData.idNumber) {
+        try { sendDQToServer(); } catch(ex) {}
+      }
       clearExamineeState();
       var isDQ = endedReason === 'dq';
       var examArea = document.getElementById('examArea');
