@@ -337,6 +337,8 @@ function doPost(e) {
       return handleSubmitFailOnClose(data);
     } else if (action === 'submitWrongAnswers') {
       return handleSubmitWrongAnswersBulk(data);
+    } else if (action === 'cancelFailOnClose') {
+      return handleCancelFailOnClose(data);
     } else if (action === 'uploadResultHtml') {
       return handleUploadResultHtml(data);
     } else if (action === 'disqualify') {
@@ -1357,6 +1359,46 @@ function handleSubmitFailOnClose(data) {
   markPendingCompleted(data.sessionCode, data.idNumber);
 
   return jsonResponse({ status: 'ok' });
+}
+
+function handleCancelFailOnClose(data) {
+  // Called when page reloads (refresh, not actual close) — undo the fail
+  var sc = String(data.sessionCode || '');
+  var id = normalizeId(data.idNumber || '');
+  if (!sc || !id) return jsonResponse({ status: 'ok' });
+
+  var sheet = getSheet('תוצאות');
+  var rows = sheet.getDataRange().getValues();
+  // Find the most recent row for this session+ID that is a "close" fail
+  for (var r = rows.length - 1; r >= 1; r--) {
+    if (String(rows[r][13]) === sc && normalizeId(rows[r][1]) === id) {
+      var notes = String(rows[r][15] || '');
+      if (notes.indexOf('\u05E1\u05D2\u05D9\u05E8\u05EA \u05D3\u05E4\u05D3\u05E4\u05DF') !== -1) {
+        // Delete this row — examinee resumed, so the fail was premature
+        sheet.deleteRow(r + 1);
+        // Also un-mark pending as completed so exam can continue
+        unmarkPendingCompleted(sc, id);
+      }
+      break; // only check the most recent match
+    }
+  }
+  return jsonResponse({ status: 'ok' });
+}
+
+function unmarkPendingCompleted(sessionCode, idNumber) {
+  // Restore examinee status from 'done' back to 'in_exam' in pending sheet
+  var pendingSheet = getSheet('ממתינים');
+  if (!pendingSheet) return;
+  var data = pendingSheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]) === sessionCode && normalizeId(data[i][1]) === normalizeId(idNumber)) {
+      var status = String(data[i][6] || '');
+      if (status === 'done') {
+        pendingSheet.getRange(i + 1, 7).setValue('in_exam');
+      }
+      break;
+    }
+  }
 }
 
 // ========== שיתוף תוצאה דרך CacheService ==========
