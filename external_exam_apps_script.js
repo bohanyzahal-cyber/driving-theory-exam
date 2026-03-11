@@ -166,8 +166,9 @@ function doGet(e) {
 
     // Actions that require examiner token authentication
     var examinerActions = ['getSites','listSessions','createSession','updateSession','closeSession',
-      'approveExaminee','rejectExaminee','examinerDashboard','disqualify','resetExaminee',
+      'approveExaminee','rejectExaminee','examinerDashboard','resetExaminee',
       'correctToPass','forceComplete','markSent','commanderDashboard'];
+    // Note: 'disqualify' is NOT in this list because it can be sent by the examinee client (no token)
     if (examinerActions.indexOf(action) !== -1) {
       var tokenErr = requireToken(p);
       if (tokenErr) return tokenErr;
