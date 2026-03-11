@@ -1642,8 +1642,21 @@
   function onSplitResize() {
     if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
     if (splitScreenInitW === 0) return;
-    var wRatio = window.innerWidth / splitScreenInitW;
-    var hRatio = window.innerHeight / splitScreenInitH;
+    var curW = window.innerWidth;
+    var curH = window.innerHeight;
+    var wRatio = curW / splitScreenInitW;
+    var hRatio = curH / splitScreenInitH;
+
+    // Detect orientation change (screen rotation): width and height swap
+    // In a rotation, total area stays roughly the same — one axis grows while the other shrinks
+    var wasRotation = (wRatio > 1.2 && hRatio < 0.85) || (hRatio > 1.2 && wRatio < 0.85);
+    if (wasRotation) {
+      // Update baseline to new orientation so future checks work correctly
+      splitScreenInitW = curW;
+      splitScreenInitH = curH;
+      return;
+    }
+
     // If either dimension drops significantly — split screen detected
     if (wRatio < SPLIT_RESIZE_RATIO || hRatio < SPLIT_RESIZE_RATIO) {
       // Treat as tab-switch — reuse existing DQ logic
