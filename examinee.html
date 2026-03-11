@@ -776,6 +776,35 @@
 
   function clearExamineeState() {
     try { sessionStorage.removeItem('ext_examinee_state'); } catch(e) {}
+    try { sessionStorage.removeItem('ext_exam_active'); } catch(e) {}
+  }
+
+  // ========== Active exam state (for resume on refresh) ==========
+  function saveActiveExam() {
+    if (!examInProgress || examSubmitted) return;
+    try {
+      sessionStorage.setItem('ext_exam_active', JSON.stringify({
+        activeQuestions: activeQuestions,
+        currentIndex: currentIndex,
+        userAnswers: userAnswers,
+        shuffledOrders: shuffledOrders,
+        examDeadline: examDeadline,
+        examStartTime: examStartTime,
+        autoReadEnabled: autoReadEnabled
+      }));
+    } catch(e) {}
+  }
+
+  function loadActiveExam() {
+    try {
+      var s = sessionStorage.getItem('ext_exam_active');
+      if (!s) return null;
+      return JSON.parse(s);
+    } catch(e) { return null; }
+  }
+
+  function clearActiveExam() {
+    try { sessionStorage.removeItem('ext_exam_active'); } catch(e) {}
   }
 
   // Reset everything so the next examinee can use the same device
@@ -1251,6 +1280,7 @@
     examSubmitted = false;
     startDevToolsTrap();
 
+    saveExamineeState('screenExam');
     showScreen('screenExam');
 
     // Init TTS if audio mode on
@@ -1265,6 +1295,7 @@
     setupTabSwitchDetection();
     setupSplitScreenDetection();
     startTimer();
+    saveActiveExam();
     renderQuestion();
   }
 
@@ -1295,35 +1326,10 @@
   var beforeUnloadBound = false;
   function onBeforeUnload(e) {
       if (examInProgress && !examSubmitted) {
-        // Mark exam as ended in localStorage so page reload shows appropriate screen
-        try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'closed'); } catch(ex) {}
-        // Send fail via GET (sendBeacon POST doesn't work with Apps Script)
-        var params = {
-          action: 'submitFailOnClose',
-          sessionCode: sessionCode,
-          idNumber: examineeData.idNumber,
-          fullName: examineeData.fullName,
-          phone: examineeData.phone,
-          license: examineeData.license || sessionData.license || 'B',
-          language: examineeData.language || sessionData.language || 'he',
-          examinerName: sessionData.examinerName || '',
-          site: sessionData.site || '',
-          classroom: sessionData.classroom || '',
-          answeredCount: getAnsweredCount(),
-          totalQuestions: TOTAL_QUESTIONS,
-          time: getElapsedTimeStr(),
-          population: examineeData.population || '',
-          audioMode: sessionData.audioMode || 'off'
-        };
-        var qs = [];
-        for (var k in params) {
-          if (params.hasOwnProperty(k)) qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
-        }
-        var url = API_URL + '?' + qs.join('&');
-        // Use fetch with keepalive (works with GET, survives page close)
-        try { fetch(url, { keepalive: true }); } catch(ex) {}
+        // Save current exam state so it can be resumed after refresh
+        saveActiveExam();
         e.preventDefault();
-        e.returnValue = 'סגירת הדפדפן תגרום לכישלון אוטומטי במבחן!';
+        e.returnValue = '\u05D4\u05DE\u05D1\u05D7\u05DF \u05E2\u05D3\u05D9\u05D9\u05DF \u05E4\u05E2\u05D9\u05DC. \u05D1\u05D8\u05D5\u05D7 \u05E9\u05E8\u05D5\u05E6\u05D4 \u05DC\u05E6\u05D0\u05EA?';
         return e.returnValue;
       }
   }
@@ -1466,9 +1472,11 @@
     teardownSplitScreenDetection();
     stopSpeaking();
     stopTimer();
+    stopDevToolsTrap();
     examInProgress = false;
     examSubmitted = true;
 
+    clearActiveExam();
     clearExamineeState();
     var examArea = document.getElementById('examArea');
     examArea.innerHTML =
@@ -1957,6 +1965,10 @@
   function startTimer() {
     examDeadline = Date.now() + EXAM_TIME_MINUTES * 60 * 1000;
     timeRemaining = EXAM_TIME_MINUTES * 60;
+    startResumedTimer();
+  }
+
+  function startResumedTimer() {
     if (timerInterval) clearInterval(timerInterval);
     timerInterval = setInterval(function() {
       var now = Date.now();
@@ -2222,6 +2234,7 @@
             shuffledCorrectIndex: shuffledCorrectIndex,
             shuffledAnswers: shuffledAnswers, isCorrect: isCorrect
           };
+          saveActiveExam();
 
           // Update question map colors
           var mapBtns = document.querySelectorAll('.q-map-btn');
@@ -2354,6 +2367,7 @@
     stopDevToolsTrap();
     examInProgress = false;
     examSubmitted = true;
+    clearActiveExam();
 
     var correctCount = 0;
     var answeredCount = 0;
@@ -2532,6 +2546,51 @@
     if (sessionData.license) sessionData.license = String(sessionData.license);
 
     document.getElementById('topbarSub').textContent = sessionData.site + ' | ' + (LICENSE_LABELS[sessionData.license] || sessionData.license);
+
+    // Check if there's an active exam to resume (refresh during exam)
+    var activeExam = loadActiveExam();
+    if (activeExam && activeExam.examDeadline && examineeData.idNumber) {
+      var msLeft = activeExam.examDeadline - Date.now();
+      if (msLeft > 0) {
+        // Resume exam!
+        activeQuestions = activeExam.activeQuestions;
+        currentIndex = activeExam.currentIndex;
+        userAnswers = activeExam.userAnswers;
+        shuffledOrders = activeExam.shuffledOrders;
+        examDeadline = activeExam.examDeadline;
+        examStartTime = activeExam.examStartTime;
+        autoReadEnabled = activeExam.autoReadEnabled || false;
+        timeRemaining = Math.max(0, Math.ceil(msLeft / 1000));
+        examInProgress = true;
+        examSubmitted = false;
+
+        // Load translation if needed
+        var lang = examineeData.language || sessionData.language || 'he';
+        if (lang !== 'he') {
+          loadTranslationFile(lang, function() {
+            showScreen('screenExam');
+            setupBeforeUnload();
+            setupTabSwitchDetection();
+            setupSplitScreenDetection();
+            startResumedTimer();
+            startDevToolsTrap();
+            renderQuestion();
+          });
+        } else {
+          showScreen('screenExam');
+          setupBeforeUnload();
+          setupTabSwitchDetection();
+          setupSplitScreenDetection();
+          startResumedTimer();
+          startDevToolsTrap();
+          renderQuestion();
+        }
+        return; // done restoring
+      } else {
+        // Exam time expired during refresh — end it
+        clearActiveExam();
+      }
+    }
 
     // Check if exam already ended (refresh after close/DQ/submit)
     var endedKey = 'examEnded_' + saved.sessionCode + '_' + (examineeData.idNumber || '');
