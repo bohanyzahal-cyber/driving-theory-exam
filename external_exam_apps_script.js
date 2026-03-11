@@ -53,9 +53,14 @@ function generateSessionCode() {
     // Check ALL session codes (not just active) to prevent data mixing with closed sessions
     existingCodes[String(data[i][0]).trim()] = true;
   }
+  // 8-character alphanumeric code (unambiguous chars: no O/0/I/1/L)
+  var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   var code;
   do {
-    code = String(Math.floor(100000 + Math.random() * 900000));
+    code = '';
+    for (var c = 0; c < 8; c++) {
+      code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
   } while (existingCodes[code]);
   return code;
 }
@@ -63,6 +68,41 @@ function generateSessionCode() {
 function jsonResponse(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+// ========== Token authentication ==========
+function generateToken() {
+  var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  var token = '';
+  for (var i = 0; i < 48; i++) {
+    token += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return token;
+}
+
+function verifyToken(examinerId, token) {
+  if (!examinerId || !token) return false;
+  var sheet = getSheet('בוחנים');
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (normalizeId(data[i][1]) === normalizeId(examinerId)) {
+      var storedToken = String(data[i][6] || '');
+      var expiry = data[i][7];
+      if (storedToken !== token) return false;
+      if (!expiry) return false;
+      var expiryDate = expiry instanceof Date ? expiry : new Date(expiry);
+      if (new Date() > expiryDate) return false;
+      return true;
+    }
+  }
+  return false;
+}
+
+function requireToken(p) {
+  if (!verifyToken(p.examinerId, p.token)) {
+    return jsonResponse({ status: 'error', message: 'טוקן לא תקין — יש להתחבר מחדש', tokenExpired: true });
+  }
+  return null;
 }
 
 // Verify examiner owns the session (for sensitive actions)
@@ -124,10 +164,22 @@ function doGet(e) {
     var p = e.parameter || {};
     var action = p.action || '';
 
+    // Actions that require examiner token authentication
+    var examinerActions = ['getSites','listSessions','createSession','updateSession','closeSession',
+      'approveExaminee','rejectExaminee','examinerDashboard','disqualify','resetExaminee',
+      'correctToPass','forceComplete','markSent','commanderDashboard'];
+    if (examinerActions.indexOf(action) !== -1) {
+      var tokenErr = requireToken(p);
+      if (tokenErr) return tokenErr;
+    }
+
     switch (action) {
 
       case 'login':
         return handleLogin(p);
+
+      case 'verifyLogin':
+        return handleVerifyLogin(p);
 
       case 'getSites':
         return handleGetSites();
@@ -182,12 +234,6 @@ function doGet(e) {
 
       case 'markSent':
         return handleMarkSent(p);
-
-      case 'debugSession':
-        return handleDebugSession(p);
-
-      case 'debugResults':
-        return handleDebugResults();
 
       case 'commanderDashboard':
         return handleCommanderDashboard(p);
@@ -281,7 +327,11 @@ function doPost(e) {
     var data = JSON.parse(raw);
     var action = data.action || '';
 
-    if (action === 'submitResult') {
+    if (action === 'login') {
+      return handleLogin(data);
+    } else if (action === 'registerExamQuestions') {
+      return handleRegisterExamQuestions(data);
+    } else if (action === 'submitResult') {
       return handleSubmitResult(data);
     } else if (action === 'submitFailOnClose') {
       return handleSubmitFailOnClose(data);
@@ -309,7 +359,14 @@ function handleLogin(p) {
     if (normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
       if (String(data[i][2]) === String(p.password)) {
         if (data[i][3] === 'כן' || data[i][3] === true || data[i][3] === 'TRUE') {
-          return jsonResponse({ status: 'ok', examiner: { name: data[i][0], id: normalizeId(data[i][1]), examinerNumber: String(data[i][4] || ''), role: String(data[i][5] || 'בוחן') } });
+          // Generate token and store in sheet (columns G=7, H=8 → indices 6,7)
+          var token = generateToken();
+          var expiry = new Date();
+          expiry.setHours(expiry.getHours() + 12);
+          var row = i + 1; // sheet rows are 1-indexed
+          sheet.getRange(row, 7).setValue(token);   // column G = token
+          sheet.getRange(row, 8).setValue(expiry);   // column H = expiry
+          return jsonResponse({ status: 'ok', examiner: { name: data[i][0], id: normalizeId(data[i][1]), examinerNumber: String(data[i][4] || ''), role: String(data[i][5] || 'בוחן'), token: token } });
         } else {
           return jsonResponse({ status: 'error', message: 'החשבון אינו פעיל' });
         }
@@ -319,6 +376,35 @@ function handleLogin(p) {
     }
   }
   return jsonResponse({ status: 'error', message: 'בוחן לא נמצא' });
+}
+
+function handleVerifyLogin(p) {
+  if (!p.examinerId || !p.token) {
+    return jsonResponse({ status: 'error', message: 'חסרים פרטי אימות', tokenExpired: true });
+  }
+  var sheet = getSheet('בוחנים');
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (normalizeId(data[i][1]) === normalizeId(p.examinerId)) {
+      var storedToken = String(data[i][6] || '');
+      var expiry = data[i][7];
+      if (storedToken !== p.token) {
+        return jsonResponse({ status: 'error', message: 'טוקן לא תקין', tokenExpired: true });
+      }
+      if (!expiry) {
+        return jsonResponse({ status: 'error', message: 'טוקן לא תקין', tokenExpired: true });
+      }
+      var expiryDate = expiry instanceof Date ? expiry : new Date(expiry);
+      if (new Date() > expiryDate) {
+        return jsonResponse({ status: 'error', message: 'פג תוקף ההתחברות', tokenExpired: true });
+      }
+      if (!(data[i][3] === 'כן' || data[i][3] === true || data[i][3] === 'TRUE')) {
+        return jsonResponse({ status: 'error', message: 'החשבון אינו פעיל' });
+      }
+      return jsonResponse({ status: 'ok', examiner: { name: data[i][0], id: normalizeId(data[i][1]), examinerNumber: String(data[i][4] || ''), role: String(data[i][5] || 'בוחן'), token: p.token } });
+    }
+  }
+  return jsonResponse({ status: 'error', message: 'בוחן לא נמצא', tokenExpired: true });
 }
 
 function handleGetSites() {
@@ -920,48 +1006,120 @@ function handleMarkSent(p) {
   return jsonResponse({ status: 'ok', updated: count });
 }
 
-function handleDebugSession(p) {
-  var sheet = getSheet('סשנים');
-  var data = sheet.getDataRange().getValues();
-  var rows = [];
-  for (var i = 1; i < data.length; i++) {
-    rows.push({
-      code: String(data[i][0]),
-      codeType: typeof data[i][0],
-      examiner: String(data[i][2]),
-      site: String(data[i][3]),
-      license: String(data[i][5]),
-      active: String(data[i][10]),
-      created: String(data[i][8])
-    });
+function handleRegisterExamQuestions(data) {
+  // Store question map for server-side score verification
+  // data: { sessionCode, idNumber, questions: [{qIdx, correctShuffledIdx}] }
+  if (!data.sessionCode || !data.idNumber || !data.questions) {
+    return jsonResponse({ status: 'error', message: 'חסרים נתונים לרישום מבחן' });
   }
-  return jsonResponse({
-    status: 'ok',
-    totalSessions: data.length - 1,
-    sessions: rows
-  });
-}
-
-function handleDebugResults() {
-  var sheet = getSheet('תוצאות');
-  var data = sheet.getDataRange().getValues();
-  var rows = [];
-  for (var i = 1; i < data.length; i++) {
-    rows.push({
-      date: String(data[i][0]),
-      idNumber: String(data[i][1]),
-      name: String(data[i][2]),
-      score: String(data[i][5]),
-      passed: String(data[i][7]),
-      sessionCode: String(data[i][13]),
-      sessionCodeType: typeof data[i][13]
-    });
+  // Verify examinee is in_exam status
+  var pendSheet = getSheet('ממתינים');
+  var pendData = pendSheet.getDataRange().getValues();
+  var found = false;
+  for (var i = pendData.length - 1; i >= 1; i--) {
+    if (String(pendData[i][0]) === String(data.sessionCode) && normalizeId(pendData[i][1]) === normalizeId(data.idNumber)) {
+      var status = String(pendData[i][5]).trim();
+      if (status === 'in_exam' || status === 'approved') {
+        found = true;
+        break;
+      }
+    }
   }
-  return jsonResponse({ status: 'ok', totalResults: data.length - 1, results: rows });
+  if (!found) {
+    return jsonResponse({ status: 'error', message: 'נבחן לא מאושר למבחן' });
+  }
+  // Store in מבחנים sheet (create if needed)
+  var examSheet;
+  try { examSheet = getSheet('מבחנים'); } catch(e) {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    examSheet = ss.insertSheet('מבחנים');
+    examSheet.appendRow(['קוד סשן', 'ת.ז.', 'שאלות JSON', 'זמן רישום']);
+  }
+  examSheet.appendRow([
+    String(data.sessionCode),
+    normalizeId(data.idNumber),
+    JSON.stringify(data.questions),
+    nowISO()
+  ]);
+  return jsonResponse({ status: 'ok' });
 }
 
 function handleSubmitResult(data) {
   var sheet = getSheet('תוצאות');
+
+  // Verify examinee is approved (in_exam status) before accepting results
+  if (data.sessionCode && data.idNumber) {
+    var pendSheet = getSheet('ממתינים');
+    var pendData = pendSheet.getDataRange().getValues();
+    var isApproved = false;
+    for (var pi = pendData.length - 1; pi >= 1; pi--) {
+      if (String(pendData[pi][0]) === String(data.sessionCode) && normalizeId(pendData[pi][1]) === normalizeId(data.idNumber)) {
+        var pStatus = String(pendData[pi][5]).trim();
+        if (pStatus === 'in_exam' || pStatus === 'approved' || pStatus === 'completed') {
+          isApproved = true;
+        }
+        break;
+      }
+    }
+    if (!isApproved) {
+      return jsonResponse({ status: 'error', message: 'נבחן לא מאושר — לא ניתן לשלוח תוצאות' });
+    }
+  }
+
+  // Server-side score verification: if answers array is present, recalculate score
+  if (data.answers && Array.isArray(data.answers)) {
+    try {
+      var examSheet = getSheet('מבחנים');
+      var examData = examSheet.getDataRange().getValues();
+      var questionMap = null;
+      // Find the registered exam for this session+ID (latest)
+      for (var ei = examData.length - 1; ei >= 1; ei--) {
+        if (String(examData[ei][0]) === String(data.sessionCode) && normalizeId(examData[ei][1]) === normalizeId(data.idNumber)) {
+          questionMap = JSON.parse(examData[ei][2]);
+          break;
+        }
+      }
+      if (questionMap) {
+        var correctCount = 0;
+        var totalQ = questionMap.length;
+        for (var ai = 0; ai < data.answers.length && ai < totalQ; ai++) {
+          if (data.answers[ai] !== null && data.answers[ai] !== undefined) {
+            var selected = Number(data.answers[ai].selected);
+            var correctIdx = Number(questionMap[ai].correctShuffledIdx);
+            if (selected === correctIdx) correctCount++;
+          }
+        }
+        var pct = Math.round((correctCount / totalQ) * 100);
+        var passThreshold = Math.ceil(totalQ * 0.86); // ~26/30
+        data.score = correctCount;
+        data.total = totalQ;
+        data.percent = pct;
+        data.passed = correctCount >= passThreshold;
+        data.verified = true;
+      }
+    } catch(ve) {
+      // If verification fails, fall through to client-provided score with flag
+      data.verified = false;
+    }
+  }
+
+  // Server-side timing check: if exam took less than 3 minutes, flag as suspicious
+  if (data.sessionCode && data.idNumber) {
+    try {
+      var examSheet2 = getSheet('מבחנים');
+      var examData2 = examSheet2.getDataRange().getValues();
+      for (var ti = examData2.length - 1; ti >= 1; ti--) {
+        if (String(examData2[ti][0]) === String(data.sessionCode) && normalizeId(examData2[ti][1]) === normalizeId(data.idNumber)) {
+          var regTime = new Date(examData2[ti][3]);
+          var elapsed = (new Date() - regTime) / 1000; // seconds
+          if (elapsed < 180 && elapsed > 0) { // less than 3 minutes
+            data.suspicious = true;
+          }
+          break;
+        }
+      }
+    } catch(te) {}
+  }
 
   // Duplicate protection: check if result already exists for this session+ID+license+language
   var existingData = sheet.getDataRange().getValues();
@@ -1040,7 +1198,9 @@ function handleSubmitResult(data) {
     waLink,
     data.population || '',
     false,
-    data.audioMode || 'off'
+    data.audioMode || 'off',
+    data.verified ? 'מאומת' : '',
+    data.suspicious ? 'חשוד' : ''
   ]);
 
   // Update pending status to completed

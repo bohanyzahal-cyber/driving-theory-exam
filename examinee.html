@@ -257,7 +257,7 @@
     <h2>הכנס קוד סשן</h2>
     <p class="muted">קבל את הקוד מהבוחן שלך</p>
     <div style="margin:20px 0;">
-      <input type="text" id="sessionCodeInput" class="code-input" maxlength="6" inputmode="numeric" pattern="[0-9]*" placeholder="------" autocomplete="off">
+      <input type="text" id="sessionCodeInput" class="code-input" maxlength="8" inputmode="text" pattern="[A-Za-z0-9]*" placeholder="--------" autocomplete="off" style="text-transform:uppercase;letter-spacing:3px;">
     </div>
     <div class="form-error" id="codeError" style="text-align:center;">קוד לא תקין</div>
     <div class="info-banner error" id="codeApiError" style="display:none;"></div>
@@ -397,13 +397,34 @@
 (function() {
   'use strict';
 
+  // ========== Freeze questions to prevent tampering ==========
+  if (typeof QUESTIONS !== 'undefined' && Array.isArray(QUESTIONS)) {
+    try { QUESTIONS.forEach(function(q) { Object.freeze(q); }); Object.freeze(QUESTIONS); } catch(e) {}
+  }
+
   // ========== Anti-cheat ==========
   document.addEventListener('contextmenu', function(e) { e.preventDefault(); }, true);
   document.addEventListener('copy', function(e) { e.preventDefault(); }, true);
   document.addEventListener('cut', function(e) { e.preventDefault(); }, true);
+  document.addEventListener('paste', function(e) { e.preventDefault(); }, true);
   document.addEventListener('selectstart', function(e) {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
     e.preventDefault();
+  }, true);
+  // DevTools deterrent: periodic debugger trap during exam
+  var _dtInterval = null;
+  function startDevToolsTrap() {
+    if (_dtInterval) return;
+    _dtInterval = setInterval(function() { (function() { debugger; })(); }, 1000);
+  }
+  function stopDevToolsTrap() {
+    if (_dtInterval) { clearInterval(_dtInterval); _dtInterval = null; }
+  }
+  // Keyboard shortcut prevention (F12, Ctrl+Shift+I/J/C, Ctrl+U)
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'F12') { e.preventDefault(); return false; }
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === 'I' || e.key === 'i' || e.key === 'J' || e.key === 'j' || e.key === 'C' || e.key === 'c')) { e.preventDefault(); return false; }
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'U' || e.key === 'u')) { e.preventDefault(); return false; }
   }, true);
 
   // ========== Reset checkbox on page load (prevent browser form restore) ==========
@@ -860,10 +881,19 @@
   function apiPost(data) {
     return fetch(API_URL, {
       method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify(data)
+    }).then(function(r) { return r.json(); });
+  }
+
+  // Fire-and-forget POST (no response needed)
+  function apiPostNoWait(data) {
+    fetch(API_URL, {
+      method: 'POST',
       mode: 'no-cors',
       headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify(data)
-    });
+    }).catch(function() {});
   }
 
   // ========== Screen 1: Session Code ==========
@@ -876,7 +906,8 @@
     codeError.style.display = 'none';
     codeApiError.style.display = 'none';
     var code = codeInput.value.trim();
-    if (!/^\d{6}$/.test(code)) { codeError.style.display = 'block'; return; }
+    code = code.toUpperCase();
+    if (!/^[A-Z0-9]{6,8}$/.test(code)) { codeError.style.display = 'block'; return; }
 
     codeSubmitBtn.disabled = true;
     codeSubmitBtn.textContent = 'בודק...';
@@ -1196,11 +1227,29 @@
     userAnswers = new Array(TOTAL_QUESTIONS);
     for (var ui = 0; ui < TOTAL_QUESTIONS; ui++) userAnswers[ui] = null;
     shuffledOrders = new Array(TOTAL_QUESTIONS);
-    for (var si = 0; si < TOTAL_QUESTIONS; si++) shuffledOrders[si] = null;
+    // Pre-generate all shuffled orders and register with server for score verification
+    var regQuestions = [];
+    for (var si = 0; si < TOTAL_QUESTIONS; si++) {
+      var sq = activeQuestions[si];
+      var sqAnswers = getQAnswers(sq);
+      var sqCorrectIdx = getQCorrectIndex(sq);
+      var sqOrder = shuffle(sqAnswers.map(function(_, idx) { return idx; }));
+      var sqShuffledCorrect = sqOrder.indexOf(sqCorrectIdx);
+      shuffledOrders[si] = { order: sqOrder, correctIdx: sqShuffledCorrect };
+      regQuestions.push({ qIdx: si, correctShuffledIdx: sqShuffledCorrect });
+    }
+    // Register exam questions with server (fire-and-forget)
+    apiPostNoWait({
+      action: 'registerExamQuestions',
+      sessionCode: sessionCode,
+      idNumber: examineeData.idNumber,
+      questions: regQuestions
+    });
     timeRemaining = EXAM_TIME_MINUTES * 60;
     examStartTime = Date.now();
     examInProgress = true;
     examSubmitted = false;
+    startDevToolsTrap();
 
     showScreen('screenExam');
 
@@ -1764,7 +1813,7 @@
 
   // ========== Translation helpers ==========
   // Translation dictionaries loaded dynamically per language
-  // Format: TRANSLATIONS_XX = { questionId: { t: "text", a: ["ans1",...], c: correctIndex } }
+  // Format: TRANSLATIONS_XX = { questionId: { t: "text", a: ["ans1",...], ci: encodedCorrectIndex } }
   var TRANSLATION_VARS = { 'en': 'TRANSLATIONS_EN', 'fr': 'TRANSLATIONS_FR', 'ar': 'TRANSLATIONS_AR', 'es': 'TRANSLATIONS_ES', 'am': 'TRANSLATIONS_AM' };
 
   // Get the active exam language
@@ -1808,14 +1857,17 @@
     return q.answers;
   }
 
+  // Decode obfuscated correct index
+  function decodeCI(ci, id) { return ci ^ (id % 256); }
+
   // Get correct index for the current language
   function getQCorrectIndex(q) {
     var lang = getExamLang();
-    if (lang === 'he') return q.correctIndex;
-    if (lang === 'ru' && q.language === 'ru') return q.correctIndex;
+    if (lang === 'he') return decodeCI(q.ci, q.id);
+    if (lang === 'ru' && q.language === 'ru') return decodeCI(q.ci, q.id);
     var dict = getTransDict();
-    if (dict && dict[q.id] && dict[q.id].c !== undefined) return dict[q.id].c;
-    return q.correctIndex;
+    if (dict && dict[q.id] && dict[q.id].ci !== undefined) return decodeCI(dict[q.id].ci, q.id);
+    return decodeCI(q.ci, q.id);
   }
 
   function getFilteredQuestions(license, language) {
@@ -2299,6 +2351,7 @@
   function renderExamDone() {
     stopSpeaking(); stopTimer();
     teardownSplitScreenDetection();
+    stopDevToolsTrap();
     examInProgress = false;
     examSubmitted = true;
 
@@ -2342,7 +2395,17 @@
       }
     }
 
-    // Submit result via GET — include wrong answers as JSON string
+    // Build raw answers array for server-side verification
+    var rawAnswers = [];
+    for (var ra = 0; ra < userAnswers.length; ra++) {
+      if (userAnswers[ra] !== null) {
+        rawAnswers.push({ qIdx: ra, selected: userAnswers[ra].chosenIndex });
+      } else {
+        rawAnswers.push({ qIdx: ra, selected: -1 }); // unanswered
+      }
+    }
+
+    // Submit result — include raw answers for server-side score verification
     var payload = {
       action: 'submitResult',
       sessionCode: sessionCode,
@@ -2360,7 +2423,8 @@
       site: sessionData.site || '',
       classroom: sessionData.classroom || '',
       population: examineeData.population || '',
-      audioMode: sessionData.audioMode || 'off'
+      audioMode: sessionData.audioMode || 'off',
+      answers: rawAnswers
     };
     // Wrong answers sent separately via POST (GET URL would be too long on mobile)
 
@@ -2405,8 +2469,8 @@
 
   function submitWithRetry(payload, retries, wrongData) {
     var attemptNum = 4 - retries;
-    console.log('[SUBMIT] Sending result via GET, attempt ' + attemptNum + '/3');
-    apiGet(payload).then(function(data) {
+    console.log('[SUBMIT] Sending result via POST, attempt ' + attemptNum + '/3');
+    apiPost(payload).then(function(data) {
       console.log('[SUBMIT] Response:', JSON.stringify(data));
       var debugEl = document.getElementById('submitDebug');
       if (!debugEl) {
@@ -2540,7 +2604,7 @@
     try {
       var params = new URLSearchParams(window.location.search);
       var urlCode = params.get('code');
-      if (urlCode && /^\d{6}$/.test(urlCode)) {
+      if (urlCode && /^[A-Z0-9]{6,8}$/i.test(urlCode)) {
         codeInput.value = urlCode;
         // Auto-submit after short delay to allow page to fully render
         setTimeout(function() { codeSubmitBtn.click(); }, 300);

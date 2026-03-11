@@ -583,6 +583,7 @@
 
   // ========== State ==========
   var examinerData = null;
+  var examinerToken = '';
   var sessionCode = '';
   var sessionValidUntil = null;
   var currentSite = '';
@@ -608,6 +609,7 @@
     try {
       sessionStorage.setItem('ext_exam_state', JSON.stringify({
         examinerData: examinerData,
+        examinerToken: examinerToken,
         sessionCode: sessionCode,
         sessionValidUntil: sessionValidUntil ? sessionValidUntil.toISOString() : null,
         currentSite: currentSite,
@@ -627,6 +629,7 @@
       var state = JSON.parse(saved);
       if (!state.examinerData || !state.sessionCode) return false;
       examinerData = state.examinerData;
+      examinerToken = state.examinerToken || (examinerData && examinerData.token) || '';
       sessionCode = state.sessionCode;
       sessionValidUntil = state.sessionValidUntil ? new Date(state.sessionValidUntil) : null;
       currentSite = state.currentSite || '';
@@ -652,12 +655,32 @@
 
   // ========== API Helper ==========
   function apiGet(params) {
+    // Auto-attach token and examinerId for authenticated requests (skip for login/verifyLogin)
+    if (examinerToken && examinerData && !params.token && params.action !== 'login' && params.action !== 'verifyLogin') {
+      params.token = examinerToken;
+      if (!params.examinerId) params.examinerId = examinerData.id;
+      console.log('[API] ' + params.action + ' → token=' + examinerToken.substring(0, 10) + '... id=' + params.examinerId);
+    }
     var qs = [];
     for (var k in params) {
       if (params.hasOwnProperty(k)) qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
     }
     qs.push('_t=' + Date.now());
-    return fetch(API_URL + '?' + qs.join('&'), { cache: 'no-store' }).then(function(r) { return r.json(); });
+    return fetch(API_URL + '?' + qs.join('&'), { cache: 'no-store' }).then(function(r) { return r.json(); }).then(function(data) {
+      if (data && data.tokenExpired && params.action !== 'login') {
+        alert('פג תוקף ההתחברות — יש להתחבר מחדש');
+        logout();
+      }
+      return data;
+    });
+  }
+
+  function apiPost(data) {
+    return fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify(data)
+    }).then(function(r) { return r.json(); });
   }
 
   // ========== Credential obfuscation (prevents plain-text passwords in localStorage) ==========
@@ -691,12 +714,15 @@
 
     apiGet({ action: 'login', idNumber: id, password: pass }).then(function(data) {
       btn.disabled = false; btn.textContent = 'כניסה';
+      console.log('[LOGIN] response:', JSON.stringify(data).substring(0, 200));
       if (data.status === 'ok') {
         examinerData = data.examiner;
+        examinerToken = examinerData.token || '';
+        console.log('[LOGIN] token saved:', examinerToken ? examinerToken.substring(0, 10) + '...' : 'EMPTY');
         userRole = examinerData.role || 'בוחן';
-        // Save credentials if "remember me" is checked
+        // Save token for "remember me" (not password)
         if (document.getElementById('rememberMe').checked) {
-          try { localStorage.setItem('ext_examiner_remember', JSON.stringify({ id: id, pass: obfuscate(pass) })); } catch(e) {}
+          try { localStorage.setItem('ext_examiner_remember', JSON.stringify({ id: id, token: examinerToken })); } catch(e) {}
         }
         document.getElementById('topbarInfo').textContent = examinerData.name;
         document.getElementById('logoutBtn').style.display = 'inline-block';
@@ -726,7 +752,7 @@
     stopDashboardPolling();
     clearState();
     try { localStorage.removeItem('ext_examiner_remember'); } catch(e) {}
-    examinerData = null; sessionCode = ''; userRole = 'בוחן'; cmdData = null;
+    examinerData = null; examinerToken = ''; sessionCode = ''; userRole = 'בוחן'; cmdData = null;
     document.getElementById('logoutBtn').style.display = 'none';
     document.getElementById('topbarInfo').textContent = '';
     document.querySelector('.topbar h1').textContent = 'לוח בקרה — בוחן';
@@ -3380,7 +3406,7 @@
   };
 
   // ========== Auto-restore on page load ==========
-  if (loadState()) {
+  if (loadState() && examinerToken) {
     userRole = (examinerData && examinerData.role) || 'בוחן';
     // We have a saved session — check if it's still valid
     if (sessionValidUntil && new Date() < sessionValidUntil) {
@@ -3413,11 +3439,38 @@
       var remembered = localStorage.getItem('ext_examiner_remember');
       if (remembered) {
         var creds = JSON.parse(remembered);
-        if (creds.id && creds.pass) {
+        if (creds.id && creds.token) {
+          // Token-based auto-login: verify token with server
+          document.getElementById('rememberMe').checked = true;
+          var qs = 'action=verifyLogin&examinerId=' + encodeURIComponent(creds.id) + '&token=' + encodeURIComponent(creds.token) + '&_t=' + Date.now();
+          fetch(API_URL + '?' + qs, { cache: 'no-store' }).then(function(r) { return r.json(); }).then(function(data) {
+            if (data && data.status === 'ok' && data.examiner) {
+              examinerData = data.examiner;
+              examinerToken = creds.token;
+              userRole = examinerData.role || 'בוחן';
+              document.getElementById('topbarInfo').textContent = examinerData.name;
+              document.getElementById('logoutBtn').style.display = 'inline-block';
+              if (userRole === 'מפקד') {
+                document.querySelector('.topbar h1').textContent = 'לוח בקרה — מפקד';
+                showScreen('screenCommander');
+                initCommanderDashboard();
+              } else {
+                document.querySelector('.topbar h1').textContent = 'לוח בקרה — בוחן';
+                document.getElementById('setupExaminerName').textContent = 'שלום, ' + examinerData.name;
+                showScreen('screenSetup');
+                fetchSites();
+                fetchPreviousSessions();
+              }
+            } else {
+              // Token expired — clear and show login
+              try { localStorage.removeItem('ext_examiner_remember'); } catch(ex) {}
+            }
+          }).catch(function() {});
+        } else if (creds.id && creds.pass) {
+          // Legacy: password-based auto-login — fill form and click
           document.getElementById('loginId').value = creds.id;
           document.getElementById('loginPass').value = deobfuscate(creds.pass);
           document.getElementById('rememberMe').checked = true;
-          // Auto-click login
           document.getElementById('loginBtn').click();
         }
       }
