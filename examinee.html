@@ -1353,29 +1353,44 @@
         saveActiveExam();
         // Mark that we might be closing (will be cleared if page actually reloads)
         try { sessionStorage.setItem('ext_exam_closing', '1'); } catch(ex) {}
-        // Send fail as safety net — if browser closes, server records fail
-        // If just a refresh, the resume logic will cancel this
-        try {
-          if (navigator.sendBeacon) {
-            navigator.sendBeacon(API_URL, new Blob([JSON.stringify({
-              action: 'submitFailOnClose',
-              sessionCode: sessionCode,
-              idNumber: examineeData.idNumber,
-              fullName: examineeData.fullName,
-              phone: examineeData.phone || '',
-              license: examineeData.license || sessionData.license || 'B',
-              language: examineeData.language || sessionData.language || 'he',
-              examinerName: sessionData.examinerName || '',
-              site: sessionData.site || '',
-              classroom: sessionData.classroom || '',
-              answeredCount: getAnsweredCount(),
-              totalQuestions: TOTAL_QUESTIONS,
-              time: getElapsedTimeStr(),
-              population: examineeData.population || '',
-              audioMode: sessionData.audioMode || 'off'
-            })], { type: 'application/json' }));
-          }
-        } catch(ex) {}
+
+        // If a DQ was already sent/confirmed or provisional DQ is pending, send DQ (not fail)
+        if (tabSwitchDQConfirmed || provisionalDQSent || tabSwitchGraceTimer || splitScreenBlurTimer) {
+          try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+          try {
+            if (navigator.sendBeacon) {
+              navigator.sendBeacon(API_URL, new Blob([JSON.stringify({
+                action: 'disqualify',
+                sessionCode: sessionCode,
+                idNumber: examineeData.idNumber
+              })], { type: 'application/json' }));
+            }
+          } catch(ex) {}
+        } else {
+          // Normal close — send fail as safety net
+          // If just a refresh, the resume logic will cancel this
+          try {
+            if (navigator.sendBeacon) {
+              navigator.sendBeacon(API_URL, new Blob([JSON.stringify({
+                action: 'submitFailOnClose',
+                sessionCode: sessionCode,
+                idNumber: examineeData.idNumber,
+                fullName: examineeData.fullName,
+                phone: examineeData.phone || '',
+                license: examineeData.license || sessionData.license || 'B',
+                language: examineeData.language || sessionData.language || 'he',
+                examinerName: sessionData.examinerName || '',
+                site: sessionData.site || '',
+                classroom: sessionData.classroom || '',
+                answeredCount: getAnsweredCount(),
+                totalQuestions: TOTAL_QUESTIONS,
+                time: getElapsedTimeStr(),
+                population: examineeData.population || '',
+                audioMode: sessionData.audioMode || 'off'
+              })], { type: 'application/json' }));
+            }
+          } catch(ex) {}
+        }
         e.preventDefault();
         e.returnValue = '\u05D4\u05DE\u05D1\u05D7\u05DF \u05E2\u05D3\u05D9\u05D9\u05DF \u05E4\u05E2\u05D9\u05DC. \u05D1\u05D8\u05D5\u05D7 \u05E9\u05E8\u05D5\u05E6\u05D4 \u05DC\u05E6\u05D0\u05EA?';
         return e.returnValue;
@@ -1419,6 +1434,7 @@
   }
 
   var dqServerConfirmed = false;
+  var provisionalDQSent = false;  // true when provisional DQ was sent (waiting for grace timer)
 
   function sendDQToServer() {
     var url = buildDisqualifyUrl();
@@ -1470,25 +1486,47 @@
     }, 8000);
   }
 
+  // Cancel a provisional DQ — called when examinee returns within grace period
+  function sendCancelDQToServer() {
+    try {
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon(API_URL, new Blob([JSON.stringify({
+          action: 'cancelDisqualify',
+          sessionCode: sessionCode,
+          idNumber: examineeData.idNumber
+        })], { type: 'application/json' }));
+      }
+    } catch(ex) {}
+    // Also try fetch as backup
+    try {
+      var params = 'action=cancelDisqualify&sessionCode=' + encodeURIComponent(sessionCode) + '&idNumber=' + encodeURIComponent(examineeData.idNumber);
+      fetch(API_URL + '?' + params).catch(function() {});
+    } catch(ex) {}
+  }
+
   function onTabSwitch() {
     if (!examInProgress || examSubmitted) return;
 
     if (document.visibilityState === 'hidden') {
       tabHiddenAt = Date.now();
       if (tabSwitchWarnings >= TAB_SWITCH_MAX_WARNINGS) {
-        // Already used their chance — immediate DQ, no grace
+        // Already used their chance — immediate final DQ, no grace
         tabSwitchDQConfirmed = true;
+        provisionalDQSent = false;
         try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
         sendDQToServer();
       } else {
-        // First offense — start grace period timer
+        // First offense — send PROVISIONAL DQ immediately (so server gets it before browser freezes timers)
+        // then start grace timer; if user returns in time, cancel the DQ
+        provisionalDQSent = true;
         tabSwitchDQConfirmed = false;
+        sendDQToServer();
         tabSwitchGraceTimer = setTimeout(function() {
-          // Grace expired while still hidden — confirm DQ
+          // Grace expired while still hidden — confirm DQ (server already has it)
           tabSwitchDQConfirmed = true;
           tabSwitchGraceTimer = null;
+          provisionalDQSent = false;
           try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
-          sendDQToServer();
         }, TAB_SWITCH_GRACE_MS);
       }
     }
@@ -1497,21 +1535,22 @@
       var awayMs = tabHiddenAt ? (Date.now() - tabHiddenAt) : 0;
 
       if (tabSwitchDQConfirmed) {
-        // DQ was sent (grace expired or 2nd offense) — show DQ screen
+        // DQ was confirmed (grace expired or 2nd offense) — show DQ screen
         showDQScreen();
-      } else if (tabSwitchGraceTimer && awayMs >= TAB_SWITCH_CALL_MS) {
-        // Away 5+ seconds = phone call detected — immediate DQ
-        clearTimeout(tabSwitchGraceTimer);
-        tabSwitchGraceTimer = null;
+      } else if ((tabSwitchGraceTimer || provisionalDQSent) && awayMs >= TAB_SWITCH_CALL_MS) {
+        // Away 5+ seconds = phone call detected — confirm DQ (already sent provisionally)
+        if (tabSwitchGraceTimer) { clearTimeout(tabSwitchGraceTimer); tabSwitchGraceTimer = null; }
         tabSwitchDQConfirmed = true;
+        provisionalDQSent = false;
         try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
-        sendDQToServer();
+        sendDQToServer(); // send again to be safe
         showDQScreen();
-      } else if (tabSwitchGraceTimer) {
-        // Returned quickly (< 5 seconds) — cancel DQ, show warning
-        clearTimeout(tabSwitchGraceTimer);
-        tabSwitchGraceTimer = null;
+      } else if (tabSwitchGraceTimer || provisionalDQSent) {
+        // Returned quickly (< 5 seconds) — cancel provisional DQ, show warning
+        if (tabSwitchGraceTimer) { clearTimeout(tabSwitchGraceTimer); tabSwitchGraceTimer = null; }
+        provisionalDQSent = false;
         tabSwitchWarnings++;
+        sendCancelDQToServer();
         showTabSwitchWarning();
       }
     }
@@ -1618,24 +1657,27 @@
   function onWindowBlur() {
     if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
     // Window lost focus — could be split-screen tap on other app
-    // Use same grace/warning logic as tab switch
+    // Use same provisional-DQ logic as tab switch
     if (tabSwitchWarnings >= TAB_SWITCH_MAX_WARNINGS) {
-      // Already warned — immediate DQ
+      // Already warned — immediate final DQ
       tabSwitchDQConfirmed = true;
+      provisionalDQSent = false;
       try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
       sendDQToServer();
       showDQScreen();
     } else {
-      // Start grace timer (same as tab switch)
-      if (!tabSwitchGraceTimer && document.visibilityState === 'visible') {
+      // Send provisional DQ immediately, start grace timer
+      if (!tabSwitchGraceTimer && !provisionalDQSent && document.visibilityState === 'visible') {
         tabHiddenAt = Date.now();
+        provisionalDQSent = true;
+        sendDQToServer();
         splitScreenBlurTimer = setTimeout(function() {
-          // Still blurred after grace — DQ
+          // Still blurred after grace — confirm DQ (server already has it)
           splitScreenBlurTimer = null;
           if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
           tabSwitchDQConfirmed = true;
+          provisionalDQSent = false;
           try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
-          sendDQToServer();
           showDQScreen();
         }, TAB_SWITCH_GRACE_MS);
       }
@@ -1644,19 +1686,21 @@
 
   function onWindowFocus() {
     if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
-    if (splitScreenBlurTimer) {
-      clearTimeout(splitScreenBlurTimer);
+    if (splitScreenBlurTimer || provisionalDQSent) {
+      if (splitScreenBlurTimer) { clearTimeout(splitScreenBlurTimer); splitScreenBlurTimer = null; }
       var awayMs = tabHiddenAt ? (Date.now() - tabHiddenAt) : 0;
-      splitScreenBlurTimer = null;
       if (awayMs >= TAB_SWITCH_CALL_MS) {
-        // Was away 5+ sec — DQ
+        // Was away 5+ sec — confirm DQ (already sent provisionally)
         tabSwitchDQConfirmed = true;
+        provisionalDQSent = false;
         try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
-        sendDQToServer();
+        sendDQToServer(); // send again to be safe
         showDQScreen();
       } else {
-        // Quick return — warn
+        // Quick return — cancel provisional DQ, show warning
+        provisionalDQSent = false;
         tabSwitchWarnings++;
+        sendCancelDQToServer();
         showTabSwitchWarning();
       }
     }
