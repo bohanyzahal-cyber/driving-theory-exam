@@ -943,7 +943,7 @@
     document.getElementById('modalAudio').value = currentAudioMode;
 
     // Show QR code (always refresh when dashboard renders)
-    if (sessionCode && /^\d{6}$/.test(sessionCode)) {
+    if (sessionCode && /^[A-Z0-9]{6,8}$/i.test(sessionCode)) {
       showQR(sessionCode);
     }
     // Show "back to commander" button if user is a commander
