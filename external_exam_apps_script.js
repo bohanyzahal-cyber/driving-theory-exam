@@ -225,6 +225,9 @@ function doGet(e) {
       case 'disqualify':
         return handleDisqualify(p);
 
+      case 'cancelDisqualify':
+        return handleCancelDisqualify(p);
+
       case 'resetExaminee':
         return handleResetExaminee(p);
 
@@ -345,6 +348,8 @@ function doPost(e) {
       return handleUploadResultHtml(data);
     } else if (action === 'disqualify') {
       return handleDisqualify(data);
+    } else if (action === 'cancelDisqualify') {
+      return handleCancelDisqualify(data);
     } else {
       return jsonResponse({ status: 'error', message: 'Unknown POST action: ' + action });
     }
@@ -942,6 +947,42 @@ function handleDisqualify(p) {
     attemptNum, '', false, true, '',
     population, false, examineeAudio
   ]);
+  SpreadsheetApp.flush();
+  return jsonResponse({ status: 'ok' });
+}
+
+// Cancel a provisional disqualification — called when examinee returns within grace period
+function handleCancelDisqualify(p) {
+  var sc = String(p.sessionCode || '');
+  var id = normalizeId(p.idNumber || '');
+  if (!sc || !id) return jsonResponse({ status: 'ok' });
+
+  // 1. Revert pending status from 'disqualified' back to 'in_exam'
+  var pendSheet = getSheet('ממתינים');
+  var pendData = pendSheet.getDataRange().getValues();
+  for (var j = pendData.length - 1; j >= 1; j--) {
+    if (String(pendData[j][0]) === sc && normalizeId(pendData[j][1]) === id) {
+      if (String(pendData[j][5]).trim() === 'disqualified') {
+        pendSheet.getRange(j + 1, 6).setValue('in_exam');
+        break;
+      }
+    }
+  }
+
+  // 2. Delete the latest DQ result row (פסול) for this session+ID
+  var resSheet = getSheet('תוצאות');
+  var resData = resSheet.getDataRange().getValues();
+  for (var i = resData.length - 1; i >= 1; i--) {
+    if (String(resData[i][13]) === sc && normalizeId(resData[i][1]) === id) {
+      if (String(resData[i][7]).trim() === 'פסול') {
+        resSheet.deleteRow(i + 1);
+        break;
+      }
+      // If latest result is NOT פסול, the DQ was already overwritten or never created — stop
+      break;
+    }
+  }
+
   SpreadsheetApp.flush();
   return jsonResponse({ status: 'ok' });
 }
