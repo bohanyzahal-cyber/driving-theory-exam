@@ -3048,32 +3048,36 @@
     return d.getDate() + '/' + (d.getMonth() + 1) + '/' + d.getFullYear();
   }
 
+  var cmdInitDone = false;
   function initCommanderDashboard() {
-    var btns = document.querySelectorAll('#cmdPeriodBtns .cmd-period-btn');
-    for (var i = 0; i < btns.length; i++) {
-      btns[i].addEventListener('click', function() {
-        var allBtns = document.querySelectorAll('#cmdPeriodBtns .cmd-period-btn');
-        for (var j = 0; j < allBtns.length; j++) allBtns[j].classList.remove('active');
-        this.classList.add('active');
-        var period = this.getAttribute('data-period');
-        if (period === 'custom') {
-          document.getElementById('cmdCustomRange').style.display = 'block';
-        } else {
-          document.getElementById('cmdCustomRange').style.display = 'none';
-          fetchCommanderData(period);
-        }
-      });
-    }
-    // Tab buttons
-    var tabBtns = document.querySelectorAll('.cmd-tab-btn');
-    for (var i = 0; i < tabBtns.length; i++) {
-      tabBtns[i].addEventListener('click', function() {
-        var allTabs = document.querySelectorAll('.cmd-tab-btn');
-        for (var j = 0; j < allTabs.length; j++) allTabs[j].classList.remove('active');
-        this.classList.add('active');
-        cmdCurrentTab = this.getAttribute('data-tab');
-        if (cmdData) renderBreakdownTable(cmdData, cmdCurrentTab);
-      });
+    if (!cmdInitDone) {
+      cmdInitDone = true;
+      var btns = document.querySelectorAll('#cmdPeriodBtns .cmd-period-btn');
+      for (var i = 0; i < btns.length; i++) {
+        btns[i].addEventListener('click', function() {
+          var allBtns = document.querySelectorAll('#cmdPeriodBtns .cmd-period-btn');
+          for (var j = 0; j < allBtns.length; j++) allBtns[j].classList.remove('active');
+          this.classList.add('active');
+          var period = this.getAttribute('data-period');
+          if (period === 'custom') {
+            document.getElementById('cmdCustomRange').style.display = 'block';
+          } else {
+            document.getElementById('cmdCustomRange').style.display = 'none';
+            fetchCommanderData(period);
+          }
+        });
+      }
+      // Tab buttons
+      var tabBtns = document.querySelectorAll('.cmd-tab-btn');
+      for (var i = 0; i < tabBtns.length; i++) {
+        tabBtns[i].addEventListener('click', function() {
+          var allTabs = document.querySelectorAll('.cmd-tab-btn');
+          for (var j = 0; j < allTabs.length; j++) allTabs[j].classList.remove('active');
+          this.classList.add('active');
+          cmdCurrentTab = this.getAttribute('data-tab');
+          if (cmdData) renderBreakdownTable(cmdData, cmdCurrentTab);
+        });
+      }
     }
     // Load default (daily)
     fetchCommanderData('daily');
@@ -3403,6 +3407,7 @@
   window.switchToCommander = function() {
     showScreen('screenCommander');
     document.querySelector('.topbar h1').textContent = 'לוח בקרה — מפקד';
+    fetchCommanderData('daily');
   };
 
   // ========== Auto-restore on page load ==========
