@@ -738,31 +738,38 @@ function handleExaminerDashboard(p) {
 
   // Auto-cleanup: detect stale in_exam entries that already have a result or are way past exam time
   var now = new Date();
-  var MAX_EXAM_MS = 90 * 60 * 1000; // 90 minutes — very conservative threshold
+  var BASE_EXAM_MS = 40 * 60 * 1000;
+  var STALE_BUFFER_MS = 20 * 60 * 1000; // 20 minutes buffer (approval wait + instructions)
   for (var ci = 1; ci < pendData.length; ci++) {
     if (String(pendData[ci][0]) !== code) continue;
     if (String(pendData[ci][5]).trim() !== 'in_exam') continue;
     var ciId = pendData[ci][1];
     var regTime = pendData[ci][4] ? new Date(pendData[ci][4]) : null;
-    var isStale = regTime && (now.getTime() - regTime.getTime() > MAX_EXAM_MS);
+    // Dynamic stale threshold: exam time (based on extension) + 10 min buffer
+    var ciExt = parseFloat(pendData[ci][10]) || 1;
+    if (ciExt !== 1.25 && ciExt !== 1.5) ciExt = 1;
+    var maxMs = Math.round(BASE_EXAM_MS * ciExt) + STALE_BUFFER_MS;
+    var isStale = regTime && (now.getTime() - regTime.getTime() > maxMs);
 
-    // Count results for this examinee in this session
+    // Count results AND disqualified entries for this examinee in this session
     var resultCount = 0;
     for (var ri = 1; ri < resData.length; ri++) {
       if (String(resData[ri][13]) === code && normalizeId(resData[ri][1]) === normalizeId(ciId)) {
         resultCount++;
       }
     }
-    // Count completed entries in pending sheet for this examinee in this session
-    var completedCount = 0;
+    // Count terminal entries (completed/disqualified) in pending sheet for this examinee
+    var terminalCount = 0;
     for (var cc = 1; cc < pendData.length; cc++) {
-      if (String(pendData[cc][0]) === code && normalizeId(pendData[cc][1]) === normalizeId(ciId) && String(pendData[cc][5]).trim() === 'completed') {
-        completedCount++;
+      if (String(pendData[cc][0]) !== code || normalizeId(pendData[cc][1]) !== normalizeId(ciId)) continue;
+      var ccStatus = String(pendData[cc][5]).trim();
+      if (ccStatus === 'completed' || ccStatus === 'disqualified') {
+        terminalCount++;
       }
     }
-    // Only treat as dangling if there are more results than completed entries
-    // (meaning this in_exam already has a result but wasn't marked completed)
-    var hasUnmatchedResult = resultCount > completedCount;
+    // Only treat as dangling if there are more results than terminal entries
+    // (meaning this in_exam already has a result but wasn't marked completed/disqualified)
+    var hasUnmatchedResult = resultCount > terminalCount;
 
     if (hasUnmatchedResult || isStale) {
       // Fix dangling status — mark as completed
