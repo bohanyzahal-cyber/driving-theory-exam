@@ -1,7 +1,12 @@
 *.py
 *.xlsx
 *.html.bak
+*.backup
 start_server.bat
 our_*.html
 spanish_*.html
 system_flowchart.html
+_translation_progress/
+_zip_extracted/
+_ul
+driving questions.zip

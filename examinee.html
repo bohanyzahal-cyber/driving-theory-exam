@@ -1196,7 +1196,7 @@
     // Stop approval polling
     if (approvalInterval) { clearInterval(approvalInterval); approvalInterval = null; }
     // Cancel registration on server
-    apiGet({ action: 'cancelRegistration', sessionCode: sessionCode, idNumber: examineeData.idNumber }).then(function() {
+    apiGet({ action: 'cancelRegistration', sessionCode: sessionCode, idNumber: examineeData.idNumber, phone: examineeData.phone || '' }).then(function() {
       // Restore session defaults
       sessionData.language = sessionData._defaultLanguage || 'he';
       sessionData.license = sessionData._defaultLicense || 'B';

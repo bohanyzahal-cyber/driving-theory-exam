@@ -7,7 +7,7 @@
 // ========== פונקציות עזר ==========
 
 var SHEET_HEADERS = {
-  'בוחנים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'מס בוחן'],
+  'בוחנים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'מס בוחן', 'תפקיד', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד'],
   'אתרים': ['שם אתר', 'מזהה', 'טלפון מנהל', 'כיתות'],
   'סשנים': ['קוד', 'בוחן ת.ז.', 'שם בוחן', 'אתר', 'כיתה', 'דרגה', 'שפה', 'מצב שמע', 'זמן יצירה', 'תקף עד', 'פעיל'],
   'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה', 'דרגה', 'שמע'],
@@ -177,7 +177,8 @@ function doGet(e) {
     switch (action) {
 
       case 'login':
-        return handleLogin(p);
+        // Login only via POST — block GET to prevent password in URL
+        return jsonResponse({ status: 'error', message: 'יש להתחבר דרך POST בלבד' });
 
       case 'verifyLogin':
         return handleVerifyLogin(p);
@@ -360,13 +361,32 @@ function handleLogin(p) {
   var data = sheet.getDataRange().getValues();
   for (var i = 1; i < data.length; i++) {
     if (normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
+      var row = i + 1; // sheet rows are 1-indexed
+      // Rate limiting: column I (index 8) = failed attempts, column J (index 9) = lockout until
+      var failedAttempts = Number(data[i][8]) || 0;
+      var lockoutUntil = data[i][9];
+      if (lockoutUntil) {
+        var lockoutDate = lockoutUntil instanceof Date ? lockoutUntil : new Date(lockoutUntil);
+        if (new Date() < lockoutDate) {
+          var minsLeft = Math.ceil((lockoutDate - new Date()) / 60000);
+          return jsonResponse({ status: 'error', message: 'החשבון נעול עקב ניסיונות כושלים. נסה שוב בעוד ' + minsLeft + ' דקות' });
+        }
+        // Lockout expired — reset counter
+        failedAttempts = 0;
+        sheet.getRange(row, 9).setValue('');   // clear lockout
+        sheet.getRange(row, 10).setValue(0);   // clear counter
+      }
       if (String(data[i][2]) === String(p.password)) {
         if (data[i][3] === 'כן' || data[i][3] === true || data[i][3] === 'TRUE') {
+          // Successful login — reset failed attempts
+          if (failedAttempts > 0) {
+            sheet.getRange(row, 9).setValue(0);    // column I = failed attempts reset
+            sheet.getRange(row, 10).setValue('');   // column J = lockout cleared
+          }
           // Generate token and store in sheet (columns G=7, H=8 → indices 6,7)
           var token = generateToken();
           var expiry = new Date();
           expiry.setHours(expiry.getHours() + 12);
-          var row = i + 1; // sheet rows are 1-indexed
           sheet.getRange(row, 7).setValue(token);   // column G = token
           sheet.getRange(row, 8).setValue(expiry);   // column H = expiry
           return jsonResponse({ status: 'ok', examiner: { name: data[i][0], id: normalizeId(data[i][1]), examinerNumber: String(data[i][4] || ''), role: String(data[i][5] || 'בוחן'), token: token } });
@@ -374,6 +394,15 @@ function handleLogin(p) {
           return jsonResponse({ status: 'error', message: 'החשבון אינו פעיל' });
         }
       } else {
+        // Wrong password — increment failed attempts
+        failedAttempts++;
+        sheet.getRange(row, 9).setValue(failedAttempts);   // column I = failed attempts
+        if (failedAttempts >= 5) {
+          var lockout = new Date();
+          lockout.setMinutes(lockout.getMinutes() + 15);
+          sheet.getRange(row, 10).setValue(lockout);        // column J = lockout until
+          return jsonResponse({ status: 'error', message: 'יותר מדי ניסיונות כושלים. החשבון ננעל ל-15 דקות' });
+        }
         return jsonResponse({ status: 'error', message: 'סיסמה שגויה' });
       }
     }
@@ -553,24 +582,29 @@ function handleGetSessionInfo(p) {
       });
     }
   }
-  // Debug info: return how many rows and first code found for troubleshooting
-  var debugInfo = 'rows=' + data.length;
-  if (data.length > 1) {
-    debugInfo += ', firstCode=[' + String(data[1][0]) + '], type=' + typeof data[1][0] + ', cols=' + data[1].length;
-  }
-  return jsonResponse({ status: 'error', message: 'קוד סשן לא תקין (' + debugInfo + ')' });
+  return jsonResponse({ status: 'error', message: 'קוד סשן לא תקין' });
 }
 
 function handleRegisterExaminee(p) {
+  var MAX_PENDING_PER_SESSION = 50;
   var pendSheet = getSheet('ממתינים');
   var data = pendSheet.getDataRange().getValues();
+  var activeCount = 0;
   for (var i = 1; i < data.length; i++) {
-    if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
-      var status = data[i][5];
+    if (String(data[i][0]) === String(p.sessionCode)) {
+      var status = String(data[i][5] || '').trim();
+      if (normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
+        if (status === 'waiting' || status === 'approved' || status === 'in_exam') {
+          return jsonResponse({ status: 'error', message: 'כבר רשום בסשן זה' });
+        }
+      }
       if (status === 'waiting' || status === 'approved' || status === 'in_exam') {
-        return jsonResponse({ status: 'error', message: 'כבר רשום בסשן זה' });
+        activeCount++;
       }
     }
+  }
+  if (activeCount >= MAX_PENDING_PER_SESSION) {
+    return jsonResponse({ status: 'error', message: 'הסשן מלא — לא ניתן לרשום נבחנים נוספים' });
   }
   pendSheet.appendRow([
     p.sessionCode,
@@ -594,6 +628,12 @@ function handleCancelRegistration(p) {
     if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
       var s = String(data[i][5]).trim();
       if (s === 'waiting' || s === 'approved') {
+        // Verify phone matches to prevent unauthorized cancellation
+        var storedPhone = String(data[i][3] || '').replace(/[^0-9]/g, '');
+        var givenPhone = String(p.phone || '').replace(/[^0-9]/g, '');
+        if (storedPhone && givenPhone && storedPhone.slice(-7) !== givenPhone.slice(-7)) {
+          return jsonResponse({ status: 'error', message: 'פרטים לא תואמים' });
+        }
         sheet.getRange(i + 1, 6).setValue('cancelled');
         SpreadsheetApp.flush();
         return jsonResponse({ status: 'ok' });
