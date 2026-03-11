@@ -436,12 +436,12 @@
     <div class="card" style="text-align:center;">
       <h2 style="margin:0 0 12px;">לוח מפקד — סיכום נתונים</h2>
       <div id="cmdPeriodBtns" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:12px 0;">
-        <button class="cmd-period-btn active" data-period="daily">יומי</button>
-        <button class="cmd-period-btn" data-period="weekly">שבועי</button>
-        <button class="cmd-period-btn" data-period="monthly">חודשי</button>
-        <button class="cmd-period-btn" data-period="quarterly">תלת חודשי</button>
-        <button class="cmd-period-btn" data-period="yearly">שנתי</button>
-        <button class="cmd-period-btn" data-period="custom">מותאם</button>
+        <button class="cmd-period-btn active" data-period="daily" onclick="cmdSelectPeriod(this)">יומי</button>
+        <button class="cmd-period-btn" data-period="weekly" onclick="cmdSelectPeriod(this)">שבועי</button>
+        <button class="cmd-period-btn" data-period="monthly" onclick="cmdSelectPeriod(this)">חודשי</button>
+        <button class="cmd-period-btn" data-period="quarterly" onclick="cmdSelectPeriod(this)">תלת חודשי</button>
+        <button class="cmd-period-btn" data-period="yearly" onclick="cmdSelectPeriod(this)">שנתי</button>
+        <button class="cmd-period-btn" data-period="custom" onclick="cmdSelectPeriod(this)">מותאם</button>
       </div>
       <div id="cmdCustomRange" style="display:none;margin:12px auto;max-width:400px;">
         <div style="display:flex;gap:8px;align-items:center;justify-content:center;">
@@ -468,10 +468,10 @@
 
     <div class="card" id="cmdBreakdowns" style="display:none;">
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
-        <button class="cmd-tab-btn active" data-tab="byExaminer">לפי בוחן</button>
-        <button class="cmd-tab-btn" data-tab="bySite">לפי אתר</button>
-        <button class="cmd-tab-btn" data-tab="byLicense">לפי דרגה</button>
-        <button class="cmd-tab-btn" data-tab="byPopulation">לפי אוכלוסיה</button>
+        <button class="cmd-tab-btn active" data-tab="byExaminer" onclick="cmdSelectTab(this)">לפי בוחן</button>
+        <button class="cmd-tab-btn" data-tab="bySite" onclick="cmdSelectTab(this)">לפי אתר</button>
+        <button class="cmd-tab-btn" data-tab="byLicense" onclick="cmdSelectTab(this)">לפי דרגה</button>
+        <button class="cmd-tab-btn" data-tab="byPopulation" onclick="cmdSelectTab(this)">לפי אוכלוסיה</button>
       </div>
       <div id="cmdBreakdownContent" style="overflow-x:auto;"></div>
     </div>
@@ -3048,37 +3048,28 @@
     return d.getDate() + '/' + (d.getMonth() + 1) + '/' + d.getFullYear();
   }
 
-  var cmdInitDone = false;
-  function initCommanderDashboard() {
-    if (!cmdInitDone) {
-      cmdInitDone = true;
-      var btns = document.querySelectorAll('#cmdPeriodBtns .cmd-period-btn');
-      for (var i = 0; i < btns.length; i++) {
-        btns[i].addEventListener('click', function() {
-          var allBtns = document.querySelectorAll('#cmdPeriodBtns .cmd-period-btn');
-          for (var j = 0; j < allBtns.length; j++) allBtns[j].classList.remove('active');
-          this.classList.add('active');
-          var period = this.getAttribute('data-period');
-          if (period === 'custom') {
-            document.getElementById('cmdCustomRange').style.display = 'block';
-          } else {
-            document.getElementById('cmdCustomRange').style.display = 'none';
-            fetchCommanderData(period);
-          }
-        });
-      }
-      // Tab buttons
-      var tabBtns = document.querySelectorAll('.cmd-tab-btn');
-      for (var i = 0; i < tabBtns.length; i++) {
-        tabBtns[i].addEventListener('click', function() {
-          var allTabs = document.querySelectorAll('.cmd-tab-btn');
-          for (var j = 0; j < allTabs.length; j++) allTabs[j].classList.remove('active');
-          this.classList.add('active');
-          cmdCurrentTab = this.getAttribute('data-tab');
-          if (cmdData) renderBreakdownTable(cmdData, cmdCurrentTab);
-        });
-      }
+  window.cmdSelectPeriod = function(btn) {
+    var allBtns = document.querySelectorAll('#cmdPeriodBtns .cmd-period-btn');
+    for (var j = 0; j < allBtns.length; j++) allBtns[j].classList.remove('active');
+    btn.classList.add('active');
+    var period = btn.getAttribute('data-period');
+    if (period === 'custom') {
+      document.getElementById('cmdCustomRange').style.display = 'block';
+    } else {
+      document.getElementById('cmdCustomRange').style.display = 'none';
+      fetchCommanderData(period);
     }
+  };
+
+  window.cmdSelectTab = function(btn) {
+    var allTabs = document.querySelectorAll('.cmd-tab-btn');
+    for (var j = 0; j < allTabs.length; j++) allTabs[j].classList.remove('active');
+    btn.classList.add('active');
+    cmdCurrentTab = btn.getAttribute('data-tab');
+    if (cmdData) renderBreakdownTable(cmdData, cmdCurrentTab);
+  };
+
+  function initCommanderDashboard() {
     // Load default (daily)
     fetchCommanderData('daily');
   }
