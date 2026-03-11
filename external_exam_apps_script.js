@@ -746,20 +746,29 @@ function handleExaminerDashboard(p) {
     var regTime = pendData[ci][4] ? new Date(pendData[ci][4]) : null;
     var isStale = regTime && (now.getTime() - regTime.getTime() > MAX_EXAM_MS);
 
-    // Check if result already exists for this examinee in this session
-    var hasResult = false;
+    // Count results for this examinee in this session
+    var resultCount = 0;
     for (var ri = 1; ri < resData.length; ri++) {
       if (String(resData[ri][13]) === code && normalizeId(resData[ri][1]) === normalizeId(ciId)) {
-        hasResult = true;
-        break;
+        resultCount++;
       }
     }
+    // Count completed entries in pending sheet for this examinee in this session
+    var completedCount = 0;
+    for (var cc = 1; cc < pendData.length; cc++) {
+      if (String(pendData[cc][0]) === code && normalizeId(pendData[cc][1]) === normalizeId(ciId) && String(pendData[cc][5]).trim() === 'completed') {
+        completedCount++;
+      }
+    }
+    // Only treat as dangling if there are more results than completed entries
+    // (meaning this in_exam already has a result but wasn't marked completed)
+    var hasUnmatchedResult = resultCount > completedCount;
 
-    if (hasResult || isStale) {
+    if (hasUnmatchedResult || isStale) {
       // Fix dangling status — mark as completed
       pendSheet.getRange(ci + 1, 6).setValue('completed');
       pendData[ci][5] = 'completed'; // update local copy
-      if (isStale && !hasResult) {
+      if (isStale && !hasUnmatchedResult) {
         // Create a timeout fail result
         var sesData2 = getSheet('סשנים').getDataRange().getValues();
         var license2 = pendData[ci][8] || '', site2 = '', classroom2 = '', examinerName2 = '', language2 = pendData[ci][6] || 'he';
@@ -788,7 +797,7 @@ function handleExaminerDashboard(p) {
 
   for (var i = 1; i < pendData.length; i++) {
     if (String(pendData[i][0]) !== code) continue;
-    var s = pendData[i][5];
+    var s = String(pendData[i][5] || '').trim();
     var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], status: s, language: pendData[i][6] || '', population: pendData[i][7] || '', license: pendData[i][8] || '', audioMode: pendData[i][9] || 'off', timeExtension: String(pendData[i][10] || '') };
     if (s === 'waiting') pending.push(item);
     else if (s === 'approved') pending.push(item);
