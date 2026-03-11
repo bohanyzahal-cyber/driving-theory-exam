@@ -659,7 +659,6 @@
     if (examinerToken && examinerData && !params.token && params.action !== 'login' && params.action !== 'verifyLogin') {
       params.token = examinerToken;
       if (!params.examinerId) params.examinerId = examinerData.id;
-      console.log('[API] ' + params.action + ' → token=' + examinerToken.substring(0, 10) + '... id=' + params.examinerId);
     }
     var qs = [];
     for (var k in params) {
@@ -683,22 +682,6 @@
     }).then(function(r) { return r.json(); });
   }
 
-  // ========== Credential obfuscation (prevents plain-text passwords in localStorage) ==========
-  var _obfKey = 'ExMn2026';
-  function obfuscate(str) {
-    var r = '';
-    for (var i = 0; i < str.length; i++) r += String.fromCharCode(str.charCodeAt(i) ^ _obfKey.charCodeAt(i % _obfKey.length));
-    return btoa(r);
-  }
-  function deobfuscate(encoded) {
-    try {
-      var d = atob(encoded);
-      var r = '';
-      for (var i = 0; i < d.length; i++) r += String.fromCharCode(d.charCodeAt(i) ^ _obfKey.charCodeAt(i % _obfKey.length));
-      return r;
-    } catch(e) { return encoded; } // fallback: return as-is if decode fails (old plain-text)
-  }
-
   // ========== Login ==========
   document.getElementById('loginBtn').addEventListener('click', function() {
     var id = document.getElementById('loginId').value.trim();
@@ -712,13 +695,11 @@
     var btn = document.getElementById('loginBtn');
     btn.disabled = true; btn.textContent = 'מתחבר...';
 
-    apiGet({ action: 'login', idNumber: id, password: pass }).then(function(data) {
+    apiPost({ action: 'login', idNumber: id, password: pass }).then(function(data) {
       btn.disabled = false; btn.textContent = 'כניסה';
-      console.log('[LOGIN] response:', JSON.stringify(data).substring(0, 200));
       if (data.status === 'ok') {
         examinerData = data.examiner;
         examinerToken = examinerData.token || '';
-        console.log('[LOGIN] token saved:', examinerToken ? examinerToken.substring(0, 10) + '...' : 'EMPTY');
         userRole = examinerData.role || 'בוחן';
         // Save token for "remember me" (not password)
         if (document.getElementById('rememberMe').checked) {
@@ -3463,11 +3444,10 @@
             }
           }).catch(function() {});
         } else if (creds.id && creds.pass) {
-          // Legacy: password-based auto-login — fill form and click
+          // Legacy: password-based credentials found — clear them for security, require fresh login
+          try { localStorage.removeItem('ext_examiner_remember'); } catch(ex) {}
           document.getElementById('loginId').value = creds.id;
-          document.getElementById('loginPass').value = deobfuscate(creds.pass);
           document.getElementById('rememberMe').checked = true;
-          document.getElementById('loginBtn').click();
         }
       }
     } catch(e) {}
