@@ -359,6 +359,7 @@
         <li><span class="icon">&#x1F4E9;</span> התוצאות יימסרו לך ע"י הבוחן, ולא יוצגו על המסך.</li>
       </ul>
       <div id="audioModeNotice" style="display:none;" class="info-banner">המבחן כולל הקראה בקול. ודא שהרמקול/אוזניות פעילים.</div>
+      <div id="timeExtNotice" style="display:none;" class="info-banner" dir="rtl">⏱ זמן המבחן שלך: <strong id="timeExtMinutes"></strong> דקות (תוספת זמן)</div>
       <div class="session-info-box">
         <div style="display:flex; gap:20px; flex-wrap:wrap;">
           <div><span class="label">דרגת רישיון:</span><br><span class="value" id="infoLicense"></span></div>
@@ -448,7 +449,8 @@
 
   var TOTAL_QUESTIONS = 30;
   var PASS_SCORE = 26;
-  var EXAM_TIME_MINUTES = 40;
+  var BASE_EXAM_MINUTES = 40;
+  var examTimeMinutes = 40; // may be updated by server (e.g. 50 or 60 for time extensions)
   var ANSWER_LABELS = ['\u05d0', '\u05d1', '\u05d2', '\u05d3'];
 
   var EXAM_STRUCTURE = {
@@ -742,7 +744,7 @@
   var userAnswers = [];
   var shuffledOrders = [];  // stores {order: [], correctIdx: N} per question
   var timerInterval = null;
-  var timeRemaining = EXAM_TIME_MINUTES * 60;
+  var timeRemaining = examTimeMinutes * 60;
   var examStartTime = null;
   var examInProgress = false;
   var examSubmitted = false;
@@ -797,7 +799,8 @@
         shuffledOrders: shuffledOrders,
         examDeadline: examDeadline,
         examStartTime: examStartTime,
-        autoReadEnabled: autoReadEnabled
+        autoReadEnabled: autoReadEnabled,
+        examTimeMinutes: examTimeMinutes
       }));
     } catch(e) {}
   }
@@ -837,7 +840,8 @@
     currentIndex = 0;
     userAnswers = [];
     shuffledOrders = [];
-    timeRemaining = EXAM_TIME_MINUTES * 60;
+    examTimeMinutes = BASE_EXAM_MINUTES; // reset to default for next examinee
+    timeRemaining = examTimeMinutes * 60;
     stopTimer(); // clears interval, removes visibilitychange listener, resets examDeadline
     if (approvalInterval) { clearInterval(approvalInterval); approvalInterval = null; }
     examineeData = { idNumber: '', fullName: '', phone: '', population: '', license: '', language: '' };
@@ -876,6 +880,7 @@
     document.getElementById('waitingPhase').style.display = 'block';
     document.getElementById('instructionsPhase').style.display = 'none';
     document.getElementById('audioModeNotice').style.display = 'none';
+    document.getElementById('timeExtNotice').style.display = 'none';
     document.getElementById('rejectedMsg').style.display = 'none';
     // Re-enable tab switch detection for next examinee
     document.addEventListener('visibilitychange', onTabSwitch);
@@ -1092,6 +1097,9 @@
         updateApprovalDebug('בדיקה #' + pollNum + ' OK', 'תגובה: ' + data.approval);
         if (data.approval === 'approved') {
           clearInterval(approvalInterval); approvalInterval = null;
+          if (data.examMinutes && data.examMinutes > 0) {
+            examTimeMinutes = data.examMinutes;
+          }
           showInstructions();
         } else if (data.approval === 'rejected') {
           clearInterval(approvalInterval); approvalInterval = null;
@@ -1183,6 +1191,14 @@
 
     if (sessionData.audioMode === 'on') {
       document.getElementById('audioModeNotice').style.display = 'block';
+    }
+
+    // Show time extension notice
+    if (examTimeMinutes > BASE_EXAM_MINUTES) {
+      document.getElementById('timeExtMinutes').textContent = examTimeMinutes;
+      document.getElementById('timeExtNotice').style.display = 'block';
+    } else {
+      document.getElementById('timeExtNotice').style.display = 'none';
     }
 
     // Pre-load translation file so it's ready when exam starts
@@ -1281,7 +1297,7 @@
       idNumber: examineeData.idNumber,
       questions: regQuestions
     });
-    timeRemaining = EXAM_TIME_MINUTES * 60;
+    timeRemaining = examTimeMinutes * 60;
     examStartTime = Date.now();
     examInProgress = true;
     examSubmitted = false;
@@ -1650,7 +1666,7 @@
     if (!examStartTime) return '0 דק\' 00 שנ\'';
     var elapsed = Math.round((Date.now() - examStartTime) / 1000);
     // Cap at exam time limit (in case timer didn't fire immediately)
-    var maxSec = EXAM_TIME_MINUTES * 60;
+    var maxSec = examTimeMinutes * 60;
     if (elapsed > maxSec) elapsed = maxSec;
     var eM = Math.floor(elapsed / 60);
     var eS = elapsed % 60;
@@ -2002,8 +2018,8 @@
   var examDeadline = null; // timestamp when exam expires
 
   function startTimer() {
-    examDeadline = Date.now() + EXAM_TIME_MINUTES * 60 * 1000;
-    timeRemaining = EXAM_TIME_MINUTES * 60;
+    examDeadline = Date.now() + examTimeMinutes * 60 * 1000;
+    timeRemaining = examTimeMinutes * 60;
     startResumedTimer();
   }
 
@@ -2599,6 +2615,7 @@
         examDeadline = activeExam.examDeadline;
         examStartTime = activeExam.examStartTime;
         autoReadEnabled = activeExam.autoReadEnabled || false;
+        if (activeExam.examTimeMinutes) examTimeMinutes = activeExam.examTimeMinutes;
         timeRemaining = Math.max(0, Math.ceil(msLeft / 1000));
         examInProgress = true;
         examSubmitted = false;

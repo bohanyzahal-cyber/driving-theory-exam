@@ -10,7 +10,7 @@ var SHEET_HEADERS = {
   'בוחנים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'מס בוחן', 'תפקיד', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד'],
   'אתרים': ['שם אתר', 'מזהה', 'טלפון מנהל', 'כיתות'],
   'סשנים': ['קוד', 'בוחן ת.ז.', 'שם בוחן', 'אתר', 'כיתה', 'דרגה', 'שפה', 'מצב שמע', 'זמן יצירה', 'תקף עד', 'פעיל'],
-  'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה', 'דרגה', 'שמע'],
+  'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה', 'דרגה', 'שמע', 'הארכת זמן'],
   'תוצאות': ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר', 'כיתה', 'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ', 'אוכלוסיה', 'תוקן?', 'שמע']
 };
 
@@ -616,7 +616,8 @@ function handleRegisterExaminee(p) {
     p.language || '',
     p.population || '',
     p.license || '',
-    p.audioMode || 'off'
+    p.audioMode || 'off',
+    ''  // הארכת זמן — נקבע ע"י הבוחן בעת אישור
   ]);
   return jsonResponse({ status: 'ok' });
 }
@@ -644,6 +645,7 @@ function handleCancelRegistration(p) {
 }
 
 function handleCheckApproval(p) {
+  var BASE_EXAM_MINUTES = 40;
   var sheet = getSheet('ממתינים');
   var data = sheet.getDataRange().getValues();
   for (var i = data.length - 1; i >= 1; i--) {
@@ -651,7 +653,14 @@ function handleCheckApproval(p) {
       var approval = String(data[i][5] || 'waiting').trim();
       // Skip terminal statuses from previous exams — keep looking for active row
       if (approval === 'completed' || approval === 'disqualified' || approval === 'cancelled') continue;
-      return jsonResponse({ status: 'ok', approval: approval });
+      var response = { status: 'ok', approval: approval };
+      // When approved, compute and return authorized exam duration
+      if (approval === 'approved' || approval === 'in_exam') {
+        var ext = parseFloat(data[i][10]) || 1;
+        if (ext !== 1.25 && ext !== 1.5) ext = 1;
+        response.examMinutes = Math.round(BASE_EXAM_MINUTES * ext);
+      }
+      return jsonResponse(response);
     }
   }
   return jsonResponse({ status: 'error', message: 'לא נמצא רישום' });
@@ -661,11 +670,17 @@ function handleApproveExaminee(p) {
   if (p.examinerId && !verifyExaminerForSession(p.sessionCode, p.examinerId)) {
     return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
   }
+  // Validate time extension (whitelist)
+  var validExt = { '': true, '1.25': true, '1.5': true };
+  var timeExt = String(p.timeExtension || '');
+  if (!validExt[timeExt]) timeExt = '';
+
   var sheet = getSheet('ממתינים');
   var data = sheet.getDataRange().getValues();
   for (var i = data.length - 1; i >= 1; i--) {
     if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber) && String(data[i][5]).trim() === 'waiting') {
       sheet.getRange(i + 1, 6).setValue('approved');
+      if (timeExt) sheet.getRange(i + 1, 11).setValue(timeExt);  // column K = הארכת זמן
       SpreadsheetApp.flush();
       return jsonResponse({ status: 'ok' });
     }
@@ -774,7 +789,7 @@ function handleExaminerDashboard(p) {
   for (var i = 1; i < pendData.length; i++) {
     if (String(pendData[i][0]) !== code) continue;
     var s = pendData[i][5];
-    var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], status: s, language: pendData[i][6] || '', population: pendData[i][7] || '', license: pendData[i][8] || '', audioMode: pendData[i][9] || 'off' };
+    var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], status: s, language: pendData[i][6] || '', population: pendData[i][7] || '', license: pendData[i][8] || '', audioMode: pendData[i][9] || 'off', timeExtension: String(pendData[i][10] || '') };
     if (s === 'waiting') pending.push(item);
     else if (s === 'approved') pending.push(item);
     else if (s === 'in_exam') active.push(item);
