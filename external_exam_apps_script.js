@@ -373,8 +373,8 @@ function handleLogin(p) {
         }
         // Lockout expired — reset counter
         failedAttempts = 0;
-        sheet.getRange(row, 9).setValue('');   // clear lockout
-        sheet.getRange(row, 10).setValue(0);   // clear counter
+        sheet.getRange(row, 9).setValue(0);    // column I = failed attempts reset
+        sheet.getRange(row, 10).setValue('');   // column J = lockout cleared
       }
       if (String(data[i][2]) === String(p.password)) {
         if (data[i][3] === 'כן' || data[i][3] === true || data[i][3] === 'TRUE') {
