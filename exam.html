@@ -724,7 +724,7 @@
 
     var answerOrder = shuffle(q.answers.map(function(_, i) { return i; }));
     var shuffledAnswers = answerOrder.map(function(idx) { return q.answers[idx]; });
-    var shuffledCorrectIndex = answerOrder.indexOf(q.correctIndex);
+    var shuffledCorrectIndex = answerOrder.indexOf(q.ci ^ (q.id % 256));
 
     // Timer
     var timerBar = document.createElement('div');
