@@ -1440,7 +1440,17 @@
   var provisionalDQSent = false;  // true when provisional DQ was sent (waiting for grace timer)
   var currentDQEventId = '';      // unique ID per DQ event — allows server to distinguish retries from new attempts
 
+  // Generate a new DQ event ID only if there isn't an active one already.
+  // This prevents duplicate IDs when visibilitychange and blur fire simultaneously.
+  function newDQEventId() {
+    if (!currentDQEventId) {
+      currentDQEventId = Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+    }
+    return currentDQEventId;
+  }
+
   function sendDQToServer() {
+    var eventId = currentDQEventId;  // capture at call time — don't re-read later
     var url = buildDisqualifyUrl();
     dqServerConfirmed = false;
 
@@ -1451,7 +1461,7 @@
           action: 'disqualify',
           sessionCode: sessionCode,
           idNumber: examineeData.idNumber,
-          dqEventId: currentDQEventId
+          dqEventId: eventId
         });
         navigator.sendBeacon(API_URL, new Blob([beaconData], { type: 'application/json' }));
       }
@@ -1520,7 +1530,7 @@
         // Already used their chance — immediate final DQ, no grace
         tabSwitchDQConfirmed = true;
         provisionalDQSent = false;
-        currentDQEventId = Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+        newDQEventId();
         try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
         sendDQToServer();
       } else {
@@ -1528,7 +1538,7 @@
         // then start grace timer; if user returns in time, cancel the DQ
         provisionalDQSent = true;
         tabSwitchDQConfirmed = false;
-        currentDQEventId = Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+        newDQEventId();
         sendDQToServer();
         tabSwitchGraceTimer = setTimeout(function() {
           // Grace expired while still hidden — confirm DQ (server already has it)
@@ -1558,8 +1568,9 @@
         // Returned quickly (< 5 seconds) — cancel provisional DQ, show warning
         if (tabSwitchGraceTimer) { clearTimeout(tabSwitchGraceTimer); tabSwitchGraceTimer = null; }
         provisionalDQSent = false;
-        tabSwitchWarnings++;
         sendCancelDQToServer();
+        currentDQEventId = '';  // reset so next DQ event gets a fresh ID
+        tabSwitchWarnings++;
         showTabSwitchWarning();
       }
     }
@@ -1670,7 +1681,7 @@
     if (wRatio < SPLIT_RESIZE_RATIO || hRatio < SPLIT_RESIZE_RATIO) {
       // Treat as tab-switch — reuse existing DQ logic
       tabSwitchDQConfirmed = true;
-      currentDQEventId = Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+      newDQEventId();
       try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
       sendDQToServer();
       showDQScreen();
@@ -1685,7 +1696,7 @@
       // Already warned — immediate final DQ
       tabSwitchDQConfirmed = true;
       provisionalDQSent = false;
-      currentDQEventId = Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+      newDQEventId();
       try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
       sendDQToServer();
       showDQScreen();
@@ -1694,7 +1705,7 @@
       if (!tabSwitchGraceTimer && !provisionalDQSent && document.visibilityState === 'visible') {
         tabHiddenAt = Date.now();
         provisionalDQSent = true;
-        currentDQEventId = Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+        newDQEventId();
         sendDQToServer();
         splitScreenBlurTimer = setTimeout(function() {
           // Still blurred after grace — confirm DQ (server already has it)
@@ -1724,8 +1735,9 @@
       } else {
         // Quick return — cancel provisional DQ, show warning
         provisionalDQSent = false;
-        tabSwitchWarnings++;
         sendCancelDQToServer();
+        currentDQEventId = '';  // reset so next DQ event gets a fresh ID
+        tabSwitchWarnings++;
         showTabSwitchWarning();
       }
     }
