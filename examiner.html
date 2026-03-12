@@ -600,6 +600,7 @@
   var prevPendingIds = {};
   var completedResults = [];
   var phoneOverrides = {}; // idNumber → corrected phone
+  var timeExtOverrides = {}; // idNumber → selected time extension value
   var userRole = 'בוחן';
   var cmdData = null; // cached commander dashboard data
   var cmdCurrentTab = 'byExaminer';
@@ -1031,6 +1032,8 @@
           timeSelect.style.cssText = 'padding:6px 8px;border-radius:8px;border:1px solid #d1d5db;font-size:0.85em;margin-left:6px;cursor:pointer;min-width:150px;';
           timeSelect.innerHTML = '<option value="">ללא הארכת זמן</option><option value="1.25">+25% (50 דק\')</option><option value="1.5">+50% (60 דק\')</option>';
           timeSelect.title = 'תוספת זמן לנבחן';
+          timeSelect.addEventListener('change', function() { timeExtOverrides[item.idNumber] = timeSelect.value; });
+          if (timeExtOverrides[item.idNumber]) timeSelect.value = timeExtOverrides[item.idNumber];
           actions.appendChild(timeSelect);
 
           var approveBtn = document.createElement('button');
