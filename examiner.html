@@ -3266,7 +3266,7 @@
       var rowId = 'cmdR_' + tabChar + '_' + i;
       var hasSub = false;
       for (var d = 0; d < dims.length; d++) {
-        if (row[dims[d].key] && Object.keys(row[dims[d].key]).length > 0) { hasSub = true; break; }
+        if (row.sub && row.sub[dims[d].key] && Object.keys(row.sub[dims[d].key]).length > 0) { hasSub = true; break; }
       }
 
       html += '<tr id="' + rowId + '"' + (hasSub ? ' class="cmd-dd-toggle" onclick="cmdToggleDrilldown(\'' + rowId + '\')"' : '') + '>';
@@ -3291,7 +3291,7 @@
         for (var d = 0; d < dims.length; d++) {
           var subLabel = dims[d].label;
           html += '<div class="cmd-sub-wrap" data-subkey="' + dims[d].key + '" style="' + (d === 0 ? '' : 'display:none;') + '">';
-          html += buildSubTable(row[dims[d].key], subLabel);
+          html += buildSubTable(row.sub[dims[d].key], subLabel);
           html += '</div>';
         }
         html += '</td></tr>';
@@ -3466,8 +3466,8 @@
         H.push('</tr>');
 
         // Sub-breakdown row
-        if (subDim && row[subDim.key] && Object.keys(row[subDim.key]).length > 0) {
-          var subData = row[subDim.key];
+        if (subDim && row.sub && row.sub[subDim.key] && Object.keys(row.sub[subDim.key]).length > 0) {
+          var subData = row.sub[subDim.key];
           var sKeys = Object.keys(subData);
           H.push('<tr><td colspan="8" style="padding:2px 8px 8px;">');
           H.push(rptPie(row.passed, row.failed, row.disqualified, 50));
