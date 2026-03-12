@@ -1659,10 +1659,25 @@ function handleCommanderDashboard(p) {
     else overall.failed++;
     overall.scores.push(pctVal);
 
-    addToGroup(byExaminer, examinerName || 'לא צוין', isPassed, isDQ, pctVal);
-    addToGroup(bySite, siteName || 'לא צוין', isPassed, isDQ, pctVal);
-    addToGroup(byLicense, license || 'לא צוין', isPassed, isDQ, pctVal);
-    addToGroup(byPopulation, population || 'לא צוין', isPassed, isDQ, pctVal);
+    var eName = examinerName || 'לא צוין';
+    var sName = siteName || 'לא צוין';
+    var lName = license || 'לא צוין';
+    var pName = population || 'לא צוין';
+
+    addToGroup(byExaminer, eName, isPassed, isDQ, pctVal);
+    addToGroup(bySite, sName, isPassed, isDQ, pctVal);
+    addToGroup(byLicense, lName, isPassed, isDQ, pctVal);
+    addToGroup(byPopulation, pName, isPassed, isDQ, pctVal);
+
+    // Cross-tabulation sub-groups
+    addToSubGroup(byExaminer, eName, 'byLicense', lName, isPassed, isDQ, pctVal);
+    addToSubGroup(byExaminer, eName, 'bySite', sName, isPassed, isDQ, pctVal);
+    addToSubGroup(bySite, sName, 'byLicense', lName, isPassed, isDQ, pctVal);
+    addToSubGroup(bySite, sName, 'byExaminer', eName, isPassed, isDQ, pctVal);
+    addToSubGroup(byLicense, lName, 'bySite', sName, isPassed, isDQ, pctVal);
+    addToSubGroup(byLicense, lName, 'byExaminer', eName, isPassed, isDQ, pctVal);
+    addToSubGroup(byPopulation, pName, 'byLicense', lName, isPassed, isDQ, pctVal);
+    addToSubGroup(byPopulation, pName, 'bySite', sName, isPassed, isDQ, pctVal);
   }
 
   function addToGroup(map, key, isPassed, isDQ, pctVal) {
@@ -1672,6 +1687,13 @@ function handleCommanderDashboard(p) {
     else if (isPassed) map[key].passed++;
     else map[key].failed++;
     map[key].scores.push(pctVal);
+  }
+
+  function addToSubGroup(map, primaryKey, subDim, subKey, isPassed, isDQ, pctVal) {
+    if (!map[primaryKey]) return;
+    if (!map[primaryKey]._sub) map[primaryKey]._sub = {};
+    if (!map[primaryKey]._sub[subDim]) map[primaryKey]._sub[subDim] = {};
+    addToGroup(map[primaryKey]._sub[subDim], subKey, isPassed, isDQ, pctVal);
   }
 
   function computeStats(obj) {
@@ -1688,11 +1710,30 @@ function handleCommanderDashboard(p) {
     return { total: obj.total, passed: obj.passed, failed: obj.failed, disqualified: obj.disqualified, passRate: passRate, avgScore: avg, medianScore: median };
   }
 
-  var result = { overall: computeStats(overall), byExaminer: {}, bySite: {}, byLicense: {}, byPopulation: {} };
-  for (var ek in byExaminer) result.byExaminer[ek] = computeStats(byExaminer[ek]);
-  for (var sk in bySite) result.bySite[sk] = computeStats(bySite[sk]);
-  for (var lk in byLicense) result.byLicense[lk] = computeStats(byLicense[lk]);
-  for (var pk in byPopulation) result.byPopulation[pk] = computeStats(byPopulation[pk]);
+  function computeGroupWithSub(map) {
+    var out = {};
+    for (var key in map) {
+      out[key] = computeStats(map[key]);
+      if (map[key]._sub) {
+        out[key].sub = {};
+        for (var subDim in map[key]._sub) {
+          out[key].sub[subDim] = {};
+          for (var subKey in map[key]._sub[subDim]) {
+            out[key].sub[subDim][subKey] = computeStats(map[key]._sub[subDim][subKey]);
+          }
+        }
+      }
+    }
+    return out;
+  }
+
+  var result = {
+    overall: computeStats(overall),
+    byExaminer: computeGroupWithSub(byExaminer),
+    bySite: computeGroupWithSub(bySite),
+    byLicense: computeGroupWithSub(byLicense),
+    byPopulation: computeGroupWithSub(byPopulation)
+  };
 
   return jsonResponse({ status: 'ok', data: result });
 }

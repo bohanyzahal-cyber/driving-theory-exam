@@ -252,6 +252,27 @@
     }
     .cmd-action-btn:hover { opacity: 0.9; }
 
+    /* Drill-down rows */
+    .cmd-table tr.cmd-dd-toggle { cursor: pointer; user-select: none; }
+    .cmd-table tr.cmd-dd-toggle:hover { background: #eff6ff; }
+    .cmd-table tr.cmd-dd-toggle td:first-child::before { content: '\25B6'; display: inline-block; margin-left: 6px; font-size: 10px; transition: transform 0.2s; }
+    .cmd-table tr.cmd-dd-toggle.expanded td:first-child::before { transform: rotate(90deg); }
+    .cmd-dd-panel { display: none; }
+    .cmd-dd-panel.open { display: table-row; }
+    .cmd-dd-panel td { padding: 8px 14px; background: #f8fafc; border-bottom: 2px solid #e2e8f0; }
+    .cmd-sub-tabs { display: flex; gap: 6px; margin: 8px 0; }
+    .cmd-sub-tab-btn { background: #e2e8f0; border: none; color: #475569; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; }
+    .cmd-sub-tab-btn.active { background: #0d47a1; color: white; }
+    .cmd-sub-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+    .cmd-sub-table th { background: #e2e8f0; padding: 5px 8px; text-align: right; font-size: 11px; font-weight: 600; color: #64748b; }
+    .cmd-sub-table td { padding: 5px 8px; border-bottom: 1px solid #e2e8f0; text-align: right; font-size: 12px; }
+    .cmd-sub-table .good { color: #16a34a; font-weight: 600; }
+    .cmd-sub-table .bad { color: #dc2626; font-weight: 600; }
+    .cmd-pie { border-radius: 50%; display: inline-block; vertical-align: middle; box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
+    .cmd-pie-wrap { display: flex; align-items: center; gap: 10px; justify-content: center; margin: 8px 0; }
+    .cmd-pie-legend { display: inline-flex; flex-direction: column; gap: 3px; font-size: 11px; vertical-align: middle; }
+    .cmd-pie-legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-left: 4px; }
+
     @media (max-width: 600px) {
       .cmd-kpi { min-width: 80px; padding: 10px 6px; }
       .cmd-kpi-val { font-size: 1.2rem; }
@@ -464,6 +485,7 @@
         <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdAvg">0%</div><div class="cmd-kpi-lbl">ציון ממוצע</div></div>
         <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdMedian">0%</div><div class="cmd-kpi-lbl">חציון</div></div>
       </div>
+      <div id="cmdOverallPie" style="margin-top:10px;"></div>
     </div>
 
     <div class="card" id="cmdBreakdowns" style="display:none;">
@@ -3138,6 +3160,26 @@
     });
   };
 
+  function buildPieChart(passed, failed, dq, size) {
+    size = size || 80;
+    var total = passed + failed + dq;
+    if (total === 0) return '';
+    var pP = Math.round(passed / total * 100);
+    var pF = Math.round(failed / total * 100);
+    var pD = 100 - pP - pF;
+    var dP = Math.round(passed / total * 360);
+    var dF = Math.round(failed / total * 360);
+    var gradient = 'conic-gradient(#16a34a 0deg ' + dP + 'deg, #dc2626 ' + dP + 'deg ' + (dP + dF) + 'deg, #f59e0b ' + (dP + dF) + 'deg 360deg)';
+    var html = '<div class="cmd-pie-wrap">';
+    html += '<div class="cmd-pie" style="width:' + size + 'px;height:' + size + 'px;background:' + gradient + ';"></div>';
+    html += '<div class="cmd-pie-legend">';
+    html += '<span><span class="cmd-pie-legend-dot" style="background:#16a34a;"></span>עברו: ' + passed + ' (' + pP + '%)</span>';
+    html += '<span><span class="cmd-pie-legend-dot" style="background:#dc2626;"></span>נכשלו: ' + failed + ' (' + pF + '%)</span>';
+    html += '<span><span class="cmd-pie-legend-dot" style="background:#f59e0b;"></span>פסולים: ' + dq + ' (' + pD + '%)</span>';
+    html += '</div></div>';
+    return html;
+  }
+
   function renderCommanderKPIs(o) {
     if (!o) return;
     document.getElementById('cmdTotal').textContent = o.total;
@@ -3147,7 +3189,61 @@
     document.getElementById('cmdPassRate').textContent = o.passRate + '%';
     document.getElementById('cmdAvg').textContent = o.avgScore + '%';
     document.getElementById('cmdMedian').textContent = o.medianScore + '%';
+    var pieEl = document.getElementById('cmdOverallPie');
+    if (pieEl) pieEl.innerHTML = buildPieChart(o.passed, o.failed, o.disqualified, 100);
   }
+
+  var SUB_DIMS = {
+    byExaminer:   [{ key: 'byLicense', label: 'לפי דרגה' }, { key: 'bySite', label: 'לפי אתר' }],
+    bySite:       [{ key: 'byLicense', label: 'לפי דרגה' }, { key: 'byExaminer', label: 'לפי בוחן' }],
+    byLicense:    [{ key: 'bySite', label: 'לפי אתר' }, { key: 'byExaminer', label: 'לפי בוחן' }],
+    byPopulation: [{ key: 'byLicense', label: 'לפי דרגה' }, { key: 'bySite', label: 'לפי אתר' }]
+  };
+
+  function buildSubTable(subData, label) {
+    if (!subData || Object.keys(subData).length === 0) return '<p style="color:#94a3b8;font-size:12px;">אין נתונים</p>';
+    var sKeys = Object.keys(subData);
+    var h = '<table class="cmd-sub-table"><thead><tr>';
+    h += '<th>' + label + '</th><th>סה"כ</th><th>עברו</th><th>נכשלו</th><th>פסולים</th><th>% הצלחה</th><th>ממוצע</th><th>חציון</th>';
+    h += '</tr></thead><tbody>';
+    for (var j = 0; j < sKeys.length; j++) {
+      var sk = sKeys[j];
+      var sr = subData[sk];
+      var rc = sr.passRate >= 60 ? 'good' : (sr.passRate < 40 ? 'bad' : '');
+      h += '<tr>';
+      h += '<td style="font-weight:600;">' + escapeHtml(sk) + '</td>';
+      h += '<td>' + sr.total + '</td>';
+      h += '<td class="good">' + sr.passed + '</td>';
+      h += '<td class="bad">' + sr.failed + '</td>';
+      h += '<td>' + sr.disqualified + '</td>';
+      h += '<td class="' + rc + '">' + sr.passRate + '%</td>';
+      h += '<td>' + sr.avgScore + '%</td>';
+      h += '<td>' + sr.medianScore + '%</td>';
+      h += '</tr>';
+    }
+    h += '</tbody></table>';
+    return h;
+  }
+
+  window.cmdToggleDrilldown = function(rowId) {
+    var toggle = document.getElementById(rowId);
+    var panel  = document.getElementById(rowId + '_panel');
+    if (!toggle || !panel) return;
+    toggle.classList.toggle('expanded');
+    panel.classList.toggle('open');
+  };
+
+  window.cmdSwitchSubTab = function(btn, rowId, subKey) {
+    var panel = document.getElementById(rowId + '_panel');
+    if (!panel) return;
+    var btns = panel.querySelectorAll('.cmd-sub-tab-btn');
+    for (var b = 0; b < btns.length; b++) btns[b].classList.remove('active');
+    btn.classList.add('active');
+    var wraps = panel.querySelectorAll('.cmd-sub-wrap');
+    for (var w = 0; w < wraps.length; w++) {
+      wraps[w].style.display = wraps[w].getAttribute('data-subkey') === subKey ? '' : 'none';
+    }
+  };
 
   function renderBreakdownTable(data, tab) {
     var section = data[tab];
@@ -3156,6 +3252,8 @@
     if (keys.length === 0) { document.getElementById('cmdBreakdownContent').innerHTML = '<p style="color:#94a3b8;">אין נתונים</p>'; return; }
 
     var tabLabels = { byExaminer: 'בוחן', bySite: 'אתר', byLicense: 'דרגה', byPopulation: 'אוכלוסיה' };
+    var dims = SUB_DIMS[tab] || [];
+    var tabChar = tab.charAt(2);
     var html = '<table class="cmd-table"><thead><tr>';
     html += '<th>' + (tabLabels[tab] || '') + '</th>';
     html += '<th>סה"כ</th><th>עברו</th><th>נכשלו</th><th>פסולים</th><th>% הצלחה</th><th>ממוצע</th><th>חציון</th>';
@@ -3165,7 +3263,13 @@
       var k = keys[i];
       var row = section[k];
       var rateClass = row.passRate >= 60 ? 'good' : (row.passRate < 40 ? 'bad' : '');
-      html += '<tr>';
+      var rowId = 'cmdR_' + tabChar + '_' + i;
+      var hasSub = false;
+      for (var d = 0; d < dims.length; d++) {
+        if (row[dims[d].key] && Object.keys(row[dims[d].key]).length > 0) { hasSub = true; break; }
+      }
+
+      html += '<tr id="' + rowId + '"' + (hasSub ? ' class="cmd-dd-toggle" onclick="cmdToggleDrilldown(\'' + rowId + '\')"' : '') + '>';
       html += '<td style="font-weight:600;">' + escapeHtml(k) + '</td>';
       html += '<td>' + row.total + '</td>';
       html += '<td class="good">' + row.passed + '</td>';
@@ -3175,6 +3279,23 @@
       html += '<td>' + row.avgScore + '%</td>';
       html += '<td>' + row.medianScore + '%</td>';
       html += '</tr>';
+
+      if (hasSub) {
+        html += '<tr id="' + rowId + '_panel" class="cmd-dd-panel"><td colspan="8">';
+        html += buildPieChart(row.passed, row.failed, row.disqualified, 70);
+        html += '<div class="cmd-sub-tabs">';
+        for (var d = 0; d < dims.length; d++) {
+          html += '<button class="cmd-sub-tab-btn' + (d === 0 ? ' active' : '') + '" onclick="cmdSwitchSubTab(this,\'' + rowId + '\',\'' + dims[d].key + '\')">' + dims[d].label + '</button>';
+        }
+        html += '</div>';
+        for (var d = 0; d < dims.length; d++) {
+          var subLabel = dims[d].label;
+          html += '<div class="cmd-sub-wrap" data-subkey="' + dims[d].key + '" style="' + (d === 0 ? '' : 'display:none;') + '">';
+          html += buildSubTable(row[dims[d].key], subLabel);
+          html += '</div>';
+        }
+        html += '</td></tr>';
+      }
     }
     html += '</tbody></table>';
     document.getElementById('cmdBreakdownContent').innerHTML = html;
@@ -3248,6 +3369,13 @@
     H.push('.bar-fill{height:100%;border-radius:4px;background:linear-gradient(90deg,#1a73e8,#4fc3f7);}');
     H.push('.bar-val{font-size:11px;color:#475569;min-width:40px;}');
     H.push('.footer{text-align:center;font-size:10px;color:#94a3b8;margin-top:16px;border-top:1px solid #e2e8f0;padding-top:8px;}');
+    H.push('.rpt-pie{border-radius:50%;display:inline-block;box-shadow:0 1px 3px rgba(0,0,0,.15);}');
+    H.push('.rpt-pie-wrap{display:flex;align-items:center;justify-content:center;gap:8px;margin:6px 0;}');
+    H.push('.rpt-pie-legend{display:flex;flex-direction:column;gap:2px;font-size:10px;}');
+    H.push('.rpt-pie-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-left:4px;}');
+    H.push('.sub-tbl{width:95%;border-collapse:collapse;font-size:11px;margin:4px 0 10px 20px;}');
+    H.push('.sub-tbl th{background:#e2e8f0;padding:4px 6px;text-align:right;font-size:10px;font-weight:bold;color:#64748b;}');
+    H.push('.sub-tbl td{padding:4px 6px;border-bottom:1px solid #e2e8f0;text-align:right;font-size:11px;}');
     H.push('@media print{body{margin:10px;} @page{size:A4;margin:10mm;}}');
     H.push('</style></head><body>');
 
@@ -3279,6 +3407,39 @@
       { key: 'byLicense', label: 'פירוט לפי דרגה' },
       { key: 'byPopulation', label: 'פירוט לפי אוכלוסיה' }
     ];
+    // -- Pie chart helper for report --
+    function rptPie(passed, failed, dq, sz) {
+      sz = sz || 80;
+      var tot = passed + failed + dq;
+      if (tot === 0) return '';
+      var pP = Math.round(passed / tot * 100);
+      var pF = Math.round(failed / tot * 100);
+      var pD = 100 - pP - pF;
+      var dP = Math.round(passed / tot * 360);
+      var dF = Math.round(failed / tot * 360);
+      var g = 'conic-gradient(#16a34a 0deg ' + dP + 'deg, #dc2626 ' + dP + 'deg ' + (dP + dF) + 'deg, #f59e0b ' + (dP + dF) + 'deg 360deg)';
+      var h = '<div class="rpt-pie-wrap">';
+      h += '<div class="rpt-pie" style="width:' + sz + 'px;height:' + sz + 'px;background:' + g + ';">';
+      h += '</div>';
+      h += '<div class="rpt-pie-legend">';
+      h += '<span><span class="rpt-pie-dot" style="background:#16a34a;"></span>עברו: ' + passed + ' (' + pP + '%)</span>';
+      h += '<span><span class="rpt-pie-dot" style="background:#dc2626;"></span>נכשלו: ' + failed + ' (' + pF + '%)</span>';
+      h += '<span><span class="rpt-pie-dot" style="background:#f59e0b;"></span>פסולים: ' + dq + ' (' + pD + '%)</span>';
+      h += '</div></div>';
+      return h;
+    }
+
+    // Overall pie chart
+    H.push(rptPie(o.passed, o.failed, o.disqualified, 80));
+
+    // Sub-dimension mapping for report drill-downs (one sub per tab)
+    var rptSubDims = {
+      byExaminer:   { key: 'byLicense', label: 'דרגה' },
+      bySite:       { key: 'byLicense', label: 'דרגה' },
+      byLicense:    { key: 'bySite',    label: 'אתר' },
+      byPopulation: { key: 'byLicense', label: 'דרגה' }
+    };
+
     for (var t = 0; t < tabs.length; t++) {
       var section = cmdData[tabs[t].key];
       if (!section) continue;
@@ -3289,6 +3450,7 @@
       H.push('<th>' + tabs[t].label.replace('פירוט לפי ', '') + '</th>');
       H.push('<th>סה"כ</th><th>עברו</th><th>נכשלו</th><th>פסולים</th><th>% הצלחה</th><th>ממוצע</th><th>חציון</th>');
       H.push('</tr></thead><tbody>');
+      var subDim = rptSubDims[tabs[t].key];
       for (var i = 0; i < keys.length; i++) {
         var row = section[keys[i]];
         var rc = row.passRate >= 60 ? 'good' : (row.passRate < 40 ? 'bad' : '');
@@ -3302,6 +3464,34 @@
         H.push('<td>' + row.avgScore + '%</td>');
         H.push('<td>' + row.medianScore + '%</td>');
         H.push('</tr>');
+
+        // Sub-breakdown row
+        if (subDim && row[subDim.key] && Object.keys(row[subDim.key]).length > 0) {
+          var subData = row[subDim.key];
+          var sKeys = Object.keys(subData);
+          H.push('<tr><td colspan="8" style="padding:2px 8px 8px;">');
+          H.push(rptPie(row.passed, row.failed, row.disqualified, 50));
+          H.push('<table class="sub-tbl"><thead><tr>');
+          H.push('<th>' + subDim.label + '</th>');
+          H.push('<th>סה"כ</th><th>עברו</th><th>נכשלו</th><th>פסולים</th><th>% הצלחה</th><th>ממוצע</th><th>חציון</th>');
+          H.push('</tr></thead><tbody>');
+          for (var s = 0; s < sKeys.length; s++) {
+            var sr = subData[sKeys[s]];
+            var src2 = sr.passRate >= 60 ? 'good' : (sr.passRate < 40 ? 'bad' : '');
+            H.push('<tr>');
+            H.push('<td style="font-weight:600;">' + escapeHtml(sKeys[s]) + '</td>');
+            H.push('<td>' + sr.total + '</td>');
+            H.push('<td class="good">' + sr.passed + '</td>');
+            H.push('<td class="bad">' + sr.failed + '</td>');
+            H.push('<td>' + sr.disqualified + '</td>');
+            H.push('<td class="' + src2 + '">' + sr.passRate + '%</td>');
+            H.push('<td>' + sr.avgScore + '%</td>');
+            H.push('<td>' + sr.medianScore + '%</td>');
+            H.push('</tr>');
+          }
+          H.push('</tbody></table>');
+          H.push('</td></tr>');
+        }
       }
       H.push('</tbody></table>');
     }
