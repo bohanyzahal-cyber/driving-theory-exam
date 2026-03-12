@@ -2353,7 +2353,8 @@
     H.push('.ps{padding:3px;border:1px solid #ddd;border-radius:4px;font-size:11px;font-family:inherit}');
     H.push('.exec-val{font-weight:700;font-size:13px;background:#f0faf0}');
     H.push('.exec-val.z{color:#94a3b8;background:#f8f9fa}');
-    H.push('@media print{body{background:#fff;padding:0}.container{box-shadow:none;max-width:100%}.no-print{display:none!important}');
+    H.push('.smr-pie{border-radius:50%;display:inline-block;box-shadow:0 2px 8px rgba(0,0,0,.12);}.smr-pie-wrap{display:flex;align-items:center;justify-content:center;gap:14px;margin:14px 0 6px;}.smr-pie-legend{display:flex;flex-direction:column;gap:4px;font-size:12px;}.smr-pie-dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-left:6px;}
+@media print{body{background:#fff;padding:0}.container{box-shadow:none;max-width:100%}.no-print{display:none!important}');
     H.push('thead th,.summary-item,.pop-table th{-webkit-print-color-adjust:exact;print-color-adjust:exact}');
     H.push('tbody tr{-webkit-print-color-adjust:exact;print-color-adjust:exact}}');
     H.push('@media(max-width:600px){body{padding:8px}.section{padding:14px 16px}}');
@@ -2689,6 +2690,26 @@
     H.push(' &nbsp;|&nbsp; \u05DE\u05DE\u05D5\u05E6\u05E2: <strong style="font-size:18px;color:' + (avgScore >= 50 ? '#2563eb' : '#dc2626') + ';">' + avgScore + '%</strong>');
     H.push(' &nbsp;|&nbsp; \u05D7\u05E6\u05D9\u05D5\u05DF: <strong style="font-size:18px;color:' + (medianScore >= 50 ? '#2563eb' : '#dc2626') + ';">' + medianScore + '%</strong>');
     H.push('</div></div>');
+
+    // Pie chart
+    (function() {
+      var pt = passCount + failCount + dqCount;
+      if (pt > 0) {
+        var pP = Math.round(passCount / pt * 100);
+        var pF = Math.round(failCount / pt * 100);
+        var pD = 100 - pP - pF;
+        var dP = Math.round(passCount / pt * 360);
+        var dF = Math.round(failCount / pt * 360);
+        var g = 'conic-gradient(#27ae60 0deg ' + dP + 'deg, #c0392b ' + dP + 'deg ' + (dP + dF) + 'deg, #d97706 ' + (dP + dF) + 'deg 360deg)';
+        H.push('<div class="smr-pie-wrap">');
+        H.push('<div class="smr-pie" style="width:90px;height:90px;background:' + g + ';"></div>');
+        H.push('<div class="smr-pie-legend">');
+        H.push('<span><span class="smr-pie-dot" style="background:#27ae60;"></span>עברו: ' + passCount + ' (' + pP + '%)</span>');
+        H.push('<span><span class="smr-pie-dot" style="background:#c0392b;"></span>נכשלו: ' + failCount + ' (' + pF + '%)</span>');
+        H.push('<span><span class="smr-pie-dot" style="background:#d97706;"></span>פסולים: ' + dqCount + ' (' + pD + '%)</span>');
+        H.push('</div></div>');
+      }
+    })();
 
     // Weak Topics (aggregate)
     if (hasCatData) {
