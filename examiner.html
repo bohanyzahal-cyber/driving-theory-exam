@@ -327,10 +327,12 @@
       <label>
         <span>אתר בחינה</span>
         <select id="siteSelect"><option value="">טוען אתרים...</option></select>
+        <input type="text" id="siteCustomInput" placeholder="הקלד שם אתר..." style="display:none; margin-top:6px;" />
       </label>
       <label>
         <span>כיתה</span>
         <select id="classroomSelect"><option value="">בחר אתר קודם</option></select>
+        <input type="text" id="classroomCustomInput" placeholder="הקלד כיתה..." style="display:none; margin-top:6px;" />
       </label>
       <label>
         <span>דרגת רישיון</span>
@@ -856,6 +858,10 @@
           opt.dataset.idx = i;
           sel.appendChild(opt);
         }
+        var otherOpt = document.createElement('option');
+        otherOpt.value = '__other__';
+        otherOpt.textContent = 'אחר (הקלדה ידנית)';
+        sel.appendChild(otherOpt);
       }
     });
   }
@@ -863,7 +869,25 @@
   document.getElementById('siteSelect').addEventListener('change', function() {
     var sel = this;
     var cSel = document.getElementById('classroomSelect');
+    var siteCustom = document.getElementById('siteCustomInput');
+    var classroomCustom = document.getElementById('classroomCustomInput');
     cSel.innerHTML = '';
+
+    if (sel.value === '__other__') {
+      siteCustom.style.display = 'block';
+      siteCustom.value = '';
+      siteCustom.focus();
+      cSel.style.display = 'none';
+      classroomCustom.style.display = 'block';
+      classroomCustom.value = '';
+      currentSiteManagerPhone = '';
+      return;
+    }
+
+    siteCustom.style.display = 'none';
+    cSel.style.display = '';
+    classroomCustom.style.display = 'none';
+
     if (!sel.value) { cSel.innerHTML = '<option value="">בחר אתר קודם</option>'; return; }
     var idx = sel.selectedOptions[0].dataset.idx;
     var site = sitesData[idx];
@@ -880,8 +904,13 @@
 
   // ========== Create Session ==========
   document.getElementById('createSessionBtn').addEventListener('click', function() {
-    var site = document.getElementById('siteSelect').value;
-    var classroom = document.getElementById('classroomSelect').value;
+    var siteSelVal = document.getElementById('siteSelect').value;
+    var site = siteSelVal === '__other__'
+      ? document.getElementById('siteCustomInput').value.trim()
+      : siteSelVal;
+    var classroom = siteSelVal === '__other__'
+      ? document.getElementById('classroomCustomInput').value.trim()
+      : document.getElementById('classroomSelect').value;
     var license = document.getElementById('licenseSetup').value;
     var language = document.getElementById('languageSetup').value;
     var audioMode = document.getElementById('audioModeSetup').value;
