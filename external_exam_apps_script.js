@@ -1,3 +1,5 @@
+// © 2026 Vitaly Gitelman. All Rights Reserved.
+// Unauthorized copying, modification or distribution is prohibited.
 // ===== Google Apps Script — מערכת בחינות חיצונית =====
 // הדבק את הקוד הזה ב-Apps Script של גיליון Google Sheets חדש
 // Deploy → New deployment → Web app
