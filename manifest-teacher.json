@@ -3,6 +3,7 @@
   "short_name": "דף מורה",
   "description": "מערכת תרגול תאוריה — לוח בקרה למורים",
   "start_url": "./teacher.html",
+  "id": "/teacher",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#f0f4f8",

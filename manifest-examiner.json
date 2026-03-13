@@ -3,6 +3,7 @@
   "short_name": "לוח בוחן",
   "description": "מערכת בחינות תאוריה חיצונית — לוח בקרה לבוחנים",
   "start_url": "./examiner.html",
+  "id": "/examiner",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#f0f4f8",
