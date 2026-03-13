@@ -1,0 +1,20 @@
+{
+  "name": "דף מורה — מערכת תרגול תאוריה",
+  "short_name": "דף מורה",
+  "description": "מערכת תרגול תאוריה — לוח בקרה למורים",
+  "start_url": "./teacher.html",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f0f4f8",
+  "theme_color": "#7c3aed",
+  "lang": "he",
+  "dir": "rtl",
+  "icons": [
+    {
+      "src": "logo.png",
+      "sizes": "300x300",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

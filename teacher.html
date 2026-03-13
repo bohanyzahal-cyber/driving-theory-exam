@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>דף מורה — מערכת תרגול תאוריה</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👩‍🏫</text></svg>"/>
+  <link rel="manifest" href="manifest-teacher.json"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="theme-color" content="#7c3aed"/>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
     body { font-family: system-ui, -apple-system, 'Segoe UI', Arial, sans-serif; margin: 0; background: #f0f4f8; color: #1e293b; line-height: 1.6; }
@@ -785,6 +789,9 @@ if (document.readyState === 'loading') document.addEventListener('DOMContentLoad
 else init();
 
 })();
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw-teacher.js').catch(function() {});
+}
 </script>
 </body>
 </html>
