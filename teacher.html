@@ -1,0 +1,790 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>דף מורה — מערכת תרגול תאוריה</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👩‍🏫</text></svg>"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, 'Segoe UI', Arial, sans-serif; margin: 0; background: #f0f4f8; color: #1e293b; line-height: 1.6; }
+    a { color: inherit; }
+
+    .topbar {
+      display: flex; gap: 12px; align-items: center; justify-content: space-between;
+      padding: 14px 20px; background: linear-gradient(135deg, #7c3aed, #5b21b6);
+      color: white; position: sticky; top: 0; z-index: 100; flex-wrap: wrap;
+    }
+    .topbar h1 { margin: 0; font-size: 1.3em; }
+    .topbar .sub { font-size: 0.75em; opacity: 0.85; }
+    .topbar-actions { display: flex; gap: 8px; align-items: center; }
+    .topbar-actions button { background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.3); color: white; padding: 6px 14px; border-radius: 8px; cursor: pointer; font-size: 0.85em; }
+    .topbar-actions button:hover { background: rgba(255,255,255,0.35); }
+
+    .container { max-width: 960px; margin: 0 auto; padding: 20px 16px; }
+
+    .screen { display: none; }
+    .screen.active { display: block; }
+
+    .card { background: white; border: 1px solid #e2e8f0; border-radius: 16px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+    .card h2 { margin: 0 0 6px; font-size: 1.3em; color: #0f172a; }
+    .card h3 { margin: 0 0 10px; font-size: 1.1em; color: #334155; }
+
+    /* Login */
+    .login-box { max-width: 400px; margin: 80px auto; }
+    .login-box h2 { text-align: center; margin-bottom: 20px; }
+    .login-box .icon { font-size: 3em; text-align: center; margin-bottom: 10px; }
+    .form-group { margin-bottom: 14px; }
+    .form-group label { display: block; font-weight: 600; margin-bottom: 4px; font-size: 0.9em; }
+    .form-group input { width: 100%; padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 10px; font-size: 1em; }
+    .form-group input:focus { outline: none; border-color: #7c3aed; box-shadow: 0 0 0 3px rgba(124,58,237,0.15); }
+    .btn-login { width: 100%; padding: 12px; background: #7c3aed; color: white; border: none; border-radius: 10px; font-size: 1.05em; font-weight: 600; cursor: pointer; }
+    .btn-login:hover { background: #6d28d9; }
+    .btn-login:disabled { opacity: 0.6; cursor: not-allowed; }
+    .login-error { color: #dc2626; font-size: 0.9em; margin-top: 8px; text-align: center; display: none; }
+    .remember-row { display: flex; align-items: center; gap: 6px; margin-bottom: 14px; font-size: 0.9em; }
+
+    /* Dashboard */
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 20px; }
+    .stat-card { background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; text-align: center; }
+    .stat-card .stat-value { font-size: 1.8em; font-weight: 700; color: #7c3aed; }
+    .stat-card .stat-label { font-size: 0.8em; color: #64748b; margin-top: 2px; }
+
+    .class-card { background: white; border: 1px solid #e2e8f0; border-radius: 14px; padding: 16px 20px; margin-bottom: 12px; cursor: pointer; transition: box-shadow 0.2s, border-color 0.2s; display: flex; justify-content: space-between; align-items: center; }
+    .class-card:hover { border-color: #7c3aed; box-shadow: 0 2px 8px rgba(124,58,237,0.12); }
+    .class-card .class-info h3 { margin: 0; font-size: 1.1em; }
+    .class-card .class-info .class-meta { font-size: 0.8em; color: #64748b; margin-top: 2px; }
+    .class-card .class-stats { text-align: left; }
+    .class-card .class-stats .count { font-size: 1.4em; font-weight: 700; color: #7c3aed; }
+    .class-card .class-stats .count-label { font-size: 0.75em; color: #64748b; }
+    .class-inactive { opacity: 0.5; }
+
+    .btn { padding: 8px 16px; border: none; border-radius: 8px; cursor: pointer; font-size: 0.9em; font-weight: 500; }
+    .btn-primary { background: #7c3aed; color: white; }
+    .btn-primary:hover { background: #6d28d9; }
+    .btn-danger { background: #fee2e2; color: #dc2626; }
+    .btn-danger:hover { background: #fecaca; }
+    .btn-secondary { background: #f1f5f9; color: #334155; border: 1px solid #e2e8f0; }
+    .btn-secondary:hover { background: #e2e8f0; }
+    .btn-icon { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.1em; padding: 0; }
+
+    /* Create class modal */
+    .modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 200; align-items: center; justify-content: center; }
+    .modal-overlay.active { display: flex; }
+    .modal { background: white; border-radius: 16px; padding: 24px; max-width: 420px; width: 90%; max-height: 80vh; overflow-y: auto; }
+    .modal h2 { margin: 0 0 16px; }
+    .modal-actions { display: flex; gap: 8px; margin-top: 16px; justify-content: flex-start; }
+
+    /* Student table */
+    .student-table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+    .student-table th, .student-table td { padding: 10px 12px; text-align: right; border-bottom: 1px solid #e2e8f0; }
+    .student-table th { background: #f8fafc; font-weight: 600; color: #475569; font-size: 0.85em; position: sticky; top: 0; }
+    .student-table tr:hover { background: #f8fafc; }
+    .student-table .status-active { color: #16a34a; }
+    .student-table .status-inactive { color: #dc2626; }
+
+    /* Progress bar */
+    .progress-bar { height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden; }
+    .progress-bar-fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
+    .progress-bar-fill.green { background: #16a34a; }
+    .progress-bar-fill.yellow { background: #eab308; }
+    .progress-bar-fill.red { background: #dc2626; }
+
+    /* Category breakdown bars */
+    .cat-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .cat-row .cat-name { min-width: 90px; font-size: 0.85em; color: #475569; }
+    .cat-row .cat-bar { flex: 1; height: 10px; background: #e2e8f0; border-radius: 5px; overflow: hidden; }
+    .cat-row .cat-fill { height: 100%; border-radius: 5px; }
+    .cat-row .cat-score { font-size: 0.8em; color: #64748b; min-width: 50px; text-align: left; }
+
+    /* Student detail panel */
+    .student-detail-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+    .student-detail-header h2 { margin: 0; }
+    .student-detail-header .back-link { cursor: pointer; color: #7c3aed; font-weight: 500; }
+    .student-detail-header .back-link:hover { text-decoration: underline; }
+
+    .results-timeline { margin-top: 12px; }
+    .result-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border: 1px solid #e2e8f0; border-radius: 10px; margin-bottom: 8px; }
+    .result-item .result-info { display: flex; gap: 12px; align-items: center; }
+    .result-item .result-date { font-size: 0.8em; color: #64748b; }
+    .result-item .result-mode { font-size: 0.75em; padding: 2px 8px; border-radius: 6px; background: #f1f5f9; color: #475569; }
+    .result-item .result-score { font-weight: 700; font-size: 1.1em; }
+    .result-item .result-score.pass { color: #16a34a; }
+    .result-item .result-score.fail { color: #dc2626; }
+
+    .effort-badge { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 0.8em; font-weight: 600; }
+    .effort-high { background: #dcfce7; color: #16a34a; }
+    .effort-medium { background: #fef9c3; color: #a16207; }
+    .effort-low { background: #fee2e2; color: #dc2626; }
+
+    .class-code-display { font-family: monospace; font-size: 1.4em; font-weight: 700; background: #f1f5f9; padding: 8px 20px; border-radius: 10px; letter-spacing: 3px; display: inline-block; color: #7c3aed; cursor: pointer; user-select: all; }
+    .class-code-display:hover::after { content: ' 📋'; font-size: 0.6em; }
+
+    .empty-state { text-align: center; padding: 40px 20px; color: #94a3b8; }
+    .empty-state .empty-icon { font-size: 3em; margin-bottom: 10px; }
+
+    .loading { text-align: center; padding: 20px; color: #94a3b8; }
+
+    @media (max-width: 600px) {
+      .stats-grid { grid-template-columns: repeat(2, 1fr); }
+      .student-table { font-size: 0.8em; }
+      .student-table th, .student-table td { padding: 8px 6px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ===== TOPBAR ===== -->
+<div class="topbar" id="topbar" style="display:none;">
+  <div>
+    <h1>👩‍🏫 דף מורה</h1>
+    <div class="sub" id="topbarTeacherName"></div>
+  </div>
+  <div class="topbar-actions">
+    <button id="btnRefresh" title="רענן">🔄</button>
+    <button id="btnLogout">יציאה</button>
+  </div>
+</div>
+
+<!-- ===== LOGIN SCREEN ===== -->
+<div id="screenLogin" class="screen active">
+  <div class="container">
+    <div class="login-box card">
+      <div class="icon">👩‍🏫</div>
+      <h2>כניסת מורה</h2>
+      <div class="form-group">
+        <label for="loginId">תעודת זהות</label>
+        <input type="text" id="loginId" placeholder="הזן ת.ז." maxlength="9" inputmode="numeric"/>
+      </div>
+      <div class="form-group">
+        <label for="loginPass">סיסמה</label>
+        <input type="password" id="loginPass" placeholder="הזן סיסמה"/>
+      </div>
+      <div class="remember-row">
+        <input type="checkbox" id="loginRemember"/>
+        <label for="loginRemember">זכור אותי</label>
+      </div>
+      <button class="btn-login" id="btnLogin">התחבר</button>
+      <div class="login-error" id="loginError"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== DASHBOARD SCREEN ===== -->
+<div id="screenDashboard" class="screen">
+  <div class="container">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px;">
+      <h2 style="margin:0;">הכיתות שלי</h2>
+      <button class="btn btn-primary" id="btnNewClass">+ כיתה חדשה</button>
+    </div>
+    <div id="classesList"></div>
+  </div>
+</div>
+
+<!-- ===== CLASS DETAIL SCREEN ===== -->
+<div id="screenClassDetail" class="screen">
+  <div class="container">
+    <div class="student-detail-header">
+      <div>
+        <span class="back-link" id="btnBackToDashboard">← חזרה לכיתות</span>
+        <h2 id="classDetailTitle"></h2>
+        <div style="margin-top:4px;">קוד כיתה: <span class="class-code-display" id="classDetailCode" title="לחץ להעתקה"></span></div>
+      </div>
+      <button class="btn btn-secondary" id="btnExportClass" title="ייצוא נתונים">📥 ייצוא</button>
+    </div>
+
+    <!-- Class stats -->
+    <div class="stats-grid" id="classStats"></div>
+
+    <!-- Category weakness chart -->
+    <div class="card" id="categoryWeaknessCard" style="display:none;">
+      <h3>נושאים שדורשים חיזוק</h3>
+      <div id="categoryWeaknessContent"></div>
+    </div>
+
+    <!-- Students table -->
+    <div class="card">
+      <h3>תלמידים</h3>
+      <div id="studentsContent"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== STUDENT DETAIL SCREEN ===== -->
+<div id="screenStudentDetail" class="screen">
+  <div class="container">
+    <div class="student-detail-header">
+      <div>
+        <span class="back-link" id="btnBackToClass">← חזרה לכיתה</span>
+        <h2 id="studentDetailName"></h2>
+      </div>
+    </div>
+    <div class="stats-grid" id="studentStats"></div>
+
+    <div class="card">
+      <h3>ביצועים לפי נושא</h3>
+      <div id="studentCategoryBreakdown"></div>
+    </div>
+
+    <div class="card">
+      <h3>היסטוריית תרגולים</h3>
+      <div class="results-timeline" id="studentTimeline"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== CREATE CLASS MODAL ===== -->
+<div class="modal-overlay" id="modalNewClass">
+  <div class="modal">
+    <h2>יצירת כיתה חדשה</h2>
+    <div class="form-group">
+      <label for="newClassName">שם הכיתה</label>
+      <input type="text" id="newClassName" placeholder='לדוג\u05F3: כיתה א - רישיון B'/>
+    </div>
+    <div class="form-group">
+      <label for="newClassLicense">דרגת רישיון</label>
+      <select id="newClassLicense" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:10px;font-size:1em;">
+        <option value="B">B (פרטי)</option>
+        <option value="1">1 (טרקטור)</option>
+        <option value="C1">C1 (משא קל)</option>
+        <option value="C">C/E (משא כבד)</option>
+        <option value="D">D (ציבורי)</option>
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-primary" id="btnCreateClass">צור כיתה</button>
+      <button class="btn btn-secondary" id="btnCancelNewClass">ביטול</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){'use strict';
+
+var API_URL = 'https://script.google.com/macros/s/AKfycbzOI0zrDEngP-GvlRblhOk8tQsYBvWZ2gGliIQHTpS67WrDZl4la8NPpwtJr_Vjsh3Gzg/exec';
+
+var teacher = null; // { name, id, token }
+var classes = [];
+var currentClassData = null; // { classInfo, students }
+var currentStudentData = null;
+
+// ===== Utility =====
+function showScreen(id) {
+  var screens = document.querySelectorAll('.screen');
+  for (var i = 0; i < screens.length; i++) screens[i].classList.remove('active');
+  document.getElementById(id).classList.add('active');
+  window.scrollTo(0, 0);
+}
+
+function apiGet(params) {
+  var qs = '';
+  for (var k in params) qs += '&' + k + '=' + encodeURIComponent(params[k]);
+  return fetch(API_URL + '?' + qs.substring(1)).then(function(r) { return r.json(); });
+}
+
+function apiPost(data) {
+  return fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify(data)
+  }).then(function(r) { return r.json(); });
+}
+
+// ===== Auth =====
+function doLogin() {
+  var idNum = document.getElementById('loginId').value.trim();
+  var pass = document.getElementById('loginPass').value;
+  var errEl = document.getElementById('loginError');
+  if (!idNum || !pass) { errEl.textContent = 'יש למלא ת.ז. וסיסמה'; errEl.style.display = 'block'; return; }
+  var btn = document.getElementById('btnLogin');
+  btn.disabled = true;
+  btn.textContent = 'מתחבר...';
+  errEl.style.display = 'none';
+
+  apiPost({ action: 'teacherLogin', idNumber: idNum, password: pass })
+  .then(function(d) {
+    btn.disabled = false;
+    btn.textContent = 'התחבר';
+    if (d.status === 'ok') {
+      teacher = d.teacher;
+      if (document.getElementById('loginRemember').checked) {
+        localStorage.setItem('teacher_auth', JSON.stringify(teacher));
+      }
+      sessionStorage.setItem('teacher_auth', JSON.stringify(teacher));
+      onLoggedIn();
+    } else {
+      errEl.textContent = d.message || 'שגיאה בהתחברות';
+      errEl.style.display = 'block';
+    }
+  })
+  .catch(function() {
+    btn.disabled = false;
+    btn.textContent = 'התחבר';
+    errEl.textContent = 'שגיאת תקשורת — נסה שוב';
+    errEl.style.display = 'block';
+  });
+}
+
+function onLoggedIn() {
+  document.getElementById('topbar').style.display = 'flex';
+  document.getElementById('topbarTeacherName').textContent = teacher.name;
+  loadDashboard();
+}
+
+function doLogout() {
+  teacher = null;
+  sessionStorage.removeItem('teacher_auth');
+  localStorage.removeItem('teacher_auth');
+  document.getElementById('topbar').style.display = 'none';
+  showScreen('screenLogin');
+}
+
+function tryAutoLogin() {
+  var saved = sessionStorage.getItem('teacher_auth') || localStorage.getItem('teacher_auth');
+  if (!saved) return;
+  try { teacher = JSON.parse(saved); } catch(e) { return; }
+  // Verify token
+  apiGet({ action: 'teacherVerifyLogin', teacherId: teacher.id, token: teacher.token })
+  .then(function(d) {
+    if (d.status === 'ok') {
+      onLoggedIn();
+    } else {
+      teacher = null;
+      sessionStorage.removeItem('teacher_auth');
+      localStorage.removeItem('teacher_auth');
+    }
+  })
+  .catch(function() {});
+}
+
+// ===== Dashboard =====
+function loadDashboard() {
+  showScreen('screenDashboard');
+  var list = document.getElementById('classesList');
+  list.innerHTML = '<div class="loading">טוען כיתות...</div>';
+
+  apiGet({ action: 'teacherGetClasses', teacherId: teacher.id, token: teacher.token })
+  .then(function(d) {
+    if (d.status === 'ok') {
+      classes = d.classes || [];
+      renderClasses();
+    } else {
+      if (d.tokenExpired) { doLogout(); return; }
+      list.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><p>' + (d.message || 'שגיאה') + '</p></div>';
+    }
+  })
+  .catch(function() {
+    list.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><p>שגיאת תקשורת</p></div>';
+  });
+}
+
+function renderClasses() {
+  var list = document.getElementById('classesList');
+  if (classes.length === 0) {
+    list.innerHTML = '<div class="empty-state"><div class="empty-icon">📚</div><p>עדיין אין כיתות.<br>צור כיתה חדשה כדי להתחיל!</p></div>';
+    return;
+  }
+  list.innerHTML = '';
+  // Active classes first
+  var sorted = classes.slice().sort(function(a, b) {
+    if (a.active && !b.active) return -1;
+    if (!a.active && b.active) return 1;
+    return 0;
+  });
+  for (var i = 0; i < sorted.length; i++) {
+    var c = sorted[i];
+    var div = document.createElement('div');
+    div.className = 'class-card' + (c.active ? '' : ' class-inactive');
+    div.innerHTML =
+      '<div class="class-info">' +
+        '<h3>' + escHtml(c.name) + (c.active ? '' : ' <span style="color:#94a3b8;font-size:0.8em;">(סגורה)</span>') + '</h3>' +
+        '<div class="class-meta">קוד: <strong>' + escHtml(c.code) + '</strong> &bull; רישיון ' + escHtml(c.license) + '</div>' +
+      '</div>' +
+      '<div class="class-stats">' +
+        '<div class="count">' + c.studentCount + '</div>' +
+        '<div class="count-label">תלמידים</div>' +
+      '</div>';
+    (function(classCode) {
+      div.addEventListener('click', function() { loadClassDetail(classCode); });
+    })(c.code);
+    list.appendChild(div);
+  }
+}
+
+// ===== Class Detail =====
+function loadClassDetail(classCode) {
+  showScreen('screenClassDetail');
+  document.getElementById('classDetailTitle').textContent = 'טוען...';
+  document.getElementById('classDetailCode').textContent = classCode;
+  document.getElementById('classStats').innerHTML = '';
+  document.getElementById('studentsContent').innerHTML = '<div class="loading">טוען נתונים...</div>';
+  document.getElementById('categoryWeaknessCard').style.display = 'none';
+
+  apiGet({ action: 'teacherClassDetails', classCode: classCode, teacherId: teacher.id, token: teacher.token })
+  .then(function(d) {
+    if (d.status === 'ok') {
+      currentClassData = d;
+      renderClassDetail();
+    } else {
+      if (d.tokenExpired) { doLogout(); return; }
+      document.getElementById('studentsContent').innerHTML = '<div class="empty-state">⚠️ ' + (d.message || 'שגיאה') + '</div>';
+    }
+  })
+  .catch(function() {
+    document.getElementById('studentsContent').innerHTML = '<div class="empty-state">⚠️ שגיאת תקשורת</div>';
+  });
+}
+
+function renderClassDetail() {
+  var info = currentClassData.classInfo;
+  var students = currentClassData.students || [];
+
+  document.getElementById('classDetailTitle').textContent = info.name;
+  document.getElementById('classDetailCode').textContent = info.code;
+
+  // Compute class-level stats
+  var totalStudents = students.length;
+  var totalPractices = 0, totalExams = 0, totalPassed = 0;
+  var allScores = [];
+  var activeStudents = 0;
+  var now = Date.now();
+  var weekAgo = now - 7 * 24 * 60 * 60 * 1000;
+  var classCategoryErrors = {};
+
+  for (var i = 0; i < students.length; i++) {
+    var s = students[i];
+    totalPractices += s.totalPractices;
+    totalExams += s.totalExams;
+    totalPassed += s.totalPassed;
+    if (s.avgScore > 0) allScores.push(s.avgScore);
+    if (s.lastActive) {
+      try { if (new Date(s.lastActive).getTime() > weekAgo) activeStudents++; } catch(e) {}
+    }
+    // Aggregate category errors
+    for (var cat in s.categoryErrors) {
+      if (!classCategoryErrors[cat]) classCategoryErrors[cat] = { correct: 0, total: 0 };
+      classCategoryErrors[cat].correct += s.categoryErrors[cat].correct;
+      classCategoryErrors[cat].total += s.categoryErrors[cat].total;
+    }
+  }
+  var avgScore = 0;
+  if (allScores.length > 0) {
+    var sum = 0;
+    for (var si = 0; si < allScores.length; si++) sum += allScores[si];
+    avgScore = Math.round(sum / allScores.length);
+  }
+  var passRate = totalExams > 0 ? Math.round((totalPassed / totalExams) * 100) : 0;
+
+  // Render stats
+  var statsHtml =
+    '<div class="stat-card"><div class="stat-value">' + totalStudents + '</div><div class="stat-label">תלמידים</div></div>' +
+    '<div class="stat-card"><div class="stat-value">' + totalPractices + '</div><div class="stat-label">תרגולים</div></div>' +
+    '<div class="stat-card"><div class="stat-value">' + avgScore + '%</div><div class="stat-label">ציון ממוצע</div></div>' +
+    '<div class="stat-card"><div class="stat-value">' + passRate + '%</div><div class="stat-label">אחוז הצלחה</div></div>' +
+    '<div class="stat-card"><div class="stat-value">' + activeStudents + '</div><div class="stat-label">פעילים השבוע</div></div>';
+  document.getElementById('classStats').innerHTML = statsHtml;
+
+  // Render category weakness chart
+  var catKeys = Object.keys(classCategoryErrors);
+  if (catKeys.length > 0) {
+    document.getElementById('categoryWeaknessCard').style.display = 'block';
+    var catContent = document.getElementById('categoryWeaknessContent');
+    catContent.innerHTML = '';
+    // Sort by weakness (lowest score first)
+    catKeys.sort(function(a, b) {
+      var pA = classCategoryErrors[a].total > 0 ? (classCategoryErrors[a].correct / classCategoryErrors[a].total) : 1;
+      var pB = classCategoryErrors[b].total > 0 ? (classCategoryErrors[b].correct / classCategoryErrors[b].total) : 1;
+      return pA - pB;
+    });
+    for (var ci = 0; ci < catKeys.length; ci++) {
+      var cat = catKeys[ci];
+      var ce = classCategoryErrors[cat];
+      var pct = ce.total > 0 ? Math.round((ce.correct / ce.total) * 100) : 0;
+      var color = pct >= 80 ? '#16a34a' : pct >= 60 ? '#eab308' : '#dc2626';
+      var row = document.createElement('div');
+      row.className = 'cat-row';
+      row.innerHTML =
+        '<span class="cat-name">' + escHtml(cat) + '</span>' +
+        '<div class="cat-bar"><div class="cat-fill" style="width:' + pct + '%;background:' + color + ';"></div></div>' +
+        '<span class="cat-score">' + ce.correct + '/' + ce.total + ' (' + pct + '%)</span>';
+      catContent.appendChild(row);
+    }
+  }
+
+  // Render students table
+  var sc = document.getElementById('studentsContent');
+  if (students.length === 0) {
+    sc.innerHTML = '<div class="empty-state"><div class="empty-icon">👤</div><p>אין תלמידים בכיתה עדיין.<br>שתף את קוד הכיתה עם התלמידים.</p></div>';
+    return;
+  }
+
+  // Sort: most active first, then by name
+  students.sort(function(a, b) {
+    if (b.totalPractices !== a.totalPractices) return b.totalPractices - a.totalPractices;
+    return (a.name || '').localeCompare(b.name || '');
+  });
+
+  var table = '<div style="overflow-x:auto;"><table class="student-table">' +
+    '<thead><tr><th>שם</th><th>תרגולים</th><th>ציון ממוצע</th><th>מאמץ</th><th>פעילות אחרונה</th><th></th></tr></thead><tbody>';
+
+  for (var si2 = 0; si2 < students.length; si2++) {
+    var st = students[si2];
+    // Determine effort level
+    var effortClass = 'effort-low', effortText = 'נמוך';
+    if (st.totalPractices >= 10) { effortClass = 'effort-high'; effortText = 'גבוה'; }
+    else if (st.totalPractices >= 4) { effortClass = 'effort-medium'; effortText = 'בינוני'; }
+
+    var lastActiveStr = '';
+    if (st.lastActive) {
+      try {
+        var la = new Date(st.lastActive);
+        var diff = now - la.getTime();
+        if (diff < 86400000) lastActiveStr = 'היום';
+        else if (diff < 172800000) lastActiveStr = 'אתמול';
+        else if (diff < 604800000) lastActiveStr = Math.floor(diff / 86400000) + ' ימים';
+        else lastActiveStr = Math.floor(diff / 604800000) + ' שבועות';
+      } catch(e) { lastActiveStr = st.lastActive; }
+    } else {
+      lastActiveStr = '<span style="color:#94a3b8;">לא פעיל</span>';
+    }
+
+    var scoreColor = st.avgScore >= 86 ? 'color:#16a34a' : st.avgScore >= 70 ? 'color:#eab308' : 'color:#dc2626';
+    if (st.totalPractices === 0) scoreColor = 'color:#94a3b8';
+
+    table += '<tr>' +
+      '<td><strong>' + escHtml(st.name) + '</strong></td>' +
+      '<td>' + st.totalPractices + '</td>' +
+      '<td style="' + scoreColor + ';font-weight:600;">' + (st.totalPractices > 0 ? st.avgScore + '%' : '—') + '</td>' +
+      '<td><span class="effort-badge ' + effortClass + '">' + effortText + '</span></td>' +
+      '<td>' + lastActiveStr + '</td>' +
+      '<td><button class="btn btn-secondary" data-student-idx="' + si2 + '" style="padding:4px 10px;font-size:0.8em;">פרטים</button></td>' +
+      '</tr>';
+  }
+  table += '</tbody></table></div>';
+  sc.innerHTML = table;
+
+  // Add click handlers for detail buttons
+  var detailBtns = sc.querySelectorAll('[data-student-idx]');
+  for (var di = 0; di < detailBtns.length; di++) {
+    detailBtns[di].addEventListener('click', function(e) {
+      e.stopPropagation();
+      var idx = parseInt(this.getAttribute('data-student-idx'));
+      showStudentDetail(students[idx]);
+    });
+  }
+}
+
+// ===== Student Detail =====
+function showStudentDetail(student) {
+  currentStudentData = student;
+  showScreen('screenStudentDetail');
+  document.getElementById('studentDetailName').textContent = student.name;
+
+  // Stats
+  var passRate = student.totalExams > 0 ? Math.round((student.totalPassed / student.totalExams) * 100) : 0;
+  document.getElementById('studentStats').innerHTML =
+    '<div class="stat-card"><div class="stat-value">' + student.totalPractices + '</div><div class="stat-label">סה"כ תרגולים</div></div>' +
+    '<div class="stat-card"><div class="stat-value">' + student.totalExams + '</div><div class="stat-label">מבחני תרגול</div></div>' +
+    '<div class="stat-card"><div class="stat-value">' + student.avgScore + '%</div><div class="stat-label">ציון ממוצע</div></div>' +
+    '<div class="stat-card"><div class="stat-value">' + passRate + '%</div><div class="stat-label">אחוז הצלחה</div></div>';
+
+  // Category breakdown
+  var catDiv = document.getElementById('studentCategoryBreakdown');
+  catDiv.innerHTML = '';
+  var cats = student.categoryErrors || {};
+  var catKeys = Object.keys(cats);
+  if (catKeys.length === 0) {
+    catDiv.innerHTML = '<div style="color:#94a3b8;text-align:center;">אין נתונים עדיין</div>';
+  } else {
+    catKeys.sort(function(a, b) {
+      var pA = cats[a].total > 0 ? (cats[a].correct / cats[a].total) : 1;
+      var pB = cats[b].total > 0 ? (cats[b].correct / cats[b].total) : 1;
+      return pA - pB;
+    });
+    for (var ci = 0; ci < catKeys.length; ci++) {
+      var cat = catKeys[ci];
+      var ce = cats[cat];
+      var pct = ce.total > 0 ? Math.round((ce.correct / ce.total) * 100) : 0;
+      var color = pct >= 80 ? '#16a34a' : pct >= 60 ? '#eab308' : '#dc2626';
+      var row = document.createElement('div');
+      row.className = 'cat-row';
+      row.innerHTML =
+        '<span class="cat-name">' + escHtml(cat) + '</span>' +
+        '<div class="cat-bar"><div class="cat-fill" style="width:' + pct + '%;background:' + color + ';"></div></div>' +
+        '<span class="cat-score">' + ce.correct + '/' + ce.total + ' (' + pct + '%)</span>';
+      catDiv.appendChild(row);
+    }
+  }
+
+  // Timeline
+  var timeline = document.getElementById('studentTimeline');
+  var results = student.recentResults || [];
+  if (results.length === 0) {
+    timeline.innerHTML = '<div style="color:#94a3b8;text-align:center;">אין תוצאות עדיין</div>';
+  } else {
+    timeline.innerHTML = '';
+    // Show newest first
+    for (var ri = results.length - 1; ri >= 0; ri--) {
+      var r = results[ri];
+      var modeLabel = r.mode === 'exam' ? 'מבחן' : r.mode === 'category' ? 'נושא: ' + (r.category || '') : r.mode;
+      var isPassed = r.passed === 'עבר' || r.passed === true;
+      var div = document.createElement('div');
+      div.className = 'result-item';
+      div.innerHTML =
+        '<div class="result-info">' +
+          '<span class="result-date">' + escHtml(String(r.date || '')) + '</span>' +
+          '<span class="result-mode">' + escHtml(modeLabel) + '</span>' +
+        '</div>' +
+        '<div class="result-score ' + (isPassed ? 'pass' : 'fail') + '">' + r.score + '/' + r.total + ' (' + r.percent + '%)</div>';
+      timeline.appendChild(div);
+    }
+  }
+}
+
+// ===== Create Class =====
+function showNewClassModal() {
+  document.getElementById('modalNewClass').classList.add('active');
+  document.getElementById('newClassName').value = '';
+  document.getElementById('newClassName').focus();
+}
+
+function hideNewClassModal() {
+  document.getElementById('modalNewClass').classList.remove('active');
+}
+
+function createClass() {
+  var name = document.getElementById('newClassName').value.trim();
+  var license = document.getElementById('newClassLicense').value;
+  if (!name) { document.getElementById('newClassName').style.borderColor = '#ef4444'; return; }
+
+  var btn = document.getElementById('btnCreateClass');
+  btn.disabled = true;
+  btn.textContent = 'יוצר...';
+
+  apiGet({
+    action: 'teacherCreateClass',
+    className: name,
+    license: license,
+    teacherId: teacher.id,
+    token: teacher.token
+  })
+  .then(function(d) {
+    btn.disabled = false;
+    btn.textContent = 'צור כיתה';
+    if (d.status === 'ok') {
+      hideNewClassModal();
+      alert('הכיתה נוצרה!\nקוד כיתה: ' + d.classCode + '\nשתף קוד זה עם התלמידים.');
+      loadDashboard();
+    } else {
+      if (d.tokenExpired) { doLogout(); return; }
+      alert(d.message || 'שגיאה ביצירת כיתה');
+    }
+  })
+  .catch(function() {
+    btn.disabled = false;
+    btn.textContent = 'צור כיתה';
+    alert('שגיאת תקשורת');
+  });
+}
+
+// ===== Export =====
+function exportClassData() {
+  if (!currentClassData || !currentClassData.classInfo) return;
+  var classCode = currentClassData.classInfo.code;
+  apiGet({
+    action: 'teacherExportData',
+    classCode: classCode,
+    teacherId: teacher.id,
+    token: teacher.token
+  })
+  .then(function(d) {
+    if (d.status === 'ok') {
+      // Generate CSV
+      var headers = d.headers || [];
+      var rows = d.rows || [];
+      var csv = '\uFEFF'; // BOM for Hebrew
+      csv += headers.join(',') + '\n';
+      for (var r = 0; r < rows.length; r++) {
+        var vals = [];
+        for (var h = 0; h < headers.length; h++) {
+          var v = String(rows[r][headers[h]] || '').replace(/"/g, '""');
+          vals.push('"' + v + '"');
+        }
+        csv += vals.join(',') + '\n';
+      }
+      var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'class_' + classCode + '_export.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+    } else {
+      alert(d.message || 'שגיאה בייצוא');
+    }
+  })
+  .catch(function() { alert('שגיאת תקשורת'); });
+}
+
+// ===== Copy class code =====
+function copyClassCode() {
+  var code = document.getElementById('classDetailCode').textContent;
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(code).then(function() {
+      var el = document.getElementById('classDetailCode');
+      var orig = el.textContent;
+      el.textContent = 'הועתק! ✓';
+      setTimeout(function() { el.textContent = orig; }, 1500);
+    });
+  }
+}
+
+// ===== Helpers =====
+function escHtml(s) {
+  var d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// ===== Init =====
+function init() {
+  // Login
+  document.getElementById('btnLogin').addEventListener('click', doLogin);
+  document.getElementById('loginPass').addEventListener('keydown', function(e) { if (e.key === 'Enter') doLogin(); });
+  document.getElementById('loginId').addEventListener('keydown', function(e) { if (e.key === 'Enter') document.getElementById('loginPass').focus(); });
+
+  // Topbar
+  document.getElementById('btnLogout').addEventListener('click', doLogout);
+  document.getElementById('btnRefresh').addEventListener('click', function() {
+    if (document.getElementById('screenDashboard').classList.contains('active')) loadDashboard();
+    else if (document.getElementById('screenClassDetail').classList.contains('active') && currentClassData) loadClassDetail(currentClassData.classInfo.code);
+  });
+
+  // Dashboard
+  document.getElementById('btnNewClass').addEventListener('click', showNewClassModal);
+
+  // Modal
+  document.getElementById('btnCreateClass').addEventListener('click', createClass);
+  document.getElementById('btnCancelNewClass').addEventListener('click', hideNewClassModal);
+
+  // Class detail
+  document.getElementById('btnBackToDashboard').addEventListener('click', loadDashboard);
+  document.getElementById('classDetailCode').addEventListener('click', copyClassCode);
+  document.getElementById('btnExportClass').addEventListener('click', exportClassData);
+
+  // Student detail
+  document.getElementById('btnBackToClass').addEventListener('click', function() {
+    if (currentClassData) loadClassDetail(currentClassData.classInfo.code);
+  });
+
+  // Auto login
+  tryAutoLogin();
+}
+
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+else init();
+
+})();
+</script>
+</body>
+</html>

@@ -11,7 +11,11 @@ var SHEET_HEADERS = {
   'אתרים': ['שם אתר', 'מזהה', 'טלפון מנהל', 'כיתות'],
   'סשנים': ['קוד', 'בוחן ת.ז.', 'שם בוחן', 'אתר', 'כיתה', 'דרגה', 'שפה', 'מצב שמע', 'זמן יצירה', 'תקף עד', 'פעיל'],
   'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה', 'דרגה', 'שמע', 'הארכת זמן'],
-  'תוצאות': ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר', 'כיתה', 'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ', 'אוכלוסיה', 'תוקן?', 'שמע', 'מאומת', 'חשוד', 'dqEventId']
+  'תוצאות': ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר', 'כיתה', 'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ', 'אוכלוסיה', 'תוקן?', 'שמע', 'מאומת', 'חשוד', 'dqEventId'],
+  'מורים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד'],
+  'כיתות': ['קוד כיתה', 'שם כיתה', 'מורה ת.ז.', 'שם מורה', 'דרגה', 'תאריך יצירה', 'פעיל'],
+  'תלמידי כיתות': ['קוד כיתה', 'שם תלמיד', 'מזהה תלמיד', 'תאריך הצטרפות'],
+  'תוצאות תרגול': ['תאריך', 'מזהה תלמיד', 'שם תלמיד', 'קוד כיתה', 'מצב', 'דרגה', 'ציון', 'סה"כ', 'אחוז', 'עבר/נכשל', 'זמן', 'נושא', 'שפה', 'פירוט שגויות', 'פירוט לפי נושא']
 };
 
 function getSheet(name) {
@@ -174,6 +178,14 @@ function doGet(e) {
       if (tokenErr) return tokenErr;
     }
 
+    // Actions that require teacher token authentication
+    var teacherActions = ['teacherDashboard','teacherCreateClass','teacherCloseClass',
+      'teacherRemoveStudent','teacherGetClasses','teacherClassDetails','teacherExportData'];
+    if (teacherActions.indexOf(action) !== -1) {
+      var tErr = requireTeacherToken(p);
+      if (tErr) return tErr;
+    }
+
     switch (action) {
 
       case 'login':
@@ -312,6 +324,38 @@ function doGet(e) {
         }
         return HtmlService.createHtmlOutput(fullHtml).setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 
+      // ===== Teacher actions =====
+      case 'teacherVerifyLogin':
+        return handleTeacherVerifyLogin(p);
+
+      case 'teacherGetClasses':
+        return handleTeacherGetClasses(p);
+
+      case 'teacherCreateClass':
+        return handleTeacherCreateClass(p);
+
+      case 'teacherCloseClass':
+        return handleTeacherCloseClass(p);
+
+      case 'teacherRemoveStudent':
+        return handleTeacherRemoveStudent(p);
+
+      case 'teacherDashboard':
+        return handleTeacherDashboard(p);
+
+      case 'teacherClassDetails':
+        return handleTeacherClassDetails(p);
+
+      case 'teacherExportData':
+        return handleTeacherExportData(p);
+
+      // ===== Student join class (no auth) =====
+      case 'studentJoinClass':
+        return handleStudentJoinClass(p);
+
+      case 'submitPracticeResult':
+        return handleSubmitPracticeResult(p);
+
       default:
         return jsonResponse({ status: 'ok', message: 'External Exam API is running' });
     }
@@ -334,6 +378,10 @@ function doPost(e) {
 
     if (action === 'login') {
       return handleLogin(data);
+    } else if (action === 'teacherLogin') {
+      return handleTeacherLogin(data);
+    } else if (action === 'submitPracticeResult') {
+      return handleSubmitPracticeResult(data);
     } else if (action === 'registerExamQuestions') {
       return handleRegisterExamQuestions(data);
     } else if (action === 'submitResult') {
@@ -1736,4 +1784,389 @@ function handleCommanderDashboard(p) {
   };
 
   return jsonResponse({ status: 'ok', data: result });
+}
+
+// ========== מערכת מורים — Teacher System ==========
+
+function verifyTeacherToken(teacherId, token) {
+  if (!teacherId || !token) return false;
+  var sheet = getSheet('מורים');
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (normalizeId(data[i][1]) === normalizeId(teacherId)) {
+      var storedToken = String(data[i][4] || '');
+      var expiry = data[i][5];
+      if (storedToken !== token) return false;
+      if (!expiry) return false;
+      var expiryDate = expiry instanceof Date ? expiry : new Date(expiry);
+      if (new Date() > expiryDate) return false;
+      return true;
+    }
+  }
+  return false;
+}
+
+function requireTeacherToken(p) {
+  if (!verifyTeacherToken(p.teacherId, p.token)) {
+    return jsonResponse({ status: 'error', message: 'טוקן לא תקין — יש להתחבר מחדש', tokenExpired: true });
+  }
+  return null;
+}
+
+function generateClassCode() {
+  var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  var sheet = getSheet('כיתות');
+  var data = sheet.getDataRange().getValues();
+  var existing = {};
+  for (var i = 1; i < data.length; i++) existing[String(data[i][0]).trim()] = true;
+  var code;
+  do {
+    code = '';
+    for (var c = 0; c < 6; c++) code += chars.charAt(Math.floor(Math.random() * chars.length));
+  } while (existing[code]);
+  return code;
+}
+
+function handleTeacherLogin(p) {
+  var sheet = getSheet('מורים');
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
+      var row = i + 1;
+      var failedAttempts = Number(data[i][6]) || 0;
+      var lockoutUntil = data[i][7];
+      if (lockoutUntil) {
+        var lockoutDate = lockoutUntil instanceof Date ? lockoutUntil : new Date(lockoutUntil);
+        if (new Date() < lockoutDate) {
+          var minsLeft = Math.ceil((lockoutDate - new Date()) / 60000);
+          return jsonResponse({ status: 'error', message: 'החשבון נעול. נסה שוב בעוד ' + minsLeft + ' דקות' });
+        }
+        failedAttempts = 0;
+        sheet.getRange(row, 7).setValue(0);
+        sheet.getRange(row, 8).setValue('');
+      }
+      if (String(data[i][2]) === String(p.password)) {
+        if (data[i][3] === 'כן' || data[i][3] === true || data[i][3] === 'TRUE') {
+          if (failedAttempts > 0) {
+            sheet.getRange(row, 7).setValue(0);
+            sheet.getRange(row, 8).setValue('');
+          }
+          var token = generateToken();
+          var expiry = new Date();
+          expiry.setHours(expiry.getHours() + 12);
+          sheet.getRange(row, 5).setValue(token);
+          sheet.getRange(row, 6).setValue(expiry);
+          return jsonResponse({ status: 'ok', teacher: { name: data[i][0], id: normalizeId(data[i][1]), token: token } });
+        } else {
+          return jsonResponse({ status: 'error', message: 'החשבון אינו פעיל' });
+        }
+      } else {
+        failedAttempts++;
+        sheet.getRange(row, 7).setValue(failedAttempts);
+        if (failedAttempts >= 5) {
+          var lockout = new Date();
+          lockout.setMinutes(lockout.getMinutes() + 15);
+          sheet.getRange(row, 8).setValue(lockout);
+          return jsonResponse({ status: 'error', message: 'יותר מדי ניסיונות. החשבון ננעל ל-15 דקות' });
+        }
+        return jsonResponse({ status: 'error', message: 'סיסמה שגויה' });
+      }
+    }
+  }
+  return jsonResponse({ status: 'error', message: 'מורה לא נמצא' });
+}
+
+function handleTeacherVerifyLogin(p) {
+  if (!verifyTeacherToken(p.teacherId, p.token)) {
+    return jsonResponse({ status: 'error', message: 'טוקן לא תקין', tokenExpired: true });
+  }
+  var sheet = getSheet('מורים');
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (normalizeId(data[i][1]) === normalizeId(p.teacherId)) {
+      return jsonResponse({ status: 'ok', teacher: { name: data[i][0], id: normalizeId(data[i][1]) } });
+    }
+  }
+  return jsonResponse({ status: 'error', message: 'מורה לא נמצא' });
+}
+
+function handleTeacherCreateClass(p) {
+  var code = generateClassCode();
+  var className = p.className || 'כיתה חדשה';
+  var license = p.license || 'B';
+  var sheet = getSheet('כיתות');
+  // Get teacher name
+  var tSheet = getSheet('מורים');
+  var tData = tSheet.getDataRange().getValues();
+  var teacherName = '';
+  for (var i = 1; i < tData.length; i++) {
+    if (normalizeId(tData[i][1]) === normalizeId(p.teacherId)) { teacherName = tData[i][0]; break; }
+  }
+  sheet.appendRow([code, className, normalizeId(p.teacherId), teacherName, license, nowISO(), 'כן']);
+  return jsonResponse({ status: 'ok', classCode: code, className: className });
+}
+
+function handleTeacherCloseClass(p) {
+  var sheet = getSheet('כיתות');
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]).trim() === String(p.classCode).trim() &&
+        normalizeId(data[i][2]) === normalizeId(p.teacherId)) {
+      sheet.getRange(i + 1, 7).setValue('לא');
+      return jsonResponse({ status: 'ok' });
+    }
+  }
+  return jsonResponse({ status: 'error', message: 'כיתה לא נמצאה' });
+}
+
+function handleTeacherRemoveStudent(p) {
+  var sheet = getSheet('תלמידי כיתות');
+  var data = sheet.getDataRange().getValues();
+  // Verify teacher owns this class
+  var classSheet = getSheet('כיתות');
+  var classData = classSheet.getDataRange().getValues();
+  var ownsClass = false;
+  for (var c = 1; c < classData.length; c++) {
+    if (String(classData[c][0]).trim() === String(p.classCode).trim() &&
+        normalizeId(classData[c][2]) === normalizeId(p.teacherId)) {
+      ownsClass = true; break;
+    }
+  }
+  if (!ownsClass) return jsonResponse({ status: 'error', message: 'אין הרשאה' });
+
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0]).trim() === String(p.classCode).trim() &&
+        String(data[i][2]).trim() === String(p.studentId).trim()) {
+      sheet.deleteRow(i + 1);
+      return jsonResponse({ status: 'ok' });
+    }
+  }
+  return jsonResponse({ status: 'error', message: 'תלמיד לא נמצא' });
+}
+
+function handleTeacherGetClasses(p) {
+  var sheet = getSheet('כיתות');
+  var data = sheet.getDataRange().getValues();
+  var studSheet = getSheet('תלמידי כיתות');
+  var studData = studSheet.getDataRange().getValues();
+
+  // Count students per class
+  var studentCounts = {};
+  for (var s = 1; s < studData.length; s++) {
+    var cc = String(studData[s][0]).trim();
+    studentCounts[cc] = (studentCounts[cc] || 0) + 1;
+  }
+
+  var classes = [];
+  for (var i = 1; i < data.length; i++) {
+    if (normalizeId(data[i][2]) === normalizeId(p.teacherId)) {
+      var classCode = String(data[i][0]).trim();
+      classes.push({
+        code: classCode,
+        name: data[i][1],
+        license: data[i][4] || 'B',
+        created: data[i][5],
+        active: data[i][6] === 'כן',
+        studentCount: studentCounts[classCode] || 0
+      });
+    }
+  }
+  return jsonResponse({ status: 'ok', classes: classes });
+}
+
+function handleTeacherClassDetails(p) {
+  var classCode = String(p.classCode || '').trim();
+  if (!classCode) return jsonResponse({ status: 'error', message: 'חסר קוד כיתה' });
+
+  // Verify teacher owns this class
+  var classSheet = getSheet('כיתות');
+  var classData = classSheet.getDataRange().getValues();
+  var classInfo = null;
+  for (var c = 1; c < classData.length; c++) {
+    if (String(classData[c][0]).trim() === classCode && normalizeId(classData[c][2]) === normalizeId(p.teacherId)) {
+      classInfo = { code: classCode, name: classData[c][1], license: classData[c][4], active: classData[c][6] === 'כן' };
+      break;
+    }
+  }
+  if (!classInfo) return jsonResponse({ status: 'error', message: 'כיתה לא נמצאה' });
+
+  // Get students in class
+  var studSheet = getSheet('תלמידי כיתות');
+  var studData = studSheet.getDataRange().getValues();
+  var studentIds = [];
+  var studentMap = {};
+  for (var s = 1; s < studData.length; s++) {
+    if (String(studData[s][0]).trim() === classCode) {
+      var sid = String(studData[s][2]).trim();
+      studentIds.push(sid);
+      studentMap[sid] = { name: studData[s][1], id: sid, joined: studData[s][3] };
+    }
+  }
+
+  // Get practice results for these students
+  var resSheet = getSheet('תוצאות תרגול');
+  var resData = resSheet.getDataRange().getValues();
+  var studentResults = {};
+  for (var r = 1; r < resData.length; r++) {
+    var rSid = String(resData[r][1]).trim();
+    var rClass = String(resData[r][3]).trim();
+    if (rClass === classCode && studentIds.indexOf(rSid) !== -1) {
+      if (!studentResults[rSid]) studentResults[rSid] = [];
+      studentResults[rSid].push({
+        date: resData[r][0],
+        mode: resData[r][4],
+        license: resData[r][5],
+        score: resData[r][6],
+        total: resData[r][7],
+        percent: resData[r][8],
+        passed: resData[r][9],
+        time: resData[r][10],
+        category: resData[r][11] || '',
+        language: resData[r][12] || 'he',
+        wrongDetails: resData[r][13] || '',
+        categoryBreakdown: resData[r][14] || ''
+      });
+    }
+  }
+
+  // Build student summaries
+  var students = [];
+  for (var si = 0; si < studentIds.length; si++) {
+    var id = studentIds[si];
+    var info = studentMap[id];
+    var results = studentResults[id] || [];
+    var totalExams = 0, totalPassed = 0, scores = [], lastActive = '';
+    var categoryErrors = {};
+    for (var ri = 0; ri < results.length; ri++) {
+      var res = results[ri];
+      if (res.mode === 'exam') {
+        totalExams++;
+        if (res.passed === 'עבר' || res.passed === true) totalPassed++;
+        scores.push(Number(res.percent) || 0);
+      }
+      if (res.date && (!lastActive || String(res.date) > String(lastActive))) lastActive = res.date;
+      // Aggregate category errors
+      if (res.categoryBreakdown) {
+        try {
+          var cb = typeof res.categoryBreakdown === 'string' ? JSON.parse(res.categoryBreakdown) : res.categoryBreakdown;
+          for (var cat in cb) {
+            if (!categoryErrors[cat]) categoryErrors[cat] = { correct: 0, total: 0 };
+            categoryErrors[cat].correct += (cb[cat].correct || 0);
+            categoryErrors[cat].total += (cb[cat].total || 0);
+          }
+        } catch(e) {}
+      }
+    }
+    var avgScore = 0;
+    if (scores.length > 0) {
+      var sum = 0;
+      for (var sc = 0; sc < scores.length; sc++) sum += scores[sc];
+      avgScore = Math.round(sum / scores.length);
+    }
+    students.push({
+      name: info.name,
+      id: id,
+      joined: info.joined,
+      totalPractices: results.length,
+      totalExams: totalExams,
+      totalPassed: totalPassed,
+      avgScore: avgScore,
+      lastActive: lastActive,
+      categoryErrors: categoryErrors,
+      recentResults: results.slice(-10) // Last 10 results
+    });
+  }
+
+  return jsonResponse({ status: 'ok', classInfo: classInfo, students: students });
+}
+
+function handleTeacherDashboard(p) {
+  // Overview of all classes for a teacher
+  return handleTeacherGetClasses(p);
+}
+
+function handleTeacherExportData(p) {
+  var classCode = String(p.classCode || '').trim();
+  if (!classCode) return jsonResponse({ status: 'error', message: 'חסר קוד כיתה' });
+
+  // Verify ownership
+  var classSheet = getSheet('כיתות');
+  var classData = classSheet.getDataRange().getValues();
+  var owns = false;
+  for (var c = 1; c < classData.length; c++) {
+    if (String(classData[c][0]).trim() === classCode && normalizeId(classData[c][2]) === normalizeId(p.teacherId)) {
+      owns = true; break;
+    }
+  }
+  if (!owns) return jsonResponse({ status: 'error', message: 'אין הרשאה' });
+
+  // Get all results for this class
+  var resSheet = getSheet('תוצאות תרגול');
+  var resData = resSheet.getDataRange().getValues();
+  var headers = resData[0];
+  var rows = [];
+  for (var r = 1; r < resData.length; r++) {
+    if (String(resData[r][3]).trim() === classCode) {
+      var row = {};
+      for (var h = 0; h < headers.length; h++) row[headers[h]] = resData[r][h];
+      rows.push(row);
+    }
+  }
+  return jsonResponse({ status: 'ok', headers: headers, rows: rows });
+}
+
+function handleStudentJoinClass(p) {
+  var classCode = String(p.classCode || '').trim().toUpperCase();
+  var studentName = String(p.studentName || '').trim();
+  var studentId = String(p.studentId || '').trim();
+  if (!classCode || !studentName || !studentId) {
+    return jsonResponse({ status: 'error', message: 'חסרים פרטים (קוד כיתה, שם, מזהה)' });
+  }
+
+  // Verify class exists and active
+  var classSheet = getSheet('כיתות');
+  var classData = classSheet.getDataRange().getValues();
+  var classInfo = null;
+  for (var c = 1; c < classData.length; c++) {
+    if (String(classData[c][0]).trim() === classCode) {
+      if (classData[c][6] !== 'כן') return jsonResponse({ status: 'error', message: 'הכיתה אינה פעילה' });
+      classInfo = { name: classData[c][1], teacherName: classData[c][3], license: classData[c][4] };
+      break;
+    }
+  }
+  if (!classInfo) return jsonResponse({ status: 'error', message: 'כיתה לא נמצאה' });
+
+  // Check if already enrolled
+  var studSheet = getSheet('תלמידי כיתות');
+  var studData = studSheet.getDataRange().getValues();
+  for (var s = 1; s < studData.length; s++) {
+    if (String(studData[s][0]).trim() === classCode && String(studData[s][2]).trim() === studentId) {
+      return jsonResponse({ status: 'ok', message: 'כבר רשום בכיתה', className: classInfo.name, teacherName: classInfo.teacherName, license: classInfo.license });
+    }
+  }
+
+  studSheet.appendRow([classCode, studentName, studentId, nowISO()]);
+  return jsonResponse({ status: 'ok', message: 'הצטרפת לכיתה בהצלחה!', className: classInfo.name, teacherName: classInfo.teacherName, license: classInfo.license });
+}
+
+function handleSubmitPracticeResult(p) {
+  var sheet = getSheet('תוצאות תרגול');
+  var studentId = String(p.studentId || '').trim();
+  var classCode = String(p.classCode || '').trim();
+  var mode = String(p.mode || 'exam');
+  var license = String(p.license || 'B');
+  var score = Number(p.score) || 0;
+  var total = Number(p.total) || 0;
+  var percent = Number(p.percent) || 0;
+  var passed = percent >= 86 ? 'עבר' : 'נכשל';
+  var time = String(p.time || '');
+  var category = String(p.category || '');
+  var language = String(p.language || 'he');
+  var wrongDetails = '';
+  try { wrongDetails = typeof p.wrongDetails === 'string' ? p.wrongDetails : JSON.stringify(p.wrongDetails || ''); } catch(e) {}
+  var categoryBreakdown = '';
+  try { categoryBreakdown = typeof p.categoryBreakdown === 'string' ? p.categoryBreakdown : JSON.stringify(p.categoryBreakdown || ''); } catch(e) {}
+
+  sheet.appendRow([todayStr(), studentId, String(p.studentName || ''), classCode, mode, license, score, total, percent, passed, time, category, language, wrongDetails, categoryBreakdown]);
+  return jsonResponse({ status: 'ok' });
 }
