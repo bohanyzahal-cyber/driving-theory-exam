@@ -3,6 +3,7 @@
   "short_name": "תרגול תאוריה",
   "description": "תרגלו לקראת מבחן התאוריה — מבחן תרגול מלא או תרגול לפי נושא",
   "start_url": "./student.html",
+  "id": "/student",
   "display": "standalone",
   "orientation": "any",
   "background_color": "#f0f4f8",
