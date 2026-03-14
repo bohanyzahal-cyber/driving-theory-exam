@@ -341,6 +341,28 @@
       display: flex; align-items: center; gap: 10px; padding: 10px 0;
     }
     .audio-toggle-wrap label { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  
+    /* History */
+    .btn-history { display:block; margin:16px auto 0; padding:10px 24px; background:#f1f5f9; border:1px solid #e2e8f0; border-radius:10px; font-size:0.95em; color:#475569; cursor:pointer; font-weight:500; }
+    .btn-history:hover { background:#e2e8f0; }
+    .history-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:10px; }
+    .history-header h2 { margin:0; color:#0f172a; }
+    .history-empty { text-align:center; padding:40px 20px; color:#94a3b8; }
+    .history-empty .history-empty-icon { font-size:3em; margin-bottom:10px; }
+    .history-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:10px; margin-bottom:20px; }
+    .history-stat { background:white; border:1px solid #e2e8f0; border-radius:12px; padding:14px; text-align:center; }
+    .history-stat .hs-val { font-size:1.6em; font-weight:700; color:#2563eb; }
+    .history-stat .hs-lbl { font-size:0.78em; color:#64748b; margin-top:2px; }
+    .history-table { width:100%; border-collapse:collapse; font-size:0.88em; background:white; border:1px solid #e2e8f0; border-radius:12px; overflow:hidden; }
+    .history-table th { background:#f8fafc; padding:10px 12px; text-align:right; font-weight:600; color:#475569; font-size:0.85em; border-bottom:2px solid #e2e8f0; }
+    .history-table td { padding:10px 12px; text-align:right; border-bottom:1px solid #f1f5f9; }
+    .history-table tr:hover { background:#f8fafc; }
+    .history-table .pass { color:#16a34a; font-weight:600; }
+    .history-table .fail { color:#dc2626; font-weight:600; }
+    .history-clear { display:block; margin:16px auto 0; padding:8px 20px; background:#fee2e2; border:1px solid #fecaca; color:#dc2626; border-radius:8px; cursor:pointer; font-size:0.85em; }
+    .history-clear:hover { background:#fecaca; }
+    @media(max-width:600px){ .history-table { font-size:0.78em; } .history-table th,.history-table td { padding:8px 6px; } }
+  
   </style>
 </head>
 <body>
@@ -376,12 +398,20 @@
     <div class="mode-card" id="cardCategory"><div class="card-icon">&#x1F3AF;</div><div class="card-title">תרגול לפי נושא</div><div class="card-desc">10-15 שאלות &#x2022; משוב מיידי</div><div class="card-sub">בחר נושא ותתרגל</div><div class="category-panel" id="categoryPanel"><h3>בחר נושא:</h3><div class="cat-buttons" id="catButtons"></div></div></div>
     <div class="mode-card" id="cardFlashcards"><div class="card-icon">&#x1F0CF;</div><div class="card-title">כרטיסיות</div><div class="card-desc">ראה שאלה &#x2192; חשוב &#x2192; גלה תשובה</div><div class="card-sub">למידה אקטיבית</div><div class="category-panel" id="fcCategoryPanel"><h3>בחר נושא:</h3><div class="cat-buttons" id="fcCatButtons"></div><button class="cat-btn" id="fcAllBtn" style="color:#0f172a;border-color:#0f172a;">הכל</button></div></div>
   </div>
+    <button class="btn-history" id="btnShowHistory">📊 היסטוריית תרגולים</button>
   <button class="btn-back-mode" id="btnBackToWelcome">&#x2192; חזרה</button>
 </div></div>
 
 <div id="screenPractice" class="screen"><div class="container"><div id="practiceArea"></div></div></div>
 <div id="screenResults" class="screen"><div class="container"><div id="resultsArea"></div></div></div>
 <div id="screenFlashcards" class="screen"><div class="container"><div id="flashcardsArea"></div></div></div>
+<div id="screenHistory" class="screen"><div class="container">
+  <div class="history-header">
+    <h2>היסטוריית תרגולים</h2>
+    <button class="btn-back-mode" id="btnBackFromHistory">→ חזרה</button>
+  </div>
+  <div id="historyContent"></div>
+</div></div>
 
 <footer>תרגול תאוריה &copy; 2026</footer>
 
@@ -597,6 +627,89 @@ if(immediateMode&&prev!==null){answerLocked=true;if(currentIndex<total-1){var nb
 
 function finishExam(){stopTimer();showResults();}
 
+function saveToHistory(mode, category, score, total, pct, passed, elapsed) {
+  try {
+    var history = JSON.parse(localStorage.getItem('student_history') || '[]');
+    history.push({
+      date: new Date().toLocaleString('he-IL'),
+      mode: mode,
+      category: category || '',
+      score: score,
+      total: total,
+      pct: pct,
+      passed: passed,
+      time: elapsed || '',
+      license: currentLicense
+    });
+    if (history.length > 50) history = history.slice(-50);
+    localStorage.setItem('student_history', JSON.stringify(history));
+  } catch(e) {}
+}
+
+function showHistory() {
+  showScreen('screenHistory');
+  var area = document.getElementById('historyContent');
+  var history = [];
+  try { history = JSON.parse(localStorage.getItem('student_history') || '[]'); } catch(e) {}
+  
+  if (history.length === 0) {
+    area.innerHTML = '<div class="history-empty"><div class="history-empty-icon">📊</div><p>עדיין אין היסטוריית תרגולים.<br>התחל לתרגל כדי לראות את ההתקדמות שלך!</p></div>';
+    return;
+  }
+  
+  var totalPractices = history.length;
+  var examResults = history.filter(function(h) { return h.mode === 'exam'; });
+  var totalExams = examResults.length;
+  var totalPassed = examResults.filter(function(h) { return h.passed; }).length;
+  var allScores = history.filter(function(h) { return h.pct > 0; }).map(function(h) { return h.pct; });
+  var avgScore = 0;
+  if (allScores.length > 0) {
+    var sum = 0;
+    for (var i = 0; i < allScores.length; i++) sum += allScores[i];
+    avgScore = Math.round(sum / allScores.length);
+  }
+  var passRate = totalExams > 0 ? Math.round((totalPassed / totalExams) * 100) : 0;
+  
+  var html = '<div class="history-stats">';
+  html += '<div class="history-stat"><div class="hs-val">' + totalPractices + '</div><div class="hs-lbl">סה"כ תרגולים</div></div>';
+  html += '<div class="history-stat"><div class="hs-val">' + totalExams + '</div><div class="hs-lbl">מבחנים</div></div>';
+  html += '<div class="history-stat"><div class="hs-val">' + avgScore + '%</div><div class="hs-lbl">ציון ממוצע</div></div>';
+  html += '<div class="history-stat"><div class="hs-val">' + passRate + '%</div><div class="hs-lbl">אחוז הצלחה</div></div>';
+  html += '</div>';
+  
+  var modeLabels = { exam: 'מבחן', category: 'נושא', flashcards: 'כרטיסיות' };
+  
+  html += '<table class="history-table"><thead><tr>';
+  html += '<th>תאריך</th><th>סוג</th><th>ציון</th><th>אחוז</th><th>תוצאה</th>';
+  html += '</tr></thead><tbody>';
+  
+  for (var i = history.length - 1; i >= 0; i--) {
+    var h = history[i];
+    var modeText = modeLabels[h.mode] || h.mode;
+    if (h.mode === 'category' && h.category) modeText += ': ' + h.category;
+    var resultClass = h.passed ? 'pass' : 'fail';
+    var resultText = h.mode === 'exam' ? (h.passed ? 'עבר' : 'נכשל') : (h.pct + '%');
+    html += '<tr>';
+    html += '<td>' + (h.date || '') + '</td>';
+    html += '<td>' + modeText + '</td>';
+    html += '<td>' + h.score + '/' + h.total + ' (' + h.pct + '%)</td>';
+    html += '<td>' + (h.pct >= 80 ? '✅' : '❌') + '</td>';
+    html += '<td class="' + resultClass + '">' + resultText + '</td>';
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  
+  html += '<button class="history-clear" onclick="clearHistory()">🗑️ מחק היסטוריה</button>';
+  
+  area.innerHTML = html;
+}
+
+window.clearHistory = function() {
+  if (confirm('בטוח שרוצה למחוק את כל ההיסטוריה?')) {
+    localStorage.removeItem('student_history');
+    showHistory();
+  }
+};
 function showResults(){showScreen('screenResults');var area=document.getElementById('resultsArea');area.innerHTML='';var total=examQuestions.length,correct=0;for(var i=0;i<userAnswers.length;i++){if(userAnswers[i]&&userAnswers[i].isCorrect)correct++;}var pct=total>0?Math.round((correct/total)*100):0;var passed=currentMode==='exam'?(correct>=PASS_SCORE):(pct>=80);
 
 // Send results to backend if enrolled in a class
@@ -607,6 +720,11 @@ try{
   var catBd=computeCategoryBreakdown();var catObj={};for(var cb=0;cb<catBd.length;cb++){catObj[catBd[cb].category]={correct:catBd[cb].correct,total:catBd[cb].total};}
   sendPracticeResult({mode:currentMode,score:correct,total:total,percent:pct,time:elapsed,category:currentCategory,wrongDetails:JSON.stringify(wrongArr),categoryBreakdown:JSON.stringify(catObj)});
 }catch(e){}
+// Save to local history
+var histElapsed='';
+if(examStartTime){var hd=Math.floor((Date.now()-examStartTime)/1000);var hm=Math.floor(hd/60);var hs=hd%60;histElapsed=hm+':'+(hs<10?'0':'')+hs;}
+saveToHistory(currentMode, currentCategory, correct, total, pct, passed, histElapsed);
+
 
 var sb=document.createElement('div');sb.className='card result-score-box';var bs=document.createElement('div');bs.className='result-big-score';bs.textContent=correct+' / '+total;sb.appendChild(bs);var pe=document.createElement('div');pe.className='result-pct';pe.textContent=pct+'%';sb.appendChild(pe);var bg=document.createElement('div');bg.className='result-badge';if(passed){bg.classList.add('pass');bg.textContent='\u05E2\u05D1\u05E8\u05EA! \u2705';}else{bg.classList.add('fail');bg.textContent='\u05E0\u05DB\u05E9\u05DC\u05EA \u2717';}sb.appendChild(bg);area.appendChild(sb);
 
@@ -807,6 +925,9 @@ if(classInput&&classInput!==currentClassCode){joinClass(classInput,currentName,c
 else if(savedClass){currentClassCode=savedClass;}
 loadTranslationFile(currentLanguage,function(){document.getElementById('greetingText').textContent='\u05E9\u05DC\u05D5\u05DD, '+currentName+'! \u05DE\u05D4 \u05E0\u05EA\u05E8\u05D2\u05DC \u05D4\u05D9\u05D5\u05DD?';buildCategoryButtons();showScreen('screenModeSelect');});});
 document.getElementById('btnBackToWelcome').addEventListener('click',function(){showScreen('screenWelcome');});
+document.getElementById('btnShowHistory').addEventListener('click', function() { showHistory(); });
+document.getElementById('btnBackFromHistory').addEventListener('click', function() { showScreen('screenModeSelect'); });
+
 document.getElementById('cardExam').addEventListener('click',function(e){if(e.target.closest('.category-panel'))return;startExam();});
 var catOpen=false;document.getElementById('cardCategory').addEventListener('click',function(e){if(e.target.closest('.cat-btn'))return;var panel=document.getElementById('categoryPanel');if(!catOpen){panel.classList.add('open');catOpen=true;}else{if(!e.target.closest('.category-panel')){panel.classList.remove('open');catOpen=false;}}});
 var fcCatOpen=false;
