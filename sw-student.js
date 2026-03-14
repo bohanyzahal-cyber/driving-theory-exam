@@ -1,5 +1,5 @@
 // Service Worker for Student PWA
-var CACHE_NAME = 'student-v2';
+var CACHE_NAME = 'student-v3';
 
 // Install — cache the student page shell
 self.addEventListener('install', function(e) {
@@ -7,7 +7,8 @@ self.addEventListener('install', function(e) {
     caches.open(CACHE_NAME).then(function(cache) {
       return cache.addAll([
         './student.html',
-        './logo.png',
+        './icon-192.png',
+        './icon-512.png',
         './manifest-student.json'
       ]);
     })
