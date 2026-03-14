@@ -1,5 +1,5 @@
 // Service Worker for Teacher PWA
-var CACHE_NAME = 'teacher-v2';
+var CACHE_NAME = 'teacher-v3';
 
 // Install — cache the teacher page shell
 self.addEventListener('install', function(e) {
@@ -7,7 +7,8 @@ self.addEventListener('install', function(e) {
     caches.open(CACHE_NAME).then(function(cache) {
       return cache.addAll([
         './teacher.html',
-        './logo.png',
+        './icon-192.png',
+        './icon-512.png',
         './manifest-teacher.json'
       ]);
     })
