@@ -182,7 +182,8 @@ function doGet(e) {
 
     // Actions that require teacher token authentication
     var teacherActions = ['teacherDashboard','teacherCreateClass','teacherCloseClass',
-      'teacherRemoveStudent','teacherGetClasses','teacherClassDetails','teacherExportData'];
+      'teacherRemoveStudent','teacherGetClasses','teacherClassDetails','teacherExportData',
+      'teacherCommanderDashboard'];
     if (teacherActions.indexOf(action) !== -1) {
       var tErr = requireTeacherToken(p);
       if (tErr) return tErr;
@@ -350,6 +351,9 @@ function doGet(e) {
 
       case 'teacherExportData':
         return handleTeacherExportData(p);
+
+      case 'teacherCommanderDashboard':
+        return handleTeacherCommanderDashboard(p);
 
       // ===== Student join class (no auth) =====
       case 'studentJoinClass':
@@ -1858,7 +1862,7 @@ function handleTeacherLogin(p) {
           expiry.setHours(expiry.getHours() + 12);
           sheet.getRange(row, 5).setValue(token);
           sheet.getRange(row, 6).setValue(expiry);
-          return jsonResponse({ status: 'ok', teacher: { name: data[i][0], id: normalizeId(data[i][1]), token: token } });
+          return jsonResponse({ status: 'ok', teacher: { name: data[i][0], id: normalizeId(data[i][1]), token: token, role: String(data[i][8] || 'מורה') } });
         } else {
           return jsonResponse({ status: 'error', message: 'החשבון אינו פעיל' });
         }
@@ -1886,10 +1890,174 @@ function handleTeacherVerifyLogin(p) {
   var data = sheet.getDataRange().getValues();
   for (var i = 1; i < data.length; i++) {
     if (normalizeId(data[i][1]) === normalizeId(p.teacherId)) {
-      return jsonResponse({ status: 'ok', teacher: { name: data[i][0], id: normalizeId(data[i][1]) } });
+      return jsonResponse({ status: 'ok', teacher: { name: data[i][0], id: normalizeId(data[i][1]), role: String(data[i][8] || 'מורה') } });
     }
   }
   return jsonResponse({ status: 'error', message: 'מורה לא נמצא' });
+}
+
+function handleTeacherCommanderDashboard(p) {
+  // Verify commander role
+  var tSheet = getSheet('מורים');
+  var tData = tSheet.getDataRange().getValues();
+  var role = '';
+  for (var i = 1; i < tData.length; i++) {
+    if (normalizeId(tData[i][1]) === normalizeId(p.teacherId)) {
+      role = String(tData[i][8] || 'מורה');
+      break;
+    }
+  }
+  if (role !== 'מפקד') {
+    return jsonResponse({ status: 'error', message: 'אין הרשאת מפקד' });
+  }
+
+  // Parse date range
+  var dateFrom = parseDateParam(p.dateFrom);
+  var dateTo = parseDateParam(p.dateTo);
+  if (!dateFrom || !dateTo) {
+    return jsonResponse({ status: 'error', message: 'תאריכים לא תקינים' });
+  }
+  dateTo.setHours(23, 59, 59, 999);
+
+  // Build class→teacher map from כיתות sheet
+  var classSheet = getSheet('כיתות');
+  var classData = classSheet.getDataRange().getValues();
+  var classMap = {}; // classCode → { teacherName, className, license }
+  for (var c = 1; c < classData.length; c++) {
+    var cc = String(classData[c][0]).trim();
+    classMap[cc] = {
+      teacherName: String(classData[c][3] || ''),
+      teacherId: normalizeId(classData[c][2]),
+      className: String(classData[c][1] || ''),
+      license: String(classData[c][4] || '')
+    };
+  }
+
+  // Read practice results
+  var resSheet = getSheet('תוצאות תרגול');
+  var resData = resSheet.getDataRange().getValues();
+
+  // Columns: [0]תאריך [1]מזהה תלמיד [2]שם תלמיד [3]קוד כיתה [4]מצב [5]דרגה [6]ציון [7]סה"כ [8]אחוז [9]עבר/נכשל [10]זמן [11]נושא [12]שפה [13]פירוט שגויות [14]פירוט לפי נושא
+
+  var overall = { total: 0, passed: 0, failed: 0, scores: [], students: {}, teachers: {}, classes: {} };
+  var byTeacher = {};
+  var byClass = {};
+  var byLicense = {};
+  var byMode = {};
+
+  for (var r = 1; r < resData.length; r++) {
+    var rowDate = parseSheetDate(resData[r][0]);
+    if (!rowDate || rowDate < dateFrom || rowDate > dateTo) continue;
+
+    var classCode = String(resData[r][3] || '').trim();
+    if (!classCode) continue; // skip results without class
+
+    var cInfo = classMap[classCode] || { teacherName: 'לא ידוע', className: classCode, license: '' };
+    var teacherName = cInfo.teacherName || 'לא ידוע';
+    var className = cInfo.className || classCode;
+    var license = String(resData[r][5] || cInfo.license || 'לא צוין');
+    var mode = String(resData[r][4] || 'לא צוין');
+    var studentId = String(resData[r][1] || '');
+    var passedStr = String(resData[r][9] || '');
+    var isPassed = (passedStr === 'עבר' || passedStr === 'true' || passedStr === true);
+    var isFailed = (passedStr === 'נכשל' || passedStr === 'false' || passedStr === false);
+
+    var pctVal = 0;
+    var pctRaw = resData[r][8];
+    if (typeof pctRaw === 'string' && pctRaw.indexOf('%') !== -1) {
+      pctVal = parseFloat(pctRaw.replace('%', '')) || 0;
+    } else {
+      var pctNum = Number(pctRaw);
+      if (!isNaN(pctNum)) {
+        pctVal = pctNum <= 1 ? pctNum * 100 : pctNum;
+      }
+    }
+
+    overall.total++;
+    if (isPassed) overall.passed++;
+    else if (isFailed) overall.failed++;
+    overall.scores.push(pctVal);
+    overall.students[studentId] = true;
+    overall.teachers[teacherName] = true;
+    overall.classes[classCode] = true;
+
+    addToGroup(byTeacher, teacherName, isPassed, isFailed, pctVal, studentId);
+    addToGroup(byClass, className + ' (' + classCode + ')', isPassed, isFailed, pctVal, studentId);
+    addToGroup(byLicense, license, isPassed, isFailed, pctVal, studentId);
+    addToGroup(byMode, mode, isPassed, isFailed, pctVal, studentId);
+
+    // Cross-tabulation sub-groups
+    addToSubGroup(byTeacher, teacherName, 'byClass', className + ' (' + classCode + ')', isPassed, isFailed, pctVal, studentId);
+    addToSubGroup(byTeacher, teacherName, 'byLicense', license, isPassed, isFailed, pctVal, studentId);
+    addToSubGroup(byClass, className + ' (' + classCode + ')', 'byLicense', license, isPassed, isFailed, pctVal, studentId);
+    addToSubGroup(byClass, className + ' (' + classCode + ')', 'byMode', mode, isPassed, isFailed, pctVal, studentId);
+    addToSubGroup(byLicense, license, 'byTeacher', teacherName, isPassed, isFailed, pctVal, studentId);
+    addToSubGroup(byLicense, license, 'byClass', className + ' (' + classCode + ')', isPassed, isFailed, pctVal, studentId);
+    addToSubGroup(byMode, mode, 'byLicense', license, isPassed, isFailed, pctVal, studentId);
+    addToSubGroup(byMode, mode, 'byTeacher', teacherName, isPassed, isFailed, pctVal, studentId);
+  }
+
+  function addToGroup(map, key, isPassed, isFailed, pctVal, studentId) {
+    if (!map[key]) map[key] = { total: 0, passed: 0, failed: 0, scores: [], students: {} };
+    map[key].total++;
+    if (isPassed) map[key].passed++;
+    else if (isFailed) map[key].failed++;
+    map[key].scores.push(pctVal);
+    map[key].students[studentId] = true;
+  }
+
+  function addToSubGroup(map, primaryKey, subDim, subKey, isPassed, isFailed, pctVal, studentId) {
+    if (!map[primaryKey]) return;
+    if (!map[primaryKey]._sub) map[primaryKey]._sub = {};
+    if (!map[primaryKey]._sub[subDim]) map[primaryKey]._sub[subDim] = {};
+    addToGroup(map[primaryKey]._sub[subDim], subKey, isPassed, isFailed, pctVal, studentId);
+  }
+
+  function computeStats(obj) {
+    var avg = 0, median = 0;
+    if (obj.scores.length > 0) {
+      var sum = 0;
+      for (var s = 0; s < obj.scores.length; s++) sum += obj.scores[s];
+      avg = Math.round(sum / obj.scores.length);
+      var sorted = obj.scores.slice().sort(function(a, b) { return a - b; });
+      var mid = Math.floor(sorted.length / 2);
+      median = sorted.length % 2 !== 0 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+    }
+    var passRate = obj.total > 0 ? Math.round((obj.passed / obj.total) * 100) : 0;
+    var studentCount = Object.keys(obj.students || {}).length;
+    return { total: obj.total, passed: obj.passed, failed: obj.failed, passRate: passRate, avgScore: avg, medianScore: median, students: studentCount };
+  }
+
+  function computeGroupWithSub(map) {
+    var out = {};
+    for (var key in map) {
+      out[key] = computeStats(map[key]);
+      if (map[key]._sub) {
+        out[key].sub = {};
+        for (var subDim in map[key]._sub) {
+          out[key].sub[subDim] = {};
+          for (var subKey in map[key]._sub[subDim]) {
+            out[key].sub[subDim][subKey] = computeStats(map[key]._sub[subDim][subKey]);
+          }
+        }
+      }
+    }
+    return out;
+  }
+
+  var overallStats = computeStats(overall);
+  overallStats.activeTeachers = Object.keys(overall.teachers).length;
+  overallStats.activeClasses = Object.keys(overall.classes).length;
+
+  var result = {
+    overall: overallStats,
+    byTeacher: computeGroupWithSub(byTeacher),
+    byClass: computeGroupWithSub(byClass),
+    byLicense: computeGroupWithSub(byLicense),
+    byMode: computeGroupWithSub(byMode)
+  };
+
+  return jsonResponse({ status: 'ok', data: result });
 }
 
 function handleTeacherCreateClass(p) {

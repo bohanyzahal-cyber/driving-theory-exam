@@ -135,6 +135,75 @@
       .student-table { font-size: 0.8em; }
       .student-table th, .student-table td { padding: 8px 6px; }
     }
+
+    /* Commander Dashboard */
+    .cmd-period-btn {
+      background: #e2e8f0; border: none; color: #475569; padding: 8px 16px;
+      border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600;
+      transition: background .2s, color .2s;
+    }
+    .cmd-period-btn:hover { background: #cbd5e1; }
+    .cmd-period-btn.active { background: #7c3aed; color: white; }
+
+    .cmd-kpi {
+      text-align: center; flex: 1; min-width: 100px; padding: 16px 12px;
+      background: #f0f4f8; border-radius: 12px;
+    }
+    .cmd-kpi-val { font-size: 1.6rem; font-weight: 700; color: #1e293b; }
+    .cmd-kpi-lbl { font-size: 12px; color: #64748b; margin-top: 4px; }
+    .cmd-kpi-pass { background: #dcfce7; }
+    .cmd-kpi-pass .cmd-kpi-val { color: #16a34a; }
+    .cmd-kpi-fail { background: #fee2e2; }
+    .cmd-kpi-fail .cmd-kpi-val { color: #dc2626; }
+    .cmd-kpi-rate { background: #f5f3ff; }
+    .cmd-kpi-rate .cmd-kpi-val { color: #7c3aed; }
+
+    .cmd-tab-btn {
+      background: #e2e8f0; border: none; color: #475569; padding: 6px 14px;
+      border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600;
+      transition: background .2s, color .2s;
+    }
+    .cmd-tab-btn:hover { background: #cbd5e1; }
+    .cmd-tab-btn.active { background: #7c3aed; color: white; }
+
+    .cmd-table {
+      width: 100%; border-collapse: collapse; font-size: 13px; direction: rtl;
+    }
+    .cmd-table th {
+      background: #f1f5f9; padding: 8px 10px; text-align: right; font-weight: 600;
+      color: #475569; border-bottom: 2px solid #e2e8f0;
+    }
+    .cmd-table td {
+      padding: 8px 10px; border-bottom: 1px solid #f1f5f9; text-align: right;
+    }
+    .cmd-table tr:hover { background: #f8fafc; }
+    .cmd-table .good { color: #16a34a; font-weight: 600; }
+    .cmd-table .bad { color: #dc2626; font-weight: 600; }
+
+    .cmd-action-btn {
+      padding: 10px 20px; font-size: 14px; font-weight: 700; color: white;
+      border: none; border-radius: 8px; cursor: pointer; min-width: 140px;
+    }
+    .cmd-action-btn:hover { opacity: 0.9; }
+
+    .cmd-table tr.cmd-dd-toggle { cursor: pointer; user-select: none; }
+    .cmd-table tr.cmd-dd-toggle:hover { background: #f5f3ff; }
+    .cmd-table tr.cmd-dd-toggle td:first-child::before { content: '\25B6'; display: inline-block; margin-left: 6px; font-size: 10px; transition: transform 0.2s; }
+    .cmd-table tr.cmd-dd-toggle.expanded td:first-child::before { transform: rotate(90deg); }
+    .cmd-dd-panel { display: none; }
+    .cmd-dd-panel.open { display: table-row; }
+    .cmd-dd-panel > td { padding: 12px 16px; background: #faf5ff; }
+    .cmd-sub-tab-btn { background: #e2e8f0; border: none; color: #475569; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; margin-left: 4px; }
+    .cmd-sub-tab-btn.active { background: #7c3aed; color: white; }
+    .cmd-sub-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+    .cmd-sub-table th { background: #ede9fe; padding: 6px 8px; text-align: right; font-size: 11px; border-bottom: 1px solid #c4b5fd; }
+    .cmd-sub-table td { padding: 6px 8px; border-bottom: 1px solid #ede9fe; text-align: right; }
+
+    .cmd-pie-wrap { display: flex; align-items: center; justify-content: center; gap: 16px; flex-wrap: wrap; }
+    .cmd-pie { border-radius: 50%; flex-shrink: 0; }
+    .cmd-pie-legend { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+    .cmd-pie-legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-left: 4px; vertical-align: middle; }
+
   </style>
 </head>
 <body>
@@ -180,11 +249,73 @@
   </div>
 </div>
 
+<!-- ===== COMMANDER SCREEN ===== -->
+<div id="screenCommander" class="screen">
+  <div class="container">
+    <div class="card" style="text-align:center;">
+      <h2 style="margin:0 0 12px;">לוח מפקד — סיכום מערכת תרגול</h2>
+      <div id="cmdPeriodBtns" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:12px 0;">
+        <button class="cmd-period-btn active" data-period="daily" onclick="cmdSelectPeriod(this)">יומי</button>
+        <button class="cmd-period-btn" data-period="weekly" onclick="cmdSelectPeriod(this)">שבועי</button>
+        <button class="cmd-period-btn" data-period="monthly" onclick="cmdSelectPeriod(this)">חודשי</button>
+        <button class="cmd-period-btn" data-period="quarterly" onclick="cmdSelectPeriod(this)">תלת חודשי</button>
+        <button class="cmd-period-btn" data-period="yearly" onclick="cmdSelectPeriod(this)">שנתי</button>
+        <button class="cmd-period-btn" data-period="custom" onclick="cmdSelectPeriod(this)">מותאם</button>
+      </div>
+      <div id="cmdCustomRange" style="display:none;margin:12px auto;max-width:400px;">
+        <div style="display:flex;gap:8px;align-items:center;justify-content:center;">
+          <label style="font-size:13px;">מ-<input type="date" id="cmdDateFrom" style="padding:6px;border-radius:6px;border:1px solid #cbd5e1;"></label>
+          <label style="font-size:13px;">עד<input type="date" id="cmdDateTo" style="padding:6px;border-radius:6px;border:1px solid #cbd5e1;"></label>
+          <button onclick="fetchCommanderData()" style="padding:6px 16px;font-size:13px;background:#7c3aed;color:white;border:none;border-radius:6px;cursor:pointer;">הצג</button>
+        </div>
+      </div>
+      <div id="cmdDateLabel" style="font-size:13px;color:#64748b;margin-top:4px;"></div>
+      <div id="cmdLoading" style="display:none;margin:12px 0;color:#64748b;">טוען נתונים...</div>
+    </div>
+
+    <div id="cmdKPIs" class="card" style="display:none;">
+      <div style="display:flex;gap:16px;flex-wrap:wrap;justify-content:center;">
+        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdTotal">0</div><div class="cmd-kpi-lbl">סה"כ תרגולים</div></div>
+        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdStudents">0</div><div class="cmd-kpi-lbl">תלמידים פעילים</div></div>
+        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdTeachers">0</div><div class="cmd-kpi-lbl">מורים פעילים</div></div>
+        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdClasses">0</div><div class="cmd-kpi-lbl">כיתות פעילות</div></div>
+        <div class="cmd-kpi cmd-kpi-pass"><div class="cmd-kpi-val" id="cmdPassed">0</div><div class="cmd-kpi-lbl">עברו</div></div>
+        <div class="cmd-kpi cmd-kpi-fail"><div class="cmd-kpi-val" id="cmdFailed">0</div><div class="cmd-kpi-lbl">נכשלו</div></div>
+        <div class="cmd-kpi cmd-kpi-rate"><div class="cmd-kpi-val" id="cmdPassRate">0%</div><div class="cmd-kpi-lbl">אחוז הצלחה</div></div>
+        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdAvg">0%</div><div class="cmd-kpi-lbl">ציון ממוצע</div></div>
+        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdMedian">0%</div><div class="cmd-kpi-lbl">חציון</div></div>
+      </div>
+      <div id="cmdOverallPie" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="card" id="cmdBreakdowns" style="display:none;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+        <button class="cmd-tab-btn active" data-tab="byTeacher" onclick="cmdSelectTab(this)">לפי מורה</button>
+        <button class="cmd-tab-btn" data-tab="byClass" onclick="cmdSelectTab(this)">לפי כיתה</button>
+        <button class="cmd-tab-btn" data-tab="byLicense" onclick="cmdSelectTab(this)">לפי דרגה</button>
+        <button class="cmd-tab-btn" data-tab="byMode" onclick="cmdSelectTab(this)">לפי סוג תרגול</button>
+      </div>
+      <div id="cmdBreakdownContent" style="overflow-x:auto;"></div>
+    </div>
+
+    <div class="card" id="cmdActions" style="display:none;text-align:center;">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center;">
+        <button onclick="printCommanderReport()" class="cmd-action-btn" style="background:#5b21b6;">🖨️ הדפס / שמור PDF</button>
+        <button onclick="shareCommanderReport()" class="cmd-action-btn" style="background:#25D366;">📤 שתף דו"ח</button>
+      </div>
+    </div>
+
+    <div class="card" style="text-align:center;">
+      <button onclick="switchToTeacher()" style="padding:12px 24px;font-size:15px;background:#7c3aed;color:white;border:none;border-radius:8px;cursor:pointer;">מעבר ללוח מורה (ניהול כיתות)</button>
+    </div>
+  </div>
+</div>
+
 <!-- ===== DASHBOARD SCREEN ===== -->
 <div id="screenDashboard" class="screen">
   <div class="container">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px;">
-      <h2 style="margin:0;">הכיתות שלי</h2>
+      <div><h2 style="margin:0;display:inline;">הכיתות שלי</h2><button id="btnBackToCommander" class="btn btn-secondary" style="display:none;margin-right:12px;font-size:0.85em;" onclick="switchToCommander()">← חזרה למפקד</button></div>
       <button class="btn btn-primary" id="btnNewClass">+ כיתה חדשה</button>
     </div>
     <div id="classesList"></div>
@@ -277,6 +408,9 @@ var teacher = null; // { name, id, token }
 var classes = [];
 var currentClassData = null; // { classInfo, students }
 var currentStudentData = null;
+var userRole = 'מורה';
+var cmdData = null;
+var cmdCurrentTab = 'byTeacher';
 
 // ===== Utility =====
 function showScreen(id) {
@@ -338,14 +472,23 @@ function doLogin() {
 function onLoggedIn() {
   document.getElementById('topbar').style.display = 'flex';
   document.getElementById('topbarTeacherName').textContent = teacher.name;
-  loadDashboard();
+  userRole = teacher.role || 'מורה';
+  if (userRole === 'מפקד') {
+    showScreen('screenCommander');
+    initCommanderDashboard();
+  } else {
+    loadDashboard();
+  }
 }
 
 function doLogout() {
   teacher = null;
+  userRole = 'מורה';
+  cmdData = null;
   sessionStorage.removeItem('teacher_auth');
   localStorage.removeItem('teacher_auth');
   document.getElementById('topbar').style.display = 'none';
+  document.getElementById('btnBackToCommander').style.display = 'none';
   showScreen('screenLogin');
 }
 
@@ -756,6 +899,295 @@ function escHtml(s) {
   return d.innerHTML;
 }
 
+// ===== Commander Dashboard =====
+function getDateRange(period) {
+  var now = new Date();
+  var from = new Date(now);
+  var to = new Date(now);
+  switch (period) {
+    case 'daily': from.setHours(0,0,0,0); break;
+    case 'weekly': from.setDate(from.getDate() - from.getDay()); from.setHours(0,0,0,0); break;
+    case 'monthly': from.setDate(1); from.setHours(0,0,0,0); break;
+    case 'quarterly': from.setMonth(from.getMonth() - 2); from.setDate(1); from.setHours(0,0,0,0); break;
+    case 'yearly': from.setMonth(0, 1); from.setHours(0,0,0,0); break;
+  }
+  return { from: from, to: to };
+}
+
+function fmtDateDDMMYYYY(d) {
+  return ('0' + d.getDate()).slice(-2) + '/' + ('0' + (d.getMonth() + 1)).slice(-2) + '/' + d.getFullYear();
+}
+
+function initCommanderDashboard() {
+  fetchCommanderData('daily');
+}
+
+window.cmdSelectPeriod = function(btn) {
+  var allBtns = document.querySelectorAll('#cmdPeriodBtns .cmd-period-btn');
+  for (var j = 0; j < allBtns.length; j++) allBtns[j].classList.remove('active');
+  btn.classList.add('active');
+  var period = btn.getAttribute('data-period');
+  if (period === 'custom') {
+    document.getElementById('cmdCustomRange').style.display = 'block';
+  } else {
+    document.getElementById('cmdCustomRange').style.display = 'none';
+    fetchCommanderData(period);
+  }
+};
+
+window.cmdSelectTab = function(btn) {
+  var allTabs = document.querySelectorAll('.cmd-tab-btn');
+  for (var j = 0; j < allTabs.length; j++) allTabs[j].classList.remove('active');
+  btn.classList.add('active');
+  cmdCurrentTab = btn.getAttribute('data-tab');
+  if (cmdData) renderBreakdownTable(cmdData, cmdCurrentTab);
+};
+
+window.fetchCommanderData = function(period) {
+  var dateFrom, dateTo;
+  if (period && period !== 'custom') {
+    var range = getDateRange(period);
+    dateFrom = fmtDateDDMMYYYY(range.from);
+    dateTo = fmtDateDDMMYYYY(range.to);
+  } else {
+    var fromInput = document.getElementById('cmdDateFrom').value;
+    var toInput = document.getElementById('cmdDateTo').value;
+    if (!fromInput || !toInput) return;
+    var fd = new Date(fromInput);
+    var td = new Date(toInput);
+    dateFrom = fmtDateDDMMYYYY(fd);
+    dateTo = fmtDateDDMMYYYY(td);
+  }
+  document.getElementById('cmdDateLabel').textContent = dateFrom + ' \u2014 ' + dateTo;
+  document.getElementById('cmdLoading').style.display = 'block';
+  document.getElementById('cmdLoading').textContent = '\u05D8\u05D5\u05E2\u05DF \u05E0\u05EA\u05D5\u05E0\u05D9\u05DD...';
+  document.getElementById('cmdLoading').style.color = '#64748b';
+  document.getElementById('cmdKPIs').style.display = 'none';
+  document.getElementById('cmdBreakdowns').style.display = 'none';
+  document.getElementById('cmdActions').style.display = 'none';
+
+  apiGet({
+    action: 'teacherCommanderDashboard',
+    teacherId: teacher.id,
+    token: teacher.token,
+    dateFrom: dateFrom,
+    dateTo: dateTo
+  }).then(function(resp) {
+    document.getElementById('cmdLoading').style.display = 'none';
+    if (resp.status === 'ok') {
+      cmdData = resp.data;
+      renderCommanderKPIs(cmdData.overall);
+      renderBreakdownTable(cmdData, cmdCurrentTab);
+      document.getElementById('cmdKPIs').style.display = '';
+      document.getElementById('cmdBreakdowns').style.display = '';
+      document.getElementById('cmdActions').style.display = '';
+    } else {
+      if (resp.tokenExpired) { doLogout(); return; }
+      document.getElementById('cmdLoading').style.display = 'block';
+      document.getElementById('cmdLoading').textContent = resp.message || '\u05E9\u05D2\u05D9\u05D0\u05D4 \u05D1\u05D8\u05E2\u05D9\u05E0\u05EA \u05E0\u05EA\u05D5\u05E0\u05D9\u05DD';
+      document.getElementById('cmdLoading').style.color = '#ef4444';
+    }
+  }).catch(function(err) {
+    document.getElementById('cmdLoading').style.display = 'block';
+    document.getElementById('cmdLoading').textContent = '\u05E9\u05D2\u05D9\u05D0\u05EA \u05EA\u05E7\u05E9\u05D5\u05E8\u05EA \u2014 \u05E0\u05E1\u05D4 \u05E9\u05D5\u05D1';
+    document.getElementById('cmdLoading').style.color = '#ef4444';
+  });
+};
+
+function buildPieChart(passed, failed, size) {
+  size = size || 80;
+  var total = passed + failed;
+  if (total === 0) return '';
+  var pP = Math.round(passed / total * 100);
+  var pF = 100 - pP;
+  var dP = Math.round(passed / total * 360);
+  var gradient = 'conic-gradient(#16a34a 0deg ' + dP + 'deg, #dc2626 ' + dP + 'deg 360deg)';
+  var html = '<div class="cmd-pie-wrap">';
+  html += '<div class="cmd-pie" style="width:' + size + 'px;height:' + size + 'px;background:' + gradient + ';"></div>';
+  html += '<div class="cmd-pie-legend">';
+  html += '<span><span class="cmd-pie-legend-dot" style="background:#16a34a;"></span>\u05E2\u05D1\u05E8\u05D5: ' + passed + ' (' + pP + '%)</span>';
+  html += '<span><span class="cmd-pie-legend-dot" style="background:#dc2626;"></span>\u05E0\u05DB\u05E9\u05DC\u05D5: ' + failed + ' (' + pF + '%)</span>';
+  html += '</div></div>';
+  return html;
+}
+
+function renderCommanderKPIs(o) {
+  if (!o) return;
+  document.getElementById('cmdTotal').textContent = o.total;
+  document.getElementById('cmdStudents').textContent = o.students || 0;
+  document.getElementById('cmdTeachers').textContent = o.activeTeachers || 0;
+  document.getElementById('cmdClasses').textContent = o.activeClasses || 0;
+  document.getElementById('cmdPassed').textContent = o.passed;
+  document.getElementById('cmdFailed').textContent = o.failed;
+  document.getElementById('cmdPassRate').textContent = o.passRate + '%';
+  document.getElementById('cmdAvg').textContent = o.avgScore + '%';
+  document.getElementById('cmdMedian').textContent = o.medianScore + '%';
+  var pieEl = document.getElementById('cmdOverallPie');
+  if (pieEl) pieEl.innerHTML = buildPieChart(o.passed, o.failed, 100);
+}
+
+var SUB_DIMS = {
+  byTeacher: [{ key: 'byClass', label: '\u05DC\u05E4\u05D9 \u05DB\u05D9\u05EA\u05D4' }, { key: 'byLicense', label: '\u05DC\u05E4\u05D9 \u05D3\u05E8\u05D2\u05D4' }],
+  byClass:   [{ key: 'byLicense', label: '\u05DC\u05E4\u05D9 \u05D3\u05E8\u05D2\u05D4' }, { key: 'byMode', label: '\u05DC\u05E4\u05D9 \u05E1\u05D5\u05D2' }],
+  byLicense: [{ key: 'byTeacher', label: '\u05DC\u05E4\u05D9 \u05DE\u05D5\u05E8\u05D4' }, { key: 'byClass', label: '\u05DC\u05E4\u05D9 \u05DB\u05D9\u05EA\u05D4' }],
+  byMode:    [{ key: 'byLicense', label: '\u05DC\u05E4\u05D9 \u05D3\u05E8\u05D2\u05D4' }, { key: 'byTeacher', label: '\u05DC\u05E4\u05D9 \u05DE\u05D5\u05E8\u05D4' }]
+};
+
+function buildSubTable(subData, label) {
+  if (!subData || Object.keys(subData).length === 0) return '<p style="color:#94a3b8;font-size:12px;">\u05D0\u05D9\u05DF \u05E0\u05EA\u05D5\u05E0\u05D9\u05DD</p>';
+  var sKeys = Object.keys(subData);
+  var h = '<table class="cmd-sub-table"><thead><tr>';
+  h += '<th>' + label + '</th><th>\u05E1\u05D4"\u05DB</th><th>\u05EA\u05DC\u05DE\u05D9\u05D3\u05D9\u05DD</th><th>\u05E2\u05D1\u05E8\u05D5</th><th>\u05E0\u05DB\u05E9\u05DC\u05D5</th><th>% \u05D4\u05E6\u05DC\u05D7\u05D4</th><th>\u05DE\u05DE\u05D5\u05E6\u05E2</th><th>\u05D7\u05E6\u05D9\u05D5\u05DF</th>';
+  h += '</tr></thead><tbody>';
+  for (var j = 0; j < sKeys.length; j++) {
+    var sk = sKeys[j];
+    var sr = subData[sk];
+    var rc = sr.passRate >= 60 ? 'good' : (sr.passRate < 40 ? 'bad' : '');
+    h += '<tr>';
+    h += '<td style="font-weight:600;">' + escHtml(sk) + '</td>';
+    h += '<td>' + sr.total + '</td>';
+    h += '<td>' + (sr.students || 0) + '</td>';
+    h += '<td class="good">' + sr.passed + '</td>';
+    h += '<td class="bad">' + sr.failed + '</td>';
+    h += '<td class="' + rc + '">' + sr.passRate + '%</td>';
+    h += '<td>' + sr.avgScore + '%</td>';
+    h += '<td>' + sr.medianScore + '%</td>';
+    h += '</tr>';
+  }
+  h += '</tbody></table>';
+  return h;
+}
+
+window.cmdToggleDrilldown = function(rowId) {
+  var toggle = document.getElementById(rowId);
+  var panel  = document.getElementById(rowId + '_panel');
+  if (!toggle || !panel) return;
+  toggle.classList.toggle('expanded');
+  panel.classList.toggle('open');
+};
+
+window.cmdSwitchSubTab = function(btn, rowId, subKey) {
+  var panel = document.getElementById(rowId + '_panel');
+  if (!panel) return;
+  var btns = panel.querySelectorAll('.cmd-sub-tab-btn');
+  for (var b = 0; b < btns.length; b++) btns[b].classList.remove('active');
+  btn.classList.add('active');
+  var wraps = panel.querySelectorAll('.cmd-sub-wrap');
+  for (var w = 0; w < wraps.length; w++) {
+    wraps[w].style.display = wraps[w].getAttribute('data-subkey') === subKey ? '' : 'none';
+  }
+};
+
+function renderBreakdownTable(data, tab) {
+  var section = data[tab];
+  if (!section) { document.getElementById('cmdBreakdownContent').innerHTML = '<p style="color:#94a3b8;">\u05D0\u05D9\u05DF \u05E0\u05EA\u05D5\u05E0\u05D9\u05DD</p>'; return; }
+  var keys = Object.keys(section);
+  if (keys.length === 0) { document.getElementById('cmdBreakdownContent').innerHTML = '<p style="color:#94a3b8;">\u05D0\u05D9\u05DF \u05E0\u05EA\u05D5\u05E0\u05D9\u05DD</p>'; return; }
+
+  var tabLabels = { byTeacher: '\u05DE\u05D5\u05E8\u05D4', byClass: '\u05DB\u05D9\u05EA\u05D4', byLicense: '\u05D3\u05E8\u05D2\u05D4', byMode: '\u05E1\u05D5\u05D2 \u05EA\u05E8\u05D2\u05D5\u05DC' };
+  var dims = SUB_DIMS[tab] || [];
+  var tabChar = tab.charAt(2);
+  var html = '<table class="cmd-table"><thead><tr>';
+  html += '<th>' + (tabLabels[tab] || '') + '</th>';
+  html += '<th>\u05E1\u05D4"\u05DB</th><th>\u05EA\u05DC\u05DE\u05D9\u05D3\u05D9\u05DD</th><th>\u05E2\u05D1\u05E8\u05D5</th><th>\u05E0\u05DB\u05E9\u05DC\u05D5</th><th>% \u05D4\u05E6\u05DC\u05D7\u05D4</th><th>\u05DE\u05DE\u05D5\u05E6\u05E2</th><th>\u05D7\u05E6\u05D9\u05D5\u05DF</th>';
+  html += '</tr></thead><tbody>';
+
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    var row = section[k];
+    var rateClass = row.passRate >= 60 ? 'good' : (row.passRate < 40 ? 'bad' : '');
+    var rowId = 'cmdR_' + tabChar + '_' + i;
+    var hasSub = false;
+    for (var d = 0; d < dims.length; d++) {
+      if (row.sub && row.sub[dims[d].key] && Object.keys(row.sub[dims[d].key]).length > 0) { hasSub = true; break; }
+    }
+
+    html += '<tr id="' + rowId + '"' + (hasSub ? ' class="cmd-dd-toggle" onclick="cmdToggleDrilldown(\'' + rowId + '\')"' : '') + '>';
+    html += '<td style="font-weight:600;">' + escHtml(k) + '</td>';
+    html += '<td>' + row.total + '</td>';
+    html += '<td>' + (row.students || 0) + '</td>';
+    html += '<td class="good">' + row.passed + '</td>';
+    html += '<td class="bad">' + row.failed + '</td>';
+    html += '<td class="' + rateClass + '">' + row.passRate + '%</td>';
+    html += '<td>' + row.avgScore + '%</td>';
+    html += '<td>' + row.medianScore + '%</td>';
+    html += '</tr>';
+
+    if (hasSub) {
+      html += '<tr id="' + rowId + '_panel" class="cmd-dd-panel"><td colspan="8">';
+      html += '<div style="margin-bottom:6px;">';
+      for (var di = 0; di < dims.length; di++) {
+        var isFirst = di === 0;
+        html += '<button class="cmd-sub-tab-btn' + (isFirst ? ' active' : '') + '" onclick="cmdSwitchSubTab(this,\'' + rowId + '\',\'' + dims[di].key + '\')">' + dims[di].label + '</button>';
+      }
+      html += '</div>';
+      for (var di2 = 0; di2 < dims.length; di2++) {
+        var subSection = (row.sub && row.sub[dims[di2].key]) || {};
+        var isFirst2 = di2 === 0;
+        html += '<div class="cmd-sub-wrap" data-subkey="' + dims[di2].key + '" style="' + (isFirst2 ? '' : 'display:none;') + '">';
+        html += buildSubTable(subSection, dims[di2].label.replace('\u05DC\u05E4\u05D9 ', ''));
+        html += '</div>';
+      }
+      html += '</td></tr>';
+    }
+  }
+  html += '</tbody></table>';
+  document.getElementById('cmdBreakdownContent').innerHTML = html;
+}
+
+window.switchToTeacher = function() {
+  document.getElementById('btnBackToCommander').style.display = '';
+  loadDashboard();
+};
+
+window.switchToCommander = function() {
+  document.getElementById('btnBackToCommander').style.display = 'none';
+  showScreen('screenCommander');
+  fetchCommanderData('daily');
+};
+
+window.printCommanderReport = function() {
+  var kpis = document.getElementById('cmdKPIs');
+  var breakdown = document.getElementById('cmdBreakdownContent');
+  var dateLabel = document.getElementById('cmdDateLabel').textContent;
+  var html = '<!DOCTYPE html><html dir="rtl"><head><meta charset="utf-8"><title>\u05D3\u05D5"\u05D7 \u05DE\u05E4\u05E7\u05D3 \u2014 \u05DE\u05E2\u05E8\u05DB\u05EA \u05EA\u05E8\u05D2\u05D5\u05DC</title>';
+  html += '<style>body{font-family:system-ui,Arial,sans-serif;direction:rtl;padding:20px;}table{width:100%;border-collapse:collapse;margin:12px 0;}th,td{padding:6px 10px;text-align:right;border:1px solid #ddd;}th{background:#f1f5f9;}.good{color:#16a34a;font-weight:600;}.bad{color:#dc2626;font-weight:600;}h1{color:#5b21b6;}h3{margin:16px 0 8px;}</style>';
+  html += '</head><body><h1>\u05D3\u05D5"\u05D7 \u05DE\u05E4\u05E7\u05D3 \u2014 \u05DE\u05E2\u05E8\u05DB\u05EA \u05EA\u05E8\u05D2\u05D5\u05DC</h1>';
+  html += '<p>\u05EA\u05E7\u05D5\u05E4\u05D4: ' + dateLabel + '</p>';
+  html += '<h3>\u05E1\u05D9\u05DB\u05D5\u05DD \u05DB\u05DC\u05DC\u05D9</h3>';
+  if (kpis) html += kpis.innerHTML;
+  html += '<h3>\u05E4\u05D9\u05E8\u05D5\u05D8</h3>';
+  if (breakdown) html += breakdown.innerHTML;
+  html += '</body></html>';
+  var w = window.open('', '_blank');
+  w.document.write(html);
+  w.document.close();
+  setTimeout(function() { w.print(); }, 500);
+};
+
+window.shareCommanderReport = function() {
+  var dateLabel = document.getElementById('cmdDateLabel').textContent;
+  if (!cmdData || !cmdData.overall) { alert('\u05D0\u05D9\u05DF \u05E0\u05EA\u05D5\u05E0\u05D9\u05DD \u05DC\u05E9\u05D9\u05EA\u05D5\u05E3'); return; }
+  var o = cmdData.overall;
+  var text = '\u05D3\u05D5"\u05D7 \u05DE\u05E4\u05E7\u05D3 \u2014 \u05DE\u05E2\u05E8\u05DB\u05EA \u05EA\u05E8\u05D2\u05D5\u05DC\n';
+  text += '\u05EA\u05E7\u05D5\u05E4\u05D4: ' + dateLabel + '\n\n';
+  text += '\u05E1\u05D4"\u05DB \u05EA\u05E8\u05D2\u05D5\u05DC\u05D9\u05DD: ' + o.total + '\n';
+  text += '\u05EA\u05DC\u05DE\u05D9\u05D3\u05D9\u05DD \u05E4\u05E2\u05D9\u05DC\u05D9\u05DD: ' + (o.students || 0) + '\n';
+  text += '\u05DE\u05D5\u05E8\u05D9\u05DD \u05E4\u05E2\u05D9\u05DC\u05D9\u05DD: ' + (o.activeTeachers || 0) + '\n';
+  text += '\u05DB\u05D9\u05EA\u05D5\u05EA \u05E4\u05E2\u05D9\u05DC\u05D5\u05EA: ' + (o.activeClasses || 0) + '\n';
+  text += '\u05E2\u05D1\u05E8\u05D5: ' + o.passed + ' | \u05E0\u05DB\u05E9\u05DC\u05D5: ' + o.failed + '\n';
+  text += '\u05D0\u05D7\u05D5\u05D6 \u05D4\u05E6\u05DC\u05D7\u05D4: ' + o.passRate + '%\n';
+  text += '\u05E6\u05D9\u05D5\u05DF \u05DE\u05DE\u05D5\u05E6\u05E2: ' + o.avgScore + '% | \u05D7\u05E6\u05D9\u05D5\u05DF: ' + o.medianScore + '%\n';
+
+  if (navigator.share) {
+    navigator.share({ title: '\u05D3\u05D5"\u05D7 \u05DE\u05E4\u05E7\u05D3 \u2014 \u05DE\u05E2\u05E8\u05DB\u05EA \u05EA\u05E8\u05D2\u05D5\u05DC', text: text }).catch(function() {});
+  } else if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).then(function() { alert('\u05D4\u05D3\u05D5"\u05D7 \u05D4\u05D5\u05E2\u05EA\u05E7 \u05DC\u05DC\u05D5\u05D7!'); });
+  } else {
+    alert(text);
+  }
+};
+
 // ===== Init =====
 function init() {
   // Login
@@ -766,7 +1198,8 @@ function init() {
   // Topbar
   document.getElementById('btnLogout').addEventListener('click', doLogout);
   document.getElementById('btnRefresh').addEventListener('click', function() {
-    if (document.getElementById('screenDashboard').classList.contains('active')) loadDashboard();
+    if (document.getElementById('screenCommander').classList.contains('active')) fetchCommanderData();
+    else if (document.getElementById('screenDashboard').classList.contains('active')) loadDashboard();
     else if (document.getElementById('screenClassDetail').classList.contains('active') && currentClassData) loadClassDetail(currentClassData.classInfo.code);
   });
 
