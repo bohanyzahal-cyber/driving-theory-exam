@@ -2209,10 +2209,11 @@ function handleTeacherClassDetails(p) {
     var categoryErrors = {};
     for (var ri = 0; ri < results.length; ri++) {
       var res = results[ri];
+      var pctVal = Number(res.percent) || 0;
+      if (pctVal > 0) scores.push(pctVal);
       if (res.mode === 'exam') {
         totalExams++;
         if (res.passed === 'עבר' || res.passed === true) totalPassed++;
-        scores.push(Number(res.percent) || 0);
       }
       if (res.date && (!lastActive || String(res.date) > String(lastActive))) lastActive = res.date;
       // Aggregate category errors
