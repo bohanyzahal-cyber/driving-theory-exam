@@ -361,6 +361,11 @@
       <label><input type="checkbox" id="chkAudio"/> &#x1F50A; הפעל הקראה בקול</label>
     </div>
     <button class="btn-start" id="btnStartWelcome">התחל תרגול &#x2192;</button>
+    <!-- PWA Install Banner -->
+    <div id="installBanner" style="display:none; margin-top:16px; padding:12px 16px; background:#eff6ff; border:1px solid #93c5fd; border-radius:12px; text-align:center;">
+      <p style="margin:0 0 8px; font-size:14px; color:#1e40af;"><strong>התקן כאפליקציה</strong> — גישה מהירה מהמסך הראשי</p>
+      <button onclick="installPWA()" style="background:#2563eb; color:#fff; border:none; padding:8px 24px; font-size:14px; border-radius:8px; cursor:pointer;">התקן</button>
+    </div>
   </div>
 </div></div>
 
@@ -814,9 +819,36 @@ document.getElementById('cardFlashcards').addEventListener('click',function(e){
 
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',init);else init();
 })();
+// ========== PWA: Service Worker + Install Prompt ==========
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw-student.js').catch(function() {});
 }
+
+var deferredInstallPrompt = null;
+window.addEventListener('beforeinstallprompt', function(e) {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  var banner = document.getElementById('installBanner');
+  if (banner) banner.style.display = 'block';
+});
+
+window.installPWA = function() {
+  if (!deferredInstallPrompt) return;
+  deferredInstallPrompt.prompt();
+  deferredInstallPrompt.userChoice.then(function(result) {
+    if (result.outcome === 'accepted') {
+      var banner = document.getElementById('installBanner');
+      if (banner) banner.style.display = 'none';
+    }
+    deferredInstallPrompt = null;
+  });
+};
+
+window.addEventListener('appinstalled', function() {
+  var banner = document.getElementById('installBanner');
+  if (banner) banner.style.display = 'none';
+  deferredInstallPrompt = null;
+});
 </script>
 </body>
 </html>
