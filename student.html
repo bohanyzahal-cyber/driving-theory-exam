@@ -363,6 +363,21 @@
     .history-clear:hover { background:#fecaca; }
     @media(max-width:600px){ .history-table { font-size:0.78em; } .history-table th,.history-table td { padding:8px 6px; } }
   
+    /* Tips */
+    .tip-card { display:flex; gap:14px; align-items:flex-start; }
+    .tip-num { min-width:36px; height:36px; background:linear-gradient(135deg,#2563eb,#1d4ed8); color:white; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:0.95em; flex-shrink:0; }
+    .tip-content h3 { margin:0 0 4px; font-size:1em; color:#0f172a; }
+    .tip-content p { margin:0; font-size:0.9em; color:#475569; line-height:1.5; }
+    .tips-list .card { margin-bottom:10px; }
+    .btn-tips { display:inline-block; margin:8px auto 0; padding:10px 24px; background:#fef3c7; border:1px solid #f59e0b; border-radius:10px; font-size:0.95em; color:#92400e; cursor:pointer; font-weight:500; }
+    .btn-tips:hover { background:#fde68a; }
+    .btn-strengthen { padding:4px 10px; margin-right:8px; background:#eff6ff; border:1px solid #93c5fd; color:#1d4ed8; border-radius:6px; cursor:pointer; font-size:0.78em; font-weight:600; white-space:nowrap; }
+    .btn-strengthen:hover { background:#dbeafe; }
+    /* Streak */
+    .streak-banner { text-align:center; margin-bottom:12px; padding:10px 16px; background:linear-gradient(135deg,#fef3c7,#fde68a); border:1px solid #f59e0b; border-radius:12px; }
+    .streak-banner .streak-fire { font-size:1.8em; }
+    .streak-banner .streak-count { font-size:1.3em; font-weight:700; color:#92400e; }
+    .streak-banner .streak-msg { font-size:0.85em; color:#78350f; margin-top:2px; }
   </style>
 </head>
 <body>
@@ -392,13 +407,16 @@
 </div></div>
 
 <div id="screenModeSelect" class="screen"><div class="container">
+  <div id="streakBanner" class="streak-banner" style="display:none;"></div>
   <div class="greeting" id="greetingText"></div>
   <div class="mode-cards">
     <div class="mode-card" id="cardExam"><div class="card-icon">&#x1F4DD;</div><div class="card-title">מבחן תרגול</div><div class="card-desc">30 שאלות &#x2022; 40 דקות &#x2022; 86% לעבור</div><div class="card-sub">מדמה מבחן אמיתי</div></div>
     <div class="mode-card" id="cardCategory"><div class="card-icon">&#x1F3AF;</div><div class="card-title">תרגול לפי נושא</div><div class="card-desc">10-15 שאלות &#x2022; משוב מיידי</div><div class="card-sub">בחר נושא ותתרגל</div><div class="category-panel" id="categoryPanel"><h3>בחר נושא:</h3><div class="cat-buttons" id="catButtons"></div></div></div>
     <div class="mode-card" id="cardFlashcards"><div class="card-icon">&#x1F0CF;</div><div class="card-title">כרטיסיות</div><div class="card-desc">ראה שאלה &#x2192; חשוב &#x2192; גלה תשובה</div><div class="card-sub">למידה אקטיבית</div><div class="category-panel" id="fcCategoryPanel"><h3>בחר נושא:</h3><div class="cat-buttons" id="fcCatButtons"></div><button class="cat-btn" id="fcAllBtn" style="color:#0f172a;border-color:#0f172a;">הכל</button></div></div>
+    <div class="mode-card" id="cardSpacedRep" style="display:none;"><div class="card-icon">🔄</div><div class="card-title">חזרה על שגיאות</div><div class="card-desc" id="spacedRepDesc">שאלות שטעית בהן חוזרות</div><div class="card-sub">למידה חכמה — Spaced Repetition</div></div>
   </div>
     <button class="btn-history" id="btnShowHistory">📊 היסטוריית תרגולים</button>
+    <button class="btn-tips" id="btnShowTips">💡 טיפים למבחן</button>
   <button class="btn-back-mode" id="btnBackToWelcome">&#x2192; חזרה</button>
 </div></div>
 
@@ -411,6 +429,25 @@
     <button class="btn-back-mode" id="btnBackFromHistory">→ חזרה</button>
   </div>
   <div id="historyContent"></div>
+</div></div>
+
+<div id="screenTips" class="screen"><div class="container">
+  <div class="history-header">
+    <h2>💡 טיפים למבחן התאוריה</h2>
+    <button class="btn-back-mode" id="btnBackFromTips">→ חזרה</button>
+  </div>
+  <div class="tips-list">
+    <div class="card tip-card"><div class="tip-num">1</div><div class="tip-content"><h3>תשובה ארוכה = בדרך כלל נכונה</h3><p>התשובה המפורטת ביותר היא לרוב הנכונה, כי היא מנסה לכסות את כל המקרים.</p></div></div>
+    <div class="card tip-card"><div class="tip-num">2</div><div class="tip-content"><h3>מילות מפתח: &quot;תמיד&quot; ו&quot;אף פעם&quot;</h3><p>תשובות עם &quot;תמיד&quot;, &quot;אף פעם&quot;, &quot;בשום מקרה&quot; — בדרך כלל <strong>שגויות</strong>. בתעבורה כמעט תמיד יש חריגים.</p></div></div>
+    <div class="card tip-card"><div class="tip-num">3</div><div class="tip-content"><h3>&quot;כל התשובות נכונות&quot; — שים לב</h3><p>אם אחת האפשרויות היא &quot;כל התשובות נכונות&quot;, בדוק כל תשובה בנפרד. אם אפילו אחת שגויה — זו לא התשובה.</p></div></div>
+    <div class="card tip-card"><div class="tip-num">4</div><div class="tip-content"><h3>בטיחות קודמת לכל</h3><p>כשאתה מסופק, בחר תמיד בתשובה הבטיחותית ביותר — האטה, עצירה, זהירות.</p></div></div>
+    <div class="card tip-card"><div class="tip-num">5</div><div class="tip-content"><h3>קרא את השאלה עד הסוף</h3><p>הרבה שאלות מכילות &quot;לא&quot; או &quot;אינו&quot; שמשנים את המשמעות לגמרי. קרא כל מילה.</p></div></div>
+    <div class="card tip-card"><div class="tip-num">6</div><div class="tip-content"><h3>התחל מהקלות</h3><p>עבור על כל השאלות, ענה קודם על מה שאתה בטוח, וחזור לשאלות הקשות אח&quot;כ.</p></div></div>
+    <div class="card tip-card"><div class="tip-num">7</div><div class="tip-content"><h3>שיטת הפסילה</h3><p>לא יודע את התשובה? פסול תשובות שאתה בטוח שהן שגויות. גם אם נשארו 2 — יש 50% סיכוי.</p></div></div>
+    <div class="card tip-card"><div class="tip-num">8</div><div class="tip-content"><h3>תמרורים: צבע = משמעות</h3><p>🔴 אדום = איסור | 🔵 כחול = חובה/הכוונה | 🟡 צהוב = אזהרה | ⚪ לבן = הנחיות</p></div></div>
+    <div class="card tip-card"><div class="tip-num">9</div><div class="tip-content"><h3>זכות קדימה — כלל הימין</h3><p>כשאין תמרור — כלל הימין: נותנים זכות קדימה למי שבא מימין. רכב חירום תמיד קודם.</p></div></div>
+    <div class="card tip-card"><div class="tip-num">10</div><div class="tip-content"><h3>אל תשאיר שאלות ריקות</h3><p>אין הורדת נקודות על טעות. תמיד עדיף לנחש מאשר להשאיר ריק — 25% סיכוי!</p></div></div>
+  </div>
 </div></div>
 
 <footer>תרגול תאוריה &copy; 2026</footer>
@@ -627,6 +664,12 @@ if(immediateMode&&prev!==null){answerLocked=true;if(currentIndex<total-1){var nb
 
 function finishExam(){stopTimer();showResults();}
 
+// ===== Streak System =====
+function updateStreak(){try{var today=new Date().toISOString().slice(0,10);var data=JSON.parse(localStorage.getItem('student_streak')||'{}');if(data.lastDate===today)return;var yesterday=new Date(Date.now()-86400000).toISOString().slice(0,10);if(data.lastDate===yesterday){data.count=(data.count||0)+1;}else{data.count=1;}data.lastDate=today;localStorage.setItem('student_streak',JSON.stringify(data));}catch(e){}}
+function renderStreak(){try{var data=JSON.parse(localStorage.getItem('student_streak')||'{}');var banner=document.getElementById('streakBanner');if(!banner)return;var today=new Date().toISOString().slice(0,10);var yesterday=new Date(Date.now()-86400000).toISOString().slice(0,10);var count=data.count||0;if(data.lastDate!==today&&data.lastDate!==yesterday)count=0;if(count<=0){banner.style.display='none';return;}banner.style.display='block';var msgs=['התחלה טובה! המשך כך','יופי! אתה בדרך הנכונה','מדהים! אל תעצור','אלוף! ממשיכים','בלתי ניתן לעצירה!'];var msgIdx=Math.min(Math.floor((count-1)/2),msgs.length-1);banner.innerHTML='<div class="streak-fire">🔥</div><div class="streak-count">'+count+' ימים רצופים!</div><div class="streak-msg">'+msgs[msgIdx]+'</div>';}catch(e){}}
+// ===== Spaced Repetition =====
+function saveWrongQuestions(){try{var wrong=JSON.parse(localStorage.getItem('student_wrong_qs')||'[]');var existingIds={};for(var e=0;e<wrong.length;e++)existingIds[wrong[e].id]=e;for(var i=0;i<userAnswers.length;i++){var q=examQuestions[i];var qId=q.id||(getQText(q)||'').substring(0,50);if(userAnswers[i]&&!userAnswers[i].isCorrect){if(existingIds[qId]!==undefined){wrong[existingIds[qId]].wrongCount=(wrong[existingIds[qId]].wrongCount||1)+1;wrong[existingIds[qId]].lastSeen=Date.now();}else{wrong.push({id:qId,license:currentLicense,category:classifyCategory(q.category),wrongCount:1,correctStreak:0,lastSeen:Date.now()});}}else if(userAnswers[i]&&userAnswers[i].isCorrect){if(existingIds[qId]!==undefined){wrong[existingIds[qId]].correctStreak=(wrong[existingIds[qId]].correctStreak||0)+1;if(wrong[existingIds[qId]].correctStreak>=2){wrong.splice(existingIds[qId],1);}}}}if(wrong.length>200)wrong=wrong.slice(-200);localStorage.setItem('student_wrong_qs',JSON.stringify(wrong));}catch(e){}}
+function getSpacedRepetitionQuestions(license,language){try{var wrong=JSON.parse(localStorage.getItem('student_wrong_qs')||'[]');if(wrong.length===0)return[];var allQs=getFilteredQuestions(license,language);var wrongIds={};for(var w=0;w<wrong.length;w++){if(wrong[w].license===license)wrongIds[wrong[w].id]=wrong[w];}var matched=[];for(var i=0;i<allQs.length;i++){var qId=allQs[i].id||(getQText(allQs[i])||'').substring(0,50);if(wrongIds[qId])matched.push(allQs[i]);}shuffle(matched);return matched.slice(0,15);}catch(e){return[];}}
 function saveToHistory(mode, category, score, total, pct, passed, elapsed) {
   try {
     var history = JSON.parse(localStorage.getItem('student_history') || '[]');
@@ -723,12 +766,12 @@ try{
 // Save to local history
 var histElapsed='';
 if(examStartTime){var hd=Math.floor((Date.now()-examStartTime)/1000);var hm=Math.floor(hd/60);var hs=hd%60;histElapsed=hm+':'+(hs<10?'0':'')+hs;}
-saveToHistory(currentMode, currentCategory, correct, total, pct, passed, histElapsed);
+saveToHistory(currentMode, currentCategory, correct, total, pct, passed, histElapsed);updateStreak();saveWrongQuestions();
 
 
 var sb=document.createElement('div');sb.className='card result-score-box';var bs=document.createElement('div');bs.className='result-big-score';bs.textContent=correct+' / '+total;sb.appendChild(bs);var pe=document.createElement('div');pe.className='result-pct';pe.textContent=pct+'%';sb.appendChild(pe);var bg=document.createElement('div');bg.className='result-badge';if(passed){bg.classList.add('pass');bg.textContent='\u05E2\u05D1\u05E8\u05EA! \u2705';}else{bg.classList.add('fail');bg.textContent='\u05E0\u05DB\u05E9\u05DC\u05EA \u2717';}sb.appendChild(bg);area.appendChild(sb);
 
-var bd=computeCategoryBreakdown();if(bd.length>0){var bc=document.createElement('div');bc.className='card cat-breakdown';var bt=document.createElement('h3');bt.textContent='\u05E4\u05D9\u05E8\u05D5\u05D8 \u05DC\u05E4\u05D9 \u05E0\u05D5\u05E9\u05D0';bc.appendChild(bt);for(var bi=0;bi<bd.length;bi++){var b=bd[bi],row=document.createElement('div');row.className='cat-bar-row';var lb=document.createElement('span');lb.className='cat-bar-label';lb.textContent=CATEGORY_LABELS[b.category]||b.category;row.appendChild(lb);var tr=document.createElement('div');tr.className='cat-bar-track';var fl=document.createElement('div');fl.className='cat-bar-fill';var cp=b.total>0?Math.round((b.correct/b.total)*100):0;fl.style.width=cp+'%';if(cp>=80)fl.classList.add('green');else if(cp>=60)fl.classList.add('yellow');else fl.classList.add('red');tr.appendChild(fl);row.appendChild(tr);var sc=document.createElement('span');sc.className='cat-bar-score';sc.textContent=b.correct+'/'+b.total;row.appendChild(sc);bc.appendChild(row);}area.appendChild(bc);}
+var bd=computeCategoryBreakdown();if(bd.length>0){var bc=document.createElement('div');bc.className='card cat-breakdown';var bt=document.createElement('h3');bt.textContent='\u05E4\u05D9\u05E8\u05D5\u05D8 \u05DC\u05E4\u05D9 \u05E0\u05D5\u05E9\u05D0';bc.appendChild(bt);for(var bi=0;bi<bd.length;bi++){var b=bd[bi],row=document.createElement('div');row.className='cat-bar-row';var lb=document.createElement('span');lb.className='cat-bar-label';lb.textContent=CATEGORY_LABELS[b.category]||b.category;row.appendChild(lb);var tr=document.createElement('div');tr.className='cat-bar-track';var fl=document.createElement('div');fl.className='cat-bar-fill';var cp=b.total>0?Math.round((b.correct/b.total)*100):0;fl.style.width=cp+'%';if(cp>=80)fl.classList.add('green');else if(cp>=60)fl.classList.add('yellow');else fl.classList.add('red');tr.appendChild(fl);row.appendChild(tr);var sc=document.createElement('span');sc.className='cat-bar-score';sc.textContent=b.correct+'/'+b.total;row.appendChild(sc);if(cp<80){var stb=document.createElement('button');stb.className='btn-strengthen';stb.textContent='⚡ תרגל';(function(c){stb.addEventListener('click',function(){startCategoryQuiz(c);});})(b.category);row.appendChild(stb);}bc.appendChild(row);}area.appendChild(bc);}
 
 var wl=[];for(var wi=0;wi<userAnswers.length;wi++){if(userAnswers[wi]&&!userAnswers[wi].isCorrect)wl.push({index:wi,answer:userAnswers[wi]});if(userAnswers[wi]===null)wl.push({index:wi,answer:null});}
 if(wl.length>0){var wc=document.createElement('div');wc.className='card wrong-answers-section';var wt=document.createElement('h3');wt.textContent='\u05E9\u05D0\u05DC\u05D5\u05EA \u05E9\u05D2\u05D5\u05D9\u05D5\u05EA ('+wl.length+') \u25BC';var wle=document.createElement('ul');wle.className='wrong-list';wle.style.display='none';wt.addEventListener('click',function(){if(wle.style.display==='none'){wle.style.display='block';wt.textContent='\u05E9\u05D0\u05DC\u05D5\u05EA \u05E9\u05D2\u05D5\u05D9\u05D5\u05EA ('+wl.length+') \u25B2';}else{wle.style.display='none';wt.textContent='\u05E9\u05D0\u05DC\u05D5\u05EA \u05E9\u05D2\u05D5\u05D9\u05D5\u05EA ('+wl.length+') \u25BC';}});wc.appendChild(wt);
@@ -923,10 +966,13 @@ if(audioEnabled)initTTS();
 var classInput=document.getElementById('inputClassCode').value.trim().toUpperCase();
 if(classInput&&classInput!==currentClassCode){joinClass(classInput,currentName,currentStudentId);}
 else if(savedClass){currentClassCode=savedClass;}
-loadTranslationFile(currentLanguage,function(){document.getElementById('greetingText').textContent='\u05E9\u05DC\u05D5\u05DD, '+currentName+'! \u05DE\u05D4 \u05E0\u05EA\u05E8\u05D2\u05DC \u05D4\u05D9\u05D5\u05DD?';buildCategoryButtons();showScreen('screenModeSelect');});});
+loadTranslationFile(currentLanguage,function(){document.getElementById('greetingText').textContent='\u05E9\u05DC\u05D5\u05DD, '+currentName+'! \u05DE\u05D4 \u05E0\u05EA\u05E8\u05D2\u05DC \u05D4\u05D9\u05D5\u05DD?';buildCategoryButtons();showScreen('screenModeSelect');renderStreak();try{var wr=JSON.parse(localStorage.getItem('student_wrong_qs')||'[]');var srCard=document.getElementById('cardSpacedRep');if(srCard){if(wr.length>0){srCard.style.display='';document.getElementById('spacedRepDesc').textContent=wr.length+' שאלות שטעית בהן מחכות לך';}else{srCard.style.display='none';}}}catch(e){}});});
 document.getElementById('btnBackToWelcome').addEventListener('click',function(){showScreen('screenWelcome');});
+document.getElementById('cardSpacedRep').addEventListener('click',function(){var qs=getSpacedRepetitionQuestions(currentLicense,currentLanguage);if(qs.length===0){alert('אין שאלות לחזרה! תתרגל קודם כדי שהמערכת תזהה שגיאות.');return;}currentMode='category';immediateMode=true;currentCategory='חזרה על שגיאות';currentIndex=0;userAnswers=[];shuffledOrders=[];answerLocked=false;examStartTime=Date.now();examQuestions=qs;for(var i=0;i<examQuestions.length;i++)userAnswers.push(null);showScreen('screenPractice');renderQuestion();});
 document.getElementById('btnShowHistory').addEventListener('click', function() { showHistory(); });
 document.getElementById('btnBackFromHistory').addEventListener('click', function() { showScreen('screenModeSelect'); });
+document.getElementById('btnShowTips').addEventListener('click', function() { showScreen('screenTips'); });
+document.getElementById('btnBackFromTips').addEventListener('click', function() { showScreen('screenModeSelect'); });
 
 document.getElementById('cardExam').addEventListener('click',function(e){if(e.target.closest('.category-panel'))return;startExam();});
 var catOpen=false;document.getElementById('cardCategory').addEventListener('click',function(e){if(e.target.closest('.cat-btn'))return;var panel=document.getElementById('categoryPanel');if(!catOpen){panel.classList.add('open');catOpen=true;}else{if(!e.target.closest('.category-panel')){panel.classList.remove('open');catOpen=false;}}});
