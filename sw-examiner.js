@@ -7,8 +7,8 @@ self.addEventListener('install', function(e) {
     caches.open(CACHE_NAME).then(function(cache) {
       return cache.addAll([
         './examiner.html',
-        './icon-192.png',
-        './icon-512.png',
+        './icon-examiner-192.png',
+        './icon-examiner-512.png',
         './manifest-examiner.json'
       ]);
     })
