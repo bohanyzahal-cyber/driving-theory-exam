@@ -1,0 +1,55 @@
+{
+  "name": "דף מורה — מערכת תרגול תאוריה",
+  "short_name": "דף מורה",
+  "description": "דף מורה — מערכת תרגול תאוריה",
+  "start_url": "../teacher.html",
+  "scope": "/driving-theory-exam/teacher/",
+  "id": "teacher-app",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f0f4f8",
+  "theme_color": "#7c3aed",
+  "lang": "he",
+  "dir": "rtl",
+  "icons": [
+    {
+      "src": "../icon-teacher-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "../icon-teacher-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "../icon-teacher-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "../icon-teacher-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "../screenshot-wide.png",
+      "sizes": "1280x800",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "Desktop view"
+    },
+    {
+      "src": "../screenshot-mobile.png",
+      "sizes": "390x844",
+      "type": "image/png",
+      "label": "Mobile view"
+    }
+  ]
+}
