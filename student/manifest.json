@@ -2,7 +2,7 @@
   "name": "תרגול תאוריה — מערכת תרגול",
   "short_name": "תרגול תאוריה",
   "description": "תרגלו לקראת מבחן התאוריה — מבחן תרגול מלא או תרגול לפי נושא",
-  "start_url": "../student.html",
+  "start_url": "./",
   "scope": "/driving-theory-exam/student/",
   "id": "student-app",
   "display": "standalone",

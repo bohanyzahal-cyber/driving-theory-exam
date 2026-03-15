@@ -2,7 +2,7 @@
   "name": "לוח בוחן — מבחן תאוריה חיצוני",
   "short_name": "לוח בוחן",
   "description": "לוח בוחן — מבחן תאוריה חיצוני",
-  "start_url": "../examiner.html",
+  "start_url": "./",
   "scope": "/driving-theory-exam/examiner/",
   "id": "examiner-app",
   "display": "standalone",
