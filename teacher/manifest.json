@@ -2,7 +2,7 @@
   "name": "דף מורה — מערכת תרגול תאוריה",
   "short_name": "דף מורה",
   "description": "דף מורה — מערכת תרגול תאוריה",
-  "start_url": "../teacher.html",
+  "start_url": "./",
   "scope": "/driving-theory-exam/teacher/",
   "id": "teacher-app",
   "display": "standalone",

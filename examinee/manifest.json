@@ -2,7 +2,7 @@
   "name": "דף נבחן — מבחן תאוריה חיצוני",
   "short_name": "דף נבחן",
   "description": "דף נבחן — מבחן תאוריה חיצוני",
-  "start_url": "../examinee.html",
+  "start_url": "./",
   "scope": "/driving-theory-exam/examinee/",
   "id": "examinee-app",
   "display": "standalone",
