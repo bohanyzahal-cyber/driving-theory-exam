@@ -378,9 +378,52 @@
     .streak-banner .streak-fire { font-size:1.8em; }
     .streak-banner .streak-count { font-size:1.3em; font-weight:700; color:#92400e; }
     .streak-banner .streak-msg { font-size:0.85em; color:#78350f; margin-top:2px; }
-  </style>
+  
+    /* Intro Screen */
+    .intro-overlay {
+      position:fixed; inset:0; z-index:9999; background:linear-gradient(135deg,#0d1b3e 0%,#1a365d 50%,#1e3a5f 100%);
+      display:flex; flex-direction:column; align-items:center; justify-content:center;
+      color:white; text-align:center; padding:24px; animation:introFadeIn 0.5s ease;
+    }
+    @keyframes introFadeIn { from{opacity:0} to{opacity:1} }
+    .intro-overlay.hiding { animation:introFadeOut 0.4s ease forwards; }
+    @keyframes introFadeOut { from{opacity:1} to{opacity:0} }
+    .intro-logo { width:120px; height:120px; margin-bottom:16px; border-radius:20px; box-shadow:0 4px 20px rgba(0,0,0,0.3); }
+    .intro-title { font-size:1.8em; font-weight:800; margin:0 0 4px; text-shadow:0 2px 8px rgba(0,0,0,0.3); }
+    .intro-subtitle { font-size:1em; opacity:0.9; margin:0 0 20px; font-weight:300; }
+    .intro-divider { width:60px; height:3px; background:linear-gradient(90deg,#60a5fa,#3b82f6); border-radius:2px; margin:0 auto 20px; }
+    .intro-features { display:flex; gap:24px; justify-content:center; flex-wrap:wrap; margin-bottom:24px; }
+    .intro-feat { display:flex; flex-direction:column; align-items:center; gap:4px; font-size:0.82em; opacity:0.85; }
+    .intro-feat-icon { font-size:1.6em; }
+    .intro-disclaimer { max-width:500px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.15); border-radius:12px; padding:14px 18px; margin-bottom:24px; font-size:0.78em; line-height:1.6; color:rgba(255,255,255,0.75); }
+    .intro-disclaimer strong { color:#fbbf24; }
+    .intro-enter-btn { background:linear-gradient(135deg,#3b82f6,#2563eb); color:white; border:none; padding:14px 48px; font-size:1.1em; font-weight:700; border-radius:12px; cursor:pointer; box-shadow:0 4px 15px rgba(37,99,235,0.4); transition:transform 0.2s, box-shadow 0.2s; }
+    .intro-enter-btn:hover { transform:translateY(-2px); box-shadow:0 6px 20px rgba(37,99,235,0.5); }
+    .intro-version { margin-top:16px; font-size:0.7em; opacity:0.4; }
+    @media(max-width:480px) { .intro-title { font-size:1.4em; } .intro-features { gap:16px; } .intro-logo { width:90px; height:90px; } }
+</style>
 </head>
 <body>
+<!-- Intro Screen -->
+<div id="introOverlay" class="intro-overlay">
+  <img src="logo.png" alt="סמכות רישוי צה&quot;ל" class="intro-logo"/>
+  <h1 class="intro-title">מערכת תרגול תאוריה</h1>
+  <p class="intro-subtitle">סמכות הרישוי הצבאית — צה״ל</p>
+  <div class="intro-divider"></div>
+  <div class="intro-features">
+    <div class="intro-feat"><span class="intro-feat-icon">📝</span><span>מבחן תרגול</span></div>
+    <div class="intro-feat"><span class="intro-feat-icon">🎯</span><span>תרגול לפי נושא</span></div>
+    <div class="intro-feat"><span class="intro-feat-icon">🃏</span><span>כרטיסיות</span></div>
+    <div class="intro-feat"><span class="intro-feat-icon">🔄</span><span>חזרה חכמה</span></div>
+  </div>
+  <div class="intro-disclaimer">
+    <strong>⚠ הודעה חשובה:</strong> מערכת זו מיועדת לתרגול בלבד ואינה מהווה תחליף למבחן רשמי. 
+    אין להעביר, להפיץ או לשתף את תכני המערכת ללא אישור מפורש מסמכות הרישוי הצבאית.
+    כל הזכויות שמורות.
+  </div>
+  <button class="intro-enter-btn" id="btnEnterApp">כניסה למערכת &larr;</button>
+  <div class="intro-version">גרסה 2.0 | תרגול תאוריה &copy; 2026</div>
+</div>
 <div class="topbar"><div><h1>תרגול תאוריה</h1><div class="sub">מערכת תרגול לקראת מבחן התאוריה</div></div></div>
 
 <div id="screenWelcome" class="screen active"><div class="container">
@@ -1016,6 +1059,24 @@ window.addEventListener('appinstalled', function() {
   if (banner) banner.style.display = 'none';
   deferredInstallPrompt = null;
 });
+
+
+// ===== Intro Screen =====
+(function(){
+  var intro = document.getElementById('introOverlay');
+  var btn = document.getElementById('btnEnterApp');
+  if(!intro || !btn) return;
+  // Check if already dismissed this session
+  if(sessionStorage.getItem('intro_dismissed')){
+    intro.style.display='none';
+    return;
+  }
+  btn.addEventListener('click', function(){
+    intro.classList.add('hiding');
+    sessionStorage.setItem('intro_dismissed','1');
+    setTimeout(function(){ intro.style.display='none'; }, 400);
+  });
+})();
 </script>
 </body>
 </html>
