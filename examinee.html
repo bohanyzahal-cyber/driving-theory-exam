@@ -248,6 +248,10 @@
       border-top: 1px solid #e2e8f0; margin-top: 30px;
     }
   </style>
+  <link rel="manifest" href="manifest-examinee.json"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="theme-color" content="#16a34a"/>
 </head>
 <body>
 
@@ -2844,6 +2848,9 @@
   }
 
 })();
+</script>
+<script>
+if('serviceWorker' in navigator) navigator.serviceWorker.register('./sw-examinee.js').catch(function(){});
 </script>
 </body>
 </html>
