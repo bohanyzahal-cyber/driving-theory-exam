@@ -1862,7 +1862,7 @@ function handleTeacherLogin(p) {
           expiry.setHours(expiry.getHours() + 12);
           sheet.getRange(row, 5).setValue(token);
           sheet.getRange(row, 6).setValue(expiry);
-          return jsonResponse({ status: 'ok', teacher: { name: data[i][0], id: normalizeId(data[i][1]), token: token, role: String(data[i][8] || 'מורה') } });
+          return jsonResponse({ status: 'ok', teacher: { name: data[i][0], id: normalizeId(data[i][1]), token: token, role: String(data[i][8] || 'מורה'), site: String(data[i][9] || '') } });
         } else {
           return jsonResponse({ status: 'error', message: 'החשבון אינו פעיל' });
         }
@@ -1890,7 +1890,7 @@ function handleTeacherVerifyLogin(p) {
   var data = sheet.getDataRange().getValues();
   for (var i = 1; i < data.length; i++) {
     if (normalizeId(data[i][1]) === normalizeId(p.teacherId)) {
-      return jsonResponse({ status: 'ok', teacher: { name: data[i][0], id: normalizeId(data[i][1]), role: String(data[i][8] || 'מורה') } });
+      return jsonResponse({ status: 'ok', teacher: { name: data[i][0], id: normalizeId(data[i][1]), role: String(data[i][8] || 'מורה'), site: String(data[i][9] || '') } });
     }
   }
   return jsonResponse({ status: 'error', message: 'מורה לא נמצא' });
@@ -1901,15 +1901,22 @@ function handleTeacherCommanderDashboard(p) {
   var tSheet = getSheet('מורים');
   var tData = tSheet.getDataRange().getValues();
   var role = '';
+  var userSite = '';
   for (var i = 1; i < tData.length; i++) {
     if (normalizeId(tData[i][1]) === normalizeId(p.teacherId)) {
       role = String(tData[i][8] || 'מורה');
+      userSite = String(tData[i][9] || '');
       break;
     }
   }
-  if (role !== 'מפקד') {
+  if (role !== 'מפקד' && role !== 'מפקד מקומי' && role !== 'מפקד ראשי') {
     return jsonResponse({ status: 'error', message: 'אין הרשאת מפקד' });
   }
+
+  // Determine if local or global commander
+  // Legacy: role === 'מפקד' treated as 'מפקד ראשי'
+  var isGlobal = (role === 'מפקד ראשי' || role === 'מפקד');
+  var isLocal = (role === 'מפקד מקומי');
 
   // Parse date range
   var dateFrom = parseDateParam(p.dateFrom);
@@ -1922,14 +1929,15 @@ function handleTeacherCommanderDashboard(p) {
   // Build class→teacher map from כיתות sheet
   var classSheet = getSheet('כיתות');
   var classData = classSheet.getDataRange().getValues();
-  var classMap = {}; // classCode → { teacherName, className, license }
+  var classMap = {}; // classCode → { teacherName, className, license, site }
   for (var c = 1; c < classData.length; c++) {
     var cc = String(classData[c][0]).trim();
     classMap[cc] = {
       teacherName: String(classData[c][3] || ''),
       teacherId: normalizeId(classData[c][2]),
       className: String(classData[c][1] || ''),
-      license: String(classData[c][4] || '')
+      license: String(classData[c][4] || ''),
+      site: String(classData[c][5] || '')
     };
   }
 
@@ -1937,22 +1945,26 @@ function handleTeacherCommanderDashboard(p) {
   var resSheet = getSheet('תוצאות תרגול');
   var resData = resSheet.getDataRange().getValues();
 
-  // Columns: [0]תאריך [1]מזהה תלמיד [2]שם תלמיד [3]קוד כיתה [4]מצב [5]דרגה [6]ציון [7]סה"כ [8]אחוז [9]עבר/נכשל [10]זמן [11]נושא [12]שפה [13]פירוט שגויות [14]פירוט לפי נושא
-
-  var overall = { total: 0, passed: 0, failed: 0, scores: [], students: {}, teachers: {}, classes: {} };
+  var overall = { total: 0, passed: 0, failed: 0, scores: [], students: {}, teachers: {}, classes: {}, sites: {} };
   var byTeacher = {};
   var byClass = {};
   var byLicense = {};
   var byMode = {};
+  var bySite = {};
 
   for (var r = 1; r < resData.length; r++) {
     var rowDate = parseSheetDate(resData[r][0]);
     if (!rowDate || rowDate < dateFrom || rowDate > dateTo) continue;
 
     var classCode = String(resData[r][3] || '').trim();
-    if (!classCode) continue; // skip results without class
+    if (!classCode) continue;
 
-    var cInfo = classMap[classCode] || { teacherName: 'לא ידוע', className: classCode, license: '' };
+    var cInfo = classMap[classCode] || { teacherName: 'לא ידוע', className: classCode, license: '', site: '' };
+    var classSite = cInfo.site || '';
+
+    // Site filtering for local commander
+    if (isLocal && userSite && classSite !== userSite) continue;
+
     var teacherName = cInfo.teacherName || 'לא ידוע';
     var className = cInfo.className || classCode;
     var license = String(resData[r][5] || cInfo.license || 'לא צוין');
@@ -1980,11 +1992,19 @@ function handleTeacherCommanderDashboard(p) {
     overall.students[studentId] = true;
     overall.teachers[teacherName] = true;
     overall.classes[classCode] = true;
+    if (classSite) overall.sites[classSite] = true;
 
     addToGroup(byTeacher, teacherName, isPassed, isFailed, pctVal, studentId);
     addToGroup(byClass, className + ' (' + classCode + ')', isPassed, isFailed, pctVal, studentId);
     addToGroup(byLicense, license, isPassed, isFailed, pctVal, studentId);
     addToGroup(byMode, mode, isPassed, isFailed, pctVal, studentId);
+
+    // bySite aggregation (for global commander)
+    if (isGlobal && classSite) {
+      addToGroup(bySite, classSite, isPassed, isFailed, pctVal, studentId);
+      addToSubGroup(bySite, classSite, 'byTeacher', teacherName, isPassed, isFailed, pctVal, studentId);
+      addToSubGroup(bySite, classSite, 'byClass', className + ' (' + classCode + ')', isPassed, isFailed, pctVal, studentId);
+    }
 
     // Cross-tabulation sub-groups
     addToSubGroup(byTeacher, teacherName, 'byClass', className + ' (' + classCode + ')', isPassed, isFailed, pctVal, studentId);
@@ -2048,14 +2068,22 @@ function handleTeacherCommanderDashboard(p) {
   var overallStats = computeStats(overall);
   overallStats.activeTeachers = Object.keys(overall.teachers).length;
   overallStats.activeClasses = Object.keys(overall.classes).length;
+  overallStats.activeSites = Object.keys(overall.sites).length;
 
   var result = {
     overall: overallStats,
     byTeacher: computeGroupWithSub(byTeacher),
     byClass: computeGroupWithSub(byClass),
     byLicense: computeGroupWithSub(byLicense),
-    byMode: computeGroupWithSub(byMode)
+    byMode: computeGroupWithSub(byMode),
+    commanderRole: role,
+    commanderSite: userSite
   };
+
+  // Add bySite only for global commander
+  if (isGlobal) {
+    result.bySite = computeGroupWithSub(bySite);
+  }
 
   return jsonResponse({ status: 'ok', data: result });
 }
