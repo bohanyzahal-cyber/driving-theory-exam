@@ -247,6 +247,8 @@
       text-align: center; padding: 20px; font-size: 13px; color: #94a3b8;
       border-top: 1px solid #e2e8f0; margin-top: 30px;
     }
+    .exam-lang-switcher { background:rgba(255,255,255,0.95); border:2px solid rgba(255,255,255,0.3); border-radius:8px; padding:4px 8px; font-size:13px; font-weight:700; color:#1e293b; cursor:pointer; min-width:52px; }
+    .exam-lang-switcher:focus { outline:2px solid #3b82f6; }
   </style>
   <link rel="manifest" href="examinee/manifest.json"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
@@ -1153,10 +1155,12 @@
 
   // Load translation file dynamically if needed
   var translationLoaded = false;
+  var loadedTranslations = {'he': true, 'ru': true};
   function loadTranslationFile(lang, callback) {
-    if (lang === 'he' || lang === 'ru') {
+    if (lang === 'he' || lang === 'ru' || loadedTranslations[lang]) {
       // Hebrew uses base questions, Russian has separate entries in questions.js
       translationLoaded = true;
+      loadedTranslations[lang] = true;
       if (callback) callback();
       return;
     }
@@ -1167,6 +1171,7 @@
     script.onload = function() {
       console.log('[TRANS] Loaded ' + fileName + ' successfully');
       translationLoaded = true;
+      loadedTranslations[lang] = true;
       if (callback) callback();
     };
     script.onerror = function() {
@@ -1987,21 +1992,34 @@
     return t && t.t && t.a && t.a.length >= 2;
   }
 
+  var ruQuestionMap=null;
+  function getRuQuestion(id){if(!ruQuestionMap){ruQuestionMap={};var qs=(typeof QUESTIONS!=='undefined')?QUESTIONS:window.QUESTIONS;for(var i=0;i<qs.length;i++){if((qs[i].language||'he')==='ru')ruQuestionMap[qs[i].id]=qs[i];}}return ruQuestionMap[id]||null;}
+
   // Get question text for the current language
   function getQText(q) {
     var lang = getExamLang();
     if (lang === 'he') return q.text;
-    if (lang === 'ru' && q.language === 'ru') return q.text;
+    if (lang === 'ru') {
+      if (q.language === 'ru') return q.text;
+      var rq = getRuQuestion(q.id);
+      if (rq) return rq.text;
+      return q.text;
+    }
     var dict = getTransDict();
     if (dict && dict[q.id]) return dict[q.id].t;
-    return q.text; // fallback to Hebrew
+    return q.text;
   }
 
   // Get question answers for the current language
   function getQAnswers(q) {
     var lang = getExamLang();
     if (lang === 'he') return q.answers;
-    if (lang === 'ru' && q.language === 'ru') return q.answers;
+    if (lang === 'ru') {
+      if (q.language === 'ru') return q.answers;
+      var rq = getRuQuestion(q.id);
+      if (rq) return rq.answers;
+      return q.answers;
+    }
     var dict = getTransDict();
     if (dict && dict[q.id]) return dict[q.id].a;
     return q.answers;
@@ -2014,7 +2032,12 @@
   function getQCorrectIndex(q) {
     var lang = getExamLang();
     if (lang === 'he') return decodeCI(q.ci, q.id);
-    if (lang === 'ru' && q.language === 'ru') return decodeCI(q.ci, q.id);
+    if (lang === 'ru') {
+      if (q.language === 'ru') return decodeCI(q.ci, q.id);
+      var rq = getRuQuestion(q.id);
+      if (rq) return decodeCI(rq.ci, rq.id);
+      return decodeCI(q.ci, q.id);
+    }
     var dict = getTransDict();
     if (dict && dict[q.id] && dict[q.id].ci !== undefined) return decodeCI(dict[q.id].ci, q.id);
     return decodeCI(q.ci, q.id);
@@ -2165,6 +2188,18 @@
     return c;
   }
 
+  function switchExamLanguage(newLang) {
+    if (newLang === getExamLang()) return;
+    if (typeof stopSpeaking === 'function') stopSpeaking();
+    loadTranslationFile(newLang, function() {
+      sessionData.language = newLang;
+      var isRTL = (newLang === 'he' || newLang === 'ar');
+      document.documentElement.dir = isRTL ? 'rtl' : 'ltr';
+      document.documentElement.lang = newLang;
+      renderQuestion();
+    });
+  }
+
   function renderQuestion() {
     var q = activeQuestions[currentIndex];
     var total = activeQuestions.length;
@@ -2180,8 +2215,9 @@
     var answerOrder, shuffledAnswers, shuffledCorrectIndex;
     if (shuffledOrders[currentIndex]) {
       answerOrder = shuffledOrders[currentIndex].order;
-      shuffledCorrectIndex = shuffledOrders[currentIndex].correctIdx;
       shuffledAnswers = answerOrder.map(function(idx) { return qAnswers[idx]; });
+      shuffledCorrectIndex = answerOrder.indexOf(qCorrectIndex);
+      shuffledOrders[currentIndex].correctIdx = shuffledCorrectIndex;
     } else {
       answerOrder = shuffle(qAnswers.map(function(_, i) { return i; }));
       shuffledAnswers = answerOrder.map(function(idx) { return qAnswers[idx]; });
@@ -2201,6 +2237,19 @@
       (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s + '</span>';
     if (timeRemaining <= 300) timerBar.classList.add('warn-time');
     examArea.appendChild(timerBar);
+
+    // Language switcher
+    var langSwitchWrap = document.createElement('div');
+    langSwitchWrap.style.cssText = 'text-align:center;margin-bottom:6px;';
+    var langSwitch = document.createElement('select');
+    langSwitch.className = 'exam-lang-switcher';
+    var langOpts=[{v:'he',l:'עברית'},{v:'ru',l:'RU'},{v:'en',l:'EN'},{v:'ar',l:'عربي'},{v:'fr',l:'FR'},{v:'es',l:'ES'},{v:'am',l:'AM'}];
+    var curLang = getExamLang();
+    for(var li=0;li<langOpts.length;li++){var opt=document.createElement('option');opt.value=langOpts[li].v;opt.textContent=langOpts[li].l;if(langOpts[li].v===curLang)opt.selected=true;langSwitch.appendChild(opt);}
+    langSwitch.addEventListener('change',function(){switchExamLanguage(this.value);});
+    langSwitchWrap.appendChild(langSwitch);
+    examArea.appendChild(langSwitchWrap);
+
 
     // Question map
     var qMap = document.createElement('div');
