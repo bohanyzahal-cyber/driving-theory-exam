@@ -204,9 +204,52 @@
     .cmd-pie-legend { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
     .cmd-pie-legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-left: 4px; vertical-align: middle; }
 
-  </style>
+      /* Intro Screen */
+    .intro-overlay {
+      position:fixed; inset:0; z-index:9999; background:linear-gradient(135deg,#2d1b69 0%,#5b21b6 50%,#7c3aed 100%);
+      display:flex; flex-direction:column; align-items:center; justify-content:center;
+      color:white; text-align:center; padding:24px; animation:introFadeIn 0.5s ease;
+    }
+    @keyframes introFadeIn { from{opacity:0} to{opacity:1} }
+    .intro-overlay.hiding { animation:introFadeOut 0.4s ease forwards; }
+    @keyframes introFadeOut { from{opacity:1} to{opacity:0} }
+    .intro-logo { width:120px; height:120px; margin-bottom:16px; border-radius:20px; box-shadow:0 4px 20px rgba(0,0,0,0.3); }
+    .intro-title { font-size:1.8em; font-weight:800; margin:0 0 4px; text-shadow:0 2px 8px rgba(0,0,0,0.3); }
+    .intro-subtitle { font-size:1em; opacity:0.9; margin:0 0 20px; font-weight:300; }
+    .intro-divider { width:60px; height:3px; background:linear-gradient(90deg,#c4b5fd,#a78bfa); border-radius:2px; margin:0 auto 20px; }
+    .intro-features { display:flex; gap:24px; justify-content:center; flex-wrap:wrap; margin-bottom:24px; }
+    .intro-feat { display:flex; flex-direction:column; align-items:center; gap:4px; font-size:0.82em; opacity:0.85; }
+    .intro-feat-icon { font-size:1.6em; }
+    .intro-disclaimer { max-width:500px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.15); border-radius:12px; padding:14px 18px; margin-bottom:24px; font-size:0.78em; line-height:1.6; color:rgba(255,255,255,0.75); }
+    .intro-disclaimer strong { color:#fbbf24; }
+    .intro-enter-btn { background:linear-gradient(135deg,#a78bfa,#7c3aed); color:white; border:none; padding:14px 48px; font-size:1.1em; font-weight:700; border-radius:12px; cursor:pointer; box-shadow:0 4px 15px rgba(124,58,237,0.4); transition:transform 0.2s, box-shadow 0.2s; }
+    .intro-enter-btn:hover { transform:translateY(-2px); box-shadow:0 6px 20px rgba(124,58,237,0.5); }
+    .intro-version { margin-top:16px; font-size:0.7em; opacity:0.4; }
+    @media(max-width:480px) { .intro-title { font-size:1.4em; } .intro-features { gap:16px; } .intro-logo { width:90px; height:90px; } }
+</style>
 </head>
 <body>
+
+<!-- Intro Screen -->
+<div id="introOverlay" class="intro-overlay">
+  <img src="logo.png" alt="סמכות רישוי צה&quot;ל" class="intro-logo"/>
+  <h1 class="intro-title">מערכת ניהול מורים</h1>
+  <p class="intro-subtitle">סמכות הרישוי הצבאית — צה״ל</p>
+  <div class="intro-divider"></div>
+  <div class="intro-features">
+    <div class="intro-feat"><span class="intro-feat-icon">👩‍🏫</span><span>ניהול כיתות</span></div>
+    <div class="intro-feat"><span class="intro-feat-icon">📊</span><span>סטטיסטיקות</span></div>
+    <div class="intro-feat"><span class="intro-feat-icon">📋</span><span>מעקב תלמידים</span></div>
+    <div class="intro-feat"><span class="intro-feat-icon">🏆</span><span>לוח מפקד</span></div>
+  </div>
+  <div class="intro-disclaimer">
+    <strong>⚠ הודעה חשובה:</strong> מערכת זו מיועדת לשימוש מורים ומפקדים מורשים בלבד.
+    אין להעביר, להפיץ או לשתף את תכני המערכת ללא אישור מפורש מסמכות הרישוי הצבאית.
+    כל הזכויות שמורות.
+  </div>
+  <button class="intro-enter-btn" id="btnEnterApp">כניסה למערכת &larr;</button>
+  <div class="intro-version">גרסה 2.0 | מערכת מורים &copy; 2026</div>
+</div>
 
 <!-- ===== TOPBAR ===== -->
 <div class="topbar" id="topbar" style="display:none;">
@@ -253,7 +296,7 @@
 <div id="screenCommander" class="screen">
   <div class="container">
     <div class="card" style="text-align:center;">
-      <h2 style="margin:0 0 12px;">לוח מפקד — סיכום מערכת תרגול</h2>
+      <h2 style="margin:0 0 12px;" id="cmdTitle">לוח מפקד — סיכום מערכת תרגול</h2>
       <div id="cmdPeriodBtns" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:12px 0;">
         <button class="cmd-period-btn active" data-period="daily" onclick="cmdSelectPeriod(this)">יומי</button>
         <button class="cmd-period-btn" data-period="weekly" onclick="cmdSelectPeriod(this)">שבועי</button>
@@ -294,6 +337,7 @@
         <button class="cmd-tab-btn" data-tab="byClass" onclick="cmdSelectTab(this)">לפי כיתה</button>
         <button class="cmd-tab-btn" data-tab="byLicense" onclick="cmdSelectTab(this)">לפי דרגה</button>
         <button class="cmd-tab-btn" data-tab="byMode" onclick="cmdSelectTab(this)">לפי סוג תרגול</button>
+        <button class="cmd-tab-btn" data-tab="bySite" onclick="cmdSelectTab(this)" id="cmdTabSite" style="display:none;">לפי אתר</button>
       </div>
       <div id="cmdBreakdownContent" style="overflow-x:auto;"></div>
     </div>
@@ -411,6 +455,7 @@ var currentStudentData = null;
 var userRole = 'מורה';
 var cmdData = null;
 var cmdCurrentTab = 'byTeacher';
+var userSite = '';
 
 // ===== Utility =====
 function showScreen(id) {
@@ -473,7 +518,16 @@ function onLoggedIn() {
   document.getElementById('topbar').style.display = 'flex';
   document.getElementById('topbarTeacherName').textContent = teacher.name;
   userRole = teacher.role || 'מורה';
-  if (userRole === 'מפקד') {
+  userSite = teacher.site || '';
+  var isCommander = (userRole === 'מפקד' || userRole === 'מפקד מקומי' || userRole === 'מפקד ראשי');
+  if (isCommander) {
+    var isGlobal = (userRole === 'מפקד ראשי' || userRole === 'מפקד');
+    var titleEl = document.getElementById('cmdTitle');
+    if (titleEl) {
+      titleEl.textContent = isGlobal ? 'לוח מפקד — סיכום מערכת תרגול' : 'לוח מפקד — ' + userSite;
+    }
+    var siteTab = document.getElementById('cmdTabSite');
+    if (siteTab) siteTab.style.display = isGlobal ? '' : 'none';
     showScreen('screenCommander');
     initCommanderDashboard();
   } else {
@@ -484,6 +538,7 @@ function onLoggedIn() {
 function doLogout() {
   teacher = null;
   userRole = 'מורה';
+  userSite = '';
   cmdData = null;
   sessionStorage.removeItem('teacher_auth');
   localStorage.removeItem('teacher_auth');
@@ -1030,7 +1085,8 @@ var SUB_DIMS = {
   byTeacher: [{ key: 'byClass', label: '\u05DC\u05E4\u05D9 \u05DB\u05D9\u05EA\u05D4' }, { key: 'byLicense', label: '\u05DC\u05E4\u05D9 \u05D3\u05E8\u05D2\u05D4' }],
   byClass:   [{ key: 'byLicense', label: '\u05DC\u05E4\u05D9 \u05D3\u05E8\u05D2\u05D4' }, { key: 'byMode', label: '\u05DC\u05E4\u05D9 \u05E1\u05D5\u05D2' }],
   byLicense: [{ key: 'byTeacher', label: '\u05DC\u05E4\u05D9 \u05DE\u05D5\u05E8\u05D4' }, { key: 'byClass', label: '\u05DC\u05E4\u05D9 \u05DB\u05D9\u05EA\u05D4' }],
-  byMode:    [{ key: 'byLicense', label: '\u05DC\u05E4\u05D9 \u05D3\u05E8\u05D2\u05D4' }, { key: 'byTeacher', label: '\u05DC\u05E4\u05D9 \u05DE\u05D5\u05E8\u05D4' }]
+  byMode:    [{ key: 'byLicense', label: '\u05DC\u05E4\u05D9 \u05D3\u05E8\u05D2\u05D4' }, { key: 'byTeacher', label: '\u05DC\u05E4\u05D9 \u05DE\u05D5\u05E8\u05D4' }],
+  bySite:    [{ key: 'byTeacher', label: '\u05DC\u05E4\u05D9 \u05DE\u05D5\u05E8\u05D4' }, { key: 'byClass', label: '\u05DC\u05E4\u05D9 \u05DB\u05D9\u05EA\u05D4' }]
 };
 
 function buildSubTable(subData, label) {
@@ -1084,7 +1140,7 @@ function renderBreakdownTable(data, tab) {
   var keys = Object.keys(section);
   if (keys.length === 0) { document.getElementById('cmdBreakdownContent').innerHTML = '<p style="color:#94a3b8;">\u05D0\u05D9\u05DF \u05E0\u05EA\u05D5\u05E0\u05D9\u05DD</p>'; return; }
 
-  var tabLabels = { byTeacher: '\u05DE\u05D5\u05E8\u05D4', byClass: '\u05DB\u05D9\u05EA\u05D4', byLicense: '\u05D3\u05E8\u05D2\u05D4', byMode: '\u05E1\u05D5\u05D2 \u05EA\u05E8\u05D2\u05D5\u05DC' };
+  var tabLabels = { byTeacher: '\u05DE\u05D5\u05E8\u05D4', byClass: '\u05DB\u05D9\u05EA\u05D4', byLicense: '\u05D3\u05E8\u05D2\u05D4', byMode: '\u05E1\u05D5\u05D2 \u05EA\u05E8\u05D2\u05D5\u05DC', bySite: '\u05D0\u05EA\u05E8' };
   var dims = SUB_DIMS[tab] || [];
   var tabChar = tab.charAt(2);
   var html = '<table class="cmd-table"><thead><tr>';
@@ -1258,6 +1314,23 @@ window.addEventListener('appinstalled', function() {
   if (banner) banner.style.display = 'none';
   deferredInstallPrompt = null;
 });
+
+
+// ===== Intro Screen =====
+(function(){
+  var intro = document.getElementById('introOverlay');
+  var btn = document.getElementById('btnEnterApp');
+  if(!intro || !btn) return;
+  if(sessionStorage.getItem('teacher_intro_dismissed')){
+    intro.style.display='none';
+    return;
+  }
+  btn.addEventListener('click', function(){
+    intro.classList.add('hiding');
+    sessionStorage.setItem('teacher_intro_dismissed','1');
+    setTimeout(function(){ intro.style.display='none'; }, 400);
+  });
+})();
 </script>
 </body>
 </html>
