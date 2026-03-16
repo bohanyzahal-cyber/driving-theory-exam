@@ -1937,7 +1937,7 @@ function handleTeacherCommanderDashboard(p) {
       teacherId: normalizeId(classData[c][2]),
       className: String(classData[c][1] || ''),
       license: String(classData[c][4] || ''),
-      site: String(classData[c][5] || '')
+      site: String(classData[c][7] || '')
     };
   }
 
