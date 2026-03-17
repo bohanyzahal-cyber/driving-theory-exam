@@ -2959,8 +2959,7 @@
   window.overturnDQ = function(idx) {
     var r = completedResults[idx];
     if (!r) return;
-    if (confirm('ביטול פסילה של ' + r.name + '?
-התוצאה תשתנה ל"נכשל" והנבחן יוכל להיבחן מחדש.')) {
+    if (confirm('ביטול פסילה של ' + r.name + '?\nהתוצאה תשתנה ל"נכשל" והנבחן יוכל להיבחן מחדש.')) {
       apiGet({ action: 'overturnDQ', sessionCode: sessionCode, idNumber: r.idNumber, examinerId: examinerData.id }).then(function(data) {
         if (data.status === 'ok') {
           alert(r.name + ' — הפסילה בוטלה.');
