@@ -838,7 +838,7 @@ function handleExaminerDashboard(p) {
     for (var cc = 1; cc < pendData.length; cc++) {
       if (String(pendData[cc][0]) !== code || normalizeId(pendData[cc][1]) !== normalizeId(ciId)) continue;
       var ccStatus = String(pendData[cc][5]).trim();
-      if (ccStatus === 'completed' || ccStatus === 'disqualified') {
+      if (ccStatus === 'completed' || ccStatus === 'disqualified' || ccStatus === 'dq_confirmed') {
         terminalCount++;
       }
     }
