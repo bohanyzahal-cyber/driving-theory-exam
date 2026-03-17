@@ -92,9 +92,9 @@ function verifyToken(examinerId, token) {
   var data = sheet.getDataRange().getValues();
   for (var i = 1; i < data.length; i++) {
     if (normalizeId(data[i][1]) === normalizeId(examinerId)) {
-      var storedToken = String(data[i][6] || '');
+      var storedTokens = String(data[i][6] || '').split(',');
       var expiry = data[i][7];
-      if (storedToken !== token) return false;
+      if (storedTokens.indexOf(token) === -1) return false;
       if (!expiry) return false;
       var expiryDate = expiry instanceof Date ? expiry : new Date(expiry);
       if (new Date() > expiryDate) return false;
@@ -449,10 +449,15 @@ function handleLogin(p) {
             sheet.getRange(row, 10).setValue('');   // column J = lockout cleared
           }
           // Generate token and store in sheet (columns G=7, H=8 → indices 6,7)
+          // Support multiple tokens (multi-device) separated by comma, max 5
           var token = generateToken();
           var expiry = new Date();
           expiry.setHours(expiry.getHours() + 12);
-          sheet.getRange(row, 7).setValue(token);   // column G = token
+          var existingTokens = String(data[i][6] || '').trim();
+          var tokenList = existingTokens ? existingTokens.split(',') : [];
+          tokenList.push(token);
+          if (tokenList.length > 5) tokenList = tokenList.slice(-5); // keep last 5
+          sheet.getRange(row, 7).setValue(tokenList.join(','));   // column G = tokens
           sheet.getRange(row, 8).setValue(expiry);   // column H = expiry
           return jsonResponse({ status: 'ok', examiner: { name: data[i][0], id: normalizeId(data[i][1]), examinerNumber: String(data[i][4] || ''), role: String(data[i][5] || 'בוחן'), token: token } });
         } else {
@@ -483,9 +488,9 @@ function handleVerifyLogin(p) {
   var data = sheet.getDataRange().getValues();
   for (var i = 1; i < data.length; i++) {
     if (normalizeId(data[i][1]) === normalizeId(p.examinerId)) {
-      var storedToken = String(data[i][6] || '');
+      var storedTokens = String(data[i][6] || '').split(',');
       var expiry = data[i][7];
-      if (storedToken !== p.token) {
+      if (storedTokens.indexOf(p.token) === -1) {
         return jsonResponse({ status: 'error', message: 'טוקן לא תקין', tokenExpired: true });
       }
       if (!expiry) {
