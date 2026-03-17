@@ -1146,8 +1146,8 @@ function handleOverturnDQ(p) {
       if (status !== 'פסול') {
         return jsonResponse({ status: 'error', message: 'תוצאה זו אינה פסולה' });
       }
-      // Change status from פסול to נכשל (allow retake)
-      sheet.getRange(i + 1, 8).setValue('נכשל');
+      // Change status from פסול to בוטל (hidden from results, allow retake)
+      sheet.getRange(i + 1, 8).setValue('בוטל');
       // Clear the DQ flag
       sheet.getRange(i + 1, 18).setValue(false);
       SpreadsheetApp.flush();
