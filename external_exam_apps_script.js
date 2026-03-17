@@ -2108,17 +2108,16 @@ function handleTeacherCommanderDashboard(p) {
 }
 
 function handleAdminDashboard(p) {
-  // Verify admin role
+  // Verify admin role - check ALL rows for this ID
   var tSheet = getSheet('מורים');
   var tData = tSheet.getDataRange().getValues();
-  var role = '';
+  var isAdmin = false;
   for (var i = 1; i < tData.length; i++) {
     if (normalizeId(tData[i][1]) === normalizeId(p.teacherId)) {
-      role = String(tData[i][8] || 'מורה');
-      break;
+      if (String(tData[i][8] || '') === 'אדמין') { isAdmin = true; break; }
     }
   }
-  if (role !== 'אדמין') {
+  if (!isAdmin) {
     return jsonResponse({ status: 'error', message: 'אין הרשאת אדמין' });
   }
 
