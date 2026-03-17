@@ -375,7 +375,10 @@
         <h2 id="classDetailTitle"></h2>
         <div style="margin-top:4px;">קוד כיתה: <span class="class-code-display" id="classDetailCode" title="לחץ להעתקה"></span></div>
       </div>
-      <button class="btn btn-secondary" id="btnExportClass" title="ייצוא נתונים">📥 ייצוא</button>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-secondary" id="btnCloseClass" style="background:#dc2626;color:#fff;display:none;" title="סגור כיתה">🔒 סגור כיתה</button>
+        <button class="btn btn-secondary" id="btnExportClass" title="ייצוא נתונים">📥 ייצוא</button>
+      </div>
     </div>
 
     <!-- Class stats -->
@@ -647,8 +650,9 @@ function renderClassDetail() {
   var info = currentClassData.classInfo;
   var students = currentClassData.students || [];
 
-  document.getElementById('classDetailTitle').textContent = info.name;
+  document.getElementById('classDetailTitle').textContent = info.name + (info.active ? '' : ' (סגורה)');
   document.getElementById('classDetailCode').textContent = info.code;
+  document.getElementById('btnCloseClass').style.display = info.active ? '' : 'none';
 
   // Compute class-level stats
   var totalStudents = students.length;
@@ -893,6 +897,25 @@ function createClass() {
     btn.textContent = 'צור כיתה';
     alert('שגיאת תקשורת');
   });
+}
+
+// ===== Close Class =====
+function closeClass() {
+  if (!currentClassData || !currentClassData.classInfo) return;
+  if (!confirm('האם לסגור את הכיתה?\nתלמידים חדשים לא יוכלו להצטרף.')) return;
+  var info = currentClassData.classInfo;
+  apiGet({ action: 'teacherCloseClass', classCode: info.code, teacherId: teacher.id, token: teacher.token })
+  .then(function(d) {
+    if (d.status === 'ok') {
+      currentClassData.classInfo.active = false;
+      renderClassDetail();
+      alert('הכיתה נסגרה בהצלחה');
+    } else {
+      if (d.tokenExpired) { doLogout(); return; }
+      alert(d.message || 'שגיאה בסגירת הכיתה');
+    }
+  })
+  .catch(function() { alert('שגיאת תקשורת'); });
 }
 
 // ===== Export =====
@@ -1270,6 +1293,7 @@ function init() {
   document.getElementById('btnBackToDashboard').addEventListener('click', loadDashboard);
   document.getElementById('classDetailCode').addEventListener('click', copyClassCode);
   document.getElementById('btnExportClass').addEventListener('click', exportClassData);
+  document.getElementById('btnCloseClass').addEventListener('click', closeClass);
 
   // Student detail
   document.getElementById('btnBackToClass').addEventListener('click', function() {
