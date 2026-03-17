@@ -559,7 +559,6 @@ function joinClass(code,name,studentId){
 
 // Send practice result to backend
 function sendPracticeResult(resultData){
-  if(!currentClassCode)return; // Only send if enrolled in a class
   var body=JSON.stringify({
     action:'submitPracticeResult',
     studentId:currentStudentId,
