@@ -1518,18 +1518,16 @@
         try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
         sendDQToServer();
       } else {
-        // First offense — send PROVISIONAL DQ immediately (so server gets it before browser freezes timers)
-        // then start grace timer; if user returns in time, cancel the DQ
-        provisionalDQSent = true;
+        // First offense — start grace timer only, do NOT send DQ yet
+        provisionalDQSent = false;
         tabSwitchDQConfirmed = false;
         newDQEventId();
-        sendDQToServer();
         tabSwitchGraceTimer = setTimeout(function() {
-          // Grace expired while still hidden — confirm DQ (server already has it)
+          // Grace expired while still hidden — NOW send DQ
           tabSwitchDQConfirmed = true;
           tabSwitchGraceTimer = null;
-          provisionalDQSent = false;
           try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+          sendDQToServer();
         }, TAB_SWITCH_GRACE_MS);
       }
     }
@@ -1540,19 +1538,16 @@
       if (tabSwitchDQConfirmed) {
         // DQ was confirmed (grace expired or 2nd offense) — show DQ screen
         showDQScreen();
-      } else if ((tabSwitchGraceTimer || provisionalDQSent) && awayMs >= TAB_SWITCH_CALL_MS) {
-        // Away 5+ seconds = phone call detected — confirm DQ (already sent provisionally)
+      } else if (tabSwitchGraceTimer && awayMs >= TAB_SWITCH_CALL_MS) {
+        // Away 5+ seconds = phone call detected — send DQ now
         if (tabSwitchGraceTimer) { clearTimeout(tabSwitchGraceTimer); tabSwitchGraceTimer = null; }
         tabSwitchDQConfirmed = true;
-        provisionalDQSent = false;
         try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
-        sendDQToServer(); // send again to be safe
+        sendDQToServer();
         showDQScreen();
-      } else if (tabSwitchGraceTimer || provisionalDQSent) {
-        // Returned quickly (< 5 seconds) — cancel provisional DQ, show warning
+      } else if (tabSwitchGraceTimer) {
+        // Returned quickly (< 5 seconds) — cancel grace timer, show warning (no DQ was sent)
         if (tabSwitchGraceTimer) { clearTimeout(tabSwitchGraceTimer); tabSwitchGraceTimer = null; }
-        provisionalDQSent = false;
-        sendCancelDQToServer();
         currentDQEventId = '';  // reset so next DQ event gets a fresh ID
         tabSwitchWarnings++;
         showTabSwitchWarning();
@@ -1685,19 +1680,17 @@
       sendDQToServer();
       showDQScreen();
     } else {
-      // Send provisional DQ immediately, start grace timer
-      if (!tabSwitchGraceTimer && !provisionalDQSent && document.visibilityState === 'visible') {
+      // Start grace timer only, do NOT send DQ yet
+      if (!tabSwitchGraceTimer && !splitScreenBlurTimer && document.visibilityState === 'visible') {
         tabHiddenAt = Date.now();
-        provisionalDQSent = true;
         newDQEventId();
-        sendDQToServer();
         splitScreenBlurTimer = setTimeout(function() {
-          // Still blurred after grace — confirm DQ (server already has it)
+          // Still blurred after grace — NOW send DQ
           splitScreenBlurTimer = null;
           if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
           tabSwitchDQConfirmed = true;
-          provisionalDQSent = false;
           try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+          sendDQToServer();
           showDQScreen();
         }, TAB_SWITCH_GRACE_MS);
       }
@@ -1706,21 +1699,18 @@
 
   function onWindowFocus() {
     if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
-    if (splitScreenBlurTimer || provisionalDQSent) {
+    if (splitScreenBlurTimer) {
       if (splitScreenBlurTimer) { clearTimeout(splitScreenBlurTimer); splitScreenBlurTimer = null; }
       var awayMs = tabHiddenAt ? (Date.now() - tabHiddenAt) : 0;
       if (awayMs >= TAB_SWITCH_CALL_MS) {
-        // Was away 5+ sec — confirm DQ (already sent provisionally)
+        // Was away 5+ sec — send DQ now
         tabSwitchDQConfirmed = true;
-        provisionalDQSent = false;
         try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
-        sendDQToServer(); // send again to be safe
+        sendDQToServer();
         showDQScreen();
       } else {
-        // Quick return — cancel provisional DQ, show warning
-        provisionalDQSent = false;
-        sendCancelDQToServer();
-        currentDQEventId = '';  // reset so next DQ event gets a fresh ID
+        // Quick return — cancel grace timer, show warning (no DQ was sent)
+        currentDQEventId = '';
         tabSwitchWarnings++;
         showTabSwitchWarning();
       }
