@@ -349,18 +349,11 @@
     btn.disabled = true;
     btn.textContent = 'מתחבר...';
 
-    var formData = new FormData();
-    formData.append('action', 'teacherLogin');
-    formData.append('idNumber', idNumber);
-    formData.append('password', password);
+    var body = JSON.stringify({ action: 'teacherLogin', idNumber: idNumber, password: password });
 
-    fetch(API_URL, { method: 'POST', body: formData })
-      .then(function(r) { return r.text(); })
-      .then(function(txt) {
-        var d;
-        try { d = JSON.parse(txt); } catch(e) {
-          throw new Error('שגיאה בתגובת השרת');
-        }
+    fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: body })
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
         if (d.status !== 'ok') throw new Error(d.message || d.error || 'שגיאה בהתחברות');
         if (!d.teacher || d.teacher.role !== 'אדמין') {
           throw new Error('אין הרשאת אדמין');
