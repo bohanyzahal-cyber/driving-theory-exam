@@ -1805,11 +1805,11 @@ function verifyTeacherToken(teacherId, token) {
     if (normalizeId(data[i][1]) === normalizeId(teacherId)) {
       var storedToken = String(data[i][4] || '');
       var expiry = data[i][5];
-      if (storedToken !== token) return false;
-      if (!expiry) return false;
-      var expiryDate = expiry instanceof Date ? expiry : new Date(expiry);
-      if (new Date() > expiryDate) return false;
-      return true;
+      if (storedToken === token && expiry) {
+        var expiryDate = expiry instanceof Date ? expiry : new Date(expiry);
+        if (new Date() <= expiryDate) return true;
+      }
+      // Continue searching other rows with same ID
     }
   }
   return false;
