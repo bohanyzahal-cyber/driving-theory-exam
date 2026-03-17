@@ -451,13 +451,13 @@
   function renderKPIs(o) {
     $('cmdTotal').textContent = (o.total || 0).toLocaleString();
     $('cmdStudents').textContent = (o.students || 0).toLocaleString();
-    $('cmdClasses').textContent = (o.classes || 0).toLocaleString();
+    $('cmdClasses').textContent = (o.activeClasses || 0).toLocaleString();
     $('cmdPassed').textContent = (o.passed || 0).toLocaleString();
     $('cmdFailed').textContent = (o.failed || 0).toLocaleString();
     var rate = o.total ? Math.round((o.passed || 0) / o.total * 100) : 0;
     $('cmdPassRate').textContent = (o.passRate != null ? o.passRate : rate) + '%';
-    $('cmdAvg').textContent = (o.avg != null ? o.avg : 0) + '%';
-    $('cmdMedian').textContent = (o.median != null ? o.median : 0) + '%';
+    $('cmdAvg').textContent = (o.avgScore != null ? o.avgScore : 0) + '%';
+    $('cmdMedian').textContent = (o.medianScore != null ? o.medianScore : 0) + '%';
     $('cmdIndependent').textContent = (o.independentStudents || 0).toLocaleString();
 
     // Pie chart
@@ -696,7 +696,7 @@
       + fmtDateDDMMYYYY(range.from) + ' — ' + fmtDateDDMMYYYY(range.to) + '\n\n'
       + 'סה"כ תרגולים: ' + (o.total || 0) + '\n'
       + 'תלמידים ייחודיים: ' + (o.students || 0) + '\n'
-      + 'כיתות פעילות: ' + (o.classes || 0) + '\n'
+      + 'כיתות פעילות: ' + (o.activeClasses || 0) + '\n'
       + 'עברו: ' + (o.passed || 0) + '\n'
       + 'נכשלו: ' + (o.failed || 0) + '\n'
       + '% הצלחה: ' + (o.passRate || 0) + '%\n'
