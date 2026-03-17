@@ -361,13 +361,12 @@
         try { d = JSON.parse(txt); } catch(e) {
           throw new Error('שגיאה בתגובת השרת');
         }
-        if (!d.ok) throw new Error(d.error || 'שגיאה בהתחברות');
+        if (d.status !== 'ok') throw new Error(d.message || d.error || 'שגיאה בהתחברות');
         if (!d.teacher || d.teacher.role !== 'אדמין') {
           throw new Error('אין הרשאת אדמין');
         }
 
         adminData = d.teacher;
-        adminData.token = d.token || '';
         adminData.idNumber = idNumber;
 
         // Remember me
@@ -439,10 +438,10 @@
     fetch(url)
       .then(function(r) { return r.json(); })
       .then(function(d) {
-        if (!d.ok) throw new Error(d.error || 'שגיאה בטעינת נתונים');
-        dashboardData = d;
-        renderKPIs(d.overall || {});
-        renderBreakdownTable(d, currentTab);
+        if (d.status !== 'ok') throw new Error(d.message || d.error || 'שגיאה בטעינת נתונים');
+        dashboardData = d.data;
+        renderKPIs(d.data.overall || {});
+        renderBreakdownTable(d.data, currentTab);
         show('cmdKPIs');
         show('cmdBreakdowns');
         show('cmdActions');
@@ -466,7 +465,7 @@
     $('cmdPassRate').textContent = (o.passRate != null ? o.passRate : rate) + '%';
     $('cmdAvg').textContent = (o.avg != null ? o.avg : 0) + '%';
     $('cmdMedian').textContent = (o.median != null ? o.median : 0) + '%';
-    $('cmdIndependent').textContent = (o.independent || 0).toLocaleString();
+    $('cmdIndependent').textContent = (o.independentStudents || 0).toLocaleString();
 
     // Pie chart
     var passed = o.passed || 0;
@@ -664,7 +663,7 @@
       + '% הצלחה: ' + (o.passRate || 0) + '%\n'
       + 'ממוצע: ' + (o.avg || 0) + '%\n'
       + 'חציון: ' + (o.median || 0) + '%\n'
-      + 'תלמידים עצמאיים: ' + (o.independent || 0);
+      + 'תלמידים עצמאיים: ' + (o.independentStudents || 0);
 
     if (navigator.share) {
       navigator.share({ title: 'דו"ח אדמין', text: text }).catch(function() {});
