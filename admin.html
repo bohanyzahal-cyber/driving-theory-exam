@@ -492,12 +492,27 @@
   // ===== Breakdown Table =====
   function renderBreakdownTable(data, tab) {
     var container = $('cmdBreakdownContent');
-    var items = data[tab] || [];
+    var rawItems = data[tab] || {};
+
+    // Convert object to array: { "B": {total:5,...}, "C1": {total:2,...} } -> [{name:"B", total:5,...}, ...]
+    var items = [];
+    if (typeof rawItems === 'object' && !Array.isArray(rawItems)) {
+      Object.keys(rawItems).forEach(function(k) {
+        var row = rawItems[k];
+        row.name = k;
+        items.push(row);
+      });
+    } else {
+      items = rawItems;
+    }
 
     if (!items.length) {
       container.innerHTML = '<div style="text-align:center;padding:20px;color:#94a3b8;">אין נתונים להצגה</div>';
       return;
     }
+
+    // Sort by total descending
+    items.sort(function(a, b) { return (b.total || 0) - (a.total || 0); });
 
     if (tab === 'byDay') {
       renderDayTable(container, items);
@@ -509,18 +524,18 @@
       + '</tr></thead><tbody>';
 
     items.forEach(function(row, idx) {
-      var passRate = row.total ? Math.round((row.passed || 0) / row.total * 100) : 0;
+      var passRate = row.passRate || (row.total ? Math.round((row.passed || 0) / row.total * 100) : 0);
       var rateCls = passRate >= 60 ? 'good' : 'bad';
       var key = tab + '_' + idx;
-      var hasSubs = SUB_DIMS[tab] && Object.keys(SUB_DIMS[tab]).length > 0;
+      var hasSubs = SUB_DIMS[tab] && Object.keys(SUB_DIMS[tab]).length > 0 && row.sub;
 
       html += '<tr class="' + (hasSubs ? 'cmd-dd-toggle' : '') + '" ' + (hasSubs ? 'onclick="toggleDrilldown(\'' + key + '\')"' : '') + ' id="row_' + key + '">'
-        + '<td>' + (row.name || row.label || '-') + '</td>'
+        + '<td>' + (row.name || '-') + '</td>'
         + '<td>' + (row.total || 0) + '</td>'
         + '<td>' + (row.passed || 0) + '</td>'
         + '<td>' + (row.failed || 0) + '</td>'
         + '<td class="' + rateCls + '">' + passRate + '%</td>'
-        + '<td>' + (row.avg != null ? row.avg + '%' : '-') + '</td>'
+        + '<td>' + (row.avgScore != null ? row.avgScore + '%' : '-') + '</td>'
         + '<td>' + (row.students || 0) + '</td>'
         + '</tr>';
 
@@ -534,7 +549,7 @@
         });
         html += '</div>';
         html += '<div id="subtable_' + key + '">';
-        html += renderSubTable(row[firstSub] || []);
+        html += renderSubTable(row.sub ? row.sub[firstSub] : {});
         html += '</div>';
         html += '</td></tr>';
       }
@@ -545,6 +560,16 @@
   }
 
   function renderDayTable(container, items) {
+    // Convert object to array if needed: { "2026-03-17": {total:5,...} } -> [{date:"2026-03-17", total:5,...}, ...]
+    if (typeof items === 'object' && !Array.isArray(items)) {
+      var arr = [];
+      Object.keys(items).forEach(function(k) {
+        var row = items[k];
+        row.date = k;
+        arr.push(row);
+      });
+      items = arr;
+    }
     // Sort by date descending
     var sorted = items.slice().sort(function(a, b) {
       return (b.date || '').localeCompare(a.date || '');
@@ -578,6 +603,16 @@
   }
 
   function renderSubTable(items) {
+    // Convert object to array if needed: { "B": {total:3,...} } -> [{name:"B", total:3,...}, ...]
+    if (items && typeof items === 'object' && !Array.isArray(items)) {
+      var arr = [];
+      Object.keys(items).forEach(function(k) {
+        var row = items[k];
+        row.name = k;
+        arr.push(row);
+      });
+      items = arr;
+    }
     if (!items || !items.length) return '<div style="color:#94a3b8;font-size:12px;padding:8px;">אין נתונים</div>';
     var html = '<table class="cmd-sub-table"><thead><tr>'
       + '<th>שם</th><th>תרגולים</th><th>עברו</th><th>נכשלו</th><th>% הצלחה</th><th>ממוצע</th>'
@@ -592,7 +627,7 @@
         + '<td>' + (row.passed || 0) + '</td>'
         + '<td>' + (row.failed || 0) + '</td>'
         + '<td class="' + rateCls + '">' + passRate + '%</td>'
-        + '<td>' + (row.avg != null ? row.avg + '%' : '-') + '</td>'
+        + '<td>' + (row.avgScore != null ? row.avgScore + '%' : '-') + '</td>'
         + '</tr>';
     });
 
@@ -623,17 +658,28 @@
       b.classList.toggle('active', b.getAttribute('data-sub') === subDim);
     });
 
-    // Find data
+    // Find data - convert object to array to find the row by index
     var parts = key.split('_');
     var tab = parts[0];
     var idx = parseInt(parts[1], 10);
-    var items = dashboardData[tab] || [];
+    var rawItems = dashboardData[tab] || {};
+    var items = [];
+    if (typeof rawItems === 'object' && !Array.isArray(rawItems)) {
+      Object.keys(rawItems).forEach(function(k) {
+        var r = rawItems[k];
+        r.name = k;
+        items.push(r);
+      });
+      items.sort(function(a, b) { return (b.total || 0) - (a.total || 0); });
+    } else {
+      items = rawItems;
+    }
     var row = items[idx];
     if (!row) return;
 
     var subContainer = $('subtable_' + key);
     if (subContainer) {
-      subContainer.innerHTML = renderSubTable(row[subDim] || []);
+      subContainer.innerHTML = renderSubTable(row.sub ? row.sub[subDim] : {});
     }
   };
 
