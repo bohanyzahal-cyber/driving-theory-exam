@@ -1460,11 +1460,11 @@
   }
 
   function sendDQToServer() {
-    var eventId = currentDQEventId;  // capture at call time — don't re-read later
+    var eventId = currentDQEventId;
     var url = buildDisqualifyUrl();
     dqServerConfirmed = false;
 
-    // Method 1: sendBeacon with JSON body (most reliable for background/closing pages)
+    // Method 1: sendBeacon (most reliable for background/closing)
     try {
       if (navigator.sendBeacon) {
         var beaconData = JSON.stringify({
@@ -1477,39 +1477,12 @@
       }
     } catch(ex) {}
 
-    // Method 2: fetch with redirect follow + confirmation
-    function tryFetch(suffix) {
-      try {
-        fetch(url + (suffix || ''))
-          .then(function(resp) { if (resp.ok || resp.type === 'opaque') dqServerConfirmed = true; })
-          .catch(function() {});
-      } catch(ex) {}
-    }
-    tryFetch('&_m=fetch1');
-
-    // Method 3: Image pixel (immediate backup)
-    try { new Image().src = url + '&_m=img1&_t=' + Date.now(); } catch(ex) {}
-
-    // Method 4: retry fetch after 2 seconds
-    setTimeout(function() { if (eventId === currentDQEventId) tryFetch('&_m=fetch2&_retry=1'); }, 2000);
-
-    // Method 5: retry Image after 4 seconds
-    setTimeout(function() {
-      if (eventId !== currentDQEventId) return;
-      try { new Image().src = url + '&_m=img2&_retry=2&_t=' + Date.now(); } catch(ex) {}
-    }, 4000);
-
-    // Method 6: open a tiny popup/redirect as last resort after 8 seconds
-    setTimeout(function() {
-      if (dqServerConfirmed || eventId !== currentDQEventId) return;
-      try {
-        var iframe = document.createElement('iframe');
-        iframe.style.display = 'none';
-        iframe.src = url + '&_m=iframe&_retry=3';
-        document.body.appendChild(iframe);
-        setTimeout(function() { try { document.body.removeChild(iframe); } catch(ex) {} }, 10000);
-      } catch(ex) {}
-    }, 8000);
+    // Method 2: single fetch backup
+    try {
+      fetch(url + '&_m=fetch1')
+        .then(function(resp) { if (resp.ok || resp.type === 'opaque') dqServerConfirmed = true; })
+        .catch(function() {});
+    } catch(ex) {}
   }
 
   // Cancel a provisional DQ — called when examinee returns within grace period

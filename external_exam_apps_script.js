@@ -817,6 +817,7 @@ function handleExaminerDashboard(p) {
     var resultCount = 0;
     for (var ri = 1; ri < resData.length; ri++) {
       if (String(resData[ri][13]) === code && normalizeId(resData[ri][1]) === normalizeId(ciId)) {
+        if (String(resData[ri][7] || '') === 'בוטל') continue;
         resultCount++;
       }
     }
@@ -878,6 +879,7 @@ function handleExaminerDashboard(p) {
   var completed = [];
   for (var j = 1; j < resData.length; j++) {
     if (String(resData[j][13]) !== code) continue;
+    if (String(resData[j][7] || '') === 'בוטל') continue;
     completed.push({
       date: resData[j][0],
       idNumber: resData[j][1],
@@ -913,6 +915,7 @@ function handleExaminerDashboard(p) {
     var todayExams = [];
     for (var ri = 1; ri < resData.length; ri++) {
       if (normalizeId(resData[ri][1]) !== normalizeId(pending[pi].idNumber)) continue;
+      if (String(resData[ri][7] || '') === 'בוטל') continue;
       // Handle both Date objects and string dates from Sheets
       var cellDate = resData[ri][0];
       var dateStr = '';
@@ -971,8 +974,9 @@ function handleDisqualify(p) {
   var data = sheet.getDataRange().getValues();
   for (var i = data.length - 1; i >= 1; i--) {
     if (String(data[i][13]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
-      if (String(data[i][7]).trim() === 'פסול' && dqEventId && String(data[i][24] || '') === dqEventId) {
-        // Same DQ event — retry from sendDQToServer, skip
+      var rowStatus = String(data[i][7]).trim();
+      if ((rowStatus === 'פסול' || rowStatus === 'בוטל') && dqEventId && String(data[i][24] || '') === dqEventId) {
+        // Same DQ event (active or cancelled) — retry from sendDQToServer, skip
         return jsonResponse({ status: 'ok' });
       }
       // Either latest is not "פסול", or different/missing dqEventId → new attempt, create new row
@@ -1034,7 +1038,7 @@ function handleCancelDisqualify(p) {
       if (String(resData[i][7]).trim() === 'פסול') {
         // Only delete if dqEventId matches (or if no eventId provided for backwards compat)
         if (!dqEventId || String(resData[i][24] || '') === dqEventId) {
-          resSheet.deleteRow(i + 1);
+          resSheet.getRange(i + 1, 8).setValue('בוטל');
           break;
         }
       }
@@ -1696,6 +1700,7 @@ function handleCommanderDashboard(p) {
     var license = String(resData[r][4] || '');
     var population = String(resData[r][19] || '');
     var passedStr = String(resData[r][7] || '');
+    if (passedStr === 'בוטל') continue;
     var isDQ = resData[r][17] === true || String(resData[r][17]).toUpperCase() === 'TRUE' || passedStr === 'פסול';
     var isPassed = !isDQ && (passedStr === 'עבר');
 
