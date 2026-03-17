@@ -1398,7 +1398,7 @@
           '<a href="' + waUrl + '" target="_blank" class="wa-btn" onclick="markSentWA(' + i + ')" style="margin-left:4px;">\u{1F4F1} WA</a>' +
           '<a href="' + smsUrl + '" class="wa-btn" style="background:#2563eb;margin-left:4px;">\u{1F4E9} SMS</a>' +
           '<button class="wa-btn" style="background:#64748b;margin-left:4px;" onclick="editPhone(' + i + ')" title="\u05E2\u05E8\u05D5\u05DA \u05D8\u05DC\u05E4\u05D5\u05DF">\u270E\u{1F4F1}</button>' +
-          (!isDQ ? ' <button class="btn-disqualify" onclick="disqualifyResult(' + i + ')">פסול</button>' : ' <button style="background:#16a34a;color:white;padding:4px 10px;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;margin-left:4px;" onclick="overturnDQ(' + i + ')">ביטול פסילה</button>') +
+          (!isDQ ? ' <button class="btn-disqualify" onclick="disqualifyResult(' + i + ')">פסול</button>' : ' <button style="background:#16a34a;color:white;padding:4px 10px;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;margin-left:4px;" onclick="overturnDQ(' + i + ')">ביטול פסילה</button> <button style="background:#dc2626;color:white;padding:4px 10px;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;margin-left:4px;" onclick="confirmDQ(' + i + ')">אישור פסילה</button>') +
           (canCorrect ? ' <button style="background:#f59e0b;color:white;padding:4px 10px;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;margin-left:4px;" onclick="correctToPass(' + i + ')">\u05EA\u05E7\u05DF</button>' : '') +
         '</td></tr>';
     }
@@ -2963,6 +2963,21 @@
       apiGet({ action: 'overturnDQ', sessionCode: sessionCode, idNumber: r.idNumber, examinerId: examinerData.id }).then(function(data) {
         if (data.status === 'ok') {
           alert(r.name + ' — הפסילה בוטלה.');
+          pollDashboard();
+        } else {
+          alert('שגיאה: ' + (data.message || ''));
+        }
+      });
+    }
+  };
+
+  window.confirmDQ = function(idx) {
+    var r = completedResults[idx];
+    if (!r) return;
+    if (confirm('אישור פסילה של ' + r.name + '?\nהנבחן יקבל הודעה סופית שהמבחן נפסל.')) {
+      apiGet({ action: 'confirmDQ', sessionCode: sessionCode, idNumber: r.idNumber, examinerId: examinerData.id }).then(function(data) {
+        if (data.status === 'ok') {
+          alert(r.name + ' — הפסילה אושרה.');
           pollDashboard();
         } else {
           alert('שגיאה: ' + (data.message || ''));

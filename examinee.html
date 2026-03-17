@@ -1627,6 +1627,10 @@
           // Examiner overturned DQ — try to resume exam
           clearInterval(dqOverturnInterval); dqOverturnInterval = null;
           restoreExamFromSuspended();
+        } else if (data.status === 'ok' && data.approval === 'dq_confirmed') {
+          // Examiner confirmed DQ — show final screen
+          clearInterval(dqOverturnInterval); dqOverturnInterval = null;
+          showFinalDQScreen();
         }
       }).catch(function() {});
     }, 3000);
@@ -1634,6 +1638,18 @@
 
   function stopDQOverturnPolling() {
     if (dqOverturnInterval) { clearInterval(dqOverturnInterval); dqOverturnInterval = null; }
+  }
+
+  function showFinalDQScreen() {
+    // Remove suspended exam data — DQ is confirmed, no resume possible
+    try { localStorage.removeItem('examSuspended_' + sessionCode + '_' + examineeData.idNumber); } catch(e) {}
+    var waitMsg = document.getElementById('dqWaitingMsg');
+    if (waitMsg) {
+      waitMsg.style.background = '#fee2e2';
+      waitMsg.innerHTML =
+        '<p style="color:#991b1b; font-size:15px; font-weight:700; margin:0 0 4px;">❌ הבוחן אישר את הפסילה</p>' +
+        '<p style="color:#991b1b; font-size:13px; margin:0;">המבחן נפסל סופית.</p>';
+    }
   }
 
   // ========== Restore exam after DQ overturn ==========
