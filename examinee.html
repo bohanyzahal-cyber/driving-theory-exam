@@ -1583,7 +1583,8 @@
             shuffledOrders: shuffledOrders,
             timeRemainingMs: msLeft,
             examTimeMinutes: examTimeMinutes,
-            autoReadEnabled: autoReadEnabled
+            autoReadEnabled: autoReadEnabled,
+            dqEventId: currentDQEventId
           }));
         } catch(e) {}
       }
@@ -2916,8 +2917,13 @@
       try { hasSuspended = isDQ && !!localStorage.getItem(suspKey2); } catch(ex) {}
 
       if (hasSuspended) {
+        // Restore dqEventId from suspended state so retry uses same ID (prevents duplicate פסול rows)
+        try {
+          var suspData = JSON.parse(localStorage.getItem(suspKey2));
+          if (suspData && suspData.dqEventId) currentDQEventId = suspData.dqEventId;
+        } catch(ex) {}
         // Retry DQ notification to server (in case original request failed)
-        try { sendDQToServer(); } catch(ex) {}
+        if (currentDQEventId) { try { sendDQToServer(); } catch(ex) {} }
         var examArea = document.getElementById('examArea');
         examArea.innerHTML =
           '<div style="text-align:center; padding:40px 20px;">' +
