@@ -1150,6 +1150,17 @@ function handleOverturnDQ(p) {
       sheet.getRange(i + 1, 8).setValue('בוטל');
       // Clear the DQ flag
       sheet.getRange(i + 1, 18).setValue(false);
+      // Revert pending status from 'disqualified' back to 'in_exam' so examinee can resume
+      var pendSheet = getSheet('ממתינים');
+      var pendData = pendSheet.getDataRange().getValues();
+      for (var j = pendData.length - 1; j >= 1; j--) {
+        if (String(pendData[j][0]) === String(p.sessionCode) && normalizeId(pendData[j][1]) === normalizeId(p.idNumber)) {
+          if (String(pendData[j][5]).trim() === 'disqualified') {
+            pendSheet.getRange(j + 1, 6).setValue('in_exam');
+          }
+          break;
+        }
+      }
       SpreadsheetApp.flush();
       return jsonResponse({ status: 'ok' });
     }

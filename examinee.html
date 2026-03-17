@@ -827,6 +827,8 @@
 
   // Reset everything so the next examinee can use the same device
   window.resetForNextExaminee = function() {
+    // Stop DQ overturn polling if active
+    stopDQOverturnPolling();
     // Clear state
     clearExamineeState();
     // Clear pending result for CURRENT examinee only (in-flight retries for others may still need it)
@@ -835,6 +837,7 @@
         localStorage.removeItem('pendingResult_' + examineeData.idNumber);
         localStorage.removeItem('pendingWrongAnswers_' + examineeData.idNumber);
         localStorage.removeItem('examEnded_' + sessionCode + '_' + examineeData.idNumber);
+        localStorage.removeItem('examSuspended_' + sessionCode + '_' + examineeData.idNumber);
       } catch(e) {}
     }
     examInProgress = false;
@@ -1422,7 +1425,8 @@
   var tabHiddenAt = 0;                // timestamp when tab was hidden
   var TAB_SWITCH_GRACE_MS = 10000;    // 10 second grace on first offense
   var TAB_SWITCH_CALL_MS = 5000;      // 5+ seconds away = phone call → immediate DQ
-  var TAB_SWITCH_MAX_WARNINGS = 1;    // allow 1 return; 2nd switch = immediate DQ
+  var TAB_SWITCH_MAX_WARNINGS = 3;    // allow 3 returns; 4th switch = immediate DQ
+  var SHORT_BLUR_IGNORE_MS = 2000;    // blur returns under 2 seconds (without leaving screen) are ignored completely
 
   var tabSwitchBound = false;
   function setupTabSwitchDetection() {
@@ -1546,11 +1550,16 @@
         sendDQToServer();
         showDQScreen();
       } else if (tabSwitchGraceTimer) {
-        // Returned quickly (< 5 seconds) — cancel grace timer, show warning (no DQ was sent)
-        if (tabSwitchGraceTimer) { clearTimeout(tabSwitchGraceTimer); tabSwitchGraceTimer = null; }
+        // Returned within grace period — cancel grace timer
+        clearTimeout(tabSwitchGraceTimer); tabSwitchGraceTimer = null;
         currentDQEventId = '';  // reset so next DQ event gets a fresh ID
-        tabSwitchWarnings++;
-        showTabSwitchWarning();
+        if (awayMs < SHORT_BLUR_IGNORE_MS) {
+          // Very short switch (< 2 sec) — ignore completely (connectivity hiccup, system notification)
+        } else {
+          // Away 2-5 sec — count as warning
+          tabSwitchWarnings++;
+          showTabSwitchWarning();
+        }
       }
     }
   }
@@ -1560,23 +1569,133 @@
     document.removeEventListener('visibilitychange', onTabSwitch);
     teardownSplitScreenDetection();
     stopSpeaking();
-    stopTimer();
     stopDevToolsTrap();
+
+    // Save exam state to localStorage BEFORE clearing — allows resume if examiner overturns DQ
+    if (activeQuestions.length > 0 && examDeadline) {
+      var msLeft = examDeadline - Date.now();
+      if (msLeft > 0) {
+        try {
+          localStorage.setItem('examSuspended_' + sessionCode + '_' + examineeData.idNumber, JSON.stringify({
+            activeQuestions: activeQuestions,
+            currentIndex: currentIndex,
+            userAnswers: userAnswers,
+            shuffledOrders: shuffledOrders,
+            timeRemainingMs: msLeft,
+            examTimeMinutes: examTimeMinutes,
+            autoReadEnabled: autoReadEnabled
+          }));
+        } catch(e) {}
+      }
+    }
+
+    stopTimer();
     examInProgress = false;
     examSubmitted = true;
 
     clearActiveExam();
-    clearExamineeState();
     var examArea = document.getElementById('examArea');
     examArea.innerHTML =
       '<div style="text-align:center; padding:40px 20px;">' +
         '<div style="font-size:60px; margin-bottom:16px;">\u26D4</div>' +
         '<h2 style="color:#dc2626; margin:0 0 12px;">\u05D4\u05DE\u05D1\u05D7\u05DF \u05E0\u05E4\u05E1\u05DC</h2>' +
         '<p style="color:#64748b; font-size:15px;">\u05D6\u05D5\u05D4\u05D4 \u05DE\u05E2\u05D1\u05E8 \u05DC\u05DE\u05E1\u05DA \u05D0\u05D7\u05E8 \u05D0\u05D5 \u05D0\u05E4\u05DC\u05D9\u05E7\u05E6\u05D9\u05D4 \u05D0\u05D7\u05E8\u05EA.</p>' +
-        '<p style="color:#64748b; font-size:15px;">\u05D0\u05D9\u05DF \u05DC\u05E6\u05D0\u05EA \u05DE\u05DE\u05E1\u05DA \u05D4\u05DE\u05D1\u05D7\u05DF \u05D1\u05DE\u05D4\u05DC\u05DA \u05D4\u05DE\u05D1\u05D7\u05DF.</p>' +
-        '<p style="color:#94a3b8; font-size:13px; margin-top:20px;">\u05E4\u05E0\u05D4 \u05DC\u05D1\u05D5\u05D7\u05DF \u05DC\u05E7\u05D1\u05DC\u05EA \u05D4\u05E0\u05D7\u05D9\u05D5\u05EA.</p>' +
+        '<div id="dqWaitingMsg" style="margin-top:16px; padding:12px; background:#fef3c7; border-radius:8px;">' +
+          '<p style="color:#92400e; font-size:15px; font-weight:700; margin:0 0 4px;">\u23F3 \u05DE\u05DE\u05EA\u05D9\u05DF \u05DC\u05D4\u05D7\u05DC\u05D8\u05EA \u05D4\u05D1\u05D5\u05D7\u05DF...</p>' +
+          '<p style="color:#92400e; font-size:13px; margin:0;">\u05D0\u05DD \u05D4\u05D1\u05D5\u05D7\u05DF \u05D9\u05D1\u05D8\u05DC \u05D0\u05EA \u05D4\u05E4\u05E1\u05D9\u05DC\u05D4, \u05D4\u05DE\u05D1\u05D7\u05DF \u05D9\u05DE\u05E9\u05D9\u05DA \u05D0\u05D5\u05D8\u05D5\u05DE\u05D8\u05D9\u05EA.</p>' +
+        '</div>' +
         '<button onclick="resetForNextExaminee()" style="margin-top:24px; display:block; width:100%; padding:14px; font-size:17px; background:#0f172a; color:white; border:none; border-radius:10px; cursor:pointer; font-weight:700;">\u05E0\u05D1\u05D7\u05DF \u05D4\u05D1\u05D0 \u2190</button>' +
       '</div>';
+
+    // Start polling for DQ overturn
+    startDQOverturnPolling();
+  }
+
+  // ========== DQ Overturn polling — checks if examiner reversed the DQ ==========
+  var dqOverturnInterval = null;
+
+  function startDQOverturnPolling() {
+    if (dqOverturnInterval) { clearInterval(dqOverturnInterval); dqOverturnInterval = null; }
+    dqOverturnInterval = setInterval(function() {
+      if (!sessionCode || !examineeData.idNumber) return;
+      apiGet({
+        action: 'checkApproval',
+        sessionCode: sessionCode,
+        idNumber: examineeData.idNumber
+      }).then(function(data) {
+        if (data.status === 'ok' && data.approval === 'in_exam') {
+          // Examiner overturned DQ — try to resume exam
+          clearInterval(dqOverturnInterval); dqOverturnInterval = null;
+          restoreExamFromSuspended();
+        }
+      }).catch(function() {});
+    }, 3000);
+  }
+
+  function stopDQOverturnPolling() {
+    if (dqOverturnInterval) { clearInterval(dqOverturnInterval); dqOverturnInterval = null; }
+  }
+
+  // ========== Restore exam after DQ overturn ==========
+  function restoreExamFromSuspended() {
+    var suspKey = 'examSuspended_' + sessionCode + '_' + examineeData.idNumber;
+    var endedKey = 'examEnded_' + sessionCode + '_' + examineeData.idNumber;
+    var saved = null;
+    try { saved = JSON.parse(localStorage.getItem(suspKey)); } catch(e) {}
+
+    if (!saved || !saved.activeQuestions || !saved.timeRemainingMs || saved.timeRemainingMs <= 0) {
+      // No saved state or time expired — can't resume, show message
+      var waitMsg = document.getElementById('dqWaitingMsg');
+      if (waitMsg) {
+        waitMsg.innerHTML =
+          '<p style="color:#16a34a; font-size:15px; font-weight:700; margin:0 0 4px;">\u2705 \u05D4\u05E4\u05E1\u05D9\u05DC\u05D4 \u05D1\u05D5\u05D8\u05DC\u05D4!</p>' +
+          '<p style="color:#64748b; font-size:13px; margin:0;">\u05DC\u05D0 \u05E0\u05D9\u05EA\u05DF \u05DC\u05D4\u05DE\u05E9\u05D9\u05DA \u2014 \u05D4\u05D6\u05DE\u05DF \u05E4\u05D2. \u05E4\u05E0\u05D4 \u05DC\u05D1\u05D5\u05D7\u05DF.</p>';
+        waitMsg.style.background = '#dcfce7';
+      }
+      try { localStorage.removeItem(suspKey); } catch(e) {}
+      try { localStorage.removeItem(endedKey); } catch(e) {}
+      return;
+    }
+
+    // Restore exam state
+    activeQuestions = saved.activeQuestions;
+    currentIndex = saved.currentIndex;
+    userAnswers = saved.userAnswers;
+    shuffledOrders = saved.shuffledOrders;
+    examTimeMinutes = saved.examTimeMinutes;
+    autoReadEnabled = saved.autoReadEnabled || false;
+    examDeadline = Date.now() + saved.timeRemainingMs;
+    examStartTime = Date.now() - ((examTimeMinutes * 60 * 1000) - saved.timeRemainingMs);
+    timeRemaining = Math.max(0, Math.ceil(saved.timeRemainingMs / 1000));
+
+    examInProgress = true;
+    examSubmitted = false;
+
+    // Reset DQ flags — fresh chances
+    tabSwitchDQConfirmed = false;
+    tabSwitchWarnings = 0;
+    currentDQEventId = '';
+    provisionalDQSent = false;
+    dqServerConfirmed = false;
+    if (splitScreenBlurTimer) { clearTimeout(splitScreenBlurTimer); splitScreenBlurTimer = null; }
+
+    // Clear DQ markers
+    try { localStorage.removeItem(suspKey); } catch(e) {}
+    try { localStorage.removeItem(endedKey); } catch(e) {}
+
+    // Reset bound flags so detection listeners can be re-attached
+    tabSwitchBound = false;
+    splitScreenBound = false;
+
+    // Re-setup exam UI
+    showScreen('screenExam');
+    setupBeforeUnload();
+    setupTabSwitchDetection();
+    setupSplitScreenDetection();
+    startResumedTimer();
+    startDevToolsTrap();
+    saveActiveExam();
+    renderQuestion();
   }
 
   function showTabSwitchWarning() {
@@ -1700,7 +1819,7 @@
   function onWindowFocus() {
     if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
     if (splitScreenBlurTimer) {
-      if (splitScreenBlurTimer) { clearTimeout(splitScreenBlurTimer); splitScreenBlurTimer = null; }
+      clearTimeout(splitScreenBlurTimer); splitScreenBlurTimer = null;
       var awayMs = tabHiddenAt ? (Date.now() - tabHiddenAt) : 0;
       if (awayMs >= TAB_SWITCH_CALL_MS) {
         // Was away 5+ sec — send DQ now
@@ -1708,8 +1827,11 @@
         try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
         sendDQToServer();
         showDQScreen();
+      } else if (awayMs < SHORT_BLUR_IGNORE_MS && document.visibilityState === 'visible') {
+        // Very short blur (< 2 sec) without leaving screen — ignore completely (connectivity hiccup, system notification, etc.)
+        currentDQEventId = '';
       } else {
-        // Quick return — cancel grace timer, show warning (no DQ was sent)
+        // Quick return (2-5 sec) — cancel grace timer, show warning (no DQ was sent)
         currentDQEventId = '';
         tabSwitchWarnings++;
         showTabSwitchWarning();
@@ -2770,23 +2892,49 @@
     if (endedReason && examineeData.idNumber) {
       // Exam already ended — show clear "exam ended" screen instead of confusing waiting screen
       var endedName = examineeData.fullName || '';
-      // Retry DQ notification to server (in case original request failed)
-      if (endedReason === 'dq' && sessionCode && examineeData.idNumber) {
-        try { sendDQToServer(); } catch(ex) {}
-      }
-      clearExamineeState();
       var isDQ = endedReason === 'dq';
-      var examArea = document.getElementById('examArea');
-      examArea.innerHTML =
-        '<div style="text-align:center; padding:40px 20px;">' +
-          '<div style="font-size:50px; margin-bottom:12px;">' + (isDQ ? '\u26D4' : '\uD83D\uDCCB') + '</div>' +
-          '<h2 style="color:' + (isDQ ? '#dc2626' : '#334155') + '; margin:0 0 12px;">' + (isDQ ? '\u05D4\u05DE\u05D1\u05D7\u05DF \u05E0\u05E4\u05E1\u05DC' : '\u05D4\u05DE\u05D1\u05D7\u05DF \u05D4\u05E1\u05EA\u05D9\u05D9\u05DD') + '</h2>' +
-          (endedName ? '<p style="font-size:18px; font-weight:700; margin:0 0 8px;">' + escHtml(endedName) + '</p>' : '') +
-          '<p style="color:#64748b; font-size:15px;">' + (isDQ ? '\u05D4\u05DE\u05D1\u05D7\u05DF \u05E0\u05E4\u05E1\u05DC \u05E2\u05E7\u05D1 \u05D9\u05E6\u05D9\u05D0\u05D4 \u05DE\u05DE\u05E1\u05DA \u05D4\u05DE\u05D1\u05D7\u05DF.' : '\u05D4\u05EA\u05D5\u05E6\u05D0\u05D4 \u05E0\u05E9\u05DC\u05D7\u05D4 \u05DC\u05D1\u05D5\u05D7\u05DF.') + '</p>' +
-          '<p style="color:#94a3b8; font-size:13px; margin-top:12px;">\u05E4\u05E0\u05D4 \u05DC\u05D1\u05D5\u05D7\u05DF \u05DC\u05E7\u05D1\u05DC\u05EA \u05D4\u05E0\u05D7\u05D9\u05D5\u05EA.</p>' +
-          '<button onclick="resetForNextExaminee()" style="margin-top:24px; display:block; width:100%; padding:14px; font-size:17px; background:#0f172a; color:white; border:none; border-radius:10px; cursor:pointer; font-weight:700;">\u05E0\u05D1\u05D7\u05DF \u05D4\u05D1\u05D0 \u2190</button>' +
-        '</div>';
-      showScreen('screenExam');
+
+      // Check if there's a suspended exam state — if so, show DQ screen with overturn polling
+      var suspKey2 = 'examSuspended_' + saved.sessionCode + '_' + examineeData.idNumber;
+      var hasSuspended = false;
+      try { hasSuspended = isDQ && !!localStorage.getItem(suspKey2); } catch(ex) {}
+
+      if (hasSuspended) {
+        // Retry DQ notification to server (in case original request failed)
+        try { sendDQToServer(); } catch(ex) {}
+        var examArea = document.getElementById('examArea');
+        examArea.innerHTML =
+          '<div style="text-align:center; padding:40px 20px;">' +
+            '<div style="font-size:60px; margin-bottom:16px;">\u26D4</div>' +
+            '<h2 style="color:#dc2626; margin:0 0 12px;">\u05D4\u05DE\u05D1\u05D7\u05DF \u05E0\u05E4\u05E1\u05DC</h2>' +
+            '<p style="color:#64748b; font-size:15px;">\u05D6\u05D5\u05D4\u05D4 \u05DE\u05E2\u05D1\u05E8 \u05DC\u05DE\u05E1\u05DA \u05D0\u05D7\u05E8 \u05D0\u05D5 \u05D0\u05E4\u05DC\u05D9\u05E7\u05E6\u05D9\u05D4 \u05D0\u05D7\u05E8\u05EA.</p>' +
+            '<div id="dqWaitingMsg" style="margin-top:16px; padding:12px; background:#fef3c7; border-radius:8px;">' +
+              '<p style="color:#92400e; font-size:15px; font-weight:700; margin:0 0 4px;">\u23F3 \u05DE\u05DE\u05EA\u05D9\u05DF \u05DC\u05D4\u05D7\u05DC\u05D8\u05EA \u05D4\u05D1\u05D5\u05D7\u05DF...</p>' +
+              '<p style="color:#92400e; font-size:13px; margin:0;">\u05D0\u05DD \u05D4\u05D1\u05D5\u05D7\u05DF \u05D9\u05D1\u05D8\u05DC \u05D0\u05EA \u05D4\u05E4\u05E1\u05D9\u05DC\u05D4, \u05D4\u05DE\u05D1\u05D7\u05DF \u05D9\u05DE\u05E9\u05D9\u05DA \u05D0\u05D5\u05D8\u05D5\u05DE\u05D8\u05D9\u05EA.</p>' +
+            '</div>' +
+            '<button onclick="resetForNextExaminee()" style="margin-top:24px; display:block; width:100%; padding:14px; font-size:17px; background:#0f172a; color:white; border:none; border-radius:10px; cursor:pointer; font-weight:700;">\u05E0\u05D1\u05D7\u05DF \u05D4\u05D1\u05D0 \u2190</button>' +
+          '</div>';
+        showScreen('screenExam');
+        startDQOverturnPolling();
+      } else {
+        // No suspended state or not DQ — show final ended screen
+        // Retry DQ notification to server (in case original request failed)
+        if (isDQ && sessionCode && examineeData.idNumber) {
+          try { sendDQToServer(); } catch(ex) {}
+        }
+        clearExamineeState();
+        var examArea = document.getElementById('examArea');
+        examArea.innerHTML =
+          '<div style="text-align:center; padding:40px 20px;">' +
+            '<div style="font-size:50px; margin-bottom:12px;">' + (isDQ ? '\u26D4' : '\uD83D\uDCCB') + '</div>' +
+            '<h2 style="color:' + (isDQ ? '#dc2626' : '#334155') + '; margin:0 0 12px;">' + (isDQ ? '\u05D4\u05DE\u05D1\u05D7\u05DF \u05E0\u05E4\u05E1\u05DC' : '\u05D4\u05DE\u05D1\u05D7\u05DF \u05D4\u05E1\u05EA\u05D9\u05D9\u05DD') + '</h2>' +
+            (endedName ? '<p style="font-size:18px; font-weight:700; margin:0 0 8px;">' + escHtml(endedName) + '</p>' : '') +
+            '<p style="color:#64748b; font-size:15px;">' + (isDQ ? '\u05D4\u05DE\u05D1\u05D7\u05DF \u05E0\u05E4\u05E1\u05DC \u05E2\u05E7\u05D1 \u05D9\u05E6\u05D9\u05D0\u05D4 \u05DE\u05DE\u05E1\u05DA \u05D4\u05DE\u05D1\u05D7\u05DF.' : '\u05D4\u05EA\u05D5\u05E6\u05D0\u05D4 \u05E0\u05E9\u05DC\u05D7\u05D4 \u05DC\u05D1\u05D5\u05D7\u05DF.') + '</p>' +
+            '<p style="color:#94a3b8; font-size:13px; margin-top:12px;">\u05E4\u05E0\u05D4 \u05DC\u05D1\u05D5\u05D7\u05DF \u05DC\u05E7\u05D1\u05DC\u05EA \u05D4\u05E0\u05D7\u05D9\u05D5\u05EA.</p>' +
+            '<button onclick="resetForNextExaminee()" style="margin-top:24px; display:block; width:100%; padding:14px; font-size:17px; background:#0f172a; color:white; border:none; border-radius:10px; cursor:pointer; font-weight:700;">\u05E0\u05D1\u05D7\u05DF \u05D4\u05D1\u05D0 \u2190</button>' +
+          '</div>';
+        showScreen('screenExam');
+      }
     } else if (saved.screen === 'screenInstructions' && examineeData.idNumber) {
       // Was waiting for approval or in instructions — go back to waiting
       showScreen('screenInstructions');
