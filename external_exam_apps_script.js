@@ -173,7 +173,7 @@ function doGet(e) {
     // Actions that require examiner token authentication
     var examinerActions = ['getSites','listSessions','createSession','updateSession','closeSession',
       'approveExaminee','rejectExaminee','examinerDashboard','resetExaminee',
-      'correctToPass','forceComplete','markSent','commanderDashboard'];
+      'correctToPass','overturnDQ','forceComplete','markSent','commanderDashboard'];
     // Note: 'disqualify' is NOT in this list because it can be sent by the examinee client (no token)
     if (examinerActions.indexOf(action) !== -1) {
       var tokenErr = requireToken(p);
@@ -245,6 +245,9 @@ function doGet(e) {
 
       case 'resetExaminee':
         return handleResetExaminee(p);
+
+      case 'overturnDQ':
+        return handleOverturnDQ(p);
 
       case 'correctToPass':
         return handleCorrectToPass(p);
@@ -1129,6 +1132,29 @@ function handleForceComplete(p) {
   ]);
   SpreadsheetApp.flush();
   return jsonResponse({ status: 'ok', message: 'נבחן סומן כנכשל (ניתוק)' });
+}
+
+function handleOverturnDQ(p) {
+  if (p.examinerId && !verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+    return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
+  }
+  var sheet = getSheet('תוצאות');
+  var data = sheet.getDataRange().getValues();
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][13]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
+      var status = String(data[i][7]).trim();
+      if (status !== 'פסול') {
+        return jsonResponse({ status: 'error', message: 'תוצאה זו אינה פסולה' });
+      }
+      // Change status from פסול to נכשל (allow retake)
+      sheet.getRange(i + 1, 8).setValue('נכשל');
+      // Clear the DQ flag
+      sheet.getRange(i + 1, 18).setValue(false);
+      SpreadsheetApp.flush();
+      return jsonResponse({ status: 'ok' });
+    }
+  }
+  return jsonResponse({ status: 'error', message: 'תוצאה לא נמצאה' });
 }
 
 function handleCorrectToPass(p) {
