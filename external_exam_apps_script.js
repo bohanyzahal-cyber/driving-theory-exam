@@ -825,26 +825,27 @@ function handleExaminerDashboard(p) {
     var maxMs = Math.round(BASE_EXAM_MS * ciExt) + STALE_BUFFER_MS;
     var isStale = regTime && (now.getTime() - regTime.getTime() > maxMs);
 
-    // Count results AND disqualified entries for this examinee in this session
-    var resultCount = 0;
+    // Count results by type for this examinee in this session
+    var dqResults = 0, otherResults = 0;
     for (var ri = 1; ri < resData.length; ri++) {
       if (String(resData[ri][13]) === code && normalizeId(resData[ri][1]) === normalizeId(ciId)) {
         if (String(resData[ri][7] || '') === 'בוטל') continue;
-        resultCount++;
+        if (String(resData[ri][7] || '').trim() === 'פסול') dqResults++;
+        else otherResults++;
       }
     }
-    // Count terminal entries (completed/disqualified) in pending sheet for this examinee
-    var terminalCount = 0;
+    // Count terminal entries by type in pending sheet for this examinee
+    var dqTerminals = 0, otherTerminals = 0;
     for (var cc = 1; cc < pendData.length; cc++) {
       if (String(pendData[cc][0]) !== code || normalizeId(pendData[cc][1]) !== normalizeId(ciId)) continue;
       var ccStatus = String(pendData[cc][5]).trim();
-      if (ccStatus === 'completed' || ccStatus === 'disqualified' || ccStatus === 'dq_confirmed') {
-        terminalCount++;
-      }
+      if (ccStatus === 'disqualified' || ccStatus === 'dq_confirmed') dqTerminals++;
+      else if (ccStatus === 'completed') otherTerminals++;
     }
-    // Only treat as dangling if there are more results than terminal entries
-    // (meaning this in_exam already has a result but wasn't marked completed/disqualified)
-    var hasUnmatchedResult = resultCount > terminalCount;
+    // Cap DQ results to DQ terminals — handles duplicate פסול rows from page refreshes
+    var effectiveResults = Math.min(dqResults, dqTerminals) + otherResults;
+    var totalTerminals = dqTerminals + otherTerminals;
+    var hasUnmatchedResult = effectiveResults > totalTerminals;
 
     if (hasUnmatchedResult || isStale) {
       // Fix dangling status — mark as completed
@@ -1368,14 +1369,25 @@ function handleSubmitResult(data) {
 
   // Duplicate protection: check if result already exists for this session+ID+license+language
   // Skip disqualified (פסול) and cancelled (בוטל) rows — those are not real results and should not block retakes
-  var existingData = sheet.getDataRange().getValues();
-  for (var d = 1; d < existingData.length; d++) {
-    var existingStatus = String(existingData[d][7] || '').trim();
-    if (existingStatus === 'פסול' || existingStatus === 'בוטל') continue;
-    if (String(existingData[d][13]) === String(data.sessionCode) && normalizeId(existingData[d][1]) === normalizeId(data.idNumber) && String(existingData[d][4]) === String(data.license) && String(existingData[d][12]) === String(data.language || 'he')) {
-      // Already submitted — still update pending status so examinee doesn't stay stuck in "in_exam"
-      markPendingCompleted(data.sessionCode, data.idNumber);
-      return jsonResponse({ status: 'ok', waLink: existingData[d][18] || '', duplicate: true });
+  // Also skip duplicate check entirely if examinee has an active in_exam pending row (retake after DQ)
+  var hasPendingInExam = false;
+  var pendCheck = getSheet('ממתינים').getDataRange().getValues();
+  for (var pc = pendCheck.length - 1; pc >= 1; pc--) {
+    if (String(pendCheck[pc][0]) === String(data.sessionCode) && normalizeId(pendCheck[pc][1]) === normalizeId(data.idNumber) && String(pendCheck[pc][5]).trim() === 'in_exam') {
+      hasPendingInExam = true;
+      break;
+    }
+  }
+  if (!hasPendingInExam) {
+    var existingData = sheet.getDataRange().getValues();
+    for (var d = 1; d < existingData.length; d++) {
+      var existingStatus = String(existingData[d][7] || '').trim();
+      if (existingStatus === 'פסול' || existingStatus === 'בוטל') continue;
+      if (String(existingData[d][13]) === String(data.sessionCode) && normalizeId(existingData[d][1]) === normalizeId(data.idNumber) && String(existingData[d][4]) === String(data.license) && String(existingData[d][12]) === String(data.language || 'he')) {
+        // Already submitted — still update pending status so examinee doesn't stay stuck in "in_exam"
+        markPendingCompleted(data.sessionCode, data.idNumber);
+        return jsonResponse({ status: 'ok', waLink: existingData[d][18] || '', duplicate: true });
+      }
     }
   }
 
