@@ -249,6 +249,9 @@ function doGet(e) {
       case 'overturnDQ':
         return handleOverturnDQ(p);
 
+      case 'confirmDQ':
+        return handleConfirmDQ(p);
+
       case 'correctToPass':
         return handleCorrectToPass(p);
 
@@ -722,6 +725,7 @@ function handleCheckApproval(p) {
     if (String(data[i][0]).trim() === String(p.sessionCode).trim() && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
       var approval = String(data[i][5] || 'waiting').trim();
       // Skip terminal statuses from previous exams — keep looking for active row
+      // Note: dq_confirmed is NOT skipped — examinee needs to receive this status
       if (approval === 'completed' || approval === 'disqualified' || approval === 'cancelled') continue;
       var response = { status: 'ok', approval: approval };
       // When approved, compute and return authorized exam duration
@@ -1171,6 +1175,26 @@ function handleOverturnDQ(p) {
     }
   }
   return jsonResponse({ status: 'error', message: 'תוצאה לא נמצאה' });
+}
+
+function handleConfirmDQ(p) {
+  if (p.examinerId && !verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+    return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
+  }
+  // Mark pending status as dq_confirmed so examinee polling gets a final answer
+  var pendSheet = getSheet('ממתינים');
+  var pendData = pendSheet.getDataRange().getValues();
+  for (var j = pendData.length - 1; j >= 1; j--) {
+    if (String(pendData[j][0]) === String(p.sessionCode) && normalizeId(pendData[j][1]) === normalizeId(p.idNumber)) {
+      if (String(pendData[j][5]).trim() === 'disqualified') {
+        pendSheet.getRange(j + 1, 6).setValue('dq_confirmed');
+        SpreadsheetApp.flush();
+        return jsonResponse({ status: 'ok' });
+      }
+      break;
+    }
+  }
+  return jsonResponse({ status: 'error', message: 'לא נמצא רישום פסול לאישור' });
 }
 
 function handleCorrectToPass(p) {
