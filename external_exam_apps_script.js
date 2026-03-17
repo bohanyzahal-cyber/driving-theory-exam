@@ -1839,50 +1839,66 @@ function generateClassCode() {
 function handleTeacherLogin(p) {
   var sheet = getSheet('מורים');
   var data = sheet.getDataRange().getValues();
+  var matchedRows = [];
   for (var i = 1; i < data.length; i++) {
     if (normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
-      var row = i + 1;
-      var failedAttempts = Number(data[i][6]) || 0;
-      var lockoutUntil = data[i][7];
-      if (lockoutUntil) {
-        var lockoutDate = lockoutUntil instanceof Date ? lockoutUntil : new Date(lockoutUntil);
-        if (new Date() < lockoutDate) {
-          var minsLeft = Math.ceil((lockoutDate - new Date()) / 60000);
-          return jsonResponse({ status: 'error', message: 'החשבון נעול. נסה שוב בעוד ' + minsLeft + ' דקות' });
-        }
-        failedAttempts = 0;
-        sheet.getRange(row, 7).setValue(0);
-        sheet.getRange(row, 8).setValue('');
-      }
-      if (String(data[i][2]) === String(p.password)) {
-        if (data[i][3] === 'כן' || data[i][3] === true || data[i][3] === 'TRUE') {
-          if (failedAttempts > 0) {
-            sheet.getRange(row, 7).setValue(0);
-            sheet.getRange(row, 8).setValue('');
-          }
-          var token = generateToken();
-          var expiry = new Date();
-          expiry.setHours(expiry.getHours() + 12);
-          sheet.getRange(row, 5).setValue(token);
-          sheet.getRange(row, 6).setValue(expiry);
-          return jsonResponse({ status: 'ok', teacher: { name: data[i][0], id: normalizeId(data[i][1]), token: token, role: String(data[i][8] || 'מורה'), site: String(data[i][9] || '') } });
-        } else {
-          return jsonResponse({ status: 'error', message: 'החשבון אינו פעיל' });
-        }
-      } else {
-        failedAttempts++;
-        sheet.getRange(row, 7).setValue(failedAttempts);
-        if (failedAttempts >= 5) {
-          var lockout = new Date();
-          lockout.setMinutes(lockout.getMinutes() + 15);
-          sheet.getRange(row, 8).setValue(lockout);
-          return jsonResponse({ status: 'error', message: 'יותר מדי ניסיונות. החשבון ננעל ל-15 דקות' });
-        }
-        return jsonResponse({ status: 'error', message: 'סיסמה שגויה' });
-      }
+      matchedRows.push(i);
     }
   }
-  return jsonResponse({ status: 'error', message: 'מורה לא נמצא' });
+  if (matchedRows.length === 0) {
+    return jsonResponse({ status: 'error', message: 'מורה לא נמצא' });
+  }
+  var lastError = '';
+  for (var m = 0; m < matchedRows.length; m++) {
+    var i = matchedRows[m];
+    var row = i + 1;
+    var failedAttempts = Number(data[i][6]) || 0;
+    var lockoutUntil = data[i][7];
+    if (lockoutUntil) {
+      var lockoutDate = lockoutUntil instanceof Date ? lockoutUntil : new Date(lockoutUntil);
+      if (new Date() < lockoutDate) {
+        var minsLeft = Math.ceil((lockoutDate - new Date()) / 60000);
+        lastError = 'החשבון נעול. נסה שוב בעוד ' + minsLeft + ' דקות';
+        continue;
+      }
+      failedAttempts = 0;
+      sheet.getRange(row, 7).setValue(0);
+      sheet.getRange(row, 8).setValue('');
+    }
+    if (String(data[i][2]) === String(p.password)) {
+      if (data[i][3] === 'כן' || data[i][3] === true || data[i][3] === 'TRUE') {
+        if (failedAttempts > 0) {
+          sheet.getRange(row, 7).setValue(0);
+          sheet.getRange(row, 8).setValue('');
+        }
+        var token = generateToken();
+        var expiry = new Date();
+        expiry.setHours(expiry.getHours() + 12);
+        sheet.getRange(row, 5).setValue(token);
+        sheet.getRange(row, 6).setValue(expiry);
+        return jsonResponse({ status: 'ok', teacher: { name: data[i][0], id: normalizeId(data[i][1]), token: token, role: String(data[i][8] || 'מורה'), site: String(data[i][9] || '') } });
+      } else {
+        lastError = 'החשבון אינו פעיל';
+        continue;
+      }
+    } else {
+      lastError = 'סיסמה שגויה';
+    }
+  }
+  // If no row matched successfully, increment failed attempts on first active row
+  if (lastError === 'סיסמה שגויה' && matchedRows.length > 0) {
+    var fi = matchedRows[0];
+    var fRow = fi + 1;
+    var fa = (Number(data[fi][6]) || 0) + 1;
+    sheet.getRange(fRow, 7).setValue(fa);
+    if (fa >= 5) {
+      var lockout = new Date();
+      lockout.setMinutes(lockout.getMinutes() + 15);
+      sheet.getRange(fRow, 8).setValue(lockout);
+      return jsonResponse({ status: 'error', message: 'יותר מדי ניסיונות. החשבון ננעל ל-15 דקות' });
+    }
+  }
+  return jsonResponse({ status: 'error', message: lastError || 'שגיאה בהתחברות' });
 }
 
 function handleTeacherVerifyLogin(p) {
