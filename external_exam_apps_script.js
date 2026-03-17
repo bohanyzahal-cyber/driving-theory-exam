@@ -1327,8 +1327,11 @@ function handleSubmitResult(data) {
   }
 
   // Duplicate protection: check if result already exists for this session+ID+license+language
+  // Skip disqualified (פסול) and cancelled (בוטל) rows — those are not real results and should not block retakes
   var existingData = sheet.getDataRange().getValues();
   for (var d = 1; d < existingData.length; d++) {
+    var existingStatus = String(existingData[d][7] || '').trim();
+    if (existingStatus === 'פסול' || existingStatus === 'בוטל') continue;
     if (String(existingData[d][13]) === String(data.sessionCode) && normalizeId(existingData[d][1]) === normalizeId(data.idNumber) && String(existingData[d][4]) === String(data.license) && String(existingData[d][12]) === String(data.language || 'he')) {
       // Already submitted — still update pending status so examinee doesn't stay stuck in "in_exam"
       markPendingCompleted(data.sessionCode, data.idNumber);
