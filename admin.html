@@ -413,8 +413,8 @@
   window.fetchDashboardData = function() {
     if (!adminData) return;
     var range = getDateRange(currentPeriod);
-    var dateFrom = fmtDateISO(range.from);
-    var dateTo = fmtDateISO(range.to);
+    var dateFrom = fmtDateDDMMYYYY(range.from);
+    var dateTo = fmtDateDDMMYYYY(range.to);
 
     $('cmdDateLabel').textContent = fmtDateDDMMYYYY(range.from) + ' — ' + fmtDateDDMMYYYY(range.to);
     show('cmdLoading');
