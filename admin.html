@@ -1,0 +1,719 @@
+<!doctype html>
+<!-- © 2026 Vitaly Gitelman. All Rights Reserved. Unauthorized copying, modification or distribution is prohibited. -->
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>לוח אדמין — מערכת תרגול תאוריה</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>"/>
+  <meta name="theme-color" content="#0f172a"/>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body { font-family: system-ui, -apple-system, 'Segoe UI', Arial, sans-serif; margin: 0; background: #f0f4f8; color: #1e293b; line-height: 1.6; }
+    a { color: inherit; }
+
+    .topbar {
+      display: flex; gap: 12px; align-items: center; justify-content: space-between;
+      padding: 14px 20px; background: linear-gradient(135deg, #0f172a, #1e3a5f);
+      color: white; position: sticky; top: 0; z-index: 100; flex-wrap: wrap;
+    }
+    .topbar h1 { margin: 0; font-size: 1.3em; }
+    .topbar .sub { font-size: 0.75em; opacity: 0.85; }
+    .topbar-actions { display: flex; gap: 8px; align-items: center; }
+    .topbar-actions button { background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.3); color: white; padding: 6px 14px; border-radius: 8px; cursor: pointer; font-size: 0.85em; }
+    .topbar-actions button:hover { background: rgba(255,255,255,0.35); }
+
+    .container { max-width: 1060px; margin: 0 auto; padding: 20px 16px; }
+
+    .screen { display: none; }
+    .screen.active { display: block; }
+
+    .card { background: white; border: 1px solid #e2e8f0; border-radius: 16px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+    .card h2 { margin: 0 0 6px; font-size: 1.3em; color: #0f172a; }
+
+    /* Login */
+    .login-box { max-width: 400px; margin: 80px auto; }
+    .login-box h2 { text-align: center; margin-bottom: 20px; }
+    .login-box .icon { font-size: 3em; text-align: center; margin-bottom: 10px; }
+    .form-group { margin-bottom: 14px; }
+    .form-group label { display: block; font-weight: 600; margin-bottom: 4px; font-size: 0.9em; }
+    .form-group input { width: 100%; padding: 10px 14px; border: 1px solid #cbd5e1; border-radius: 10px; font-size: 1em; }
+    .form-group input:focus { outline: none; border-color: #1e3a5f; box-shadow: 0 0 0 3px rgba(30,58,95,0.15); }
+    .btn-login { width: 100%; padding: 12px; background: #1e3a5f; color: white; border: none; border-radius: 10px; font-size: 1.05em; font-weight: 600; cursor: pointer; }
+    .btn-login:hover { background: #0f172a; }
+    .btn-login:disabled { opacity: 0.6; cursor: not-allowed; }
+    .login-error { color: #dc2626; font-size: 0.9em; margin-top: 8px; text-align: center; display: none; }
+    .remember-row { display: flex; align-items: center; gap: 6px; margin-bottom: 14px; font-size: 0.9em; }
+
+    /* Period buttons */
+    .cmd-period-btn {
+      background: #e2e8f0; border: none; color: #475569; padding: 8px 16px;
+      border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600;
+      transition: background .2s, color .2s;
+    }
+    .cmd-period-btn:hover { background: #cbd5e1; }
+    .cmd-period-btn.active { background: #1e3a5f; color: white; }
+
+    /* KPI cards */
+    .cmd-kpi-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 16px;
+    }
+    .cmd-kpi {
+      text-align: center; padding: 16px 12px;
+      background: #f0f4f8; border-radius: 12px;
+    }
+    .cmd-kpi-val { font-size: 1.6rem; font-weight: 700; color: #1e293b; }
+    .cmd-kpi-lbl { font-size: 12px; color: #64748b; margin-top: 4px; }
+    .cmd-kpi.pass { background: #dcfce7; }
+    .cmd-kpi.pass .cmd-kpi-val { color: #16a34a; }
+    .cmd-kpi.fail { background: #fee2e2; }
+    .cmd-kpi.fail .cmd-kpi-val { color: #dc2626; }
+    .cmd-kpi.rate { background: #dbeafe; }
+    .cmd-kpi.rate .cmd-kpi-val { color: #1e3a5f; }
+    .cmd-kpi.independent { background: #fef3c7; }
+    .cmd-kpi.independent .cmd-kpi-val { color: #b45309; }
+
+    /* Tab buttons */
+    .cmd-tab-btn {
+      background: #e2e8f0; border: none; color: #475569; padding: 6px 14px;
+      border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600;
+      transition: background .2s, color .2s;
+    }
+    .cmd-tab-btn:hover { background: #cbd5e1; }
+    .cmd-tab-btn.active { background: #1e3a5f; color: white; }
+
+    /* Breakdown table */
+    .cmd-table {
+      width: 100%; border-collapse: collapse; font-size: 13px; direction: rtl;
+    }
+    .cmd-table th {
+      background: #f1f5f9; padding: 8px 10px; text-align: right; font-weight: 600;
+      color: #475569; border-bottom: 2px solid #e2e8f0;
+    }
+    .cmd-table td {
+      padding: 8px 10px; border-bottom: 1px solid #f1f5f9; text-align: right;
+    }
+    .cmd-table tr:hover { background: #f8fafc; }
+    .cmd-table .good { color: #16a34a; font-weight: 600; }
+    .cmd-table .bad { color: #dc2626; font-weight: 600; }
+
+    /* Drill-down */
+    .cmd-table tr.cmd-dd-toggle { cursor: pointer; user-select: none; }
+    .cmd-table tr.cmd-dd-toggle:hover { background: #e0ecff; }
+    .cmd-table tr.cmd-dd-toggle td:first-child::before { content: '\25B6'; display: inline-block; margin-left: 6px; font-size: 10px; transition: transform 0.2s; }
+    .cmd-table tr.cmd-dd-toggle.expanded td:first-child::before { transform: rotate(90deg); }
+    .cmd-dd-panel { display: none; }
+    .cmd-dd-panel.open { display: table-row; }
+    .cmd-dd-panel > td { padding: 12px 16px; background: #eef4ff; }
+    .cmd-sub-tab-btn { background: #e2e8f0; border: none; color: #475569; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; margin-left: 4px; }
+    .cmd-sub-tab-btn.active { background: #1e3a5f; color: white; }
+    .cmd-sub-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+    .cmd-sub-table th { background: #d1dded; padding: 6px 8px; text-align: right; font-size: 11px; border-bottom: 1px solid #a0b4cc; }
+    .cmd-sub-table td { padding: 6px 8px; border-bottom: 1px solid #d1dded; text-align: right; }
+
+    /* Pie chart */
+    .cmd-pie-wrap { display: flex; align-items: center; justify-content: center; gap: 16px; flex-wrap: wrap; }
+    .cmd-pie { border-radius: 50%; flex-shrink: 0; }
+    .cmd-pie-legend { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+    .cmd-pie-legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-left: 4px; vertical-align: middle; }
+
+    /* Action buttons */
+    .cmd-action-btn {
+      padding: 10px 20px; font-size: 14px; font-weight: 700; color: white;
+      border: none; border-radius: 8px; cursor: pointer; min-width: 140px;
+    }
+    .cmd-action-btn:hover { opacity: 0.9; }
+
+    .loading { text-align: center; padding: 20px; color: #94a3b8; }
+
+    .footer { text-align: center; padding: 20px; font-size: 12px; color: #94a3b8; margin-top: 20px; }
+
+    @media (max-width: 700px) {
+      .cmd-kpi-grid { grid-template-columns: repeat(2, 1fr); }
+      .cmd-table { font-size: 12px; }
+      .cmd-table th, .cmd-table td { padding: 6px 6px; }
+    }
+
+    @media print {
+      .topbar, .cmd-action-btn, .cmd-period-btn, .cmd-tab-btn, .cmd-sub-tab-btn, .footer { display: none !important; }
+      body { background: white; }
+      .card { box-shadow: none; border: 1px solid #ccc; page-break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ===== TOPBAR ===== -->
+<div class="topbar" id="topbar" style="display:none;">
+  <div>
+    <h1>🛡️ לוח אדמין</h1>
+    <div class="sub" id="topbarAdminName"></div>
+  </div>
+  <div class="topbar-actions">
+    <button id="btnRefresh" onclick="fetchDashboardData()" title="רענן">🔄</button>
+    <button id="btnLogout" onclick="doLogout()">יציאה</button>
+  </div>
+</div>
+
+<!-- ===== LOGIN SCREEN ===== -->
+<div id="screenLogin" class="screen active">
+  <div class="container">
+    <div class="login-box card">
+      <div class="icon">🛡️</div>
+      <h2>כניסת מנהל מערכת</h2>
+      <div class="form-group">
+        <label for="loginId">תעודת זהות</label>
+        <input type="text" id="loginId" placeholder="הזן ת.ז." maxlength="9" inputmode="numeric"/>
+      </div>
+      <div class="form-group">
+        <label for="loginPass">סיסמה</label>
+        <input type="password" id="loginPass" placeholder="הזן סיסמה"/>
+      </div>
+      <div class="remember-row">
+        <input type="checkbox" id="loginRemember"/>
+        <label for="loginRemember">זכור אותי</label>
+      </div>
+      <button class="btn-login" id="btnLogin">התחבר</button>
+      <div class="login-error" id="loginError"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== DASHBOARD SCREEN ===== -->
+<div id="screenDashboard" class="screen">
+  <div class="container">
+
+    <!-- Period Selector -->
+    <div class="card" style="text-align:center;">
+      <h2 style="margin:0 0 12px;" id="cmdTitle">לוח אדמין — סטטיסטיקות מערכת</h2>
+      <div id="cmdPeriodBtns" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:12px 0;">
+        <button class="cmd-period-btn active" data-period="daily" onclick="selectPeriod(this)">יומי</button>
+        <button class="cmd-period-btn" data-period="weekly" onclick="selectPeriod(this)">שבועי</button>
+        <button class="cmd-period-btn" data-period="monthly" onclick="selectPeriod(this)">חודשי</button>
+        <button class="cmd-period-btn" data-period="quarterly" onclick="selectPeriod(this)">תלת חודשי</button>
+        <button class="cmd-period-btn" data-period="yearly" onclick="selectPeriod(this)">שנתי</button>
+        <button class="cmd-period-btn" data-period="custom" onclick="selectPeriod(this)">מותאם</button>
+      </div>
+      <div id="cmdCustomRange" style="display:none;margin:12px auto;max-width:400px;">
+        <div style="display:flex;gap:8px;align-items:center;justify-content:center;">
+          <label style="font-size:13px;">מ-<input type="date" id="cmdDateFrom" style="padding:6px;border-radius:6px;border:1px solid #cbd5e1;"></label>
+          <label style="font-size:13px;">עד<input type="date" id="cmdDateTo" style="padding:6px;border-radius:6px;border:1px solid #cbd5e1;"></label>
+          <button onclick="fetchDashboardData()" style="padding:6px 16px;font-size:13px;background:#1e3a5f;color:white;border:none;border-radius:6px;cursor:pointer;">הצג</button>
+        </div>
+      </div>
+      <div id="cmdDateLabel" style="font-size:13px;color:#64748b;margin-top:4px;"></div>
+      <div id="cmdLoading" style="display:none;margin:12px 0;color:#64748b;">⏳ טוען נתונים...</div>
+    </div>
+
+    <!-- KPI Cards -->
+    <div id="cmdKPIs" class="card" style="display:none;">
+      <div class="cmd-kpi-grid">
+        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdTotal">0</div><div class="cmd-kpi-lbl">סה"כ תרגולים</div></div>
+        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdStudents">0</div><div class="cmd-kpi-lbl">תלמידים ייחודיים</div></div>
+        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdClasses">0</div><div class="cmd-kpi-lbl">כיתות פעילות</div></div>
+        <div class="cmd-kpi pass"><div class="cmd-kpi-val" id="cmdPassed">0</div><div class="cmd-kpi-lbl">עברו ✅</div></div>
+        <div class="cmd-kpi fail"><div class="cmd-kpi-val" id="cmdFailed">0</div><div class="cmd-kpi-lbl">נכשלו ✗</div></div>
+        <div class="cmd-kpi rate"><div class="cmd-kpi-val" id="cmdPassRate">0%</div><div class="cmd-kpi-lbl">% הצלחה</div></div>
+        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdAvg">0%</div><div class="cmd-kpi-lbl">ממוצע</div></div>
+        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdMedian">0%</div><div class="cmd-kpi-lbl">חציון</div></div>
+        <div class="cmd-kpi independent"><div class="cmd-kpi-val" id="cmdIndependent">0</div><div class="cmd-kpi-lbl">תלמידים עצמאיים</div></div>
+      </div>
+      <div id="cmdOverallPie" style="margin-top:10px;"></div>
+    </div>
+
+    <!-- Breakdown Tabs -->
+    <div class="card" id="cmdBreakdowns" style="display:none;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+        <button class="cmd-tab-btn active" data-tab="byLicense" onclick="selectTab(this)">לפי דרגה</button>
+        <button class="cmd-tab-btn" data-tab="byMode" onclick="selectTab(this)">לפי סוג תרגול</button>
+        <button class="cmd-tab-btn" data-tab="byEnrollment" onclick="selectTab(this)">לפי סטטוס</button>
+        <button class="cmd-tab-btn" data-tab="byClass" onclick="selectTab(this)">לפי כיתה</button>
+        <button class="cmd-tab-btn" data-tab="byDay" onclick="selectTab(this)">לפי יום</button>
+      </div>
+      <div id="cmdBreakdownContent" style="overflow-x:auto;"></div>
+    </div>
+
+    <!-- Action Buttons -->
+    <div class="card" id="cmdActions" style="display:none;text-align:center;">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center;">
+        <button onclick="printReport()" class="cmd-action-btn" style="background:#0f172a;">🖨️ הדפסה</button>
+        <button onclick="shareReport()" class="cmd-action-btn" style="background:#1e3a5f;">📤 שיתוף</button>
+      </div>
+    </div>
+
+    <div class="footer">לוח אדמין — מערכת תרגול תאוריה &copy; 2026</div>
+  </div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  var API_URL = 'https://script.google.com/macros/s/AKfycbzOI0zrDEngP-GvlRblhOk8tQsYBvWZ2gGliIQHTpS67WrDZl4la8NPpwtJr_Vjsh3Gzg/exec';
+
+  var adminData = null;
+  var dashboardData = null;
+  var currentPeriod = 'daily';
+  var currentTab = 'byLicense';
+
+  var SUB_DIMS = {
+    byLicense: { byMode: 'סוג תרגול', byEnrollment: 'סטטוס' },
+    byMode: { byLicense: 'דרגה' },
+    byEnrollment: { byLicense: 'דרגה' },
+    byClass: { byLicense: 'דרגה', byMode: 'סוג תרגול' },
+    byDay: {}
+  };
+
+  // ===== DOM helpers =====
+  function $(id) { return document.getElementById(id); }
+  function show(el) { if (typeof el === 'string') el = $(el); if (el) el.style.display = ''; }
+  function hide(el) { if (typeof el === 'string') el = $(el); if (el) el.style.display = 'none'; }
+
+  // ===== Date helpers =====
+  function getDateRange(period) {
+    var now = new Date();
+    var from = new Date(now);
+    var to = new Date(now);
+    to.setHours(23,59,59,999);
+
+    switch (period) {
+      case 'daily':
+        from.setHours(0,0,0,0);
+        break;
+      case 'weekly':
+        var day = from.getDay();
+        from.setDate(from.getDate() - day);
+        from.setHours(0,0,0,0);
+        break;
+      case 'monthly':
+        from.setDate(1);
+        from.setHours(0,0,0,0);
+        break;
+      case 'quarterly':
+        var q = Math.floor(from.getMonth() / 3) * 3;
+        from.setMonth(q, 1);
+        from.setHours(0,0,0,0);
+        break;
+      case 'yearly':
+        from.setMonth(0, 1);
+        from.setHours(0,0,0,0);
+        break;
+      case 'custom':
+        var df = $('cmdDateFrom').value;
+        var dt = $('cmdDateTo').value;
+        if (df) from = new Date(df + 'T00:00:00');
+        if (dt) to = new Date(dt + 'T23:59:59');
+        break;
+    }
+    return { from: from, to: to };
+  }
+
+  function fmtDateDDMMYYYY(d) {
+    var dd = String(d.getDate()).padStart(2, '0');
+    var mm = String(d.getMonth() + 1).padStart(2, '0');
+    var yyyy = d.getFullYear();
+    return dd + '/' + mm + '/' + yyyy;
+  }
+
+  function fmtDateISO(d) {
+    var dd = String(d.getDate()).padStart(2, '0');
+    var mm = String(d.getMonth() + 1).padStart(2, '0');
+    return d.getFullYear() + '-' + mm + '-' + dd;
+  }
+
+  // ===== Screens =====
+  function showScreen(name) {
+    document.querySelectorAll('.screen').forEach(function(s) { s.classList.remove('active'); });
+    $(name).classList.add('active');
+    if (name === 'screenDashboard') {
+      show('topbar');
+    } else {
+      hide('topbar');
+    }
+  }
+
+  // ===== Login =====
+  function doLogin() {
+    var idNumber = $('loginId').value.trim();
+    var password = $('loginPass').value.trim();
+    var errEl = $('loginError');
+    errEl.style.display = 'none';
+
+    if (!idNumber || !password) {
+      errEl.textContent = 'נא למלא ת.ז. וסיסמה';
+      errEl.style.display = 'block';
+      return;
+    }
+
+    var btn = $('btnLogin');
+    btn.disabled = true;
+    btn.textContent = 'מתחבר...';
+
+    var formData = new FormData();
+    formData.append('action', 'teacherLogin');
+    formData.append('idNumber', idNumber);
+    formData.append('password', password);
+
+    fetch(API_URL, { method: 'POST', body: formData })
+      .then(function(r) { return r.text(); })
+      .then(function(txt) {
+        var d;
+        try { d = JSON.parse(txt); } catch(e) {
+          throw new Error('שגיאה בתגובת השרת');
+        }
+        if (!d.ok) throw new Error(d.error || 'שגיאה בהתחברות');
+        if (!d.teacher || d.teacher.role !== 'אדמין') {
+          throw new Error('אין הרשאת אדמין');
+        }
+
+        adminData = d.teacher;
+        adminData.token = d.token || '';
+        adminData.idNumber = idNumber;
+
+        // Remember me
+        if ($('loginRemember').checked) {
+          localStorage.setItem('admin_remember', JSON.stringify({ idNumber: idNumber, password: password }));
+        } else {
+          localStorage.removeItem('admin_remember');
+        }
+
+        sessionStorage.setItem('admin_auth', JSON.stringify(adminData));
+        enterDashboard();
+      })
+      .catch(function(err) {
+        errEl.textContent = err.message;
+        errEl.style.display = 'block';
+      })
+      .finally(function() {
+        btn.disabled = false;
+        btn.textContent = 'התחבר';
+      });
+  }
+
+  function enterDashboard() {
+    $('topbarAdminName').textContent = adminData.name || '';
+    showScreen('screenDashboard');
+    fetchDashboardData();
+  }
+
+  window.doLogout = function() {
+    sessionStorage.removeItem('admin_auth');
+    adminData = null;
+    dashboardData = null;
+    showScreen('screenLogin');
+  };
+
+  // ===== Period selection =====
+  window.selectPeriod = function(btn) {
+    document.querySelectorAll('.cmd-period-btn').forEach(function(b) { b.classList.remove('active'); });
+    btn.classList.add('active');
+    currentPeriod = btn.getAttribute('data-period');
+
+    if (currentPeriod === 'custom') {
+      show('cmdCustomRange');
+    } else {
+      hide('cmdCustomRange');
+      fetchDashboardData();
+    }
+  };
+
+  // ===== Fetch dashboard data =====
+  window.fetchDashboardData = function() {
+    if (!adminData) return;
+    var range = getDateRange(currentPeriod);
+    var dateFrom = fmtDateISO(range.from);
+    var dateTo = fmtDateISO(range.to);
+
+    $('cmdDateLabel').textContent = fmtDateDDMMYYYY(range.from) + ' — ' + fmtDateDDMMYYYY(range.to);
+    show('cmdLoading');
+    hide('cmdKPIs');
+    hide('cmdBreakdowns');
+    hide('cmdActions');
+
+    var url = API_URL + '?action=adminDashboard'
+      + '&teacherId=' + encodeURIComponent(adminData.idNumber)
+      + '&token=' + encodeURIComponent(adminData.token || '')
+      + '&dateFrom=' + encodeURIComponent(dateFrom)
+      + '&dateTo=' + encodeURIComponent(dateTo);
+
+    fetch(url)
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (!d.ok) throw new Error(d.error || 'שגיאה בטעינת נתונים');
+        dashboardData = d;
+        renderKPIs(d.overall || {});
+        renderBreakdownTable(d, currentTab);
+        show('cmdKPIs');
+        show('cmdBreakdowns');
+        show('cmdActions');
+      })
+      .catch(function(err) {
+        $('cmdDateLabel').textContent = 'שגיאה: ' + err.message;
+      })
+      .finally(function() {
+        hide('cmdLoading');
+      });
+  };
+
+  // ===== Render KPIs =====
+  function renderKPIs(o) {
+    $('cmdTotal').textContent = (o.total || 0).toLocaleString();
+    $('cmdStudents').textContent = (o.students || 0).toLocaleString();
+    $('cmdClasses').textContent = (o.classes || 0).toLocaleString();
+    $('cmdPassed').textContent = (o.passed || 0).toLocaleString();
+    $('cmdFailed').textContent = (o.failed || 0).toLocaleString();
+    var rate = o.total ? Math.round((o.passed || 0) / o.total * 100) : 0;
+    $('cmdPassRate').textContent = (o.passRate != null ? o.passRate : rate) + '%';
+    $('cmdAvg').textContent = (o.avg != null ? o.avg : 0) + '%';
+    $('cmdMedian').textContent = (o.median != null ? o.median : 0) + '%';
+    $('cmdIndependent').textContent = (o.independent || 0).toLocaleString();
+
+    // Pie chart
+    var passed = o.passed || 0;
+    var failed = o.failed || 0;
+    $('cmdOverallPie').innerHTML = buildPieChart(passed, failed, 100);
+  }
+
+  function buildPieChart(passed, failed, size) {
+    var total = passed + failed;
+    if (!total) return '<div style="text-align:center;color:#94a3b8;">אין נתונים</div>';
+    var pPct = Math.round(passed / total * 100);
+    var fPct = 100 - pPct;
+    var deg = Math.round(pPct * 3.6);
+
+    return '<div class="cmd-pie-wrap">'
+      + '<div class="cmd-pie" style="width:' + size + 'px;height:' + size + 'px;background:conic-gradient(#16a34a 0deg ' + deg + 'deg, #dc2626 ' + deg + 'deg 360deg);"></div>'
+      + '<div class="cmd-pie-legend">'
+      + '<div><span class="cmd-pie-legend-dot" style="background:#16a34a;"></span> עברו: ' + passed + ' (' + pPct + '%)</div>'
+      + '<div><span class="cmd-pie-legend-dot" style="background:#dc2626;"></span> נכשלו: ' + failed + ' (' + fPct + '%)</div>'
+      + '</div></div>';
+  }
+
+  // ===== Tabs =====
+  window.selectTab = function(btn) {
+    document.querySelectorAll('.cmd-tab-btn').forEach(function(b) { b.classList.remove('active'); });
+    btn.classList.add('active');
+    currentTab = btn.getAttribute('data-tab');
+    if (dashboardData) renderBreakdownTable(dashboardData, currentTab);
+  };
+
+  // ===== Breakdown Table =====
+  function renderBreakdownTable(data, tab) {
+    var container = $('cmdBreakdownContent');
+    var items = data[tab] || [];
+
+    if (!items.length) {
+      container.innerHTML = '<div style="text-align:center;padding:20px;color:#94a3b8;">אין נתונים להצגה</div>';
+      return;
+    }
+
+    if (tab === 'byDay') {
+      renderDayTable(container, items);
+      return;
+    }
+
+    var html = '<table class="cmd-table"><thead><tr>'
+      + '<th>שם</th><th>תרגולים</th><th>עברו</th><th>נכשלו</th><th>% הצלחה</th><th>ממוצע</th><th>תלמידים</th>'
+      + '</tr></thead><tbody>';
+
+    items.forEach(function(row, idx) {
+      var passRate = row.total ? Math.round((row.passed || 0) / row.total * 100) : 0;
+      var rateCls = passRate >= 60 ? 'good' : 'bad';
+      var key = tab + '_' + idx;
+      var hasSubs = SUB_DIMS[tab] && Object.keys(SUB_DIMS[tab]).length > 0;
+
+      html += '<tr class="' + (hasSubs ? 'cmd-dd-toggle' : '') + '" ' + (hasSubs ? 'onclick="toggleDrilldown(\'' + key + '\')"' : '') + ' id="row_' + key + '">'
+        + '<td>' + (row.name || row.label || '-') + '</td>'
+        + '<td>' + (row.total || 0) + '</td>'
+        + '<td>' + (row.passed || 0) + '</td>'
+        + '<td>' + (row.failed || 0) + '</td>'
+        + '<td class="' + rateCls + '">' + passRate + '%</td>'
+        + '<td>' + (row.avg != null ? row.avg + '%' : '-') + '</td>'
+        + '<td>' + (row.students || 0) + '</td>'
+        + '</tr>';
+
+      if (hasSubs) {
+        var subDims = SUB_DIMS[tab];
+        var firstSub = Object.keys(subDims)[0];
+        html += '<tr class="cmd-dd-panel" id="panel_' + key + '"><td colspan="7">';
+        html += '<div style="margin-bottom:6px;">';
+        Object.keys(subDims).forEach(function(sd) {
+          html += '<button class="cmd-sub-tab-btn ' + (sd === firstSub ? 'active' : '') + '" onclick="event.stopPropagation();switchSubTab(\'' + key + '\',\'' + sd + '\')" data-sub="' + sd + '">' + subDims[sd] + '</button>';
+        });
+        html += '</div>';
+        html += '<div id="subtable_' + key + '">';
+        html += renderSubTable(row[firstSub] || []);
+        html += '</div>';
+        html += '</td></tr>';
+      }
+    });
+
+    html += '</tbody></table>';
+    container.innerHTML = html;
+  }
+
+  function renderDayTable(container, items) {
+    // Sort by date descending
+    var sorted = items.slice().sort(function(a, b) {
+      return (b.date || '').localeCompare(a.date || '');
+    });
+
+    var html = '<table class="cmd-table"><thead><tr>'
+      + '<th>תאריך</th><th>תרגולים</th><th>עברו</th><th>נכשלו</th><th>% הצלחה</th>'
+      + '</tr></thead><tbody>';
+
+    sorted.forEach(function(row) {
+      var passRate = row.total ? Math.round((row.passed || 0) / row.total * 100) : 0;
+      var rateCls = passRate >= 60 ? 'good' : 'bad';
+      var dateStr = row.date || row.name || '-';
+      // Try to format date
+      try {
+        var d = new Date(dateStr);
+        if (!isNaN(d.getTime())) dateStr = fmtDateDDMMYYYY(d);
+      } catch(e) {}
+
+      html += '<tr>'
+        + '<td>' + dateStr + '</td>'
+        + '<td>' + (row.total || 0) + '</td>'
+        + '<td>' + (row.passed || 0) + '</td>'
+        + '<td>' + (row.failed || 0) + '</td>'
+        + '<td class="' + rateCls + '">' + passRate + '%</td>'
+        + '</tr>';
+    });
+
+    html += '</tbody></table>';
+    container.innerHTML = html;
+  }
+
+  function renderSubTable(items) {
+    if (!items || !items.length) return '<div style="color:#94a3b8;font-size:12px;padding:8px;">אין נתונים</div>';
+    var html = '<table class="cmd-sub-table"><thead><tr>'
+      + '<th>שם</th><th>תרגולים</th><th>עברו</th><th>נכשלו</th><th>% הצלחה</th><th>ממוצע</th>'
+      + '</tr></thead><tbody>';
+
+    items.forEach(function(row) {
+      var passRate = row.total ? Math.round((row.passed || 0) / row.total * 100) : 0;
+      var rateCls = passRate >= 60 ? 'good' : 'bad';
+      html += '<tr>'
+        + '<td>' + (row.name || row.label || '-') + '</td>'
+        + '<td>' + (row.total || 0) + '</td>'
+        + '<td>' + (row.passed || 0) + '</td>'
+        + '<td>' + (row.failed || 0) + '</td>'
+        + '<td class="' + rateCls + '">' + passRate + '%</td>'
+        + '<td>' + (row.avg != null ? row.avg + '%' : '-') + '</td>'
+        + '</tr>';
+    });
+
+    html += '</tbody></table>';
+    return html;
+  }
+
+  // ===== Drilldown =====
+  window.toggleDrilldown = function(key) {
+    var row = $('row_' + key);
+    var panel = $('panel_' + key);
+    if (!row || !panel) return;
+    var isOpen = panel.classList.contains('open');
+    // Close all first
+    document.querySelectorAll('.cmd-dd-panel.open').forEach(function(p) { p.classList.remove('open'); });
+    document.querySelectorAll('.cmd-dd-toggle.expanded').forEach(function(r) { r.classList.remove('expanded'); });
+    if (!isOpen) {
+      panel.classList.add('open');
+      row.classList.add('expanded');
+    }
+  };
+
+  window.switchSubTab = function(key, subDim) {
+    // Update sub-tab buttons
+    var panel = $('panel_' + key);
+    if (!panel) return;
+    panel.querySelectorAll('.cmd-sub-tab-btn').forEach(function(b) {
+      b.classList.toggle('active', b.getAttribute('data-sub') === subDim);
+    });
+
+    // Find data
+    var parts = key.split('_');
+    var tab = parts[0];
+    var idx = parseInt(parts[1], 10);
+    var items = dashboardData[tab] || [];
+    var row = items[idx];
+    if (!row) return;
+
+    var subContainer = $('subtable_' + key);
+    if (subContainer) {
+      subContainer.innerHTML = renderSubTable(row[subDim] || []);
+    }
+  };
+
+  // ===== Print =====
+  window.printReport = function() {
+    window.print();
+  };
+
+  // ===== Share =====
+  window.shareReport = function() {
+    var range = getDateRange(currentPeriod);
+    var o = (dashboardData && dashboardData.overall) || {};
+    var text = 'דו"ח אדמין — מערכת תרגול תאוריה\n'
+      + fmtDateDDMMYYYY(range.from) + ' — ' + fmtDateDDMMYYYY(range.to) + '\n\n'
+      + 'סה"כ תרגולים: ' + (o.total || 0) + '\n'
+      + 'תלמידים ייחודיים: ' + (o.students || 0) + '\n'
+      + 'כיתות פעילות: ' + (o.classes || 0) + '\n'
+      + 'עברו: ' + (o.passed || 0) + '\n'
+      + 'נכשלו: ' + (o.failed || 0) + '\n'
+      + '% הצלחה: ' + (o.passRate || 0) + '%\n'
+      + 'ממוצע: ' + (o.avg || 0) + '%\n'
+      + 'חציון: ' + (o.median || 0) + '%\n'
+      + 'תלמידים עצמאיים: ' + (o.independent || 0);
+
+    if (navigator.share) {
+      navigator.share({ title: 'דו"ח אדמין', text: text }).catch(function() {});
+    } else {
+      navigator.clipboard.writeText(text).then(function() {
+        alert('הדו"ח הועתק ללוח');
+      }).catch(function() {
+        alert('לא ניתן להעתיק');
+      });
+    }
+  };
+
+  // ===== Init =====
+  function init() {
+    // Login button
+    $('btnLogin').addEventListener('click', doLogin);
+    $('loginPass').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') doLogin();
+    });
+    $('loginId').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') $('loginPass').focus();
+    });
+
+    // Remember me - restore
+    try {
+      var rem = localStorage.getItem('admin_remember');
+      if (rem) {
+        var obj = JSON.parse(rem);
+        $('loginId').value = obj.idNumber || '';
+        $('loginPass').value = obj.password || '';
+        $('loginRemember').checked = true;
+      }
+    } catch(e) {}
+
+    // Session restore
+    try {
+      var stored = sessionStorage.getItem('admin_auth');
+      if (stored) {
+        adminData = JSON.parse(stored);
+        if (adminData && adminData.name) {
+          enterDashboard();
+          return;
+        }
+      }
+    } catch(e) {}
+  }
+
+  init();
+})();
+</script>
+</body>
+</html>
