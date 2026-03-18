@@ -130,6 +130,8 @@ function countAttempts(idNumber, license) {
   var count = 0;
   for (var i = 1; i < data.length; i++) {
     if (normalizeId(data[i][1]) === normalizeId(idNumber) && String(data[i][4]) === String(license)) {
+      var status = String(data[i][7] || '').trim();
+      if (status === 'בוטל') continue; // overturned DQ is not a real attempt
       count++;
     }
   }
