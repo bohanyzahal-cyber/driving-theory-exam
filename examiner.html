@@ -33,7 +33,7 @@
     }
     .topbar button:hover { background: rgba(255,255,255,0.3); }
 
-    .container { max-width: 960px; margin: 0 auto; padding: 20px 16px; }
+    .container { max-width: 1280px; margin: 0 auto; padding: 20px 16px; }
 
     .card {
       background: white; border: 1px solid #e2e8f0; border-radius: 16px;
@@ -140,9 +140,9 @@
     .badge-disqualified { background: #f1f5f9; color: #475569; padding: 2px 8px; border-radius: 6px; font-weight: 700; font-size: 12px; text-decoration: line-through; }
 
     .wa-btn {
-      display: inline-flex; align-items: center; gap: 4px; padding: 4px 10px;
+      display: inline-flex; align-items: center; gap: 3px; padding: 4px 8px;
       background: #25D366; color: white; border: none; border-radius: 8px;
-      font-size: 12px; font-weight: 700; cursor: pointer; text-decoration: none;
+      font-size: 11px; font-weight: 700; cursor: pointer; text-decoration: none;
     }
     .wa-btn:hover { filter: brightness(1.1); }
 
@@ -1393,13 +1393,13 @@
         '<td><span class="' + badgeClass + '">' + badgeText + '</span></td>' +
         '<td>' + escHtml(formatTime(r.time)) + '</td>' +
         '<td style="white-space:nowrap;">' +
-          '<button class="wa-btn" style="background:#ef4444;margin-left:4px;" onclick="openExamineePDF(' + i + ')">\u{1F4C4} PDF</button>' +
-          '<button class="wa-btn" style="background:#7c3aed;margin-left:4px;" onclick="shareResult(' + i + ')">\u{1F4E4} \u05E9\u05EA\u05E3</button>' +
-          '<a href="' + waUrl + '" target="_blank" class="wa-btn" onclick="markSentWA(' + i + ')" style="margin-left:4px;">\u{1F4F1} WA</a>' +
-          '<a href="' + smsUrl + '" class="wa-btn" style="background:#2563eb;margin-left:4px;">\u{1F4E9} SMS</a>' +
-          '<button class="wa-btn" style="background:#64748b;margin-left:4px;" onclick="editPhone(' + i + ')" title="\u05E2\u05E8\u05D5\u05DA \u05D8\u05DC\u05E4\u05D5\u05DF">\u270E\u{1F4F1}</button>' +
-          (!isDQ ? ' <button class="btn-disqualify" onclick="disqualifyResult(' + i + ')">פסול</button>' : ' <button style="background:#16a34a;color:white;padding:4px 10px;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;margin-left:4px;" onclick="overturnDQ(' + i + ')">ביטול פסילה</button> <button style="background:#dc2626;color:white;padding:4px 10px;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;margin-left:4px;" onclick="confirmDQ(' + i + ')">אישור פסילה</button>') +
-          (canCorrect ? ' <button style="background:#f59e0b;color:white;padding:4px 10px;border:none;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;margin-left:4px;" onclick="correctToPass(' + i + ')">\u05EA\u05E7\u05DF</button>' : '') +
+          '<button class="wa-btn" style="background:#ef4444;margin-left:3px;" onclick="openExamineePDF(' + i + ')">\u{1F4C4}</button>' +
+          '<button class="wa-btn" style="background:#7c3aed;margin-left:3px;" onclick="shareResult(' + i + ')">\u{1F4E4}</button>' +
+          '<a href="' + waUrl + '" target="_blank" class="wa-btn" onclick="markSentWA(' + i + ')" style="margin-left:3px;">\u{1F4F1}WA</a>' +
+          '<a href="' + smsUrl + '" class="wa-btn" style="background:#2563eb;margin-left:3px;">SMS</a>' +
+          '<button class="wa-btn" style="background:#64748b;margin-left:3px;" onclick="editPhone(' + i + ')" title="\u05E2\u05E8\u05D5\u05DA \u05D8\u05DC\u05E4\u05D5\u05DF">\u270E</button>' +
+          (!isDQ ? ' <button class="btn-disqualify" onclick="disqualifyResult(' + i + ')">\u26D4</button>' : ' <button style="background:#16a34a;color:white;padding:4px 8px;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;margin-left:3px;" onclick="overturnDQ(' + i + ')">\u21A9 \u05D1\u05D8\u05DC</button> <button style="background:#dc2626;color:white;padding:4px 8px;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;margin-left:3px;" onclick="confirmDQ(' + i + ')">\u2714 \u05D0\u05E9\u05E8</button>') +
+          (canCorrect ? ' <button style="background:#f59e0b;color:white;padding:4px 8px;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;margin-left:3px;" onclick="correctToPass(' + i + ')">\u05EA\u05E7\u05DF</button>' : '') +
         '</td></tr>';
     }
     html += '</tbody></table></div>';
@@ -2637,8 +2637,14 @@
       var isDQc = rc.disqualified === true || rc.disqualified === 'TRUE' || rc.passed === '\u05E4\u05E1\u05D5\u05DC';
       var isPassedC = !isDQc && (rc.passed === '\u05E2\u05D1\u05E8' || rc.passed === true);
       var isCorrectedC = rc.corrected === true || rc.corrected === 'TRUE';
-      if (isDQc || isCorrectedC) {
+      if (isDQc && !isCorrectedC) {
         perExamineeCats.push({ name: rc.name, isDQ: true, score: rc.score, passed: rc.passed });
+        continue;
+      }
+      if (isCorrectedC) {
+        // Corrected result — check passed directly (ignore disqualified flag since result was manually corrected)
+        var correctedPassed = rc.passed === '\u05E2\u05D1\u05E8' || rc.passed === true;
+        perExamineeCats.push({ name: rc.name, isDQ: false, cats: {}, hasCats: false, score: rc.score, passed: correctedPassed });
         continue;
       }
       var wd = parseWrongDetails(rc.wrongDetails);
@@ -2792,7 +2798,8 @@
           H.push('<td><span class="badge dq">\u05E4\u05E1\u05D5\u05DC</span></td>');
         } else if (!pe.hasCats) {
           H.push('<td colspan="' + catKeys.length + '" style="color:#94a3b8;font-size:11px;">\u05D0\u05D9\u05DF \u05E0\u05EA\u05D5\u05E0\u05D9 \u05E7\u05D8\u05D2\u05D5\u05E8\u05D9\u05D4</td>');
-          H.push('<td>' + escHtml(String(pe.score || '')) + '</td>');
+          var ncBg = pe.passed ? '#dcfce7' : '#fef2f2'; var ncClr = pe.passed ? '#166534' : '#991b1b';
+          H.push('<td><span class="badge" style="background:' + ncBg + ';color:' + ncClr + ';">' + escHtml(String(pe.score || '')) + '</span></td>');
         } else {
           for (var cj = 0; cj < catKeys.length; cj++) {
             var cell = pe.cats[catKeys[cj]];
