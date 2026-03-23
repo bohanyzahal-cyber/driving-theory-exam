@@ -1393,13 +1393,13 @@
         '<td><span class="' + badgeClass + '">' + badgeText + '</span></td>' +
         '<td>' + escHtml(formatTime(r.time)) + '</td>' +
         '<td style="white-space:nowrap;">' +
-          '<button class="wa-btn" style="background:#ef4444;margin-left:3px;" onclick="openExamineePDF(' + i + ')">\u{1F4C4}</button>' +
-          '<button class="wa-btn" style="background:#7c3aed;margin-left:3px;" onclick="shareResult(' + i + ')">\u{1F4E4}</button>' +
-          '<a href="' + waUrl + '" target="_blank" class="wa-btn" onclick="markSentWA(' + i + ')" style="margin-left:3px;">\u{1F4F1}WA</a>' +
-          '<a href="' + smsUrl + '" class="wa-btn" style="background:#2563eb;margin-left:3px;">SMS</a>' +
+          '<button class="wa-btn" style="background:#ef4444;margin-left:3px;" onclick="openExamineePDF(' + i + ')" title="PDF \u05DC\u05E0\u05D1\u05D7\u05DF">\u{1F4C4}</button>' +
+          '<button class="wa-btn" style="background:#7c3aed;margin-left:3px;" onclick="shareResult(' + i + ')" title="\u05E9\u05EA\u05E3 \u05EA\u05D5\u05E6\u05D0\u05D4">\u{1F4E4}</button>' +
+          '<a href="' + waUrl + '" target="_blank" class="wa-btn" onclick="markSentWA(' + i + ')" style="margin-left:3px;" title="\u05E9\u05DC\u05D7 \u05D1\u05D5\u05D5\u05D0\u05D8\u05E1\u05D0\u05E4">\u{1F4F1}WA</a>' +
+          '<a href="' + smsUrl + '" class="wa-btn" style="background:#2563eb;margin-left:3px;" title="\u05E9\u05DC\u05D7 \u05D1-SMS">SMS</a>' +
           '<button class="wa-btn" style="background:#64748b;margin-left:3px;" onclick="editPhone(' + i + ')" title="\u05E2\u05E8\u05D5\u05DA \u05D8\u05DC\u05E4\u05D5\u05DF">\u270E</button>' +
-          (!isDQ ? ' <button class="btn-disqualify" onclick="disqualifyResult(' + i + ')">\u26D4</button>' : ' <button style="background:#16a34a;color:white;padding:4px 8px;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;margin-left:3px;" onclick="overturnDQ(' + i + ')">\u21A9 \u05D1\u05D8\u05DC</button> <button style="background:#dc2626;color:white;padding:4px 8px;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;margin-left:3px;" onclick="confirmDQ(' + i + ')">\u2714 \u05D0\u05E9\u05E8</button>') +
-          (canCorrect ? ' <button style="background:#f59e0b;color:white;padding:4px 8px;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;margin-left:3px;" onclick="correctToPass(' + i + ')">\u05EA\u05E7\u05DF</button>' : '') +
+          (!isDQ ? ' <button class="btn-disqualify" onclick="disqualifyResult(' + i + ')" title="\u05E4\u05E1\u05D5\u05DC \u05E0\u05D1\u05D7\u05DF">\u26D4</button>' : ' <button style="background:#16a34a;color:white;padding:4px 8px;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;margin-left:3px;" onclick="overturnDQ(' + i + ')" title="\u05D1\u05D9\u05D8\u05D5\u05DC \u05E4\u05E1\u05D9\u05DC\u05D4">\u21A9 \u05D1\u05D8\u05DC</button> <button style="background:#dc2626;color:white;padding:4px 8px;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;margin-left:3px;" onclick="confirmDQ(' + i + ')" title="\u05D0\u05D9\u05E9\u05D5\u05E8 \u05E4\u05E1\u05D9\u05DC\u05D4">\u2714 \u05D0\u05E9\u05E8</button>') +
+          (canCorrect ? ' <button style="background:#f59e0b;color:white;padding:4px 8px;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;margin-left:3px;" onclick="correctToPass(' + i + ')" title="\u05EA\u05E7\u05DF \u05DC\u05E2\u05D5\u05D1\u05E8">\u05EA\u05E7\u05DF</button>' : '') +
         '</td></tr>';
     }
     html += '</tbody></table></div>';
