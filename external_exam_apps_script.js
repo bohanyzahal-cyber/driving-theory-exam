@@ -1216,6 +1216,8 @@ function handleCorrectToPass(p) {
       }
       // Update pass/fail to עבר
       sheet.getRange(i + 1, 8).setValue('עבר');     // column H = עבר/נכשל
+      // Clear disqualified flag (in case correcting a DQ result directly)
+      sheet.getRange(i + 1, 18).setValue(false);     // column R = disqualified
       // Mark as corrected
       sheet.getRange(i + 1, 21).setValue(true);      // column U = תוקן?
       // Regenerate WhatsApp link — corrected result shows only "עבר" (no score/errors)
