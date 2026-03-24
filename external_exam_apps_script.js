@@ -795,6 +795,7 @@ function handleMarkExamStarted(p) {
   for (var i = data.length - 1; i >= 1; i--) {
     if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber) && String(data[i][5]).trim() === 'approved') {
       sheet.getRange(i + 1, 6).setValue('in_exam');
+      sheet.getRange(i + 1, 12).setValue(nowISO()); // column L = exam actual start time
       SpreadsheetApp.flush();
       return jsonResponse({ status: 'ok' });
     }
@@ -820,8 +821,9 @@ function handleExaminerDashboard(p) {
     if (String(pendData[ci][0]) !== code) continue;
     if (String(pendData[ci][5]).trim() !== 'in_exam') continue;
     var ciId = pendData[ci][1];
-    var regTime = pendData[ci][4] ? new Date(pendData[ci][4]) : null;
-    // Dynamic stale threshold: exam time (based on extension) + 10 min buffer
+    var examStart = pendData[ci][11] ? new Date(pendData[ci][11]) : null;
+    var regTime = examStart || (pendData[ci][4] ? new Date(pendData[ci][4]) : null);
+    // Dynamic stale threshold: exam time (based on extension) + buffer
     var ciExt = parseFloat(pendData[ci][10]) || 1;
     if (ciExt !== 1.25 && ciExt !== 1.5) ciExt = 1;
     var maxMs = Math.round(BASE_EXAM_MS * ciExt) + STALE_BUFFER_MS;
@@ -883,7 +885,7 @@ function handleExaminerDashboard(p) {
   for (var i = 1; i < pendData.length; i++) {
     if (String(pendData[i][0]) !== code) continue;
     var s = String(pendData[i][5] || '').trim();
-    var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], status: s, language: pendData[i][6] || '', population: pendData[i][7] || '', license: pendData[i][8] || '', audioMode: pendData[i][9] || 'off', timeExtension: String(pendData[i][10] || '') };
+    var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], examStartTime: pendData[i][11] || '', status: s, language: pendData[i][6] || '', population: pendData[i][7] || '', license: pendData[i][8] || '', audioMode: pendData[i][9] || 'off', timeExtension: String(pendData[i][10] || '') };
     if (s === 'waiting') pending.push(item);
     else if (s === 'approved') pending.push(item);
     else if (s === 'in_exam') active.push(item);

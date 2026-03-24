@@ -1193,8 +1193,9 @@
         var id4 = String(item.idNumber).slice(-4);
         var elapsed = '';
         var isOvertime = false;
-        if (item.time) {
-          var diff = Math.round((Date.now() - new Date(item.time).getTime()) / 1000);
+        var timerRef = item.examStartTime || item.time;
+        if (timerRef) {
+          var diff = Math.round((Date.now() - new Date(timerRef).getTime()) / 1000);
           if (diff < 0) diff = 0;
           var em = Math.floor(diff / 60), es = diff % 60;
           elapsed = em + ':' + (es < 10 ? '0' : '') + es;
