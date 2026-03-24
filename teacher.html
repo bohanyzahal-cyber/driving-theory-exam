@@ -430,14 +430,14 @@
       <input type="text" id="newClassName" placeholder='לדוג\u05F3: כיתה א - רישיון B'/>
     </div>
     <div class="form-group">
-      <label for="newClassLicense">דרגת רישיון</label>
-      <select id="newClassLicense" style="width:100%;padding:10px;border:1px solid #cbd5e1;border-radius:10px;font-size:1em;">
-        <option value="B">B (פרטי)</option>
-        <option value="1">1 (טרקטור)</option>
-        <option value="C1">C1 (משא קל)</option>
-        <option value="C">C/E (משא כבד)</option>
-        <option value="D">D (ציבורי)</option>
-      </select>
+      <label>דרגות רישיון מותרות</label>
+      <div id="newClassLicenses" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:4px;">
+        <label style="display:flex;align-items:center;gap:4px;padding:6px 12px;background:#f1f5f9;border-radius:8px;cursor:pointer;font-size:0.95em;"><input type="checkbox" value="B" checked/> B (פרטי)</label>
+        <label style="display:flex;align-items:center;gap:4px;padding:6px 12px;background:#f1f5f9;border-radius:8px;cursor:pointer;font-size:0.95em;"><input type="checkbox" value="1" checked/> 1 (טרקטור)</label>
+        <label style="display:flex;align-items:center;gap:4px;padding:6px 12px;background:#f1f5f9;border-radius:8px;cursor:pointer;font-size:0.95em;"><input type="checkbox" value="C1" checked/> C1 (משא קל)</label>
+        <label style="display:flex;align-items:center;gap:4px;padding:6px 12px;background:#f1f5f9;border-radius:8px;cursor:pointer;font-size:0.95em;"><input type="checkbox" value="C" checked/> C/E (משא כבד)</label>
+        <label style="display:flex;align-items:center;gap:4px;padding:6px 12px;background:#f1f5f9;border-radius:8px;cursor:pointer;font-size:0.95em;"><input type="checkbox" value="D" checked/> D (ציבורי)</label>
+      </div>
     </div>
     <div class="modal-actions">
       <button class="btn btn-primary" id="btnCreateClass">צור כיתה</button>
@@ -866,8 +866,10 @@ function hideNewClassModal() {
 
 function createClass() {
   var name = document.getElementById('newClassName').value.trim();
-  var license = document.getElementById('newClassLicense').value;
+  var checked = document.querySelectorAll('#newClassLicenses input[type=checkbox]:checked');
+  var license = Array.prototype.map.call(checked, function(cb) { return cb.value; }).join(',');
   if (!name) { document.getElementById('newClassName').style.borderColor = '#ef4444'; return; }
+  if (!license) { alert('\u05D9\u05E9 \u05DC\u05E1\u05DE\u05DF \u05DC\u05E4\u05D7\u05D5\u05EA \u05D3\u05E8\u05D2\u05EA \u05E8\u05D9\u05E9\u05D9\u05D5\u05DF \u05D0\u05D7\u05EA'); return; }
 
   var btn = document.getElementById('btnCreateClass');
   btn.disabled = true;

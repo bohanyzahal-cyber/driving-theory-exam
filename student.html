@@ -545,6 +545,16 @@ function joinClass(code,name,studentId){
       currentClassCode=code.toUpperCase();
       localStorage.setItem('student_class_code',currentClassCode);
       localStorage.setItem('student_class_name',d.className);
+      // Filter license dropdown to allowed licenses
+      if(d.license){
+        var allowed=d.license.split(',');
+        var sel=document.getElementById('selectLicense');
+        var opts=sel.options;
+        for(var o=opts.length-1;o>=0;o--){
+          if(allowed.indexOf(opts[o].value)===-1) sel.remove(o);
+        }
+        if(sel.options.length===1) sel.selectedIndex=0;
+      }
     } else {
       statusEl.style.color='#dc2626';
       statusEl.textContent='\u2716 '+d.message;
