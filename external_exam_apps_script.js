@@ -2196,6 +2196,31 @@ function handleTeacherCommanderDashboard(p) {
     result.bySite = computeGroupWithSub(bySite);
   }
 
+  // Active classes list
+  var studSheet = getSheet('תלמידי כיתות');
+  var studData = studSheet.getDataRange().getValues();
+  var studCountMap = {};
+  for (var sc = 1; sc < studData.length; sc++) {
+    var scc = String(studData[sc][0]).trim();
+    studCountMap[scc] = (studCountMap[scc] || 0) + 1;
+  }
+  var activeClasses = [];
+  for (var ac = 1; ac < classData.length; ac++) {
+    if (String(classData[ac][6]) !== 'כן') continue; // only active
+    var acCode = String(classData[ac][0]).trim();
+    var acSite = String(classData[ac][7] || '');
+    if (isLocal && userSite && acSite !== userSite) continue;
+    activeClasses.push({
+      code: acCode,
+      name: String(classData[ac][1] || ''),
+      teacherName: String(classData[ac][3] || ''),
+      license: String(classData[ac][4] || ''),
+      site: acSite,
+      students: studCountMap[acCode] || 0
+    });
+  }
+  result.activeClasses = activeClasses;
+
   return jsonResponse({ status: 'ok', data: result });
 }
 

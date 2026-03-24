@@ -349,6 +349,11 @@
       </div>
     </div>
 
+    <div class="card" id="cmdActiveClasses" style="display:none;">
+      <h3 style="margin:0 0 12px;">📋 כיתות פעילות</h3>
+      <div id="cmdActiveClassesContent" style="overflow-x:auto;"></div>
+    </div>
+
     <div class="card" style="text-align:center;">
       <button onclick="switchToTeacher()" style="padding:12px 24px;font-size:15px;background:#7c3aed;color:white;border:none;border-radius:8px;cursor:pointer;">מעבר ללוח מורה (ניהול כיתות)</button>
     </div>
@@ -1058,9 +1063,11 @@ window.fetchCommanderData = function(period) {
       cmdData = resp.data;
       renderCommanderKPIs(cmdData.overall);
       renderBreakdownTable(cmdData, cmdCurrentTab);
+      renderActiveClasses(cmdData.activeClasses || []);
       document.getElementById('cmdKPIs').style.display = '';
       document.getElementById('cmdBreakdowns').style.display = '';
       document.getElementById('cmdActions').style.display = '';
+      document.getElementById('cmdActiveClasses').style.display = '';
     } else {
       if (resp.tokenExpired) { doLogout(); return; }
       document.getElementById('cmdLoading').style.display = 'block';
@@ -1104,6 +1111,32 @@ function renderCommanderKPIs(o) {
   document.getElementById('cmdMedian').textContent = o.medianScore + '%';
   var pieEl = document.getElementById('cmdOverallPie');
   if (pieEl) pieEl.innerHTML = buildPieChart(o.passed, o.failed, 100);
+}
+
+function renderActiveClasses(classes) {
+  var el = document.getElementById('cmdActiveClassesContent');
+  if (!el) return;
+  if (!classes || classes.length === 0) {
+    el.innerHTML = '<p style="color:#64748b;text-align:center;">\u05D0\u05D9\u05DF \u05DB\u05D9\u05EA\u05D5\u05EA \u05E4\u05E2\u05D9\u05DC\u05D5\u05EA</p>';
+    return;
+  }
+  var html = '<table class="cmd-table" style="width:100%;border-collapse:collapse;font-size:13px;">';
+  html += '<thead><tr style="background:#f1f5f9;"><th style="padding:8px;text-align:right;">\u05E9\u05DD \u05DB\u05D9\u05EA\u05D4</th><th style="padding:8px;text-align:right;">\u05DE\u05D5\u05E8\u05D4</th><th style="padding:8px;text-align:right;">\u05E8\u05D9\u05E9\u05D9\u05D5\u05E0\u05D5\u05EA</th><th style="padding:8px;text-align:center;">\u05EA\u05DC\u05DE\u05D9\u05D3\u05D9\u05DD</th><th style="padding:8px;text-align:center;">\u05E7\u05D5\u05D3</th></tr></thead><tbody>';
+  for (var i = 0; i < classes.length; i++) {
+    var c = classes[i];
+    var licBadges = (c.license || '').split(',').map(function(l) {
+      return '<span style="background:#ede9fe;color:#6d28d9;padding:1px 6px;border-radius:6px;font-size:0.85em;margin:0 2px;">' + escHtml(l.trim()) + '</span>';
+    }).join(' ');
+    html += '<tr style="border-bottom:1px solid #e2e8f0;">';
+    html += '<td style="padding:8px;">' + escHtml(c.name) + '</td>';
+    html += '<td style="padding:8px;">' + escHtml(c.teacherName) + '</td>';
+    html += '<td style="padding:8px;">' + licBadges + '</td>';
+    html += '<td style="padding:8px;text-align:center;font-weight:600;">' + c.students + '</td>';
+    html += '<td style="padding:8px;text-align:center;font-family:monospace;font-size:12px;color:#64748b;">' + escHtml(c.code) + '</td>';
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  el.innerHTML = html;
 }
 
 var SUB_DIMS = {
