@@ -2411,10 +2411,15 @@ function handleTeacherCreateClass(p) {
   var tSheet = getSheet('מורים');
   var tData = tSheet.getDataRange().getValues();
   var teacherName = '';
+  var teacherSite = '';
   for (var i = 1; i < tData.length; i++) {
-    if (normalizeId(tData[i][1]) === normalizeId(p.teacherId)) { teacherName = tData[i][0]; break; }
+    if (normalizeId(tData[i][1]) === normalizeId(p.teacherId)) {
+      teacherName = tData[i][0];
+      teacherSite = String(tData[i][9] || '');
+      break;
+    }
   }
-  sheet.appendRow([code, className, normalizeId(p.teacherId), teacherName, license, nowISO(), 'כן']);
+  sheet.appendRow([code, className, normalizeId(p.teacherId), teacherName, license, nowISO(), 'כן', teacherSite]);
   return jsonResponse({ status: 'ok', classCode: code, className: className });
 }
 
