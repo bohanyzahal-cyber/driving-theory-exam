@@ -249,6 +249,7 @@
     }
     .exam-lang-switcher { background:rgba(255,255,255,0.95); border:2px solid rgba(255,255,255,0.3); border-radius:8px; padding:4px 8px; font-size:13px; font-weight:700; color:#1e293b; cursor:pointer; min-width:52px; }
     .exam-lang-switcher:focus { outline:2px solid #3b82f6; }
+    #examArea, .q-nav, .q-nav button { touch-action: manipulation; }
   </style>
   <link rel="manifest" href="examinee/manifest.json"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
@@ -827,6 +828,7 @@
 
   // Reset everything so the next examinee can use the same device
   window.resetForNextExaminee = function() {
+    window.removeEventListener('popstate', onBackButton);
     // Stop DQ overturn polling if active
     stopDQOverturnPolling();
     // Clear state
@@ -1331,6 +1333,10 @@
     setupBeforeUnload();
     setupTabSwitchDetection();
     setupSplitScreenDetection();
+    // Prevent back button during exam
+    history.pushState({ examActive: true }, '');
+    history.pushState({ examActive: true }, '');
+    window.addEventListener('popstate', onBackButton);
     startTimer();
     saveActiveExam();
     renderQuestion();
@@ -1564,6 +1570,15 @@
     }
   }
 
+  function onBackButton(e) {
+    if (examInProgress || examSubmitted || tabSwitchDQConfirmed) {
+      // Push state again to prevent leaving
+      history.pushState({ examActive: true }, '');
+    } else {
+      window.removeEventListener('popstate', onBackButton);
+    }
+  }
+
   function showDQScreen() {
     if (tabSwitchGraceTimer) { clearTimeout(tabSwitchGraceTimer); tabSwitchGraceTimer = null; }
     document.removeEventListener('visibilitychange', onTabSwitch);
@@ -1709,6 +1724,10 @@
     setupBeforeUnload();
     setupTabSwitchDetection();
     setupSplitScreenDetection();
+    // Prevent back button during exam
+    history.pushState({ examActive: true }, '');
+    history.pushState({ examActive: true }, '');
+    window.addEventListener('popstate', onBackButton);
     startResumedTimer();
     startDevToolsTrap();
     saveActiveExam();
@@ -1774,33 +1793,49 @@
     if (splitScreenBlurTimer) { clearTimeout(splitScreenBlurTimer); splitScreenBlurTimer = null; }
   }
 
+  var resizeDebounceTimer = null;
   function onSplitResize() {
     if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
     if (splitScreenInitW === 0) return;
-    var curW = window.innerWidth;
-    var curH = window.innerHeight;
-    var wRatio = curW / splitScreenInitW;
-    var hRatio = curH / splitScreenInitH;
+    // Debounce: wait 500ms after last resize event before checking
+    if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+    resizeDebounceTimer = setTimeout(function() {
+      resizeDebounceTimer = null;
+      if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
+      var curW = window.innerWidth;
+      var curH = window.innerHeight;
+      var wRatio = curW / splitScreenInitW;
+      var hRatio = curH / splitScreenInitH;
 
-    // Detect orientation change (screen rotation): width and height swap
-    // In a rotation, total area stays roughly the same — one axis grows while the other shrinks
-    var wasRotation = (wRatio > 1.2 && hRatio < 0.85) || (hRatio > 1.2 && wRatio < 0.85);
-    if (wasRotation) {
-      // Update baseline to new orientation so future checks work correctly
-      splitScreenInitW = curW;
-      splitScreenInitH = curH;
-      return;
-    }
+      // Detect orientation change (screen rotation): width and height swap
+      var wasRotation = (wRatio > 1.2 && hRatio < 0.85) || (hRatio > 1.2 && wRatio < 0.85);
+      if (wasRotation) {
+        splitScreenInitW = curW;
+        splitScreenInitH = curH;
+        return;
+      }
 
-    // If either dimension drops significantly — split screen detected
-    if (wRatio < SPLIT_RESIZE_RATIO || hRatio < SPLIT_RESIZE_RATIO) {
-      // Treat as tab-switch — reuse existing DQ logic
-      tabSwitchDQConfirmed = true;
-      newDQEventId();
-      try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
-      sendDQToServer();
-      showDQScreen();
-    }
+      // Also update baseline if size GREW (e.g. address bar hidden → more space)
+      if (wRatio > 1.0 && hRatio > 1.0) {
+        splitScreenInitW = curW;
+        splitScreenInitH = curH;
+        return;
+      }
+
+      // Ignore small height changes (< 20%) — likely address bar show/hide or keyboard
+      if (wRatio >= 0.95 && hRatio >= 0.80) {
+        return;
+      }
+
+      // If either dimension drops significantly — split screen detected
+      if (wRatio < SPLIT_RESIZE_RATIO || hRatio < SPLIT_RESIZE_RATIO) {
+        tabSwitchDQConfirmed = true;
+        newDQEventId();
+        try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+        sendDQToServer();
+        showDQScreen();
+      }
+    }, 500);
   }
 
   function onWindowBlur() {
@@ -2881,6 +2916,10 @@
             setupBeforeUnload();
             setupTabSwitchDetection();
             setupSplitScreenDetection();
+            // Prevent back button during exam
+            history.pushState({ examActive: true }, '');
+            history.pushState({ examActive: true }, '');
+            window.addEventListener('popstate', onBackButton);
             startResumedTimer();
             startDevToolsTrap();
             renderQuestion();
@@ -2890,6 +2929,10 @@
           setupBeforeUnload();
           setupTabSwitchDetection();
           setupSplitScreenDetection();
+          // Prevent back button during exam
+          history.pushState({ examActive: true }, '');
+          history.pushState({ examActive: true }, '');
+          window.addEventListener('popstate', onBackButton);
           startResumedTimer();
           startDevToolsTrap();
           renderQuestion();
