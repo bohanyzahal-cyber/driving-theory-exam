@@ -1941,7 +1941,10 @@
       'th{background:#e2e8f0;border:1px solid #94a3b8;padding:8px;font-weight:700;text-align:center;font-size:12px;}' +
       'td{font-size:12px;line-height:1.5;vertical-align:top;}' +
       '.footer{margin-top:20px;font-size:12px;color:#64748b;text-align:center;border-top:1px solid #e2e8f0;padding-top:10px;}' +
-      '@media print{body{margin:10px 15px;} .no-print{display:none!important;}}' +
+      '@page{size:A4;margin:10mm 12mm;}' +
+'@media print{body{margin:0;padding:0;width:100%;max-width:100%;} .no-print{display:none!important;}}' +
+'table{table-layout:fixed;width:100%;}' +
+'td,th{word-wrap:break-word;overflow-wrap:break-word;padding:6px 4px;border:1px solid #cbd5e1;}' +
       '</style></head><body>' +
       (logoBase64 ? '<div style="text-align:center;margin-bottom:8px;"><img src="' + logoBase64 + '" style="height:80px;" alt="\u05E1\u05DE\u05DB\u05D5\u05EA \u05E8\u05D9\u05E9\u05D5\u05D9 \u05E6\u05D4\u05DC"/></div>' : '<div style="text-align:center;margin-bottom:8px;font-size:20px;font-weight:900;color:#8B6914;">\u05E1\u05DE\u05DB\u05D5\u05EA \u05E8\u05D9\u05E9\u05D5\u05D9 \u05E6\u05D4"\u05DC</div>') +
       '<h1>' + escHtml(p('pdfTitle')) + '</h1>' +
@@ -2384,7 +2387,9 @@
     H.push('.ps{padding:3px;border:1px solid #ddd;border-radius:4px;font-size:11px;font-family:inherit}');
     H.push('.exec-val{font-weight:700;font-size:13px;background:#f0faf0}');
     H.push('.exec-val.z{color:#94a3b8;background:#f8f9fa}');
-    H.push('@media print{body{background:#fff;padding:0}.container{box-shadow:none;max-width:100%}.no-print{display:none!important}');
+    H.push('@page{size:A4;margin:8mm 10mm}');
+H.push('@media print{body{background:#fff;padding:0;width:100%;max-width:100%}.container{box-shadow:none;max-width:100%;width:100%}.no-print{display:none!important}');
+H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-wrap:break-word;overflow:hidden}');
     H.push('thead th,.summary-item,.pop-table th{-webkit-print-color-adjust:exact;print-color-adjust:exact}');
     H.push('tbody tr{-webkit-print-color-adjust:exact;print-color-adjust:exact}}');
     H.push('@media(max-width:600px){body{padding:8px}.section{padding:14px 16px}}');
@@ -2709,7 +2714,9 @@
     H.push('.smr-pie-legend{display:flex;flex-direction:column;gap:4px;font-size:12px;}');
     H.push('.smr-pie-dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-left:6px;}');
 
-    H.push('@media print{body{background:#fff;padding:0}.container{box-shadow:none;max-width:100%}.no-print{display:none!important}');
+    H.push('@page{size:A4;margin:8mm 10mm}');
+H.push('@media print{body{background:#fff;padding:0;width:100%;max-width:100%}.container{box-shadow:none;max-width:100%;width:100%}.no-print{display:none!important}');
+H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-wrap:break-word;overflow:hidden}');
     H.push('thead th,.kpi{-webkit-print-color-adjust:exact;print-color-adjust:exact}}');
     H.push('</style></head><body><div class="container">');
 
