@@ -531,7 +531,7 @@ function getStudentId(){
 }
 
 // Join a class
-function joinClass(code,name,studentId){
+function joinClass(code,name,studentId,onDone){
   var statusEl=document.getElementById('classStatus');
   statusEl.style.display='block';
   statusEl.style.color='#64748b';
@@ -555,15 +555,18 @@ function joinClass(code,name,studentId){
         }
         if(sel.options.length===1) sel.selectedIndex=0;
       }
+      if(onDone)onDone();
     } else {
       statusEl.style.color='#dc2626';
       statusEl.textContent='\u2716 '+d.message;
       currentClassCode='';
+      if(onDone)onDone();
     }
   })
   .catch(function(){
     statusEl.style.color='#dc2626';
     statusEl.textContent='\u2716 שגיאת תקשורת';
+    if(onDone)onDone();
   });
 }
 
@@ -1041,7 +1044,7 @@ if(audioEnabled)initTTS();
 // Handle class code
 var classInput=document.getElementById('inputClassCode').value.trim().toUpperCase();
 var proceedToApp=function(){loadTranslationFile(currentLanguage,function(){document.getElementById('greetingText').textContent='\u05E9\u05DC\u05D5\u05DD, '+currentName+'! \u05DE\u05D4 \u05E0\u05EA\u05E8\u05D2\u05DC \u05D4\u05D9\u05D5\u05DD?';buildCategoryButtons();showScreen('screenModeSelect');renderStreak();try{var wr=JSON.parse(localStorage.getItem('student_wrong_qs')||'[]');var srCard=document.getElementById('cardSpacedRep');if(srCard){if(wr.length>0){srCard.style.display='';document.getElementById('spacedRepDesc').textContent=wr.length+' שאלות שטעית בהן מחכות לך';}else{srCard.style.display='none';}}}catch(e){}});};
-if(classInput&&classInput!==currentClassCode){joinClass(classInput,currentName,currentStudentId);loadProgressFromCloud(proceedToApp);}
+if(classInput&&classInput!==currentClassCode){joinClass(classInput,currentName,currentStudentId,function(){loadProgressFromCloud(proceedToApp);});}
 else if(savedClass){currentClassCode=savedClass;loadProgressFromCloud(proceedToApp);}
 else{proceedToApp();}});
 document.getElementById('btnBackToWelcome').addEventListener('click',function(){showScreen('screenWelcome');});
