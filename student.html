@@ -588,6 +588,25 @@ function sendPracticeResult(resultData){
   fetch(API_URL,{method:'POST',headers:{'Content-Type':'text/plain'},body:body}).catch(function(){});
 }
 
+// ===== Cloud Sync =====
+function syncProgressToCloud(){
+  if(!currentClassCode||!currentName)return;
+  try{
+    var body=JSON.stringify({action:'saveStudentProgress',studentName:currentName,classCode:currentClassCode,streak:localStorage.getItem('student_streak')||'{}',wrongQs:localStorage.getItem('student_wrong_qs')||'[]',history:localStorage.getItem('student_history')||'[]'});
+    fetch(API_URL,{method:'POST',headers:{'Content-Type':'text/plain'},body:body}).catch(function(){});
+  }catch(e){}
+}
+function loadProgressFromCloud(callback){
+  if(!currentClassCode||!currentName){if(callback)callback();return;}
+  fetch(API_URL+'?action=loadStudentProgress&studentName='+encodeURIComponent(currentName)+'&classCode='+encodeURIComponent(currentClassCode)).then(function(r){return r.json();}).then(function(d){
+    if(d.status!=='ok'||!d.found){if(callback)callback();return;}
+    try{var ls=JSON.parse(localStorage.getItem('student_streak')||'{}');var cs=JSON.parse(d.streak||'{}');if((cs.count||0)>(ls.count||0))localStorage.setItem('student_streak',JSON.stringify(cs));}catch(e){}
+    try{var lw=JSON.parse(localStorage.getItem('student_wrong_qs')||'[]');var cw=JSON.parse(d.wrongQs||'[]');var mg={};for(var i=0;i<lw.length;i++)mg[lw[i].id]=lw[i];for(var j=0;j<cw.length;j++){if(!mg[cw[j].id])mg[cw[j].id]=cw[j];else{mg[cw[j].id].wrongCount=Math.max(mg[cw[j].id].wrongCount||1,cw[j].wrongCount||1);mg[cw[j].id].correctStreak=Math.min(mg[cw[j].id].correctStreak||0,cw[j].correctStreak||0);mg[cw[j].id].lastSeen=Math.max(mg[cw[j].id].lastSeen||0,cw[j].lastSeen||0);}}var arr=[];for(var k in mg)arr.push(mg[k]);if(arr.length>200)arr=arr.slice(-200);localStorage.setItem('student_wrong_qs',JSON.stringify(arr));}catch(e){}
+    try{var lh=JSON.parse(localStorage.getItem('student_history')||'[]');var ch=JSON.parse(d.history||'[]');var seen={};var all=[];function hk(h){return(h.date||'')+'|'+(h.score||0)+'|'+(h.total||0)+'|'+(h.mode||'');}for(var a=0;a<lh.length;a++){var k1=hk(lh[a]);if(!seen[k1]){seen[k1]=true;all.push(lh[a]);}}for(var b=0;b<ch.length;b++){var k2=hk(ch[b]);if(!seen[k2]){seen[k2]=true;all.push(ch[b]);}}if(all.length>50)all=all.slice(-50);localStorage.setItem('student_history',JSON.stringify(all));}catch(e){}
+    if(callback)callback();
+  }).catch(function(){if(callback)callback();});
+}
+
 function showScreen(id){var s=document.querySelectorAll('.screen');for(var i=0;i<s.length;i++)s[i].classList.remove('active');var t=document.getElementById(id);if(t)t.classList.add('active');window.scrollTo(0,0);}
 
 function loadTranslationFile(lang,cb){if(lang==='he'||lang==='ru'||loadedTranslations[lang]){translationLoaded=true;if(cb)cb();return;}var s=document.createElement('script');s.src='questions_'+lang+'.js';s.onload=function(){translationLoaded=true;loadedTranslations[lang]=true;if(cb)cb();};s.onerror=function(){translationLoaded=true;if(cb)cb();};document.head.appendChild(s);}
@@ -823,7 +842,7 @@ try{
 // Save to local history
 var histElapsed='';
 if(examStartTime){var hd=Math.floor((Date.now()-examStartTime)/1000);var hm=Math.floor(hd/60);var hs=hd%60;histElapsed=hm+':'+(hs<10?'0':'')+hs;}
-saveToHistory(currentMode, currentCategory, correct, total, pct, passed, histElapsed);updateStreak();saveWrongQuestions();
+saveToHistory(currentMode, currentCategory, correct, total, pct, passed, histElapsed);updateStreak();saveWrongQuestions();syncProgressToCloud();
 
 
 var sb=document.createElement('div');sb.className='card result-score-box';var bs=document.createElement('div');bs.className='result-big-score';bs.textContent=correct+' / '+total;sb.appendChild(bs);var pe=document.createElement('div');pe.className='result-pct';pe.textContent=pct+'%';sb.appendChild(pe);var bg=document.createElement('div');bg.className='result-badge';if(passed){bg.classList.add('pass');bg.textContent='\u05E2\u05D1\u05E8\u05EA! \u2705';}else{bg.classList.add('fail');bg.textContent='\u05E0\u05DB\u05E9\u05DC\u05EA \u2717';}sb.appendChild(bg);area.appendChild(sb);
@@ -1021,9 +1040,10 @@ audioEnabled=document.getElementById('chkAudio').checked;
 if(audioEnabled)initTTS();
 // Handle class code
 var classInput=document.getElementById('inputClassCode').value.trim().toUpperCase();
-if(classInput&&classInput!==currentClassCode){joinClass(classInput,currentName,currentStudentId);}
-else if(savedClass){currentClassCode=savedClass;}
-loadTranslationFile(currentLanguage,function(){document.getElementById('greetingText').textContent='\u05E9\u05DC\u05D5\u05DD, '+currentName+'! \u05DE\u05D4 \u05E0\u05EA\u05E8\u05D2\u05DC \u05D4\u05D9\u05D5\u05DD?';buildCategoryButtons();showScreen('screenModeSelect');renderStreak();try{var wr=JSON.parse(localStorage.getItem('student_wrong_qs')||'[]');var srCard=document.getElementById('cardSpacedRep');if(srCard){if(wr.length>0){srCard.style.display='';document.getElementById('spacedRepDesc').textContent=wr.length+' שאלות שטעית בהן מחכות לך';}else{srCard.style.display='none';}}}catch(e){}});});
+var proceedToApp=function(){loadTranslationFile(currentLanguage,function(){document.getElementById('greetingText').textContent='\u05E9\u05DC\u05D5\u05DD, '+currentName+'! \u05DE\u05D4 \u05E0\u05EA\u05E8\u05D2\u05DC \u05D4\u05D9\u05D5\u05DD?';buildCategoryButtons();showScreen('screenModeSelect');renderStreak();try{var wr=JSON.parse(localStorage.getItem('student_wrong_qs')||'[]');var srCard=document.getElementById('cardSpacedRep');if(srCard){if(wr.length>0){srCard.style.display='';document.getElementById('spacedRepDesc').textContent=wr.length+' שאלות שטעית בהן מחכות לך';}else{srCard.style.display='none';}}}catch(e){}});};
+if(classInput&&classInput!==currentClassCode){joinClass(classInput,currentName,currentStudentId);loadProgressFromCloud(proceedToApp);}
+else if(savedClass){currentClassCode=savedClass;loadProgressFromCloud(proceedToApp);}
+else{proceedToApp();}});
 document.getElementById('btnBackToWelcome').addEventListener('click',function(){showScreen('screenWelcome');});
 document.getElementById('cardSpacedRep').addEventListener('click',function(){var qs=getSpacedRepetitionQuestions(currentLicense,currentLanguage);if(qs.length===0){alert('אין שאלות לחזרה! תתרגל קודם כדי שהמערכת תזהה שגיאות.');return;}currentMode='category';immediateMode=true;currentCategory='חזרה על שגיאות';currentIndex=0;userAnswers=[];shuffledOrders=[];answerLocked=false;examStartTime=Date.now();examQuestions=qs;for(var i=0;i<examQuestions.length;i++)userAnswers.push(null);showScreen('screenPractice');renderQuestion();});
 document.getElementById('btnShowHistory').addEventListener('click', function() { showHistory(); });

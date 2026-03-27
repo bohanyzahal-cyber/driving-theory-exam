@@ -17,7 +17,8 @@ var SHEET_HEADERS = {
   'מורים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד'],
   'כיתות': ['קוד כיתה', 'שם כיתה', 'מורה ת.ז.', 'שם מורה', 'דרגה', 'תאריך יצירה', 'פעיל'],
   'תלמידי כיתות': ['קוד כיתה', 'שם תלמיד', 'מזהה תלמיד', 'תאריך הצטרפות'],
-  'תוצאות תרגול': ['תאריך', 'מזהה תלמיד', 'שם תלמיד', 'קוד כיתה', 'מצב', 'דרגה', 'ציון', 'סה"כ', 'אחוז', 'עבר/נכשל', 'זמן', 'נושא', 'שפה', 'פירוט שגויות', 'פירוט לפי נושא']
+  'תוצאות תרגול': ['תאריך', 'מזהה תלמיד', 'שם תלמיד', 'קוד כיתה', 'מצב', 'דרגה', 'ציון', 'סה"כ', 'אחוז', 'עבר/נכשל', 'זמן', 'נושא', 'שפה', 'פירוט שגויות', 'פירוט לפי נושא'],
+  'התקדמות תלמידים': ['שם תלמיד', 'קוד כיתה', 'מפתח', 'streak', 'wrong_qs', 'history', 'עדכון אחרון']
 };
 
 function getSheet(name) {
@@ -373,6 +374,8 @@ function doGet(e) {
       case 'submitPracticeResult':
         return handleSubmitPracticeResult(p);
 
+      case 'loadStudentProgress':
+        return handleLoadStudentProgress(p);
       default:
         return jsonResponse({ status: 'ok', message: 'External Exam API is running' });
     }
@@ -416,6 +419,8 @@ function doPost(e) {
     } else if (action === 'cancelDisqualify') {
       return handleCancelDisqualify(data);
     } else {
+    } else if (action === 'saveStudentProgress') {
+      return handleSaveStudentProgress(data);
       return jsonResponse({ status: 'error', message: 'Unknown POST action: ' + action });
     }
 
@@ -2686,5 +2691,48 @@ function handleSubmitPracticeResult(p) {
   try { categoryBreakdown = typeof p.categoryBreakdown === 'string' ? p.categoryBreakdown : JSON.stringify(p.categoryBreakdown || ''); } catch(e) {}
 
   sheet.appendRow([todayStr(), studentId, String(p.studentName || ''), classCode, mode, license, score, total, percent, passed, time, category, language, wrongDetails, categoryBreakdown]);
+  return jsonResponse({ status: 'ok' });
+}
+
+function handleLoadStudentProgress(p) {
+  var name = String(p.studentName || '').trim();
+  var classCode = String(p.classCode || '').trim().toUpperCase();
+  if (!name || !classCode) {
+    return jsonResponse({ status: 'error', message: 'חסרים פרטים' });
+  }
+  var key = name.toLowerCase() + '|' + classCode;
+  var sheet = getSheet('התקדמות תלמידים');
+  var row = findRow(sheet, 2, key);
+  if (row === -1) {
+    return jsonResponse({ status: 'ok', found: false });
+  }
+  var data = sheet.getRange(row, 1, 1, 7).getValues()[0];
+  return jsonResponse({
+    status: 'ok',
+    found: true,
+    streak: data[3] || '{}',
+    wrongQs: data[4] || '[]',
+    history: data[5] || '[]',
+    lastUpdated: data[6] || ''
+  });
+}
+
+function handleSaveStudentProgress(p) {
+  var name = String(p.studentName || '').trim();
+  var classCode = String(p.classCode || '').trim().toUpperCase();
+  if (!name || !classCode) {
+    return jsonResponse({ status: 'error', message: 'חסרים פרטים' });
+  }
+  var key = name.toLowerCase() + '|' + classCode;
+  var streak = String(p.streak || '{}');
+  var wrongQs = String(p.wrongQs || '[]');
+  var history = String(p.history || '[]');
+  var sheet = getSheet('התקדמות תלמידים');
+  var row = findRow(sheet, 2, key);
+  if (row === -1) {
+    sheet.appendRow([name, classCode, key, streak, wrongQs, history, nowISO()]);
+  } else {
+    sheet.getRange(row, 1, 1, 7).setValues([[name, classCode, key, streak, wrongQs, history, nowISO()]]);
+  }
   return jsonResponse({ status: 'ok' });
 }
