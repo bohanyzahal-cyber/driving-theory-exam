@@ -418,9 +418,9 @@ function doPost(e) {
       return handleDisqualify(data);
     } else if (action === 'cancelDisqualify') {
       return handleCancelDisqualify(data);
-    } else {
     } else if (action === 'saveStudentProgress') {
       return handleSaveStudentProgress(data);
+    } else {
       return jsonResponse({ status: 'error', message: 'Unknown POST action: ' + action });
     }
 
