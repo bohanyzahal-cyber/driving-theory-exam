@@ -1937,13 +1937,45 @@
 
   var splitScreenBound = false;
   function setupSplitScreenDetection() {
-    splitScreenInitW = window.innerWidth;
-    splitScreenInitH = window.innerHeight;
+    if (isMobileDevice()) {
+      // Phone: baseline = current viewport (browser chrome accounted for)
+      splitScreenInitW = window.innerWidth;
+      splitScreenInitH = window.innerHeight;
+    } else {
+      // Desktop: baseline = physical screen size. Prevents "register with small window" cheat.
+      // Window MUST occupy >= 90% of the screen at all times.
+      splitScreenInitW = screen.availWidth || screen.width || window.innerWidth;
+      splitScreenInitH = screen.availHeight || screen.height || window.innerHeight;
+    }
     if (!splitScreenBound) {
       splitScreenBound = true;
       window.addEventListener('resize', onSplitResize);
       window.addEventListener('blur', onWindowBlur);
       window.addEventListener('focus', onWindowFocus);
+      // On desktop, also do an immediate check — DQ if window is already smaller than threshold at exam start
+      if (!isMobileDevice()) {
+        setTimeout(checkSplitScreenNow, 800); // 800ms after fullscreen kicks in
+      }
+    }
+  }
+
+  // Run a one-shot check (used right after exam start on desktop) — bypasses debounce
+  function checkSplitScreenNow() {
+    if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
+    if (splitScreenInitW === 0) return;
+    // On desktop, defer to fullscreen enforcement when not in fullscreen
+    // (the fullscreen resume prompt may be active, with its own 15s grace)
+    if (!isMobileDevice() && !isFullscreenActive()) return;
+    var curW = window.innerWidth;
+    var curH = window.innerHeight;
+    var wRatio = curW / splitScreenInitW;
+    var hRatio = curH / splitScreenInitH;
+    if (wRatio < SPLIT_RESIZE_RATIO || hRatio < SPLIT_RESIZE_RATIO) {
+      tabSwitchDQConfirmed = true;
+      newDQEventId();
+      try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+      sendDQToServer();
+      showDQScreen();
     }
   }
 
@@ -1963,21 +1995,24 @@
     resizeDebounceTimer = setTimeout(function() {
       resizeDebounceTimer = null;
       if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
+      // On desktop, defer to fullscreen enforcement when not in fullscreen
+      if (!isMobileDevice() && !isFullscreenActive()) return;
       var curW = window.innerWidth;
       var curH = window.innerHeight;
       var wRatio = curW / splitScreenInitW;
       var hRatio = curH / splitScreenInitH;
 
-      // Detect orientation change (screen rotation): width and height swap
+      // Detect orientation change (screen rotation): width and height swap (mobile only)
       var wasRotation = (wRatio > 1.2 && hRatio < 0.85) || (hRatio > 1.2 && wRatio < 0.85);
-      if (wasRotation) {
+      if (wasRotation && isMobileDevice()) {
         splitScreenInitW = curW;
         splitScreenInitH = curH;
         return;
       }
 
-      // Also update baseline if size GREW (e.g. address bar hidden → more space)
-      if (wRatio > 1.0 && hRatio > 1.0) {
+      // Update baseline if size GREW (mobile only — address bar hidden)
+      // On desktop, baseline is locked to screen size so window can't legitimately grow beyond it
+      if (isMobileDevice() && wRatio > 1.0 && hRatio > 1.0) {
         splitScreenInitW = curW;
         splitScreenInitH = curH;
         return;
