@@ -2659,12 +2659,31 @@ function handleStudentJoinClass(p) {
   }
   if (!classInfo) return jsonResponse({ status: 'error', message: 'כיתה לא נמצאה' });
 
-  // Check if already enrolled
+  // Check if already enrolled by studentId (same device/browser)
   var studSheet = getSheet('תלמידי כיתות');
   var studData = studSheet.getDataRange().getValues();
   for (var s = 1; s < studData.length; s++) {
     if (String(studData[s][0]).trim() === classCode && String(studData[s][2]).trim() === studentId) {
       return jsonResponse({ status: 'ok', message: 'כבר רשום בכיתה', className: classInfo.name, teacherName: classInfo.teacherName, license: classInfo.license });
+    }
+  }
+
+  // Check if same name is already in this class with a DIFFERENT studentId (joined from another device/browser).
+  // If so, return the existing studentId so the new device adopts it — prevents duplicate roster entries.
+  var normName = studentName.toLowerCase().replace(/\s+/g, ' ');
+  for (var s2 = 1; s2 < studData.length; s2++) {
+    if (String(studData[s2][0]).trim() === classCode) {
+      var existingName = String(studData[s2][1]).trim().toLowerCase().replace(/\s+/g, ' ');
+      if (existingName === normName) {
+        return jsonResponse({
+          status: 'ok',
+          message: 'מצאנו שאתה כבר רשום בכיתה הזו ממכשיר אחר. הנתונים שלך אוחדו.',
+          existingStudentId: String(studData[s2][2]).trim(),
+          className: classInfo.name,
+          teacherName: classInfo.teacherName,
+          license: classInfo.license
+        });
+      }
     }
   }
 
