@@ -540,6 +540,14 @@ function joinClass(code,name,studentId,onDone){
   .then(function(r){return r.json();})
   .then(function(d){
     if(d.status==='ok'){
+      // If server returned an existing studentId for this name in this class \u2014 adopt it.
+      // This prevents duplicate roster entries when the same student joins from multiple devices.
+      if(d.existingStudentId && d.existingStudentId !== studentId){
+        try{
+          localStorage.setItem('student_practice_id', d.existingStudentId);
+          currentStudentId = d.existingStudentId;
+        }catch(e){}
+      }
       statusEl.style.color='#16a34a';
       statusEl.textContent='\u2714 '+d.className+' ('+d.teacherName+')';
       currentClassCode=code.toUpperCase();
