@@ -741,6 +741,13 @@ function renderClassDetail() {
     return (a.name || '').localeCompare(b.name || '');
   });
 
+  // Detect duplicates by name to highlight them
+  var nameCounts = {};
+  for (var dn = 0; dn < students.length; dn++) {
+    var n = (students[dn].name || '').trim();
+    nameCounts[n] = (nameCounts[n] || 0) + 1;
+  }
+
   var table = '<div style="overflow-x:auto;"><table class="student-table">' +
     '<thead><tr><th>שם</th><th>תרגולים</th><th>ציון ממוצע</th><th>מאמץ</th><th>פעילות אחרונה</th><th></th></tr></thead><tbody>';
 
@@ -768,16 +775,27 @@ function renderClassDetail() {
     var scoreColor = st.avgScore >= 86 ? 'color:#16a34a' : st.avgScore >= 70 ? 'color:#eab308' : 'color:#dc2626';
     if (st.totalPractices === 0) scoreColor = 'color:#94a3b8';
 
+    var isDup = nameCounts[(st.name || '').trim()] > 1;
+    var dupBadge = isDup ? ' <span title="שם זהה מופיע יותר מפעם אחת — כל רשומה היא ממכשיר/דפדפן שונה" style="display:inline-block;background:#fef3c7;color:#92400e;font-size:0.65em;font-weight:700;padding:2px 6px;border-radius:8px;margin-inline-start:4px;">כפול</span>' : '';
+
     table += '<tr>' +
-      '<td><strong>' + escHtml(st.name) + '</strong></td>' +
+      '<td><strong>' + escHtml(st.name) + '</strong>' + dupBadge + '</td>' +
       '<td>' + st.totalPractices + '</td>' +
       '<td style="' + scoreColor + ';font-weight:600;">' + (st.totalPractices > 0 ? st.avgScore + '%' : '—') + '</td>' +
       '<td><span class="effort-badge ' + effortClass + '">' + effortText + '</span></td>' +
       '<td>' + lastActiveStr + '</td>' +
-      '<td><button class="btn btn-secondary" data-student-idx="' + si2 + '" style="padding:4px 10px;font-size:0.8em;">פרטים</button></td>' +
+      '<td style="white-space:nowrap;">' +
+        '<button class="btn btn-secondary" data-student-idx="' + si2 + '" style="padding:4px 10px;font-size:0.8em;">פרטים</button> ' +
+        '<button class="btn-remove-student" data-remove-idx="' + si2 + '" title="מחק תלמיד מהכיתה" style="padding:4px 10px;font-size:0.8em;background:#fee2e2;color:#b91c1c;border:1px solid #fca5a5;border-radius:6px;cursor:pointer;font-weight:600;">🗑️ מחק</button>' +
+      '</td>' +
       '</tr>';
   }
   table += '</tbody></table></div>';
+  if (Object.keys(nameCounts).some(function(k){ return nameCounts[k] > 1; })) {
+    table += '<div style="margin-top:10px; padding:8px 12px; background:#fef3c7; border-radius:8px; font-size:13px; color:#92400e;">' +
+      '⚠️ <strong>שמות זהים מופיעים יותר מפעם אחת:</strong> זה קורה כשתלמיד נרשם מכמה מכשירים/דפדפנים. מומלץ למחוק רשומות מיותרות (השאר את הרשומה עם הכי הרבה תרגולים).' +
+      '</div>';
+  }
   sc.innerHTML = table;
 
   // Add click handlers for detail buttons
@@ -789,6 +807,51 @@ function renderClassDetail() {
       showStudentDetail(students[idx]);
     });
   }
+
+  // Add click handlers for remove buttons
+  var removeBtns = sc.querySelectorAll('[data-remove-idx]');
+  for (var ri = 0; ri < removeBtns.length; ri++) {
+    removeBtns[ri].addEventListener('click', function(e) {
+      e.stopPropagation();
+      var idx = parseInt(this.getAttribute('data-remove-idx'));
+      removeStudentFromClass(students[idx]);
+    });
+  }
+}
+
+// ===== Remove student from class =====
+function removeStudentFromClass(student) {
+  var info = currentClassData.classInfo;
+  var msg = 'למחוק את "' + (student.name || '') + '" מהכיתה?\n\n' +
+            '⚠️ כל הנתונים של תלמיד זה (תרגולים, מבחנים, סטטיסטיקות) יישארו בגיליון אך לא יוצגו בכיתה.\n\n' +
+            'אם זו רשומה כפולה — מומלץ למחוק את זאת עם הכי פחות תרגולים.\n\n' +
+            'תרגולים של הרשומה הנוכחית: ' + (student.totalPractices || 0);
+  if (!confirm(msg)) return;
+
+  var btn = event && event.target;
+  if (btn) { btn.disabled = true; btn.textContent = 'מוחק...'; }
+
+  apiGet({
+    action: 'teacherRemoveStudent',
+    classCode: info.code,
+    studentId: student.id,
+    teacherId: teacher.id,
+    token: teacher.token
+  })
+  .then(function(d) {
+    if (d.status === 'ok') {
+      // Refresh the class detail to show updated list
+      loadClassDetail(info.code);
+    } else {
+      if (d.tokenExpired) { doLogout(); return; }
+      alert('שגיאה במחיקה: ' + (d.message || 'שגיאה לא ידועה'));
+      if (btn) { btn.disabled = false; btn.textContent = '🗑️ מחק'; }
+    }
+  })
+  .catch(function() {
+    alert('שגיאת תקשורת. נסה שוב.');
+    if (btn) { btn.disabled = false; btn.textContent = '🗑️ מחק'; }
+  });
 }
 
 // ===== Student Detail =====
