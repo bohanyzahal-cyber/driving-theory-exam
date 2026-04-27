@@ -380,8 +380,9 @@
         <h2 id="classDetailTitle"></h2>
         <div style="margin-top:4px;">קוד כיתה: <span class="class-code-display" id="classDetailCode" title="לחץ להעתקה"></span></div>
       </div>
-      <div style="display:flex;gap:8px;">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button class="btn btn-secondary" id="btnCloseClass" style="background:#dc2626;color:#fff;display:none;" title="סגור כיתה">🔒 סגור כיתה</button>
+        <button class="btn btn-secondary" id="btnDeleteClass" style="background:#7f1d1d;color:#fff;display:none;" title="מחק כיתה לצמיתות">🗑️ מחק כיתה</button>
         <button class="btn btn-secondary" id="btnExportClass" title="ייצוא נתונים">📥 ייצוא</button>
       </div>
     </div>
@@ -658,6 +659,7 @@ function renderClassDetail() {
   document.getElementById('classDetailTitle').textContent = info.name + (info.active ? '' : ' (סגורה)');
   document.getElementById('classDetailCode').textContent = info.code;
   document.getElementById('btnCloseClass').style.display = info.active ? '' : 'none';
+  document.getElementById('btnDeleteClass').style.display = info.active ? 'none' : '';
 
   // Compute class-level stats
   var totalStudents = students.length;
@@ -983,6 +985,45 @@ function closeClass() {
     } else {
       if (d.tokenExpired) { doLogout(); return; }
       alert(d.message || 'שגיאה בסגירת הכיתה');
+    }
+  })
+  .catch(function() { alert('שגיאת תקשורת'); });
+}
+
+// ===== Delete Class (permanent) =====
+function deleteClass() {
+  if (!currentClassData || !currentClassData.classInfo) return;
+  var info = currentClassData.classInfo;
+  if (info.active) { alert('יש לסגור את הכיתה לפני המחיקה.'); return; }
+
+  var students = currentClassData.students || [];
+  var msg1 = '⚠️ מחיקת כיתה לצמיתות\n\n' +
+             'הכיתה: ' + info.name + '\n' +
+             'קוד: ' + info.code + '\n' +
+             'תלמידים שירשמו: ' + students.length + '\n\n' +
+             'הכיתה והתלמידים הרשומים יימחקו לצמיתות.\n' +
+             '(הציונים ההיסטוריים של תרגולים יישמרו לצורך דוחות.)\n\n' +
+             'להמשיך?';
+  if (!confirm(msg1)) return;
+
+  // Second confirmation — type the class name
+  var typed = prompt('לאישור סופי, הקלד את שם הכיתה:\n"' + info.name + '"');
+  if (typed === null) return;
+  if (String(typed).trim() !== String(info.name).trim()) {
+    alert('השם לא תואם. המחיקה בוטלה.');
+    return;
+  }
+
+  apiGet({ action: 'teacherDeleteClass', classCode: info.code, teacherId: teacher.id, token: teacher.token })
+  .then(function(d) {
+    if (d.status === 'ok') {
+      alert('הכיתה נמחקה. ' + (d.studentsRemoved || 0) + ' תלמידים הוסרו מהרשימה.');
+      // Return to the dashboard and reload the class list
+      showScreen('screenDashboard');
+      if (typeof loadDashboard === 'function') loadDashboard();
+    } else {
+      if (d.tokenExpired) { doLogout(); return; }
+      alert(d.message || 'שגיאה במחיקת הכיתה');
     }
   })
   .catch(function() { alert('שגיאת תקשורת'); });
@@ -1392,6 +1433,7 @@ function init() {
   document.getElementById('classDetailCode').addEventListener('click', copyClassCode);
   document.getElementById('btnExportClass').addEventListener('click', exportClassData);
   document.getElementById('btnCloseClass').addEventListener('click', closeClass);
+  document.getElementById('btnDeleteClass').addEventListener('click', deleteClass);
 
   // Student detail
   document.getElementById('btnBackToClass').addEventListener('click', function() {

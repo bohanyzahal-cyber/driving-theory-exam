@@ -184,7 +184,7 @@ function doGet(e) {
     }
 
     // Actions that require teacher token authentication
-    var teacherActions = ['teacherDashboard','teacherCreateClass','teacherCloseClass',
+    var teacherActions = ['teacherDashboard','teacherCreateClass','teacherCloseClass','teacherDeleteClass',
       'teacherRemoveStudent','teacherGetClasses','teacherClassDetails','teacherExportData',
       'teacherCommanderDashboard','adminDashboard'];
     if (teacherActions.indexOf(action) !== -1) {
@@ -348,6 +348,9 @@ function doGet(e) {
 
       case 'teacherCloseClass':
         return handleTeacherCloseClass(p);
+
+      case 'teacherDeleteClass':
+        return handleTeacherDeleteClass(p);
 
       case 'teacherRemoveStudent':
         return handleTeacherRemoveStudent(p);
@@ -2439,6 +2442,46 @@ function handleTeacherCloseClass(p) {
     }
   }
   return jsonResponse({ status: 'error', message: 'כיתה לא נמצאה' });
+}
+
+function handleTeacherDeleteClass(p) {
+  var classCode = String(p.classCode || '').trim();
+  if (!classCode) return jsonResponse({ status: 'error', message: 'חסר קוד כיתה' });
+
+  var classSheet = getSheet('כיתות');
+  var classData = classSheet.getDataRange().getValues();
+  var classRowIdx = -1;
+  for (var i = 1; i < classData.length; i++) {
+    if (String(classData[i][0]).trim() === classCode &&
+        normalizeId(classData[i][2]) === normalizeId(p.teacherId)) {
+      classRowIdx = i;
+      break;
+    }
+  }
+  if (classRowIdx === -1) return jsonResponse({ status: 'error', message: 'כיתה לא נמצאה או שאין הרשאה' });
+
+  // Safety: only allow deletion of CLOSED classes (active = 'לא')
+  if (String(classData[classRowIdx][6]).trim() === 'כן') {
+    return jsonResponse({ status: 'error', message: 'יש לסגור את הכיתה לפני מחיקה' });
+  }
+
+  // Delete the class row
+  classSheet.deleteRow(classRowIdx + 1);
+
+  // Delete all students enrolled in this class (cleanup roster)
+  var studentsRemoved = 0;
+  var studSheet = getSheet('תלמידי כיתות');
+  var studData = studSheet.getDataRange().getValues();
+  for (var s = studData.length - 1; s >= 1; s--) {
+    if (String(studData[s][0]).trim() === classCode) {
+      studSheet.deleteRow(s + 1);
+      studentsRemoved++;
+    }
+  }
+
+  // NOTE: practice results in 'תוצאות תרגול' are intentionally preserved for historical reporting.
+
+  return jsonResponse({ status: 'ok', studentsRemoved: studentsRemoved });
 }
 
 function handleTeacherRemoveStudent(p) {
