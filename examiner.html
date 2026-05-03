@@ -1369,13 +1369,17 @@
       else if (isPassed) passCount++;
       else failCount++;
 
-      // Check if score correction is possible (failed, not DQ, score >= 24, not already corrected)
+      // Score correction is currently DISABLED — pending approval to re-enable.
+      // To restore: remove the next line and uncomment the block below.
+      // The window.correctToPass function and the backend endpoint remain functional.
       var canCorrect = false;
+      /*
       if (!isDQ && !isPassed && !isCorrected) {
         var scoreParts2 = String(r.score || '').split('/');
         var scoreVal2 = parseInt(scoreParts2[0]) || 0;
         if (scoreVal2 >= 24) canCorrect = true;
       }
+      */
 
       // Build WA link directly
       var phone = formatPhone(r.phone);
