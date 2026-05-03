@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>דמה — מסך תוצאות בוחן (אחרי ניקוי)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    background: #0f172a;
+    color: #f1f5f9;
+    margin: 0;
+    padding: 20px;
+    direction: rtl;
+  }
+  .demo-banner {
+    background: linear-gradient(135deg, #f59e0b, #d97706);
+    color: #fff;
+    padding: 12px 20px;
+    border-radius: 12px;
+    margin-bottom: 20px;
+    text-align: center;
+    font-weight: 700;
+    font-size: 15px;
+  }
+  .demo-banner small { display: block; font-size: 12px; font-weight: 400; opacity: 0.9; margin-top: 4px; }
+
+  h1 { color: #facc15; margin: 0 0 16px; }
+
+  .stats-bar {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+  .stat-item {
+    flex: 1;
+    min-width: 110px;
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 12px;
+    padding: 14px;
+    text-align: center;
+  }
+  .stat-val { font-size: 28px; font-weight: 800; }
+  .stat-pass { color: #4ade80; }
+  .stat-fail { color: #f87171; }
+  .stat-lbl { font-size: 12px; color: #94a3b8; margin-top: 4px; }
+
+  .bulk-actions {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+    padding: 12px;
+    background: #1e293b;
+    border-radius: 12px;
+    border: 1px solid #334155;
+  }
+  .wa-btn {
+    background: #25D366;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: #1e293b;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  th, td {
+    padding: 10px 8px;
+    text-align: right;
+    border-bottom: 1px solid #334155;
+    font-size: 13px;
+  }
+  th {
+    background: #0f172a;
+    color: #facc15;
+    font-weight: 700;
+    font-size: 12px;
+    text-transform: uppercase;
+  }
+  tr:hover { background: #2a3a52; }
+
+  .badge {
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-weight: 700;
+    font-size: 11px;
+  }
+  .badge-pass { background: #16a34a; color: #fff; }
+  .badge-fail { background: #dc2626; color: #fff; }
+  .badge-dq { background: #7f1d1d; color: #fff; }
+
+  .actions-cell { white-space: nowrap; }
+  .actions-cell button, .actions-cell a {
+    padding: 5px 9px;
+    font-size: 13px;
+    margin-left: 3px;
+    border-radius: 8px;
+    border: none;
+    cursor: pointer;
+    font-weight: 700;
+    text-decoration: none;
+    display: inline-block;
+    color: #fff;
+  }
+  .btn-pdf { background: #ef4444; }
+  .btn-share { background: #7c3aed; }
+  .btn-edit-phone { background: #64748b; }
+  .btn-disqualify { background: #fb923c; padding: 4px 8px; font-size: 12px; }
+  .btn-overturn { background: #16a34a; padding: 4px 8px; font-size: 11px; font-weight: 700; }
+  .btn-confirm-dq { background: #dc2626; padding: 4px 8px; font-size: 11px; font-weight: 700; }
+
+  .compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-top: 24px;
+  }
+  .compare h3 { margin: 0 0 8px; font-size: 14px; }
+  .col-old { background: #1a0505; padding: 12px; border-radius: 8px; border: 1px solid #3d1111; }
+  .col-new { background: #052010; padding: 12px; border-radius: 8px; border: 1px solid #14532d; }
+  .col-old h3 { color: #fca5a5; }
+  .col-new h3 { color: #86efac; }
+  .legend-row { display: flex; gap: 6px; align-items: center; font-size: 12px; margin: 6px 0; color: #cbd5e1; }
+  .strike { text-decoration: line-through; opacity: 0.5; }
+  @media (max-width: 700px) {
+    .compare { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="demo-banner">
+  📺 דמה — מסך בוחן אחרי הניקוי
+  <small>נתונים פיקטיביים. הכפתורים לא פועלים — רק להמחשה ויזואלית.</small>
+</div>
+
+<h1>בוחן: סמל מ. כהן — אתר תל השומר — דרגה B</h1>
+
+<!-- Stats -->
+<div class="stats-bar">
+  <div class="stat-item"><div class="stat-val">12</div><div class="stat-lbl">סה"כ</div></div>
+  <div class="stat-item"><div class="stat-val stat-pass">9</div><div class="stat-lbl">עברו</div></div>
+  <div class="stat-item"><div class="stat-val stat-fail">3</div><div class="stat-lbl">נכשלו</div></div>
+  <div class="stat-item"><div class="stat-val" style="color:#60a5fa;">75%</div><div class="stat-lbl">אחוז הצלחה</div></div>
+</div>
+
+<!-- Bulk actions: only the report buttons remain -->
+<div class="bulk-actions">
+  <button class="wa-btn" style="padding:8px 16px; font-size:14px;">שלח סיכום למנהל אתר</button>
+  <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#1a5276;">📋 דו"ח בוחן</button>
+  <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#0e4a6e;">📊 דו"ח מנהל אתר</button>
+  <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#7c3aed;">📤 שתף דו"ח למנהל</button>
+  <!-- HIDDEN: "שלח לכל הנבחנים" -->
+</div>
+
+<!-- Results table -->
+<table>
+  <thead>
+    <tr>
+      <th>שם</th>
+      <th>ת.ז.</th>
+      <th>טלפון</th>
+      <th>ציון</th>
+      <th>סטטוס</th>
+      <th>זמן</th>
+      <th>פעולות</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>אלעד פתיחי</td>
+      <td>308729123</td>
+      <td>050-1234567</td>
+      <td>30/30</td>
+      <td><span class="badge badge-pass">עבר</span></td>
+      <td>22:14</td>
+      <td class="actions-cell">
+        <button class="btn-pdf" title="PDF לנבחן">📄</button>
+        <button class="btn-share" title="שתף תוצאה">📤</button>
+        <button class="btn-edit-phone" title="ערוך טלפון">✎</button>
+        <button class="btn-disqualify" title="פסול נבחן">⛔</button>
+      </td>
+    </tr>
+    <tr>
+      <td>נועה כהן</td>
+      <td>317452890</td>
+      <td>052-9876543</td>
+      <td>27/30</td>
+      <td><span class="badge badge-pass">עבר</span></td>
+      <td>31:42</td>
+      <td class="actions-cell">
+        <button class="btn-pdf">📄</button>
+        <button class="btn-share">📤</button>
+        <button class="btn-edit-phone">✎</button>
+        <button class="btn-disqualify">⛔</button>
+      </td>
+    </tr>
+    <tr>
+      <td>דניאל לוי</td>
+      <td>325876412</td>
+      <td>054-3344556</td>
+      <td>22/30</td>
+      <td><span class="badge badge-fail">נכשל</span></td>
+      <td>38:51</td>
+      <td class="actions-cell">
+        <button class="btn-pdf">📄</button>
+        <button class="btn-share">📤</button>
+        <button class="btn-edit-phone">✎</button>
+        <button class="btn-disqualify">⛔</button>
+      </td>
+    </tr>
+    <tr>
+      <td>שירה אברהם</td>
+      <td>331254987</td>
+      <td>053-7788123</td>
+      <td>26/30</td>
+      <td><span class="badge badge-pass">עבר</span></td>
+      <td>29:18</td>
+      <td class="actions-cell">
+        <button class="btn-pdf">📄</button>
+        <button class="btn-share">📤</button>
+        <button class="btn-edit-phone">✎</button>
+        <button class="btn-disqualify">⛔</button>
+      </td>
+    </tr>
+    <tr>
+      <td>יוסי מזרחי</td>
+      <td>342198765</td>
+      <td>050-2233445</td>
+      <td>—</td>
+      <td><span class="badge badge-dq">פסול</span></td>
+      <td>—</td>
+      <td class="actions-cell">
+        <button class="btn-pdf">📄</button>
+        <button class="btn-share">📤</button>
+        <button class="btn-edit-phone">✎</button>
+        <button class="btn-overturn">↩ בטל</button>
+        <button class="btn-confirm-dq">✔ אשר</button>
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- Comparison: before vs after -->
+<div class="compare">
+  <div class="col-old">
+    <h3>❌ לפני (קודם)</h3>
+    <div class="legend-row">📄 <span>PDF</span></div>
+    <div class="legend-row">📤 <span>שתף תוצאה</span></div>
+    <div class="legend-row strike">📱 <span>WA ישיר לנבחן</span></div>
+    <div class="legend-row strike">💬 <span>SMS ישיר לנבחן</span></div>
+    <div class="legend-row">✎ <span>ערוך טלפון</span></div>
+    <div class="legend-row">⛔ / ↩ / ✔ <span>פסילה / ביטול / אישור</span></div>
+    <hr style="border-color:#3d1111;">
+    <div class="legend-row strike">📤 <span>שלח לכל הנבחנים (כפתור עליון)</span></div>
+  </div>
+  <div class="col-new">
+    <h3>✅ אחרי (עכשיו)</h3>
+    <div class="legend-row">📄 <span>PDF</span></div>
+    <div class="legend-row">📤 <span>שתף תוצאה (כולל אופציות SMS/WA דרך דיאלוג)</span></div>
+    <div class="legend-row">✎ <span>ערוך טלפון</span></div>
+    <div class="legend-row">⛔ / ↩ / ✔ <span>פסילה / ביטול / אישור</span></div>
+    <hr style="border-color:#14532d;">
+    <div class="legend-row" style="color:#86efac;">📋 📊 📤 <span>דו"חות + שיתוף למנהל אתר</span></div>
+  </div>
+</div>
+
+<p style="margin-top:24px; color:#94a3b8; font-size:13px;">
+  💡 <strong>שים לב:</strong> בכפתור "📤 שתף תוצאה" של כל נבחן יש דיאלוג שמציע SMS, WhatsApp, או העתקת קישור — אז שתי האפשרויות עדיין זמינות לבוחן, רק לא בלחיצה ישירה.
+</p>
+
+</body>
+</html>
