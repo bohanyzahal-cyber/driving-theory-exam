@@ -348,6 +348,10 @@
         <div class="spinner"></div>
         <h2>ממתין לאישור הבוחן...</h2>
         <p class="muted">הבוחן יאשר את הכניסה שלך. אנא המתן.</p>
+        <div style="margin:18px auto 0; max-width:500px; padding:14px 18px; background:#fef3c7; border:2px solid #f59e0b; border-radius:12px; color:#92400e; font-size:14px; font-weight:600; line-height:1.5;">
+          ⚠️ <strong>חשוב:</strong> אל תסגור את הדף הזה ואל תעבור לטאב אחר.<br>
+          <span style="font-weight:400; font-size:13px;">המתן כאן עד שהבוחן יאשר. תקבל צליל והודעה ברגע האישור.</span>
+        </div>
         <p id="approvalDebug" style="font-size:11px; color:#94a3b8; margin-top:8px;"></p>
         <p id="approvalDebugResponse" style="font-size:11px; color:#94a3b8; margin:2px 0 0; direction:ltr;"></p>
         <div id="approvalError" class="info-banner error" style="display:none; margin-top:12px;"></div>
@@ -797,27 +801,41 @@
   var webspeechConfirmed = false;
 
   // ========== Session persistence ==========
+  // CRITICAL: also use localStorage so state survives tab close / iOS memory pressure.
+  // Otherwise examinee loses the waiting screen and tries to re-register, getting blocked.
+  var EXAMINEE_STATE_KEY = 'ext_examinee_state';
   function saveExamineeState(screen) {
     try {
-      sessionStorage.setItem('ext_examinee_state', JSON.stringify({
+      var payload = JSON.stringify({
         sessionCode: sessionCode,
         sessionData: sessionData,
         examineeData: examineeData,
-        screen: screen || 'screenCode'
-      }));
+        screen: screen || 'screenCode',
+        savedAt: Date.now()
+      });
+      sessionStorage.setItem(EXAMINEE_STATE_KEY, payload);
+      localStorage.setItem(EXAMINEE_STATE_KEY, payload);
     } catch(e) {}
   }
 
   function loadExamineeState() {
     try {
-      var saved = sessionStorage.getItem('ext_examinee_state');
+      // Prefer sessionStorage (most recent), fall back to localStorage (after tab close)
+      var saved = sessionStorage.getItem(EXAMINEE_STATE_KEY) || localStorage.getItem(EXAMINEE_STATE_KEY);
       if (!saved) return null;
-      return JSON.parse(saved);
+      var parsed = JSON.parse(saved);
+      // Discard if older than 8 hours (session lifetime) — prevents stale recovery
+      if (parsed.savedAt && (Date.now() - parsed.savedAt) > 8 * 60 * 60 * 1000) {
+        clearExamineeState();
+        return null;
+      }
+      return parsed;
     } catch(e) { return null; }
   }
 
   function clearExamineeState() {
-    try { sessionStorage.removeItem('ext_examinee_state'); } catch(e) {}
+    try { sessionStorage.removeItem(EXAMINEE_STATE_KEY); } catch(e) {}
+    try { localStorage.removeItem(EXAMINEE_STATE_KEY); } catch(e) {}
     try { sessionStorage.removeItem('ext_exam_active'); } catch(e) {}
   }
 
@@ -1089,7 +1107,18 @@
         applyUITranslations();
         startApprovalPolling();
       } else {
-        registerError.textContent = data.message || 'שגיאה ברישום';
+        // Special-case "already registered" — don't show as error.
+        // Just resume the examinee straight to the waiting screen with the data they already filled.
+        // This handles: cleared cache, switched browser, re-opened page after navigating away.
+        var msg = String(data.message || '');
+        if (msg.indexOf('כבר רשום') >= 0 || msg.indexOf('כבר רשומ') >= 0) {
+          saveExamineeState('screenInstructions');
+          showScreen('screenInstructions');
+          applyUITranslations();
+          startApprovalPolling();
+          return;
+        }
+        registerError.textContent = msg || 'שגיאה ברישום';
         registerError.style.display = 'block';
       }
     }).catch(function() {
@@ -1139,9 +1168,11 @@
           if (data.examMinutes && data.examMinutes > 0) {
             examTimeMinutes = data.examMinutes;
           }
+          notifyApprovedToExaminee();
           showInstructions();
         } else if (data.approval === 'rejected') {
           clearInterval(approvalInterval); approvalInterval = null;
+          teardownWaitingProtections();
           document.getElementById('waitingPhase').style.display = 'none';
           var rejEl = document.getElementById('rejectedMsg');
           rejEl.textContent = getUIString('rejected');
@@ -1174,10 +1205,86 @@
     }
   }
 
+  // ========== Waiting-screen protections ==========
+  var wakeLockSentinel = null;
+  var origTitle = '';
+  var titleFlashInterval = null;
+  var titleFlashState = false;
+
+  function setupWaitingProtections() {
+    // 1. Wake Lock — keep screen on while waiting (prevents lock-out on phones)
+    try {
+      if ('wakeLock' in navigator) {
+        navigator.wakeLock.request('screen').then(function(s) {
+          wakeLockSentinel = s;
+        }).catch(function() {});
+      }
+    } catch(e) {}
+    // Re-acquire wake lock when page becomes visible again (Wake Lock is auto-released on hidden)
+    document.addEventListener('visibilitychange', reacquireWakeLockIfNeeded);
+
+    // 2. Tab title flash — visible from other tabs / browser switcher
+    if (!origTitle) origTitle = document.title;
+    if (titleFlashInterval) clearInterval(titleFlashInterval);
+    titleFlashInterval = setInterval(function() {
+      titleFlashState = !titleFlashState;
+      document.title = titleFlashState ? '⏳ ממתין לאישור...' : '🔔 לחץ כאן — מבחן תאוריה';
+    }, 1500);
+  }
+
+  function teardownWaitingProtections() {
+    document.removeEventListener('visibilitychange', reacquireWakeLockIfNeeded);
+    if (wakeLockSentinel) {
+      try { wakeLockSentinel.release(); } catch(e) {}
+      wakeLockSentinel = null;
+    }
+    if (titleFlashInterval) { clearInterval(titleFlashInterval); titleFlashInterval = null; }
+    if (origTitle) document.title = origTitle;
+  }
+
+  function reacquireWakeLockIfNeeded() {
+    if (document.visibilityState === 'visible' && !wakeLockSentinel && 'wakeLock' in navigator) {
+      try {
+        navigator.wakeLock.request('screen').then(function(s) {
+          wakeLockSentinel = s;
+        }).catch(function() {});
+      } catch(e) {}
+    }
+  }
+
+  // Big visual + audio cue when examiner approves
+  function notifyApprovedToExaminee() {
+    teardownWaitingProtections();
+    // Audio chime — uses WebAudio so it works without an MP3 asset
+    try {
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      if (Ctx) {
+        var ctx = new Ctx();
+        function tone(freq, start, dur) {
+          var o = ctx.createOscillator(), g = ctx.createGain();
+          o.type = 'sine'; o.frequency.value = freq;
+          o.connect(g); g.connect(ctx.destination);
+          g.gain.setValueAtTime(0, ctx.currentTime + start);
+          g.gain.linearRampToValueAtTime(0.4, ctx.currentTime + start + 0.02);
+          g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + dur);
+          o.start(ctx.currentTime + start);
+          o.stop(ctx.currentTime + start + dur);
+        }
+        tone(660, 0, 0.25);
+        tone(880, 0.18, 0.35);
+      }
+    } catch(e) {}
+    // Vibration on mobile (where supported)
+    try { if (navigator.vibrate) navigator.vibrate([200, 100, 200]); } catch(e) {}
+    // Brief title flash for users in another tab
+    document.title = '✅ אושרת! חזור למבחן';
+  }
+
   function startApprovalPolling() {
     console.log('[APPROVAL] Starting polling for session=' + sessionCode + ' id=' + examineeData.idNumber);
     approvalFailCount = 0;
     approvalPollCount = 0;
+    setupWaitingProtections(); // wake-lock + tab-title flash
     // Immediate first check — don't wait 5 seconds
     doCheckApproval();
     // Then poll every 5 seconds
