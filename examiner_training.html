@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>הדרכת בוחנים — מערכת מבחני תאוריה</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI','Heebo',Tahoma,sans-serif;background:#0f172a;color:#e2e8f0;overflow:hidden;height:100vh;direction:rtl}
+
+.slides{width:100%;height:100vh;position:relative}
+.slide{display:none;width:100%;height:100vh;padding:50px 70px;flex-direction:column;position:absolute;top:0;left:0;animation:fadeIn .4s ease;overflow-y:auto}
+.slide.active{display:flex}
+@keyframes fadeIn{from{opacity:0;transform:translateY(15px)}to{opacity:1;transform:translateY(0)}}
+
+.slide.theme-title{background:linear-gradient(135deg,#1e3a5f 0%,#0f172a 100%);justify-content:center;align-items:center;text-align:center}
+.slide.theme-blue{background:linear-gradient(135deg,#0c4a6e,#1e293b)}
+.slide.theme-dark{background:#0f172a}
+.slide.theme-green{background:linear-gradient(135deg,#064e3b,#0f172a)}
+.slide.theme-orange{background:linear-gradient(135deg,#7c2d12,#1e293b)}
+.slide.theme-purple{background:linear-gradient(135deg,#581c87,#1e293b)}
+
+h1{font-size:48px;font-weight:900;margin-bottom:14px;line-height:1.2;color:#fbbf24}
+h2{font-size:36px;font-weight:800;margin-bottom:16px;color:#fbbf24}
+h3{font-size:22px;font-weight:700;margin:8px 0;color:#fcd34d}
+.subtitle{font-size:24px;color:#cbd5e1;margin-bottom:30px}
+
+p{font-size:18px;line-height:1.55;margin-bottom:10px}
+ul{padding-right:24px;margin:10px 0}
+li{font-size:18px;line-height:1.7;margin-bottom:6px}
+
+/* Cards */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;margin-top:20px}
+.card{background:rgba(255,255,255,0.05);border:1px solid rgba(251,191,36,0.3);border-radius:14px;padding:22px}
+.card .ic{font-size:38px;margin-bottom:8px}
+.card h3{margin-top:0}
+.card p{font-size:15px;color:#94a3b8;margin:0}
+
+/* Steps */
+.steps{display:flex;flex-direction:column;gap:14px;margin-top:18px}
+.step{display:flex;gap:16px;align-items:flex-start;background:rgba(255,255,255,0.04);border-right:4px solid #fbbf24;padding:14px 18px;border-radius:8px}
+.step-num{flex:0 0 40px;width:40px;height:40px;border-radius:50%;background:#fbbf24;color:#1e293b;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:18px}
+.step-text{flex:1}
+.step-text strong{color:#fcd34d;font-size:17px}
+.step-text p{margin:4px 0 0;font-size:15px;color:#cbd5e1}
+
+/* Mockup */
+.mockup{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:14px;margin:14px 0;font-size:13px}
+.mockup .mock-bar{display:flex;gap:6px;margin-bottom:10px}
+.mockup .mock-bar span{width:10px;height:10px;border-radius:50%;background:#475569}
+.mockup table{width:100%;border-collapse:collapse;font-size:13px;color:#e2e8f0}
+.mockup th{background:#0f172a;color:#fbbf24;padding:6px 8px;text-align:right;font-size:12px}
+.mockup td{padding:6px 8px;border-bottom:1px solid #334155}
+.badge{padding:3px 8px;border-radius:8px;font-weight:700;font-size:11px}
+.b-pass{background:#16a34a;color:#fff}
+.b-fail{background:#dc2626;color:#fff}
+.b-dq{background:#7f1d1d;color:#fff}
+.b-wait{background:#f59e0b;color:#fff}
+
+/* Scenario */
+.scenario{background:rgba(220,38,38,0.1);border:2px solid #dc2626;border-radius:12px;padding:16px 20px;margin:10px 0}
+.scenario .q{font-weight:700;color:#fca5a5;font-size:17px;margin-bottom:6px}
+.scenario .a{color:#bbf7d0;font-size:16px;line-height:1.6}
+.scenario .a strong{color:#86efac}
+
+/* DO/DON'T */
+.dos{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:14px}
+.do-col,.dont-col{padding:18px;border-radius:12px}
+.do-col{background:rgba(22,163,74,0.1);border:2px solid #16a34a}
+.dont-col{background:rgba(220,38,38,0.1);border:2px solid #dc2626}
+.do-col h3{color:#86efac}
+.dont-col h3{color:#fca5a5}
+.do-col li,.dont-col li{font-size:15px;line-height:1.6}
+
+/* Pills */
+.pills{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.pill{padding:5px 12px;border-radius:999px;font-size:13px;background:rgba(251,191,36,0.15);color:#fcd34d;border:1px solid rgba(251,191,36,0.4)}
+
+/* Nav */
+.nav{position:fixed;bottom:18px;right:50%;transform:translateX(50%);display:flex;gap:10px;align-items:center;background:rgba(0,0,0,0.5);padding:8px 14px;border-radius:999px;backdrop-filter:blur(8px);z-index:1000}
+.nav button{background:#fbbf24;color:#1e293b;border:none;border-radius:999px;width:38px;height:38px;font-size:18px;cursor:pointer;font-weight:700}
+.nav button:hover{background:#f59e0b}
+.nav button:disabled{background:#475569;color:#94a3b8;cursor:not-allowed}
+.counter{color:#cbd5e1;font-size:14px;min-width:50px;text-align:center;font-weight:600}
+
+.toc{position:fixed;bottom:18px;left:18px;background:rgba(0,0,0,0.5);padding:6px 12px;border-radius:8px;font-size:12px;color:#94a3b8;backdrop-filter:blur(8px);z-index:1000}
+.toc a{color:#fcd34d;text-decoration:none;cursor:pointer;font-weight:600}
+
+.kbd{display:inline-block;background:#1e293b;border:1px solid #475569;border-radius:6px;padding:2px 8px;font-family:monospace;font-size:13px;color:#fcd34d}
+
+.intro-icon{font-size:90px;margin-bottom:20px}
+
+.feature-row{display:flex;gap:14px;align-items:center;margin:8px 0;padding:10px 14px;background:rgba(255,255,255,0.04);border-radius:8px}
+.feature-row .icon{font-size:28px;flex:0 0 40px}
+.feature-row .text{flex:1;font-size:16px}
+.feature-row .text strong{color:#fcd34d}
+
+a.demo-link{color:#fcd34d;text-decoration:underline;font-weight:600}
+
+@media print{
+  body{background:#fff;color:#000}
+  .nav,.toc{display:none}
+  .slide{display:block !important;page-break-after:always;height:auto;padding:30px}
+}
+</style>
+</head>
+<body>
+
+<div class="slides">
+
+<!-- ============ SLIDE 1: TITLE ============ -->
+<section class="slide theme-title active">
+  <div class="intro-icon">🎓</div>
+  <h1>הדרכת בוחנים</h1>
+  <div class="subtitle">מערכת מבחני תאוריה דיגיטלית — סמכות הרישוי צה"ל</div>
+  <p style="color:#94a3b8;font-size:16px;margin-top:30px">מקש <span class="kbd">→</span> או <span class="kbd">←</span> למעבר בין שקופיות</p>
+</section>
+
+<!-- ============ SLIDE 2: WHAT WE'LL COVER ============ -->
+<section class="slide theme-dark">
+  <h2>מה תלמדו היום</h2>
+  <div class="cards">
+    <div class="card"><div class="ic">🔐</div><h3>כניסה ויצירת סשן</h3><p>איך להתחבר ולפתוח מבחן חדש</p></div>
+    <div class="card"><div class="ic">👥</div><h3>ניהול נבחנים</h3><p>אישור, איפוס, פסילה</p></div>
+    <div class="card"><div class="ic">📊</div><h3>תוצאות ודוחות</h3><p>צפייה, שליחה, דוחות אתר</p></div>
+    <div class="card"><div class="ic">🛡️</div><h3>אנטי-צ'יט</h3><p>מה המערכת תופסת אוטומטית</p></div>
+    <div class="card"><div class="ic">⚠️</div><h3>תרחישים נפוצים</h3><p>מה לעשות אם משהו השתבש</p></div>
+    <div class="card"><div class="ic">📱</div><h3>טיפים מעשיים</h3><p>DO ו-DON'T בכיתה</p></div>
+  </div>
+</section>
+
+<!-- ============ SLIDE 3: SYSTEM OVERVIEW ============ -->
+<section class="slide theme-blue">
+  <h2>איך זה עובד? — תמונה כללית</h2>
+  <div class="cards" style="grid-template-columns:1fr 1fr">
+    <div class="card">
+      <div class="ic">📱</div><h3>הנבחן</h3>
+      <p style="margin-top:8px">סורק QR או מזין קוד 6 ספרות, ממלא פרטים, ממתין לאישור — והמבחן מתחיל</p>
+      <div class="pills"><span class="pill">טלפון</span><span class="pill">טאבלט</span><span class="pill">מחשב</span></div>
+    </div>
+    <div class="card">
+      <div class="ic">👨‍🏫</div><h3>אתה — הבוחן</h3>
+      <p style="margin-top:8px">פותח סשן, מאשר נבחנים בזמן אמת, רואה תוצאות מיד שמסיימים, שולח תעודות משוב</p>
+      <div class="pills"><span class="pill">דשבורד חי</span><span class="pill">פעולות בלחיצה</span></div>
+    </div>
+  </div>
+  <p style="margin-top:20px;color:#cbd5e1;font-size:16px">💡 שני הצדדים מסתנכרנים בזמן אמת — אין צורך לרענן.</p>
+</section>
+
+<!-- ============ SLIDE 4: WORKFLOW OVERVIEW ============ -->
+<section class="slide theme-dark">
+  <h2>זרימה ביום מבחן — 7 צעדים</h2>
+  <div class="steps">
+    <div class="step"><div class="step-num">1</div><div class="step-text"><strong>אתה מתחבר</strong><p>נכנס לדף בוחן עם תעודת זהות וסיסמה</p></div></div>
+    <div class="step"><div class="step-num">2</div><div class="step-text"><strong>פותח סשן חדש</strong><p>בוחר אתר, דרגה, שפה — ומקבל קוד 6 ספרות + QR</p></div></div>
+    <div class="step"><div class="step-num">3</div><div class="step-text"><strong>הנבחנים סורקים</strong><p>ממלאים שם, ת.ז., טלפון. רואים מסך "ממתין לאישור"</p></div></div>
+    <div class="step"><div class="step-num">4</div><div class="step-text"><strong>אתה מאשר</strong><p>בודק שהנבחן מולך, לוחץ ✔ אישור — המבחן מתחיל אצלו</p></div></div>
+    <div class="step"><div class="step-num">5</div><div class="step-text"><strong>הנבחן עונה</strong><p>30 שאלות, 40 דקות. אתה רואה התקדמות חיה בדשבורד</p></div></div>
+    <div class="step"><div class="step-num">6</div><div class="step-text"><strong>תוצאות עוברות אליך</strong><p>אוטומטית עם הסיום. רואה ציון, אחוז, פירוט שגיאות</p></div></div>
+    <div class="step"><div class="step-num">7</div><div class="step-text"><strong>שולח תעודה</strong><p>לחיצה על 📤 — תעודת משוב נשלחת לנבחן ב-WhatsApp/SMS</p></div></div>
+  </div>
+</section>
+
+<!-- ============ SLIDE 5: LOGIN + CREATE SESSION ============ -->
+<section class="slide theme-dark">
+  <h2>1️⃣ כניסה ויצירת סשן</h2>
+  <div style="display:grid;grid-template-columns:1fr 1.2fr;gap:30px;align-items:start">
+    <div>
+      <h3>איך נכנסים</h3>
+      <ul>
+        <li><strong>כתובת:</strong> הקיצור "בוחן" שעל המסך הראשי</li>
+        <li><strong>פרטים:</strong> ת.ז. + סיסמה אישית</li>
+        <li><strong>תוקף הסשן שלך:</strong> 12 שעות (לא צריך להתחבר שוב באותו יום)</li>
+      </ul>
+      <h3 style="margin-top:20px">פתיחת מבחן חדש</h3>
+      <ul>
+        <li>לחיצה על "🆕 פתח סשן חדש"</li>
+        <li>בחירה: <strong>אתר</strong>, <strong>כיתה</strong>, <strong>דרגת רישיון</strong>, <strong>שפת ברירת מחדל</strong></li>
+        <li>קביעה: עם הקראה קולית או בלי</li>
+        <li>לחיצה "צור" → קוד 6 ספרות + QR מופיעים</li>
+      </ul>
+    </div>
+    <div class="mockup">
+      <div class="mock-bar"><span></span><span></span><span></span></div>
+      <div style="text-align:center;padding:20px;background:#0f172a;border-radius:8px">
+        <div style="font-size:14px;color:#94a3b8;margin-bottom:8px">קוד הסשן</div>
+        <div style="font-size:54px;font-weight:900;color:#fbbf24;letter-spacing:4px">7B3K9X</div>
+        <div style="font-size:60px;margin:14px 0">█▀▀▀▀█<br>█ ▀▀ █<br>█▀▀▀▀█</div>
+        <div style="font-size:13px;color:#cbd5e1">QR — נבחנים סורקים בטלפון</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SLIDE 6: APPROVAL FLOW ============ -->
+<section class="slide theme-blue">
+  <h2>2️⃣ אישור נבחנים</h2>
+  <div style="display:grid;grid-template-columns:1.3fr 1fr;gap:30px;align-items:start">
+    <div class="mockup">
+      <h3 style="color:#fcd34d;font-size:16px;margin-bottom:10px">📋 רשימת ממתינים</h3>
+      <table>
+        <tr><th>שם</th><th>ת.ז.</th><th>טלפון</th><th>פעולות</th></tr>
+        <tr><td>אלעד פתיחי</td><td>308729123</td><td>050-1234567</td>
+          <td><button style="background:#16a34a;color:#fff;border:none;padding:4px 10px;border-radius:6px;font-weight:700">✔ אשר</button> <button style="background:#dc2626;color:#fff;border:none;padding:4px 10px;border-radius:6px;font-weight:700">✗ דחה</button></td>
+        </tr>
+        <tr><td>נועה כהן</td><td>317452890</td><td>052-9876543</td>
+          <td><button style="background:#16a34a;color:#fff;border:none;padding:4px 10px;border-radius:6px;font-weight:700">✔ אשר</button> <button style="background:#dc2626;color:#fff;border:none;padding:4px 10px;border-radius:6px;font-weight:700">✗ דחה</button></td>
+        </tr>
+      </table>
+    </div>
+    <div>
+      <h3>לפני שמאשרים</h3>
+      <ul>
+        <li>✅ ודא שהנבחן <strong>פיזית מולך</strong></li>
+        <li>✅ זיהוי בתעודת זהות (לא תמונה במסך)</li>
+        <li>✅ הטלפון/מחשב שלפניו במצב מתאים</li>
+        <li>⚠️ <strong>יש אופציה לתוספת זמן:</strong> 1.25 או 1.5 — בוחרים <em>לפני</em> האישור</li>
+      </ul>
+      <h3 style="margin-top:18px">אם נבחן עזב/לא הגיע</h3>
+      <ul><li>לחץ "אפס" — הנבחן יוסר מהרשימה</li></ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SLIDE 7: DURING EXAM ============ -->
+<section class="slide theme-dark">
+  <h2>3️⃣ במהלך המבחן</h2>
+  <div class="feature-row"><div class="icon">⏱️</div><div class="text"><strong>זמן רץ אוטומטית.</strong> 40 דקות (או יותר עם תוספת זמן). רואה לכל נבחן כמה זמן נשאר.</div></div>
+  <div class="feature-row"><div class="icon">📊</div><div class="text"><strong>התקדמות בזמן אמת.</strong> רואה כמה שאלות ענה כל נבחן, באיזו הוא נמצא.</div></div>
+  <div class="feature-row"><div class="icon">🚨</div><div class="text"><strong>פסילה אוטומטית.</strong> אם נבחן יוצא מהמסך / מחליף חלון / מקבל שיחה — המערכת תופסת ופוסלת אוטומטית. תקבל התראה.</div></div>
+  <div class="feature-row"><div class="icon">⛔</div><div class="text"><strong>פסילה ידנית.</strong> אם ראית מישהו מעתיק/מתבונן בשני — לחיצה ⛔ פוסלת אותו מיד.</div></div>
+  <div class="feature-row"><div class="icon">↩</div><div class="text"><strong>ביטול פסילה.</strong> אם הפסילה הייתה בטעות — לחיצה "↩ בטל" מחזירה את הנבחן <em>לאותה שאלה בדיוק</em> שבה היה.</div></div>
+  <div class="feature-row"><div class="icon">🔒</div><div class="text"><strong>בוחן רוצה לצאת רגע?</strong> אפשר לנעול מסך — הנתונים נשמרים בענן. החזרה — ממשיך בדיוק מהמקום.</div></div>
+</section>
+
+<!-- ============ SLIDE 8: RESULTS TABLE ============ -->
+<section class="slide theme-dark">
+  <h2>4️⃣ תוצאות — הטבלה הראשית</h2>
+  <div class="mockup">
+    <table>
+      <tr><th>שם</th><th>ת.ז.</th><th>ציון</th><th>סטטוס</th><th>זמן</th><th>פעולות</th></tr>
+      <tr><td>אלעד פתיחי</td><td>308729123</td><td>30/30</td><td><span class="badge b-pass">עבר</span></td><td>22:14</td>
+        <td>📄 📤 ✎ ⛔</td>
+      </tr>
+      <tr><td>נועה כהן</td><td>317452890</td><td>27/30</td><td><span class="badge b-pass">עבר</span></td><td>31:42</td>
+        <td>📄 📤 ✎ ⛔</td>
+      </tr>
+      <tr><td>דניאל לוי</td><td>325876412</td><td>22/30</td><td><span class="badge b-fail">נכשל</span></td><td>38:51</td>
+        <td>📄 📤 ✎ ⛔</td>
+      </tr>
+      <tr><td>יוסי מזרחי</td><td>342198765</td><td>—</td><td><span class="badge b-dq">פסול</span></td><td>—</td>
+        <td>📄 📤 ✎ ↩ בטל ✔ אשר</td>
+      </tr>
+    </table>
+  </div>
+  <h3 style="margin-top:18px">משמעות הכפתורים</h3>
+  <div class="cards">
+    <div class="card"><div class="ic">📄</div><h3>PDF</h3><p>תעודת משוב להדפסה/שמירה</p></div>
+    <div class="card"><div class="ic">📤</div><h3>שתף תוצאה</h3><p>פותח דיאלוג: WhatsApp / SMS / קישור</p></div>
+    <div class="card"><div class="ic">✎</div><h3>ערוך טלפון</h3><p>אם הנבחן טעה במספר</p></div>
+    <div class="card"><div class="ic">⛔ ↩ ✔</div><h3>פסילה / ביטול / אישור פסילה</h3><p>ניהול פסילות</p></div>
+  </div>
+</section>
+
+<!-- ============ SLIDE 9: REPORTS ============ -->
+<section class="slide theme-purple">
+  <h2>5️⃣ דוחות בסוף יום</h2>
+  <div class="cards">
+    <div class="card">
+      <div class="ic">📋</div><h3>דו"ח בוחן</h3>
+      <p>סיכום כל המבחנים שלך — שעות, נבחנים, אחוז הצלחה, פילוח לפי דרגות. PDF להדפסה.</p>
+    </div>
+    <div class="card">
+      <div class="ic">📊</div><h3>דו"ח מנהל אתר</h3>
+      <p>דו"ח מקצועי — סטטיסטיקות, מפת חום של נושאים בעייתיים, ניתוח קטגוריות.</p>
+    </div>
+    <div class="card">
+      <div class="ic">📤</div><h3>שתף דו"ח למנהל</h3>
+      <p>שליחה ב-WhatsApp לטלפון של מנהל האתר בלחיצה אחת.</p>
+    </div>
+    <div class="card">
+      <div class="ic">📨</div><h3>סיכום למנהל</h3>
+      <p>הודעת WhatsApp קצרה עם המספרים העיקריים.</p>
+    </div>
+  </div>
+  <p style="margin-top:20px;color:#cbd5e1">💡 הדוחות נוצרים אוטומטית מהמבחנים שהיום — אין מה להזין ידנית.</p>
+</section>
+
+<!-- ============ SLIDE 10: SCENARIO 1 ============ -->
+<section class="slide theme-orange">
+  <h2>תרחיש 1 — נבחן "נעלם"</h2>
+  <div class="scenario">
+    <div class="q">📍 מה קרה?</div>
+    <div class="a">נבחן רשם את עצמו, ראה "ממתין לאישור", עזב לאפליקציה אחרת בטלפון. עכשיו לא מוצא את הדף.</div>
+  </div>
+  <div class="scenario" style="background:rgba(22,163,74,0.1);border-color:#16a34a">
+    <div class="q" style="color:#86efac">✅ מה לעשות?</div>
+    <div class="a"><strong>הנחה אותו:</strong> שייפתח את הדפדפן וייכנס לאותה כתובת/QR. <strong>המערכת תזכור אותו</strong> ותחזיר אותו אוטומטית למסך ההמתנה — ללא צורך להירשם שוב.<br><br>
+    אם זה לא קורה (גלישה פרטית/קאש מנוקה) — שיירשם שוב עם אותם פרטים. המערכת לא תיצור כפילות.</div>
+  </div>
+  <p style="color:#cbd5e1;margin-top:14px;font-size:15px">💡 <strong>זה כבר משתפר אוטומטית מאז העדכון האחרון:</strong> מסך ההמתנה כעת מהבהב את כותרת הטאב, ומשמיע צליל ברגע שאישרת.</p>
+</section>
+
+<!-- ============ SLIDE 11: SCENARIO 2 ============ -->
+<section class="slide theme-orange">
+  <h2>תרחיש 2 — נבחן נפסל בטעות</h2>
+  <div class="scenario">
+    <div class="q">📍 מה קרה?</div>
+    <div class="a">נבחן קיבל פסילה אוטומטית כי הוא יצא מהמסך לרגע — אבל ראית שזה היה לרגע שיחה דחופה ומדובר בנבחן רציני.</div>
+  </div>
+  <div class="scenario" style="background:rgba(22,163,74,0.1);border-color:#16a34a">
+    <div class="q" style="color:#86efac">✅ מה לעשות?</div>
+    <div class="a">בטבלה — לחץ <strong>"↩ בטל"</strong> ליד הנבחן. הוא יחזור <strong>בדיוק לאותה שאלה</strong> שבה היה, עם הזמן שנשאר. כל התשובות שלו עד אותו רגע נשמרות.</div>
+  </div>
+  <p style="color:#fca5a5;margin-top:14px;font-size:15px">⚠️ <strong>אם אתה משוכנע שהיה רמאות:</strong> לחץ "✔ אשר" כדי לקבע את הפסילה.</p>
+</section>
+
+<!-- ============ SLIDE 12: SCENARIO 3 ============ -->
+<section class="slide theme-orange">
+  <h2>תרחיש 3 — צריך לצאת לרגע</h2>
+  <div class="scenario">
+    <div class="q">📍 מה קרה?</div>
+    <div class="a">באמצע יום מבחן אתה צריך לצאת לרגע (שירותים, שיחה דחופה). יש 5 נבחנים באמצע מבחן.</div>
+  </div>
+  <div class="scenario" style="background:rgba(22,163,74,0.1);border-color:#16a34a">
+    <div class="q" style="color:#86efac">✅ מה לעשות?</div>
+    <div class="a">תוכל לסגור את המחשב/לנעול מסך — <strong>אין שום סיכון לאיבוד נתונים.</strong> כל המבחנים ימשיכו לרוץ אצל הנבחנים, התוצאות יישלחו אוטומטית לענן. תחזור — תפתח את אותו הדף — תראה הכל.<br><br>
+    <strong>אם עברו יותר מ-12 שעות:</strong> תצטרך להתחבר שוב, אבל גם הסשן ימתין לך.</div>
+  </div>
+</section>
+
+<!-- ============ SLIDE 13: SCENARIO 4 ============ -->
+<section class="slide theme-orange">
+  <h2>תרחיש 4 — נבחן עם קושי בקריאה</h2>
+  <div class="scenario">
+    <div class="q">📍 מה קרה?</div>
+    <div class="a">מגיע נבחן ומבקש הקראה (או שאתה רואה שיש לו קושי). הסשן הנוכחי לא הוגדר עם שמע.</div>
+  </div>
+  <div class="scenario" style="background:rgba(22,163,74,0.1);border-color:#16a34a">
+    <div class="q" style="color:#86efac">✅ מה לעשות?</div>
+    <div class="a">2 אפשרויות:<br>
+    <strong>1.</strong> אם זה רק נבחן אחד — תן לו לרשום את עצמו, ובאישור שלו — הפעל "תוספת זמן 1.5".<br>
+    <strong>2.</strong> אם רוב הנבחנים בכיתה צריכים — סגור את הסשן הנוכחי וצור סשן חדש עם הקראה. הקודמים שכבר במבחן ימשיכו ללא הפרעה.</div>
+  </div>
+</section>
+
+<!-- ============ SLIDE 14: SCENARIO 5 ============ -->
+<section class="slide theme-orange">
+  <h2>תרחיש 5 — אין אינטרנט לרגע</h2>
+  <div class="scenario">
+    <div class="q">📍 מה קרה?</div>
+    <div class="a">פתאום הוויפי באתר נופל לדקה. כמה נבחנים באמצע מבחן.</div>
+  </div>
+  <div class="scenario" style="background:rgba(22,163,74,0.1);border-color:#16a34a">
+    <div class="q" style="color:#86efac">✅ מה לעשות?</div>
+    <div class="a">אל תיבהל. <strong>המערכת מחזיקה את המבחן לא מקוון</strong> אצל הנבחן — הוא יכול להמשיך לענות. כשהאינטרנט חוזר, הכל מסתנכרן אוטומטית. <strong>אין צורך לעשות כלום.</strong><br><br>
+    אם הניתוק ארוך (5+ דקות) — מומלץ לעצור את הנבחנים, ולחזור כשהאינטרנט יציב.</div>
+  </div>
+</section>
+
+<!-- ============ SLIDE 15: ANTI-CHEAT ============ -->
+<section class="slide theme-green">
+  <h2>🛡️ מה המערכת תופסת אוטומטית</h2>
+  <div class="cards">
+    <div class="card"><div class="ic">📱</div><h3>בטלפון/טאבלט</h3>
+      <ul style="font-size:14px;padding-right:18px;margin-top:6px">
+        <li>מעבר לאפליקציה אחרת</li>
+        <li>שיחה נכנסת (5+ שניות)</li>
+        <li>פיצול מסך</li>
+        <li>סגירת דפדפן</li>
+      </ul>
+    </div>
+    <div class="card"><div class="ic">🖥️</div><h3>במחשב — מחמיר יותר</h3>
+      <ul style="font-size:14px;padding-right:18px;margin-top:6px">
+        <li>יציאה ממסך מלא</li>
+        <li>Alt+Tab לחלון אחר</li>
+        <li>פיצול מסך / Snap</li>
+        <li><strong>אפס סובלנות</strong></li>
+      </ul>
+    </div>
+    <div class="card"><div class="ic">🚫</div><h3>בכל מקרה</h3>
+      <ul style="font-size:14px;padding-right:18px;margin-top:6px">
+        <li>חסימת העתקה / צילום מסך</li>
+        <li>חסימת DevTools</li>
+        <li>חסימת חזרה אחורה</li>
+        <li>סגירת דפדפן = פסילה</li>
+      </ul>
+    </div>
+  </div>
+  <p style="margin-top:18px;color:#cbd5e1">💡 כל פסילה אוטומטית מופיעה בדשבורד שלך מיד. אתה תמיד יכול לבטל.</p>
+</section>
+
+<!-- ============ SLIDE 16: DO/DON'T ============ -->
+<section class="slide theme-dark">
+  <h2>📌 כללי אצבע</h2>
+  <div class="dos">
+    <div class="do-col">
+      <h3>✅ לעשות</h3>
+      <ul>
+        <li>זיהוי בתעודת זהות פיזית לפני אישור</li>
+        <li>הסבר קצר לנבחן: "אל תצא מהמסך / תעבור לטאב אחר"</li>
+        <li>במחשב — לוודא שפתוח במסך מלא לפני שמתחיל</li>
+        <li>בסוף יום — לחץ "סגור סשן" כדי שלא ייכנסו אליו אחר כך</li>
+        <li>שלח דו"ח למנהל אתר בסוף יום</li>
+      </ul>
+    </div>
+    <div class="dont-col">
+      <h3>❌ לא לעשות</h3>
+      <ul>
+        <li>אל תאשר נבחן בלי לראות אותו פיזית</li>
+        <li>אל תבטל פסילה אם לא ראית בעצמך — המערכת תופסת בדיוק</li>
+        <li>אל תמחק רשומות כפולות בלי לבדוק שיש עדיין רישום פעיל</li>
+        <li>אל תשלח קוד הסשן ב-WhatsApp לקבוצות גדולות — מי שלא בכיתה לא יוכל לעשות מבחן בכל מקרה, אבל זה ייצור בלגן</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ============ SLIDE 17: TIPS ============ -->
+<section class="slide theme-blue">
+  <h2>💡 טיפים מעשיים</h2>
+  <div class="feature-row"><div class="icon">📲</div><div class="text"><strong>הראה את ה-QR מסך גדול</strong> — אם יש פרויקטור, הקרן את הקוד. נבחנים סורקים מהר יותר.</div></div>
+  <div class="feature-row"><div class="icon">🔋</div><div class="text"><strong>טאבלט בטעינה כל הזמן.</strong> שעות ארוכות עם מסך פעיל — מתרוקן.</div></div>
+  <div class="feature-row"><div class="icon">📞</div><div class="text"><strong>אם נבחן מתקשר.</strong> מצב זמני נורמלי. שיחה > 5 שניות = פסילה אוטומטית. תוכל לבטל אם זה היה דחוף.</div></div>
+  <div class="feature-row"><div class="icon">🆔</div><div class="text"><strong>נבחן ללא ת.ז.</strong> — לא לאשר. הת.ז. היא הזיהוי היחיד במערכת.</div></div>
+  <div class="feature-row"><div class="icon">⏸️</div><div class="text"><strong>הפסקת אוכל באמצע יום.</strong> אין צורך לסגור סשן — תשאיר פתוח, אחרי הצהריים תמשיך.</div></div>
+  <div class="feature-row"><div class="icon">🔄</div><div class="text"><strong>נבחן רוצה להחליף שפה אחרי שהתחיל.</strong> לא אפשרי באמצע מבחן. רק מההתחלה. אם זה קריטי — אפס אותו ושייכנס שוב.</div></div>
+</section>
+
+<!-- ============ SLIDE 18: LIVE DEMOS ============ -->
+<section class="slide theme-purple">
+  <h2>🖥️ דמואים אינטראקטיביים</h2>
+  <p style="color:#cbd5e1;margin-bottom:16px">לחץ על כל אחד כדי לראות איך זה נראה בפועל:</p>
+  <div class="cards">
+    <div class="card">
+      <div class="ic">📊</div><h3>מסך תוצאות</h3>
+      <p style="margin-top:6px">איך נראית טבלת התוצאות עם נבחנים אמיתיים</p>
+      <p style="margin-top:8px"><a class="demo-link" href="demo_results_clean.html" target="_blank">פתח דמה ←</a></p>
+    </div>
+    <div class="card">
+      <div class="ic">✏️</div><h3>תיקון ציון (לעתיד)</h3>
+      <p style="margin-top:6px">איך מתבצע תהליך תיקון ציון נכשל</p>
+      <p style="margin-top:8px"><a class="demo-link" href="demo_correction.html" target="_blank">פתח דמה ←</a></p>
+    </div>
+    <div class="card">
+      <div class="ic">🎓</div><h3>הצטרפות לסשן אמיתי</h3>
+      <p style="margin-top:6px">פתחו את הדף בעצמכם וגלו</p>
+      <p style="margin-top:8px"><a class="demo-link" href="examiner.html" target="_blank">דף בוחן ←</a></p>
+    </div>
+  </div>
+  <p style="margin-top:24px;color:#fcd34d;font-size:16px">💡 <strong>הצעה:</strong> בסיום ההדרכה — נעשה תרגיל יחד: כל בוחן יפתח סשן ואחד מאיתנו יהיה "הנבחן".</p>
+</section>
+
+<!-- ============ SLIDE 19: SUMMARY + Q&A ============ -->
+<section class="slide theme-title">
+  <div class="intro-icon">✅</div>
+  <h1>סיימנו!</h1>
+  <div class="subtitle">כעת אתם מוכנים לתפעל את המערכת</div>
+  <div style="margin-top:30px;display:grid;grid-template-columns:repeat(3,1fr);gap:18px;max-width:850px">
+    <div style="background:rgba(255,255,255,0.05);border:1px solid #fbbf24;border-radius:12px;padding:18px">
+      <div style="font-size:32px">📞</div>
+      <h3 style="margin-top:6px">תמיכה</h3>
+      <p style="font-size:14px;color:#cbd5e1">בעיה בכיתה? התקשרו אליי</p>
+    </div>
+    <div style="background:rgba(255,255,255,0.05);border:1px solid #fbbf24;border-radius:12px;padding:18px">
+      <div style="font-size:32px">📋</div>
+      <h3 style="margin-top:6px">דף עזר</h3>
+      <p style="font-size:14px;color:#cbd5e1"><a class="demo-link" href="examiner_cheat_sheet.html" target="_blank">להוריד ולהדפיס ←</a></p>
+    </div>
+    <div style="background:rgba(255,255,255,0.05);border:1px solid #fbbf24;border-radius:12px;padding:18px">
+      <div style="font-size:32px">❓</div>
+      <h3 style="margin-top:6px">שאלות</h3>
+      <p style="font-size:14px;color:#cbd5e1">עכשיו — שאלו!</p>
+    </div>
+  </div>
+</section>
+
+</div>
+
+<div class="nav">
+  <button id="prev" title="הקודמת">›</button>
+  <span class="counter" id="counter">1 / 19</span>
+  <button id="next" title="הבאה">‹</button>
+</div>
+<div class="toc">
+  📑 <a id="tocBtn">תוכן</a>
+</div>
+
+<script>
+(function(){
+  var slides = document.querySelectorAll('.slide');
+  var current = 0;
+  var counter = document.getElementById('counter');
+  var btnPrev = document.getElementById('prev');
+  var btnNext = document.getElementById('next');
+
+  function show(i){
+    if (i < 0 || i >= slides.length) return;
+    slides[current].classList.remove('active');
+    slides[i].classList.add('active');
+    current = i;
+    counter.textContent = (i+1) + ' / ' + slides.length;
+    btnPrev.disabled = i === 0;
+    btnNext.disabled = i === slides.length - 1;
+    location.hash = 's' + (i+1);
+  }
+  // RTL: ← goes forward, → goes back (matches reading direction)
+  document.addEventListener('keydown', function(e){
+    if (e.key === 'ArrowLeft') show(current+1);
+    else if (e.key === 'ArrowRight') show(current-1);
+    else if (e.key === 'Home') show(0);
+    else if (e.key === 'End') show(slides.length-1);
+    else if (e.key === 'Escape') showToc();
+  });
+  btnPrev.addEventListener('click', function(){ show(current-1); });
+  btnNext.addEventListener('click', function(){ show(current+1); });
+
+  // Honor hash on load
+  var m = location.hash.match(/^#s(\d+)$/);
+  if (m) {
+    var idx = parseInt(m[1]) - 1;
+    if (idx >= 0 && idx < slides.length) show(idx);
+  } else {
+    show(0);
+  }
+
+  // Simple TOC popup
+  document.getElementById('tocBtn').addEventListener('click', showToc);
+  function showToc(){
+    var titles = [];
+    slides.forEach(function(s, i){
+      var h = s.querySelector('h1, h2');
+      titles.push((i+1) + '. ' + (h ? h.textContent.trim() : '...'));
+    });
+    var pick = prompt('עבור לשקופית:\n\n' + titles.join('\n') + '\n\nהקלד מספר:', String(current+1));
+    if (pick !== null) {
+      var n = parseInt(pick);
+      if (!isNaN(n) && n >= 1 && n <= slides.length) show(n-1);
+    }
+  }
+})();
+</script>
+
+</body>
+</html>

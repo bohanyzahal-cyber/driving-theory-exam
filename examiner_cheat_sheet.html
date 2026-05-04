@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>דף עזר לבוחן — מערכת מבחני תאוריה</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI','Heebo',Tahoma,sans-serif;background:#f1f5f9;color:#1e293b;direction:rtl;padding:20px;line-height:1.4}
+.page{max-width:780px;margin:0 auto;background:#fff;border-radius:14px;box-shadow:0 4px 20px rgba(0,0,0,0.08);overflow:hidden}
+.header{background:linear-gradient(135deg,#1e40af,#1e3a8a);color:#fff;padding:18px 24px}
+.header h1{font-size:24px;font-weight:900;margin:0}
+.header p{font-size:13px;opacity:0.9;margin-top:2px}
+.body{padding:18px 24px}
+.section{margin-bottom:14px;page-break-inside:avoid}
+.section-title{background:#fbbf24;color:#1e293b;padding:6px 10px;font-weight:900;font-size:14px;border-radius:6px;display:inline-block;margin-bottom:8px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.box{background:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;padding:10px 12px}
+.box h3{font-size:13px;color:#1e40af;margin-bottom:5px;font-weight:800}
+.box ol,.box ul{padding-right:18px;margin:0}
+.box li{font-size:12px;line-height:1.45;margin-bottom:2px}
+.btns{display:flex;gap:6px;flex-wrap:wrap;margin-top:5px}
+.btn{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border-radius:5px;font-size:11px;font-weight:700;color:#fff}
+.btn-pdf{background:#ef4444}
+.btn-share{background:#7c3aed}
+.btn-edit{background:#64748b}
+.btn-dq{background:#fb923c}
+.btn-overturn{background:#16a34a}
+.btn-confirm{background:#dc2626}
+.btn-approve{background:#16a34a}
+.btn-reject{background:#dc2626}
+.scenarios{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.scenario{background:#fef3c7;border-right:3px solid #f59e0b;padding:7px 10px;border-radius:5px}
+.scenario .q{font-weight:800;font-size:12px;color:#92400e;margin-bottom:2px}
+.scenario .a{font-size:11px;color:#78350f;line-height:1.45}
+.dont,.do{padding:10px;border-radius:8px}
+.do{background:#dcfce7;border:1px solid #16a34a}
+.dont{background:#fee2e2;border:1px solid #dc2626}
+.do h3{color:#15803d;font-size:13px;margin-bottom:4px}
+.dont h3{color:#b91c1c;font-size:13px;margin-bottom:4px}
+.do ul,.dont ul{padding-right:16px}
+.do li,.dont li{font-size:12px;line-height:1.45;margin-bottom:1px}
+.footer{padding:10px 24px;background:#f1f5f9;border-top:1px solid #cbd5e1;font-size:11px;color:#64748b;display:flex;justify-content:space-between}
+.footer strong{color:#1e293b}
+
+@media print{
+  body{padding:0;background:#fff}
+  .page{box-shadow:none;border-radius:0;max-width:none}
+  .no-print{display:none}
+}
+.print-btn{position:fixed;top:20px;left:20px;background:#1e40af;color:#fff;border:none;border-radius:8px;padding:10px 18px;font-size:14px;font-weight:700;cursor:pointer;box-shadow:0 4px 12px rgba(30,64,175,0.4)}
+</style>
+</head>
+<body>
+
+<button class="print-btn no-print" onclick="window.print()">🖨 הדפס דף עזר</button>
+
+<div class="page">
+  <div class="header">
+    <h1>📋 דף עזר לבוחן — מערכת מבחני תאוריה</h1>
+    <p>גרסה מעודכנת • סמכות הרישוי צה"ל</p>
+  </div>
+
+  <div class="body">
+
+    <div class="section">
+      <div class="section-title">1️⃣ פתיחת יום מבחן</div>
+      <div class="grid">
+        <div class="box">
+          <h3>כניסה</h3>
+          <ol>
+            <li>פתח קיצור "בוחן" שעל המסך</li>
+            <li>הכנס ת.ז. + סיסמה</li>
+            <li>תוקף: 12 שעות</li>
+          </ol>
+        </div>
+        <div class="box">
+          <h3>פתיחת סשן</h3>
+          <ol>
+            <li>לחץ "🆕 פתח סשן חדש"</li>
+            <li>בחר אתר, דרגה, שפה, הקראה</li>
+            <li>הצג קוד 6 ספרות / QR</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">2️⃣ אישור נבחנים</div>
+      <div class="grid">
+        <div class="box">
+          <h3>לפני אישור — ודא:</h3>
+          <ul>
+            <li>✓ הנבחן פיזית מולך</li>
+            <li>✓ ת.ז. פיזית (לא תמונה)</li>
+            <li>✓ הטלפון/מחשב שלפניו במצב מתאים</li>
+          </ul>
+        </div>
+        <div class="box">
+          <h3>פעולות בכל שורה</h3>
+          <div class="btns">
+            <span class="btn btn-approve">✔ אשר</span>
+            <span class="btn btn-reject">✗ דחה</span>
+            <span class="btn btn-edit">אפס</span>
+          </div>
+          <p style="font-size:11px;margin-top:5px;color:#64748b">אופציה לתוספת זמן: 1.25 / 1.5 — בוחרים <strong>לפני</strong> האישור</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">3️⃣ במהלך המבחן</div>
+      <div class="grid">
+        <div class="box">
+          <h3>מה רואים בדשבורד</h3>
+          <ul>
+            <li>זמן שנותר לכל נבחן</li>
+            <li>שאלה נוכחית</li>
+            <li>פסילות אוטומטיות (התראה אדומה)</li>
+          </ul>
+        </div>
+        <div class="box">
+          <h3>פעולות זמינות</h3>
+          <div class="btns">
+            <span class="btn btn-dq">⛔ פסול</span>
+            <span class="btn btn-overturn">↩ בטל פסילה</span>
+          </div>
+          <p style="font-size:11px;margin-top:5px;color:#64748b">ביטול פסילה מחזיר את הנבחן בדיוק לשאלה שהיה בה</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">4️⃣ תוצאות — כפתורים בכל שורה</div>
+      <div class="box" style="background:#fff">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px">
+          <div><span class="btn btn-pdf">📄 PDF</span><p style="font-size:11px;margin-top:3px">תעודת משוב להדפסה</p></div>
+          <div><span class="btn btn-share">📤 שתף</span><p style="font-size:11px;margin-top:3px">דיאלוג: WhatsApp / SMS / קישור</p></div>
+          <div><span class="btn btn-edit">✎ טלפון</span><p style="font-size:11px;margin-top:3px">תיקון מספר אם טעה</p></div>
+          <div><span class="btn btn-dq">⛔ פסול</span><p style="font-size:11px;margin-top:3px">פסילה ידנית</p></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">5️⃣ דוחות בסוף יום</div>
+      <div class="grid">
+        <div class="box">
+          <h3>📋 דו"ח בוחן</h3>
+          <p style="font-size:11px">סיכום אישי שלך — נבחנים, אחוזים, פילוח דרגות</p>
+        </div>
+        <div class="box">
+          <h3>📊 דו"ח מנהל אתר</h3>
+          <p style="font-size:11px">סטטיסטיקות מקצועיות + מפת חום נושאים</p>
+        </div>
+      </div>
+      <p style="font-size:11px;color:#64748b;margin-top:5px">💡 שתי אפשרויות: צפייה ב-PDF או שליחה ב-WhatsApp ישר למנהל</p>
+    </div>
+
+    <div class="section">
+      <div class="section-title">⚠️ תרחישים נפוצים</div>
+      <div class="scenarios">
+        <div class="scenario">
+          <div class="q">נבחן "איבד" את מסך ההמתנה</div>
+          <div class="a">שייכנס שוב לאותה כתובת — המערכת תזכור אותו ותחזיר אותו אוטומטית</div>
+        </div>
+        <div class="scenario">
+          <div class="q">פסילה אוטומטית בטעות</div>
+          <div class="a">לחץ "↩ בטל" — חוזר לאותה שאלה עם זמן מעודכן</div>
+        </div>
+        <div class="scenario">
+          <div class="q">צריך לצאת לרגע</div>
+          <div class="a">סגור מחשב חופשי — כל הנתונים בענן, תחזור ותראה הכל</div>
+        </div>
+        <div class="scenario">
+          <div class="q">אינטרנט נופל</div>
+          <div class="a">המבחן ממשיך לא מקוון — מסתנכרן אוטומטית כשחוזר</div>
+        </div>
+        <div class="scenario">
+          <div class="q">נבחן מבקש הקראה ולא הוגדר</div>
+          <div class="a">תן תוספת זמן 1.5 או צור סשן חדש עם הקראה</div>
+        </div>
+        <div class="scenario">
+          <div class="q">2 רישומים לאותו נבחן</div>
+          <div class="a">אפס רק אחד! בדוק שיש עוד אחד פעיל לפני</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">📌 כללי אצבע</div>
+      <div class="grid">
+        <div class="do">
+          <h3>✅ לעשות</h3>
+          <ul>
+            <li>זיהוי בת.ז. פיזית לפני אישור</li>
+            <li>הסבר קצר לנבחן: "אל תצא מהמסך"</li>
+            <li>במחשב — לוודא מסך מלא</li>
+            <li>בסוף יום — לחץ "סגור סשן"</li>
+            <li>שלח דו"ח למנהל אתר</li>
+          </ul>
+        </div>
+        <div class="dont">
+          <h3>❌ לא לעשות</h3>
+          <ul>
+            <li>לא לאשר בלי לראות הנבחן</li>
+            <li>לא לבטל פסילה אם לא ראית בעצמך</li>
+            <li>לא למחוק רשומות בלי לבדוק</li>
+            <li>לא לשתף קוד סשן בקבוצות גדולות</li>
+            <li>לא לתת לסשן ישן להישאר פתוח</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="footer">
+    <span>🛡️ <strong>אנטי-צ'יט אוטומטי:</strong> מעבר אפליקציה / שיחה / פיצול מסך / יציאה ממסך מלא</span>
+    <span><strong>מקש עזרה:</strong> F1 בדף הבוחן</span>
+  </div>
+</div>
+
+</body>
+</html>
