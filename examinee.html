@@ -459,6 +459,10 @@
   // *** שנה את ה-URL הזה ל-URL של ה-Apps Script החדש ***
   var API_URL = 'https://script.google.com/macros/s/AKfycbzOI0zrDEngP-GvlRblhOk8tQsYBvWZ2gGliIQHTpS67WrDZl4la8NPpwtJr_Vjsh3Gzg/exec';
 
+  // Cloudflare Worker that proxies + caches gov.il images. See deployment/image-proxy-worker.js
+  // Set to '' to disable proxy and use gov.il directly (fallback).
+  var IMAGE_PROXY_BASE = 'https://images-proxy.bohanyzahal.workers.dev';
+
   var TOTAL_QUESTIONS = 30;
   var PASS_SCORE = 26;
   var BASE_EXAM_MINUTES = 40;
@@ -2681,6 +2685,103 @@
     });
   }
 
+  // ========== Resilient image loader ==========
+  // Tries proxy first (bypasses carrier compression / data saver / blocked third-party).
+  // Falls back to gov.il direct if proxy fails. Shows loading + retry UI.
+  function toProxyUrl(originalUrl) {
+    if (!IMAGE_PROXY_BASE) return originalUrl;
+    try {
+      var u = new URL(originalUrl);
+      if (u.hostname !== 'www.gov.il' && u.hostname !== 'gov.il') return originalUrl;
+      return IMAGE_PROXY_BASE.replace(/\/$/, '') + '/img' + u.pathname;
+    } catch(e) { return originalUrl; }
+  }
+
+  function buildResilientImage(originalUrl) {
+    var wrap = document.createElement('div');
+    wrap.className = 'q-image-wrap';
+    wrap.style.cssText = 'position:relative;min-height:120px;display:flex;align-items:center;justify-content:center;margin:8px 0;';
+
+    var loading = document.createElement('div');
+    loading.style.cssText = 'color:#94a3b8;font-size:13px;text-align:center;padding:20px;';
+    loading.innerHTML = '<div style="display:inline-block;width:24px;height:24px;border:3px solid #cbd5e1;border-top-color:#1a73e8;border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:middle;margin-inline-end:8px;"></div>טוען תמונה...';
+    wrap.appendChild(loading);
+
+    var img = document.createElement('img');
+    img.className = 'q-image';
+    img.referrerPolicy = 'no-referrer';
+    img.loading = 'eager';
+    img.alt = 'תמונה לשאלה';
+    img.style.display = 'none';
+
+    var attempt = 0;
+    var sources = [toProxyUrl(originalUrl), originalUrl]; // try proxy first, then direct
+    // De-dupe (in case proxy is disabled)
+    if (sources[0] === sources[1]) sources = [sources[0]];
+    var maxRetriesPerSource = 2;
+    var retriesThisSource = 0;
+
+    function tryNext() {
+      var src = sources[attempt];
+      if (!src) { showError(); return; }
+      // Cache-busting query param on retries (forces fresh fetch)
+      var bust = retriesThisSource > 0 ? (src.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now() : '';
+      img.src = src + bust;
+    }
+
+    img.onload = function() {
+      loading.style.display = 'none';
+      img.style.display = '';
+      // Remove error UI if present
+      var err = wrap.querySelector('.q-image-error');
+      if (err) err.parentNode.removeChild(err);
+    };
+
+    img.onerror = function() {
+      retriesThisSource++;
+      if (retriesThisSource < maxRetriesPerSource) {
+        // Wait briefly then retry the same source
+        setTimeout(tryNext, 800);
+      } else {
+        // Move to next source (proxy → direct gov.il)
+        attempt++;
+        retriesThisSource = 0;
+        if (attempt < sources.length) {
+          tryNext();
+        } else {
+          showError();
+        }
+      }
+    };
+
+    function showError() {
+      loading.style.display = 'none';
+      img.style.display = 'none';
+      var err = document.createElement('div');
+      err.className = 'q-image-error';
+      err.style.cssText = 'background:#fef2f2;border:2px solid #fca5a5;border-radius:10px;padding:14px;text-align:center;color:#991b1b;font-size:14px;';
+      err.innerHTML =
+        '<div style="font-size:32px;margin-bottom:6px;">⚠️</div>' +
+        '<div style="font-weight:700;margin-bottom:4px;">התמונה לא נטענה</div>' +
+        '<div style="font-size:12px;color:#7f1d1d;margin-bottom:10px;">ייתכן שזו בעיית רשת. אם הבעיה נמשכת — הודע לבוחן.</div>' +
+        '<button type="button" style="background:#1a73e8;color:#fff;border:none;border-radius:8px;padding:8px 18px;font-size:14px;font-weight:700;cursor:pointer;">🔄 נסה שוב</button>';
+      err.querySelector('button').addEventListener('click', function() {
+        wrap.innerHTML = '';
+        wrap.appendChild(loading);
+        wrap.appendChild(img);
+        loading.style.display = '';
+        attempt = 0;
+        retriesThisSource = 0;
+        tryNext();
+      });
+      wrap.appendChild(err);
+    }
+
+    wrap.appendChild(img);
+    tryNext();
+    return wrap;
+  }
+
   function renderQuestion() {
     var q = activeQuestions[currentIndex];
     var total = activeQuestions.length;
@@ -2836,14 +2937,7 @@
     card.appendChild(qTextEl);
 
     if (q.imageUrl && q.imageUrl.trim() !== '') {
-      var img = document.createElement('img');
-      img.className = 'q-image';
-      img.referrerPolicy = 'no-referrer';
-      img.loading = 'eager';
-      img.src = q.imageUrl;
-      img.alt = '\u05EA\u05DE\u05D5\u05E0\u05D4 \u05DC\u05E9\u05D0\u05DC\u05D4';
-      img.onerror = function() { img.style.display = 'none'; };
-      card.appendChild(img);
+      card.appendChild(buildResilientImage(q.imageUrl));
     }
 
     // Answers
