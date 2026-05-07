@@ -871,6 +871,8 @@
 
   // Reset everything so the next examinee can use the same device
   window.resetForNextExaminee = function() {
+    dqScreenActive = false;
+    try { window.removeEventListener('beforeunload', dqBeforeUnload); } catch(e) {}
     window.removeEventListener('popstate', onBackButton);
     // Stop DQ overturn polling if active
     stopDQOverturnPolling();
@@ -1706,13 +1708,25 @@
   }
 
   function onBackButton(e) {
-    if (examInProgress || examSubmitted || tabSwitchDQConfirmed) {
+    if (examInProgress || examSubmitted || tabSwitchDQConfirmed || dqScreenActive) {
       // Push state again to prevent leaving
       history.pushState({ examActive: true }, '');
     } else {
       window.removeEventListener('popstate', onBackButton);
     }
   }
+
+  function dqBeforeUnload(e) {
+    if (!dqScreenActive) return;
+    var msg = 'אם תסגור את הדף, הבוחן לא יוכל לבטל את הפסילה.';
+    e.preventDefault();
+    e.returnValue = msg;
+    return msg;
+  }
+
+  // True while the DQ screen is shown and the examiner has not yet decided.
+  // Used by onBackButton to keep blocking the back button even after examInProgress=false.
+  var dqScreenActive = false;
 
   function showDQScreen() {
     if (tabSwitchGraceTimer) { clearTimeout(tabSwitchGraceTimer); tabSwitchGraceTimer = null; }
@@ -1721,6 +1735,18 @@
     teardownFullscreenEnforcement();
     stopSpeaking();
     stopDevToolsTrap();
+
+    // Mark DQ screen as active so the back button stays blocked while examiner decides
+    dqScreenActive = true;
+    // Re-arm popstate listener and stack history entries to make Back / swipe-back a no-op.
+    try {
+      window.removeEventListener('popstate', onBackButton);
+      window.addEventListener('popstate', onBackButton);
+      history.pushState({ dqActive: true }, '');
+      history.pushState({ dqActive: true }, '');
+    } catch(e) {}
+    // Block accidental tab close / refresh during the wait
+    window.addEventListener('beforeunload', dqBeforeUnload);
 
     // Save exam state to localStorage BEFORE clearing — allows resume if examiner overturns DQ
     if (activeQuestions.length > 0 && examDeadline) {
@@ -1756,7 +1782,11 @@
           '<p style="color:#92400e; font-size:15px; font-weight:700; margin:0 0 4px;">\u23F3 \u05DE\u05DE\u05EA\u05D9\u05DF \u05DC\u05D4\u05D7\u05DC\u05D8\u05EA \u05D4\u05D1\u05D5\u05D7\u05DF...</p>' +
           '<p style="color:#92400e; font-size:13px; margin:0;">\u05D0\u05DD \u05D4\u05D1\u05D5\u05D7\u05DF \u05D9\u05D1\u05D8\u05DC \u05D0\u05EA \u05D4\u05E4\u05E1\u05D9\u05DC\u05D4, \u05D4\u05DE\u05D1\u05D7\u05DF \u05D9\u05DE\u05E9\u05D9\u05DA \u05D0\u05D5\u05D8\u05D5\u05DE\u05D8\u05D9\u05EA.</p>' +
         '</div>' +
-        '<button onclick="resetForNextExaminee()" style="margin-top:24px; display:block; width:100%; padding:14px; font-size:17px; background:#0f172a; color:white; border:none; border-radius:10px; cursor:pointer; font-weight:700;">\u05E0\u05D1\u05D7\u05DF \u05D4\u05D1\u05D0 \u2190</button>' +
+        // Next-examinee button intentionally NOT shown on initial DQ -- it would let
+        // the disqualified examinee bail out before the examiner decides, wiping the
+        // suspended-exam state and making overturn impossible. Injected by
+        // showFinalDQScreen() once the examiner confirms the DQ.
+        '<div id="dqLeaveBtnSlot"></div>' +
       '</div>';
 
     // Start polling for DQ overturn
@@ -1802,10 +1832,19 @@
         '<p style="color:#991b1b; font-size:15px; font-weight:700; margin:0 0 4px;">❌ הבוחן אישר את הפסילה</p>' +
         '<p style="color:#991b1b; font-size:13px; margin:0;">המבחן נפסל סופית.</p>';
     }
+    // Now (and ONLY now, after examiner confirms DQ) show the "next examinee" button.
+    // Before this point, leaving would wipe the suspended-exam state and prevent overturn.
+    var slot = document.getElementById('dqLeaveBtnSlot');
+    if (slot && !slot.firstChild) {
+      slot.innerHTML = '<button onclick="resetForNextExaminee()" style="margin-top:24px; display:block; width:100%; padding:14px; font-size:17px; background:#0f172a; color:white; border:none; border-radius:10px; cursor:pointer; font-weight:700;">' + escHtml(getUIString('nextExaminee')) + '</button>';
+    }
   }
 
   // ========== Restore exam after DQ overturn ==========
   function restoreExamFromSuspended() {
+    // Examiner overturned — release the DQ-screen lock so back/close behave normally again
+    dqScreenActive = false;
+    try { window.removeEventListener('beforeunload', dqBeforeUnload); } catch(e) {}
     var suspKey = 'examSuspended_' + sessionCode + '_' + examineeData.idNumber;
     var endedKey = 'examEnded_' + sessionCode + '_' + examineeData.idNumber;
     var saved = null;
