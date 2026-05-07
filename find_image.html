@@ -305,7 +305,10 @@
   var currentLang = 'he';
 
   function getQuestionInLang(q, lang) {
-    if (lang === 'he' || !TRANSLATIONS[lang]) return { t: q.t, a: q.a, ci: decodeCI(q.ci, q.id) };
+    // questions.js uses {text, answers}; translation files use {t, a}
+    if (lang === 'he' || !TRANSLATIONS[lang]) {
+      return { t: q.text, a: q.answers, ci: decodeCI(q.ci, q.id) };
+    }
     var tr = TRANSLATIONS[lang][q.id];
     if (!tr) return null; // not translated
     return {
@@ -386,8 +389,8 @@
       qmeta.className = 'qmeta';
       qmeta.innerHTML =
         '<span>📋 שאלה ' + escHtml(q.id) + '</span>' +
-        (q.lic ? '<span>🪪 ' + escHtml(q.lic) + '</span>' : '') +
-        (q.cat ? '<span>📂 ' + escHtml(q.cat) + '</span>' : '');
+        (q.licenseType ? '<span>🪪 ' + escHtml(q.licenseType) + '</span>' : '') +
+        (q.category ? '<span>📂 ' + escHtml(q.category) + '</span>' : '');
       card.appendChild(qmeta);
 
       // Answers
