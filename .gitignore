@@ -10,3 +10,10 @@ _translation_progress/
 _zip_extracted/
 _ul
 driving questions.zip
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example

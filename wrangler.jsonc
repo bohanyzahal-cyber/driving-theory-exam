@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "driving-theory-exam",
+  "compatibility_date": "2026-05-07",
+  "observability": {
+    "enabled": true
+  },
+  "assets": {
+    "directory": "examinee"
+  },
+  "compatibility_flags": [
+    "nodejs_compat"
+  ]
+}
