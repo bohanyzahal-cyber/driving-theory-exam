@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<title>חיפוש תמונה — לבוחן</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=2.0">
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: 'Segoe UI', Tahoma, sans-serif;
+    margin: 0;
+    background: #0f172a;
+    color: #f1f5f9;
+    direction: rtl;
+    min-height: 100vh;
+  }
+  header {
+    background: linear-gradient(135deg, #1e293b, #0f172a);
+    padding: 16px 20px;
+    border-bottom: 2px solid #facc15;
+    text-align: center;
+  }
+  header h1 { margin: 0; font-size: 22px; color: #facc15; }
+  header p { margin: 6px 0 0; font-size: 13px; color: #94a3b8; }
+
+  main { padding: 16px; max-width: 720px; margin: 0 auto; }
+
+  .search-box {
+    background: #1e293b;
+    border: 2px solid #334155;
+    border-radius: 12px;
+    padding: 14px;
+    margin-bottom: 12px;
+  }
+  .search-box label {
+    display: block;
+    font-size: 13px;
+    color: #94a3b8;
+    margin-bottom: 6px;
+    font-weight: 600;
+  }
+  .search-box input {
+    width: 100%;
+    padding: 14px;
+    font-size: 17px;
+    border-radius: 8px;
+    border: 2px solid #475569;
+    background: #0f172a;
+    color: #f1f5f9;
+    direction: rtl;
+    text-align: right;
+    -webkit-appearance: none;
+    appearance: none;
+  }
+  .search-box input:focus {
+    outline: none;
+    border-color: #facc15;
+    box-shadow: 0 0 0 3px rgba(250,204,21,0.15);
+  }
+  .hint { font-size: 12px; color: #64748b; margin-top: 6px; }
+
+  .meta {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+    font-size: 13px;
+    color: #94a3b8;
+  }
+  .meta strong { color: #f1f5f9; }
+  .badge {
+    background: #1e293b;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+  }
+
+  .results { display: flex; flex-direction: column; gap: 12px; }
+
+  .card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .card .qtext {
+    padding: 14px;
+    font-size: 16px;
+    line-height: 1.5;
+    color: #f1f5f9;
+    border-bottom: 1px solid #334155;
+  }
+  .card .qmeta {
+    padding: 8px 14px;
+    background: #0f172a;
+    font-size: 12px;
+    color: #94a3b8;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .card img {
+    display: block;
+    width: 100%;
+    max-height: 70vh;
+    object-fit: contain;
+    background: #fff;
+  }
+  .card .noimg {
+    padding: 20px;
+    text-align: center;
+    color: #f87171;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .card .answers {
+    padding: 12px 14px;
+    background: #0f172a;
+    font-size: 13px;
+  }
+  .card .answers ol { margin: 0; padding: 0 18px; }
+  .card .answers li {
+    padding: 4px 0;
+    color: #cbd5e1;
+  }
+  .card .answers li.correct {
+    color: #4ade80;
+    font-weight: 700;
+  }
+
+  .empty, .loading {
+    text-align: center;
+    padding: 40px 20px;
+    color: #94a3b8;
+  }
+  .empty .icon { font-size: 48px; margin-bottom: 8px; }
+
+  .spinner {
+    display: inline-block;
+    width: 32px;
+    height: 32px;
+    border: 4px solid #334155;
+    border-top-color: #facc15;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .controls {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+  }
+  .controls button {
+    padding: 8px 14px;
+    background: #334155;
+    color: #f1f5f9;
+    border: none;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .controls button.active {
+    background: #facc15;
+    color: #0f172a;
+  }
+  .controls button:hover { background: #475569; }
+  .controls button.active:hover { background: #facc15; }
+
+  .full-image-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    background: #000;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .full-image-overlay.active { display: flex; }
+  .full-image-overlay img { max-width: 100%; max-height: 100%; object-fit: contain; }
+  .full-image-overlay .close-x {
+    position: absolute;
+    top: 14px;
+    inset-inline-end: 14px;
+    width: 44px;
+    height: 44px;
+    background: rgba(255,255,255,0.15);
+    color: #fff;
+    border: none;
+    border-radius: 50%;
+    font-size: 24px;
+    cursor: pointer;
+    font-weight: 700;
+  }
+
+  .lang-pick {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+  }
+  .lang-pick button {
+    padding: 6px 12px;
+    background: #334155;
+    color: #f1f5f9;
+    border: none;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .lang-pick button.active { background: #1a73e8; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🖼️ חיפוש תמונה לבוחן</h1>
+  <p>הקלד כמה מילים מהשאלה שהנבחן מראה לך</p>
+</header>
+
+<main>
+  <div class="search-box">
+    <label for="searchInput">חיפוש לפי טקסט השאלה:</label>
+    <input id="searchInput" type="search" placeholder="לדוגמה: רכב בצומת, תמרור עצור, נסיעה לאחור..." autocomplete="off" autofocus>
+    <div class="hint">מציג עד 8 תוצאות. הקלד לפחות 3 תווים.</div>
+  </div>
+
+  <div class="lang-pick" id="langPick">
+    <button data-lang="he" class="active">עברית</button>
+    <button data-lang="ru">רוסית</button>
+    <button data-lang="ar">ערבית</button>
+    <button data-lang="en">אנגלית</button>
+    <button data-lang="am">אמהרית</button>
+    <button data-lang="fr">צרפתית</button>
+    <button data-lang="es">ספרדית</button>
+  </div>
+
+  <div class="meta" id="meta" style="display:none;">
+    <span class="badge" id="countBadge">0 תוצאות</span>
+    <span class="badge" id="dbStatus">טוען מאגר...</span>
+  </div>
+
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    <p>טוען מאגר שאלות (~9MB, פעם אחת בלבד)...</p>
+  </div>
+
+  <div class="results" id="results"></div>
+
+  <div class="empty" id="empty" style="display:none;">
+    <div class="icon">🔎</div>
+    <p>הקלד טקסט לחיפוש</p>
+  </div>
+</main>
+
+<div class="full-image-overlay" id="fullOverlay" onclick="this.classList.remove('active')">
+  <button class="close-x" onclick="event.stopPropagation();document.getElementById('fullOverlay').classList.remove('active');">✕</button>
+  <img id="fullImg" alt="">
+</div>
+
+<script src="questions.js"></script>
+<script src="questions_ru.js" onerror="this.remove()"></script>
+<script src="questions_ar.js" onerror="this.remove()"></script>
+<script src="questions_en.js" onerror="this.remove()"></script>
+<script src="questions_am.js" onerror="this.remove()"></script>
+<script src="questions_fr.js" onerror="this.remove()"></script>
+<script src="questions_es.js" onerror="this.remove()"></script>
+<script>
+(function() {
+  'use strict';
+
+  var IMAGE_PROXY_BASE = 'https://image-proxy.bohanyzahal.workers.dev';
+
+  function toProxyUrl(originalUrl) {
+    if (!originalUrl) return '';
+    if (!IMAGE_PROXY_BASE) return originalUrl;
+    try {
+      var u = new URL(originalUrl);
+      if (u.hostname !== 'www.gov.il' && u.hostname !== 'gov.il') return originalUrl;
+      return IMAGE_PROXY_BASE.replace(/\/$/, '') + '/img' + u.pathname;
+    } catch(e) { return originalUrl; }
+  }
+
+  // XOR cipher used by the system to obfuscate the correct answer index
+  function decodeCI(stored, id) {
+    if (typeof stored !== 'number' || typeof id !== 'number') return -1;
+    return stored ^ (id % 256);
+  }
+
+  // Translation tables (when the source files load)
+  var TRANSLATIONS = {
+    'he': null,
+    'ru': typeof TRANSLATIONS_RU !== 'undefined' ? TRANSLATIONS_RU : null,
+    'ar': typeof TRANSLATIONS_AR !== 'undefined' ? TRANSLATIONS_AR : null,
+    'en': typeof TRANSLATIONS_EN !== 'undefined' ? TRANSLATIONS_EN : null,
+    'am': typeof TRANSLATIONS_AM !== 'undefined' ? TRANSLATIONS_AM : null,
+    'fr': typeof TRANSLATIONS_FR !== 'undefined' ? TRANSLATIONS_FR : null,
+    'es': typeof TRANSLATIONS_ES !== 'undefined' ? TRANSLATIONS_ES : null
+  };
+
+  var currentLang = 'he';
+
+  function getQuestionInLang(q, lang) {
+    if (lang === 'he' || !TRANSLATIONS[lang]) return { t: q.t, a: q.a, ci: decodeCI(q.ci, q.id) };
+    var tr = TRANSLATIONS[lang][q.id];
+    if (!tr) return null; // not translated
+    return {
+      t: tr.t,
+      a: tr.a,
+      ci: typeof tr.ci !== 'undefined' ? decodeCI(tr.ci, q.id) : decodeCI(q.ci, q.id)
+    };
+  }
+
+  function escHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  function showResults(matches) {
+    var results = document.getElementById('results');
+    var empty = document.getElementById('empty');
+    var meta = document.getElementById('meta');
+    var countBadge = document.getElementById('countBadge');
+
+    results.innerHTML = '';
+    if (matches.length === 0) {
+      empty.style.display = '';
+      empty.querySelector('p').textContent = 'לא נמצאו שאלות תואמות. נסה מילים אחרות.';
+      meta.style.display = 'none';
+      return;
+    }
+
+    empty.style.display = 'none';
+    meta.style.display = '';
+    countBadge.textContent = matches.length + ' תוצאות' + (matches.length >= 8 ? ' (מציג 8 ראשונות)' : '');
+
+    matches.slice(0, 8).forEach(function(q) {
+      var loc = getQuestionInLang(q, currentLang);
+      if (!loc) loc = getQuestionInLang(q, 'he'); // fallback
+
+      var card = document.createElement('div');
+      card.className = 'card';
+
+      // Question text
+      var qtext = document.createElement('div');
+      qtext.className = 'qtext';
+      qtext.textContent = loc.t || '(אין טקסט)';
+      card.appendChild(qtext);
+
+      // Image (or no-image notice)
+      if (q.imageUrl && q.imageUrl.trim() !== '') {
+        var img = document.createElement('img');
+        img.src = toProxyUrl(q.imageUrl);
+        img.alt = 'תמונה לשאלה';
+        img.referrerPolicy = 'no-referrer';
+        img.loading = 'lazy';
+        img.onerror = function() {
+          img.style.display = 'none';
+          var noimg = document.createElement('div');
+          noimg.className = 'noimg';
+          noimg.textContent = '⚠️ התמונה לא נטענה';
+          card.insertBefore(noimg, img);
+        };
+        img.style.cursor = 'zoom-in';
+        img.title = 'לחץ להגדלה';
+        img.addEventListener('click', function() {
+          var overlay = document.getElementById('fullOverlay');
+          document.getElementById('fullImg').src = img.src;
+          overlay.classList.add('active');
+        });
+        card.appendChild(img);
+      } else {
+        var noimg = document.createElement('div');
+        noimg.className = 'noimg';
+        noimg.textContent = '— לשאלה זו אין תמונה —';
+        card.appendChild(noimg);
+      }
+
+      // Meta row
+      var qmeta = document.createElement('div');
+      qmeta.className = 'qmeta';
+      qmeta.innerHTML =
+        '<span>📋 שאלה ' + escHtml(q.id) + '</span>' +
+        (q.lic ? '<span>🪪 ' + escHtml(q.lic) + '</span>' : '') +
+        (q.cat ? '<span>📂 ' + escHtml(q.cat) + '</span>' : '');
+      card.appendChild(qmeta);
+
+      // Answers
+      if (loc.a && loc.a.length) {
+        var ansDiv = document.createElement('div');
+        ansDiv.className = 'answers';
+        var html = '<ol>';
+        loc.a.forEach(function(ans, i) {
+          var cls = (i === loc.ci) ? ' class="correct"' : '';
+          html += '<li' + cls + '>' + escHtml(ans) + (i === loc.ci ? ' ✓' : '') + '</li>';
+        });
+        html += '</ol>';
+        ansDiv.innerHTML = html;
+        card.appendChild(ansDiv);
+      }
+
+      results.appendChild(card);
+    });
+  }
+
+  function search(query) {
+    if (typeof QUESTIONS === 'undefined' || !Array.isArray(QUESTIONS)) {
+      return [];
+    }
+    if (!query || query.length < 3) return [];
+    var q = query.toLowerCase().trim();
+    var words = q.split(/\s+/).filter(function(w) { return w.length >= 2; });
+    if (words.length === 0) return [];
+
+    var matches = [];
+    for (var i = 0; i < QUESTIONS.length; i++) {
+      var loc = getQuestionInLang(QUESTIONS[i], currentLang);
+      if (!loc) continue;
+      var hay = (loc.t || '').toLowerCase() + ' ' + (loc.a || []).join(' ').toLowerCase();
+      var allMatch = true;
+      for (var w = 0; w < words.length; w++) {
+        if (hay.indexOf(words[w]) === -1) { allMatch = false; break; }
+      }
+      if (allMatch) {
+        matches.push(QUESTIONS[i]);
+        if (matches.length > 50) break; // cap
+      }
+    }
+    return matches;
+  }
+
+  // Wait for QUESTIONS to load
+  function checkReady() {
+    if (typeof QUESTIONS !== 'undefined' && Array.isArray(QUESTIONS)) {
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('empty').style.display = '';
+      document.getElementById('meta').style.display = '';
+      document.getElementById('countBadge').textContent = '0 תוצאות';
+      document.getElementById('dbStatus').textContent = QUESTIONS.length.toLocaleString() + ' שאלות במאגר';
+    } else {
+      setTimeout(checkReady, 200);
+    }
+  }
+  checkReady();
+
+  var debounceTimer = null;
+  document.getElementById('searchInput').addEventListener('input', function() {
+    var val = this.value;
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(function() {
+      var matches = search(val);
+      showResults(matches);
+    }, 200);
+  });
+
+  // Language picker
+  document.getElementById('langPick').addEventListener('click', function(e) {
+    if (e.target.tagName !== 'BUTTON') return;
+    var btns = this.querySelectorAll('button');
+    for (var i = 0; i < btns.length; i++) btns[i].classList.remove('active');
+    e.target.classList.add('active');
+    currentLang = e.target.getAttribute('data-lang');
+    // Re-run current search
+    var val = document.getElementById('searchInput').value;
+    if (val.length >= 3) showResults(search(val));
+  });
+
+  // Esc closes overlay
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') document.getElementById('fullOverlay').classList.remove('active');
+  });
+})();
+</script>
+</body>
+</html>
