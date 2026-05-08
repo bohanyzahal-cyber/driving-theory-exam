@@ -455,7 +455,15 @@
 <script>
 (function(){'use strict';
 
+// ===== Copyright notice (console) =====
+try {
+  console.log('%c⚠ הודעת זכויות יוצרים', 'color:#dc2626;font-size:24px;font-weight:bold;background:#fef2f2;padding:6px 12px;border-radius:6px;');
+  console.log('%c© 2026 Vitaly Gitelman (ויטלי גיטלמן). All Rights Reserved.\nמערכת זו וכל קוד המקור שלה מוגנים בזכויות יוצרים.\nהעתקה, שינוי, הפצה או שימוש מסחרי — אסורים ללא רשות בכתב.\nReverse engineering, scraping של ה-API או הפעלת עותק עצמאי — אסורים.\nFor licensing inquiries: contact the copyright holder.', 'color:#7f1d1d;font-size:13px;line-height:1.6;');
+} catch(e){}
+
 var API_URL = 'https://script.google.com/macros/s/AKfycbzOI0zrDEngP-GvlRblhOk8tQsYBvWZ2gGliIQHTpS67WrDZl4la8NPpwtJr_Vjsh3Gzg/exec';
+// Origin tag — required by Apps Script allowlist; must match a value in ALLOWED_ORIGINS server-side.
+var API_ORIGIN = 'teacher-app';
 
 var teacher = null; // { name, id, token }
 var classes = [];
@@ -475,16 +483,19 @@ function showScreen(id) {
 }
 
 function apiGet(params) {
+  if (!params.origin) params.origin = API_ORIGIN;
   var qs = '';
   for (var k in params) qs += '&' + k + '=' + encodeURIComponent(params[k]);
   return fetch(API_URL + '?' + qs.substring(1)).then(function(r) { return r.json(); });
 }
 
 function apiPost(data) {
+  var payload = data || {};
+  if (!payload.origin) payload.origin = API_ORIGIN;
   return fetch(API_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain' },
-    body: JSON.stringify(data)
+    body: JSON.stringify(payload)
   }).then(function(r) { return r.json(); });
 }
 

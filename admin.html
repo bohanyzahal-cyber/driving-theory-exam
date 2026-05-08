@@ -249,7 +249,15 @@
 (function() {
   'use strict';
 
+  // ===== Copyright notice (console) =====
+  try {
+    console.log('%c⚠ הודעת זכויות יוצרים', 'color:#dc2626;font-size:24px;font-weight:bold;background:#fef2f2;padding:6px 12px;border-radius:6px;');
+    console.log('%c© 2026 Vitaly Gitelman (ויטלי גיטלמן). All Rights Reserved.\nמערכת זו וכל קוד המקור שלה מוגנים בזכויות יוצרים.\nהעתקה, שינוי, הפצה או שימוש מסחרי — אסורים ללא רשות בכתב.\nReverse engineering, scraping של ה-API או הפעלת עותק עצמאי — אסורים.\nFor licensing inquiries: contact the copyright holder.', 'color:#7f1d1d;font-size:13px;line-height:1.6;');
+  } catch(e){}
+
   var API_URL = 'https://script.google.com/macros/s/AKfycbzOI0zrDEngP-GvlRblhOk8tQsYBvWZ2gGliIQHTpS67WrDZl4la8NPpwtJr_Vjsh3Gzg/exec';
+  // Origin tag — required by Apps Script allowlist; must match a value in ALLOWED_ORIGINS server-side.
+  var API_ORIGIN = 'admin-app';
 
   var adminData = null;
   var dashboardData = null;
@@ -349,7 +357,7 @@
     btn.disabled = true;
     btn.textContent = 'מתחבר...';
 
-    var body = JSON.stringify({ action: 'teacherLogin', idNumber: idNumber, password: password });
+    var body = JSON.stringify({ action: 'teacherLogin', origin: API_ORIGIN, idNumber: idNumber, password: password });
 
     fetch(API_URL, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: body })
       .then(function(r) { return r.json(); })
@@ -423,6 +431,7 @@
     hide('cmdActions');
 
     var url = API_URL + '?action=adminDashboard'
+      + '&origin=' + encodeURIComponent(API_ORIGIN)
       + '&teacherId=' + encodeURIComponent(adminData.idNumber)
       + '&token=' + encodeURIComponent(adminData.token || '')
       + '&dateFrom=' + encodeURIComponent(dateFrom)

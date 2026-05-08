@@ -508,7 +508,15 @@ var CATEGORY_LABELS={'\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA':'\u05D1\u05D8\u05D9\
 var CATEGORY_CSS={'\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA':{btnClass:'cat-btn-safety',badgeClass:'cat-badge-safety',qClass:'q-cat-safety'},'\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1':{btnClass:'cat-btn-vehicle',badgeClass:'cat-badge-vehicle',qClass:'q-cat-vehicle'},'\u05D7\u05D5\u05E7':{btnClass:'cat-btn-law',badgeClass:'cat-badge-law',qClass:'q-cat-law'},'\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD':{btnClass:'cat-btn-signs',badgeClass:'cat-badge-signs',qClass:'q-cat-signs'},'\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9':{btnClass:'cat-btn-specific',badgeClass:'cat-badge-specific',qClass:'q-cat-specific'}};
 var TRANSLATION_VARS={'en':'TRANSLATIONS_EN','fr':'TRANSLATIONS_FR','ar':'TRANSLATIONS_AR','es':'TRANSLATIONS_ES','am':'TRANSLATIONS_AM'};
 
+// ===== Copyright notice (console) =====
+try {
+  console.log('%c⚠ הודעת זכויות יוצרים', 'color:#dc2626;font-size:24px;font-weight:bold;background:#fef2f2;padding:6px 12px;border-radius:6px;');
+  console.log('%c© 2026 Vitaly Gitelman (ויטלי גיטלמן). All Rights Reserved.\nמערכת זו וכל קוד המקור שלה מוגנים בזכויות יוצרים.\nהעתקה, שינוי, הפצה או שימוש מסחרי — אסורים ללא רשות בכתב.\nReverse engineering, scraping של ה-API או הפעלת עותק עצמאי — אסורים.\nFor licensing inquiries: contact the copyright holder.', 'color:#7f1d1d;font-size:13px;line-height:1.6;');
+} catch(e){}
+
 var API_URL='https://script.google.com/macros/s/AKfycbzOI0zrDEngP-GvlRblhOk8tQsYBvWZ2gGliIQHTpS67WrDZl4la8NPpwtJr_Vjsh3Gzg/exec';
+// Origin tag — required by Apps Script allowlist; must match a value in ALLOWED_ORIGINS server-side.
+var API_ORIGIN='student-app';
 var currentName='',currentLicense='B',currentLanguage='he',currentMode='',currentCategory='';
 var currentClassCode='',currentStudentId='';
 var examQuestions=[],currentIndex=0,userAnswers=[],shuffledOrders=[];
@@ -536,7 +544,7 @@ function joinClass(code,name,studentId,onDone){
   statusEl.style.display='block';
   statusEl.style.color='#64748b';
   statusEl.textContent='מתחבר לכיתה...';
-  fetch(API_URL+'?action=studentJoinClass&classCode='+encodeURIComponent(code)+'&studentName='+encodeURIComponent(name)+'&studentId='+encodeURIComponent(studentId))
+  fetch(API_URL+'?action=studentJoinClass&origin='+encodeURIComponent(API_ORIGIN)+'&classCode='+encodeURIComponent(code)+'&studentName='+encodeURIComponent(name)+'&studentId='+encodeURIComponent(studentId))
   .then(function(r){return r.json();})
   .then(function(d){
     if(d.status==='ok'){
@@ -582,6 +590,7 @@ function joinClass(code,name,studentId,onDone){
 function sendPracticeResult(resultData){
   var body=JSON.stringify({
     action:'submitPracticeResult',
+    origin:API_ORIGIN,
     studentId:currentStudentId,
     studentName:currentName,
     classCode:currentClassCode,
@@ -603,13 +612,13 @@ function sendPracticeResult(resultData){
 function syncProgressToCloud(){
   if(!currentClassCode||!currentName)return;
   try{
-    var body=JSON.stringify({action:'saveStudentProgress',studentName:currentName,classCode:currentClassCode,streak:localStorage.getItem('student_streak')||'{}',wrongQs:localStorage.getItem('student_wrong_qs')||'[]',history:localStorage.getItem('student_history')||'[]'});
+    var body=JSON.stringify({action:'saveStudentProgress',origin:API_ORIGIN,studentName:currentName,classCode:currentClassCode,streak:localStorage.getItem('student_streak')||'{}',wrongQs:localStorage.getItem('student_wrong_qs')||'[]',history:localStorage.getItem('student_history')||'[]'});
     fetch(API_URL,{method:'POST',headers:{'Content-Type':'text/plain'},body:body}).catch(function(){});
   }catch(e){}
 }
 function loadProgressFromCloud(callback){
   if(!currentClassCode||!currentName){if(callback)callback();return;}
-  fetch(API_URL+'?action=loadStudentProgress&studentName='+encodeURIComponent(currentName)+'&classCode='+encodeURIComponent(currentClassCode)).then(function(r){return r.json();}).then(function(d){
+  fetch(API_URL+'?action=loadStudentProgress&origin='+encodeURIComponent(API_ORIGIN)+'&studentName='+encodeURIComponent(currentName)+'&classCode='+encodeURIComponent(currentClassCode)).then(function(r){return r.json();}).then(function(d){
     if(d.status!=="ok"||!d.found){if(callback)callback();return;}
     try{var ls=JSON.parse(localStorage.getItem('student_streak')||'{}');var cs=JSON.parse(d.streak||'{}');if((cs.count||0)>(ls.count||0))localStorage.setItem('student_streak',JSON.stringify(cs));}catch(e){}
     try{var lw=JSON.parse(localStorage.getItem('student_wrong_qs')||'[]');var cw=JSON.parse(d.wrongQs||'[]');var mg={};for(var i=0;i<lw.length;i++)mg[lw[i].id]=lw[i];for(var j=0;j<cw.length;j++){if(!mg[cw[j].id])mg[cw[j].id]=cw[j];else{mg[cw[j].id].wrongCount=Math.max(mg[cw[j].id].wrongCount||1,cw[j].wrongCount||1);mg[cw[j].id].correctStreak=Math.min(mg[cw[j].id].correctStreak||0,cw[j].correctStreak||0);mg[cw[j].id].lastSeen=Math.max(mg[cw[j].id].lastSeen||0,cw[j].lastSeen||0);}}var arr=[];for(var k in mg)arr.push(mg[k]);if(arr.length>200)arr=arr.slice(-200);localStorage.setItem('student_wrong_qs',JSON.stringify(arr));}catch(e){}
