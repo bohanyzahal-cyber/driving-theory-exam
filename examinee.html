@@ -455,9 +455,17 @@
     if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
   })();
 
+  // ========== Copyright notice (console) ==========
+  try {
+    console.log('%c⚠ הודעת זכויות יוצרים', 'color:#dc2626;font-size:24px;font-weight:bold;background:#fef2f2;padding:6px 12px;border-radius:6px;');
+    console.log('%c© 2026 Vitaly Gitelman (ויטלי גיטלמן). All Rights Reserved.\nמערכת זו וכל קוד המקור שלה מוגנים בזכויות יוצרים.\nהעתקה, שינוי, הפצה או שימוש מסחרי — אסורים ללא רשות בכתב.\nReverse engineering, scraping של ה-API או הפעלת עותק עצמאי — אסורים.\nFor licensing inquiries: contact the copyright holder.', 'color:#7f1d1d;font-size:13px;line-height:1.6;');
+  } catch(e){}
+
   // ========== CONFIG ==========
   // *** שנה את ה-URL הזה ל-URL של ה-Apps Script החדש ***
   var API_URL = 'https://script.google.com/macros/s/AKfycbzOI0zrDEngP-GvlRblhOk8tQsYBvWZ2gGliIQHTpS67WrDZl4la8NPpwtJr_Vjsh3Gzg/exec';
+  // Origin tag — required by Apps Script allowlist; must match a value in ALLOWED_ORIGINS server-side.
+  var API_ORIGIN = 'examinee-app';
 
   // Cloudflare Worker that proxies + caches gov.il images. See deployment/image-proxy-worker.js
   // Set to '' to disable proxy and use gov.il directly (fallback).
@@ -965,7 +973,7 @@
 
   // ========== API Helper ==========
   function apiGet(params) {
-    var qs = [];
+    var qs = ['origin=' + encodeURIComponent(API_ORIGIN)];
     for (var k in params) {
       if (params.hasOwnProperty(k)) qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
     }
@@ -983,20 +991,24 @@
   }
 
   function apiPost(data) {
+    var payload = data || {};
+    if (!payload.origin) payload.origin = API_ORIGIN;
     return fetch(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify(data)
+      body: JSON.stringify(payload)
     }).then(function(r) { return r.json(); });
   }
 
   // Fire-and-forget POST (no response needed)
   function apiPostNoWait(data) {
+    var payload = data || {};
+    if (!payload.origin) payload.origin = API_ORIGIN;
     fetch(API_URL, {
       method: 'POST',
       mode: 'no-cors',
       headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify(data)
+      body: JSON.stringify(payload)
     }).catch(function() {});
   }
 
@@ -1523,7 +1535,8 @@
                 action: 'disqualify',
                 sessionCode: sessionCode,
                 idNumber: examineeData.idNumber,
-                dqEventId: currentDQEventId
+                dqEventId: currentDQEventId,
+                origin: API_ORIGIN
               })], { type: 'application/json' }));
             }
           } catch(ex) {}
@@ -1547,7 +1560,8 @@
                 totalQuestions: TOTAL_QUESTIONS,
                 time: getElapsedTimeStr(),
                 population: examineeData.population || '',
-                audioMode: sessionData.audioMode || 'off'
+                audioMode: sessionData.audioMode || 'off',
+                origin: API_ORIGIN
               })], { type: 'application/json' }));
             }
           } catch(ex) {}
@@ -1588,7 +1602,8 @@
       action: 'disqualify',
       sessionCode: sessionCode,
       idNumber: examineeData.idNumber,
-      dqEventId: currentDQEventId
+      dqEventId: currentDQEventId,
+      origin: API_ORIGIN
     };
     var qs = [];
     for (var k in params) {
@@ -1622,7 +1637,8 @@
           action: 'disqualify',
           sessionCode: sessionCode,
           idNumber: examineeData.idNumber,
-          dqEventId: eventId
+          dqEventId: eventId,
+          origin: API_ORIGIN
         });
         navigator.sendBeacon(API_URL, new Blob([beaconData], { type: 'application/json' }));
       }
@@ -1645,13 +1661,14 @@
           action: 'cancelDisqualify',
           sessionCode: sessionCode,
           idNumber: examineeData.idNumber,
-          dqEventId: eid
+          dqEventId: eid,
+          origin: API_ORIGIN
         })], { type: 'application/json' }));
       }
     } catch(ex) {}
     // Also try fetch as backup
     try {
-      var params = 'action=cancelDisqualify&sessionCode=' + encodeURIComponent(sessionCode) + '&idNumber=' + encodeURIComponent(examineeData.idNumber) + '&dqEventId=' + encodeURIComponent(eid);
+      var params = 'action=cancelDisqualify&origin=' + encodeURIComponent(API_ORIGIN) + '&sessionCode=' + encodeURIComponent(sessionCode) + '&idNumber=' + encodeURIComponent(examineeData.idNumber) + '&dqEventId=' + encodeURIComponent(eid);
       fetch(API_URL + '?' + params).catch(function() {});
     } catch(ex) {}
   }

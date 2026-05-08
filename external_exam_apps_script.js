@@ -112,6 +112,34 @@ function requireToken(p) {
   return null;
 }
 
+// ========== Origin allowlist (soft check) ==========
+// Apps Script cannot read HTTP headers, so the client must pass an `origin` parameter.
+// This is bypassable (anyone reading the HTML sees the magic string) but blocks
+// casual API exploration / generic scrapers / curl scripts. Real security comes
+// from token enforcement.
+var ALLOWED_ORIGINS = [
+  'examiner-app',   // examiner.html
+  'examinee-app',   // examinee.html
+  'teacher-app',    // teacher.html
+  'student-app',    // student.html
+  'admin-app',      // admin.html
+  'localhost-dev'   // local development
+];
+function checkOrigin(p) {
+  // Allowed: actions called from external services (none currently) or no origin enforcement on certain reads
+  // For now: reject unknown origins on all actions except 'viewResult' (HTML output, opened in browser tab).
+  var action = p.action || '';
+  if (action === 'viewResult' || action === '') return null;
+  var origin = String(p.origin || '').trim();
+  if (!origin) {
+    return jsonResponse({ status: 'error', message: 'Missing origin', code: 'origin_required' });
+  }
+  if (ALLOWED_ORIGINS.indexOf(origin) === -1) {
+    return jsonResponse({ status: 'error', message: 'Unauthorized origin', code: 'origin_denied' });
+  }
+  return null;
+}
+
 // Verify examiner owns the session (for sensitive actions)
 function verifyExaminerForSession(sessionCode, examinerId) {
   if (!examinerId) return false;
@@ -173,11 +201,24 @@ function doGet(e) {
     var p = e.parameter || {};
     var action = p.action || '';
 
+    // Block sensitive state-mutating actions from GET — must come via POST.
+    // Prevents URL-based forging (URLs leak to logs/history; trivially craftable).
+    // Clients already use POST for these (apiPost / sendBeacon with JSON body).
+    var postOnlyActions = ['submitResult','submitFailOnClose','submitWrongAnswers','uploadResultHtml','registerExamQuestions','saveStudentProgress'];
+    if (postOnlyActions.indexOf(action) !== -1) {
+      return jsonResponse({ status: 'error', message: 'פעולה זו דורשת POST' });
+    }
+
+    // Soft origin check — log unauthorized origins (deterrent, bypassable but raises bar)
+    var originErr = checkOrigin(p);
+    if (originErr) return originErr;
+
     // Actions that require examiner token authentication
     var examinerActions = ['getSites','listSessions','createSession','updateSession','closeSession',
       'approveExaminee','rejectExaminee','examinerDashboard','resetExaminee',
       'correctToPass','overturnDQ','forceComplete','markSent','commanderDashboard'];
     // Note: 'disqualify' is NOT in this list because it can be sent by the examinee client (no token)
+    // — auth is enforced inside handleDisqualify itself (examiner token OR active pending row).
     if (examinerActions.indexOf(action) !== -1) {
       var tokenErr = requireToken(p);
       if (tokenErr) return tokenErr;
@@ -398,6 +439,10 @@ function doPost(e) {
     var raw = e.postData.contents;
     var data = JSON.parse(raw);
     var action = data.action || '';
+
+    // Soft origin check (deters casual scripts; bypassable by reading client source)
+    var originErr = checkOrigin(data);
+    if (originErr) return originErr;
 
     if (action === 'login') {
       return handleLogin(data);
@@ -972,14 +1017,15 @@ function handleExaminerDashboard(p) {
 }
 
 function handleDisqualify(p) {
-  // Verify examiner if provided (examinee-side DQ doesn't send examinerId)
-  if (p.examinerId && !verifyExaminerForSession(p.sessionCode, p.examinerId)) {
-    return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
-  }
-  // ALWAYS remove from ממתינים first (so examinee leaves "active" list)
+  // Auth: two valid paths
+  //   A) Examiner-initiated DQ — must include valid token AND own the session
+  //   B) Self-DQ from examinee client (cheat detection) — pending row must exist with active status
+  // Without one of these, reject. Prevents an attacker with just sessionCode+victim's idNumber
+  // from disqualifying other examinees.
   var pendSheet = getSheet('ממתינים');
   var pendData = pendSheet.getDataRange().getValues();
   var name = '', phone = '', population = '', examineeLicense = '', examineeAudio = 'off';
+  var pendRowIdx = -1, pendStatus = '';
   for (var j = pendData.length - 1; j >= 1; j--) {
     if (String(pendData[j][0]) === String(p.sessionCode) && normalizeId(pendData[j][1]) === normalizeId(p.idNumber)) {
       name = pendData[j][2] || '';
@@ -987,9 +1033,33 @@ function handleDisqualify(p) {
       population = pendData[j][7] || '';
       examineeLicense = pendData[j][8] || '';
       examineeAudio = pendData[j][9] || 'off';
-      pendSheet.getRange(j + 1, 6).setValue('disqualified');
+      pendRowIdx = j;
+      pendStatus = String(pendData[j][5] || '').trim();
       break;
     }
+  }
+
+  if (p.examinerId) {
+    // Path A: examiner-initiated — require valid token + ownership
+    if (!verifyToken(p.examinerId, p.token)) {
+      return jsonResponse({ status: 'error', message: 'טוקן בוחן לא תקין', tokenExpired: true });
+    }
+    if (!verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+      return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
+    }
+  } else {
+    // Path B: self-DQ — pending row must exist in active state (in_exam/approved/disqualified for retry)
+    if (pendRowIdx === -1) {
+      return jsonResponse({ status: 'error', message: 'אין נבחן רשום בסשן זה' });
+    }
+    if (pendStatus !== 'in_exam' && pendStatus !== 'approved' && pendStatus !== 'disqualified') {
+      return jsonResponse({ status: 'error', message: 'מצב לא תקף לפסילה: ' + pendStatus });
+    }
+  }
+
+  // Update pending status to 'disqualified' (only if a row exists)
+  if (pendRowIdx !== -1) {
+    pendSheet.getRange(pendRowIdx + 1, 6).setValue('disqualified');
   }
 
   // Idempotency: if the latest result is already "פסול" with the SAME dqEventId, this is a retry — skip.
