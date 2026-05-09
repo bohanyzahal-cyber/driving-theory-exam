@@ -1446,7 +1446,11 @@
     userAnswers = new Array(TOTAL_QUESTIONS);
     for (var ui = 0; ui < TOTAL_QUESTIONS; ui++) userAnswers[ui] = null;
     shuffledOrders = new Array(TOTAL_QUESTIONS);
-    // Pre-generate all shuffled orders and register with server for score verification
+    // Pre-generate all shuffled orders and register with server for score verification.
+    // The server scores the exam itself using its own answer key — we send the question
+    // id and the shuffle permutation so the server can derive correctShuffledIdx without
+    // trusting our claim. correctShuffledIdx is also included as a backwards-compat
+    // fallback for questions missing from the server-side key.
     var regQuestions = [];
     for (var si = 0; si < TOTAL_QUESTIONS; si++) {
       var sq = activeQuestions[si];
@@ -1455,13 +1459,19 @@
       var sqOrder = shuffle(sqAnswers.map(function(_, idx) { return idx; }));
       var sqShuffledCorrect = sqOrder.indexOf(sqCorrectIdx);
       shuffledOrders[si] = { order: sqOrder, correctIdx: sqShuffledCorrect };
-      regQuestions.push({ qIdx: si, correctShuffledIdx: sqShuffledCorrect });
+      regQuestions.push({
+        qIdx: si,
+        qId: sq.id,
+        shuffleOrder: sqOrder,
+        correctShuffledIdx: sqShuffledCorrect
+      });
     }
     // Register exam questions with server (fire-and-forget)
     apiPostNoWait({
       action: 'registerExamQuestions',
       sessionCode: sessionCode,
       idNumber: examineeData.idNumber,
+      language: examineeData.language || sessionData.language || 'he',
       questions: regQuestions
     });
     timeRemaining = examTimeMinutes * 60;
