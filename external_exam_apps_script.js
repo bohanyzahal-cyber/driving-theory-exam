@@ -1337,12 +1337,25 @@ function handleMarkSent(p) {
 }
 
 function handleRegisterExamQuestions(data) {
-  // Store question map for server-side score verification
-  // data: { sessionCode, idNumber, questions: [{qIdx, correctShuffledIdx}] }
+  // Server-side score verification setup. The client tells us which questions
+  // came up and how each was shuffled — but NOT which answer is correct. The
+  // server looks up the canonical correct index in ANSWER_KEY_BY_LANG and
+  // computes the shuffled-correct index itself, so a tampered client cannot
+  // claim "answer 0 is always correct" and pass without taking the exam.
+  //
+  // Expected payload:
+  //   { sessionCode, idNumber, language?, questions: [{qIdx, qId, shuffleOrder}] }
+  // Where shuffleOrder is an array like [2,0,1,3] meaning:
+  //   "displayed answer A = original answer 2, B = original 0, C = original 1, D = original 3".
+  //
+  // Backward-compat: old clients send {qIdx, correctShuffledIdx} (legacy, trusted).
+  // If we detect the legacy shape, we accept it but mark the registration
+  // as unverified so submitResult flags the result row accordingly.
   if (!data.sessionCode || !data.idNumber || !data.questions) {
     return jsonResponse({ status: 'error', message: 'חסרים נתונים לרישום מבחן' });
   }
-  // Verify examinee is in_exam status
+
+  // Verify examinee is in_exam / approved status
   var pendSheet = getSheet('ממתינים');
   var pendData = pendSheet.getDataRange().getValues();
   var found = false;
@@ -1358,20 +1371,61 @@ function handleRegisterExamQuestions(data) {
   if (!found) {
     return jsonResponse({ status: 'error', message: 'נבחן לא מאושר למבחן' });
   }
-  // Store in מבחנים sheet (create if needed)
+
+  // Build the canonical question map. Each entry stores {qIdx, correctShuffledIdx}
+  // — same shape submitResult already consumes — but the correctShuffledIdx is
+  // computed server-side whenever possible.
+  var lang = String(data.language || 'he').toLowerCase();
+  var canonicalMap = [];
+  var unverifiedCount = 0;
+  var hasAnswerKey = (typeof ANSWER_KEY_BY_LANG !== 'undefined') && (typeof lookupCorrectIndex === 'function');
+
+  for (var qi = 0; qi < data.questions.length; qi++) {
+    var q = data.questions[qi];
+    if (!q) { canonicalMap.push(null); unverifiedCount++; continue; }
+
+    // Modern shape: client sent qId + shuffleOrder → server computes
+    if (hasAnswerKey && q.qId && Array.isArray(q.shuffleOrder)) {
+      var origCorrect = lookupCorrectIndex(Number(q.qId), lang);
+      if (origCorrect === null || origCorrect === undefined) {
+        // Question id missing from answer key → fall back to client's claim if present
+        canonicalMap.push({ qIdx: q.qIdx, correctShuffledIdx: Number(q.correctShuffledIdx || 0) });
+        unverifiedCount++;
+        continue;
+      }
+      var idxInShuffle = q.shuffleOrder.indexOf(Number(origCorrect));
+      if (idxInShuffle < 0) {
+        // shuffleOrder doesn't contain the correct original index → malformed
+        canonicalMap.push({ qIdx: q.qIdx, correctShuffledIdx: Number(q.correctShuffledIdx || 0) });
+        unverifiedCount++;
+        continue;
+      }
+      canonicalMap.push({ qIdx: q.qIdx, correctShuffledIdx: idxInShuffle });
+      continue;
+    }
+
+    // Legacy / fallback: client sent correctShuffledIdx directly → trust but flag
+    canonicalMap.push({ qIdx: q.qIdx, correctShuffledIdx: Number(q.correctShuffledIdx || 0) });
+    unverifiedCount++;
+  }
+
+  // Store in מבחנים sheet (create if needed). Add a fifth column for unverified
+  // count so submitResult can flag results scored from unverified data.
   var examSheet;
   try { examSheet = getSheet('מבחנים'); } catch(e) {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     examSheet = ss.insertSheet('מבחנים');
-    examSheet.appendRow(['קוד סשן', 'ת.ז.', 'שאלות JSON', 'זמן רישום']);
+    examSheet.appendRow(['קוד סשן', 'ת.ז.', 'שאלות JSON', 'זמן רישום', 'שפה', 'שגויות לא מאומתות']);
   }
   examSheet.appendRow([
     String(data.sessionCode),
     normalizeId(data.idNumber),
-    JSON.stringify(data.questions),
-    nowISO()
+    JSON.stringify(canonicalMap),
+    nowISO(),
+    lang,
+    unverifiedCount
   ]);
-  return jsonResponse({ status: 'ok' });
+  return jsonResponse({ status: 'ok', verified: unverifiedCount === 0, unverifiedCount: unverifiedCount });
 }
 
 function handleSubmitResult(data) {
@@ -1396,16 +1450,24 @@ function handleSubmitResult(data) {
     }
   }
 
-  // Server-side score verification: if answers array is present, recalculate score
+  // Server-side score verification: if answers array is present, recalculate
+  // score using the question map registered at exam start. The map's
+  // correctShuffledIdx values are server-computed (from ANSWER_KEY_BY_LANG)
+  // when possible — only fall back to client-claimed values for questions
+  // missing from the answer key, in which case we mark the result unverified.
   if (data.answers && Array.isArray(data.answers)) {
     try {
       var examSheet = getSheet('מבחנים');
       var examData = examSheet.getDataRange().getValues();
       var questionMap = null;
-      // Find the registered exam for this session+ID (latest)
+      var unverifiedCount = 0;
+      // Find the latest registered exam for this session+ID
       for (var ei = examData.length - 1; ei >= 1; ei--) {
         if (String(examData[ei][0]) === String(data.sessionCode) && normalizeId(examData[ei][1]) === normalizeId(data.idNumber)) {
           questionMap = JSON.parse(examData[ei][2]);
+          // Column F (index 5) = unverified-count (added when registerExamQuestions stored this row).
+          // Older rows may not have this column → treat as fully unverified to be safe.
+          unverifiedCount = (examData[ei].length > 5) ? Number(examData[ei][5] || 0) : questionMap.length;
           break;
         }
       }
@@ -1413,7 +1475,7 @@ function handleSubmitResult(data) {
         var correctCount = 0;
         var totalQ = questionMap.length;
         for (var ai = 0; ai < data.answers.length && ai < totalQ; ai++) {
-          if (data.answers[ai] !== null && data.answers[ai] !== undefined) {
+          if (data.answers[ai] !== null && data.answers[ai] !== undefined && questionMap[ai]) {
             var selected = Number(data.answers[ai].selected);
             var correctIdx = Number(questionMap[ai].correctShuffledIdx);
             if (selected === correctIdx) correctCount++;
@@ -1425,7 +1487,9 @@ function handleSubmitResult(data) {
         data.total = totalQ;
         data.percent = pct;
         data.passed = correctCount >= passThreshold;
-        data.verified = true;
+        // verified=true ONLY when every question in the map was scored against
+        // a server-trusted answer key. Any fallback entry → unverified.
+        data.verified = (unverifiedCount === 0);
       }
     } catch(ve) {
       // If verification fails, fall through to client-provided score with flag
