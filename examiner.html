@@ -752,6 +752,13 @@
   function apiPost(data) {
     var payload = data || {};
     if (!payload.origin) payload.origin = API_ORIGIN;
+    // Auto-attach examiner credentials (mirror of apiGet behaviour) so any
+    // POST action that needs server-side auth gets it without each call site
+    // having to remember.
+    if (examinerToken && examinerData && !payload.token && payload.action !== 'login' && payload.action !== 'verifyLogin') {
+      payload.token = examinerToken;
+      if (!payload.examinerId) payload.examinerId = examinerData.id;
+    }
     return fetch(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
