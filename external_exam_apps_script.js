@@ -140,6 +140,62 @@ function checkOrigin(p) {
   return null;
 }
 
+// ========== Rate limiting (Stage 2b) ==========
+// Sliding-window rate limit backed by CacheService. The cache stores a JSON
+// array of recent request timestamps per (action, identifier). On each call we
+// filter to the window, count, and either allow + append, or reject. CacheService
+// auto-evicts entries by TTL — no manual cleanup needed.
+//
+// Trade-off note: Apps Script doesn't expose client IP, so identifiers must come
+// from the request payload (sessionCode, idNumber, examinerId). This means an
+// attacker who varies the identifier can avoid limits — but they'd still need
+// valid creds to be useful, since the data still has to go through token and
+// origin checks. This rate limit primarily defends quotas + same-target floods.
+function checkRateLimit(action, identifier, maxRequests, windowSeconds) {
+  try {
+    var cache = CacheService.getScriptCache();
+    var key = 'rl_' + action + '_' + identifier;
+    var raw = cache.get(key);
+    var now = Date.now();
+    var windowMs = windowSeconds * 1000;
+    var timestamps = [];
+    if (raw) {
+      try { timestamps = JSON.parse(raw) || []; } catch(_e) { timestamps = []; }
+    }
+    // Drop timestamps older than the window
+    var fresh = [];
+    for (var i = 0; i < timestamps.length; i++) {
+      if ((now - timestamps[i]) < windowMs) fresh.push(timestamps[i]);
+    }
+    if (fresh.length >= maxRequests) {
+      var oldest = fresh[0];
+      var waitSec = Math.max(1, Math.ceil((windowMs - (now - oldest)) / 1000));
+      return { ok: false, waitSec: waitSec };
+    }
+    fresh.push(now);
+    cache.put(key, JSON.stringify(fresh), windowSeconds + 60); // TTL slightly over window
+    return { ok: true };
+  } catch (e) {
+    // If the cache is unavailable, fail open — don't break the system.
+    return { ok: true };
+  }
+}
+
+// Convenience wrapper that returns a jsonResponse error on hit, or null on pass.
+function requireRateLimit(action, identifier, maxRequests, windowSeconds) {
+  if (!identifier) return null; // can't enforce without an identifier
+  var result = checkRateLimit(action, identifier, maxRequests, windowSeconds || 60);
+  if (!result.ok) {
+    return jsonResponse({
+      status: 'error',
+      message: 'יותר מדי בקשות. נסה שוב בעוד ' + result.waitSec + ' שניות.',
+      rateLimited: true,
+      waitSec: result.waitSec
+    });
+  }
+  return null;
+}
+
 // ========== Examinee token (Stage 1c) ==========
 // Each examinee receives a random token at registration time. All subsequent
 // examinee-side calls (poll, submit, self-DQ) must echo that token. Prevents
@@ -775,6 +831,10 @@ function handleGetSessionInfo(p) {
 }
 
 function handleRegisterExaminee(p) {
+  // Rate limit: max 30 registrations per minute per session. Prevents an
+  // attacker with the session code from spamming hundreds of fake registrations.
+  var rlErr = requireRateLimit('registerExaminee', String(p.sessionCode || ''), 30, 60);
+  if (rlErr) return rlErr;
   var MAX_PENDING_PER_SESSION = 50;
   var pendSheet = getSheet('ממתינים');
   var data = pendSheet.getDataRange().getValues();
@@ -837,6 +897,10 @@ function handleCancelRegistration(p) {
 }
 
 function handleCheckApproval(p) {
+  // Rate limit: max 60 polls per minute per (sessionCode, idNumber). Normal
+  // polling is ~20-30/min, so this gives 2× headroom while blocking floods.
+  var rlErr = requireRateLimit('checkApproval', String(p.sessionCode || '') + '_' + normalizeId(p.idNumber), 60, 60);
+  if (rlErr) return rlErr;
   var BASE_EXAM_MINUTES = 40;
   var sheet = getSheet('ממתינים');
   var data = sheet.getDataRange().getValues();
@@ -1131,6 +1195,11 @@ function handleDisqualify(p) {
     if (pendStatus !== 'in_exam' && pendStatus !== 'approved' && pendStatus !== 'disqualified') {
       return jsonResponse({ status: 'error', message: 'מצב לא תקף לפסילה: ' + pendStatus });
     }
+    // Rate limit: max 10 self-DQ events per minute per (sessionCode, idNumber).
+    // Anti-cheat can legitimately fire multiple beacons (retries, visibility +
+    // blur racing); 10/min is well above any normal pattern.
+    var dqRlErr = requireRateLimit('disqualify', String(p.sessionCode || '') + '_' + normalizeId(p.idNumber), 10, 60);
+    if (dqRlErr) return dqRlErr;
     var tokenCheck = verifyExamineeToken(p.sessionCode, p.idNumber, p.examineeToken);
     if (!tokenCheck.valid) {
       return jsonResponse({ status: 'error', message: 'טוקן נבחן לא תקין לפסילה עצמית', examineeTokenError: tokenCheck.reason });
@@ -1582,6 +1651,10 @@ function handleRegisterExamQuestions(data) {
 }
 
 function handleSubmitResult(data) {
+  // Rate limit: max 5 submissions per minute per (sessionCode, idNumber).
+  // One legitimate submission + retries on flaky network; floods are blocked.
+  var srRlErr = requireRateLimit('submitResult', String(data.sessionCode || '') + '_' + normalizeId(data.idNumber), 5, 60);
+  if (srRlErr) return srRlErr;
   // Require the examinee token before accepting any result. Legacy rows
   // (no stored token) pass through requireExamineeToken with legacy=true.
   var srTokenErr = requireExamineeToken(data);
