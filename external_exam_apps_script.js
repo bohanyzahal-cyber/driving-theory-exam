@@ -13,7 +13,7 @@ var SHEET_HEADERS = {
   'אתרים': ['שם אתר', 'מזהה', 'טלפון מנהל', 'כיתות'],
   'סשנים': ['קוד', 'בוחן ת.ז.', 'שם בוחן', 'אתר', 'כיתה', 'דרגה', 'שפה', 'מצב שמע', 'זמן יצירה', 'תקף עד', 'פעיל'],
   'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה', 'דרגה', 'שמע', 'הארכת זמן', 'התחלת מבחן', 'טוקן נבחן'],
-  'תוצאות': ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר', 'כיתה', 'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ', 'אוכלוסיה', 'תוקן?', 'שמע', 'מאומת', 'חשוד', 'dqEventId'],
+  'תוצאות': ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר', 'כיתה', 'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ', 'אוכלוסיה', 'תוקן?', 'שמע', 'מאומת', 'חשוד', 'dqEventId', 'תוקן ע"י', 'סיבת תיקון', 'תאריך תיקון'],
   'מורים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד'],
   'כיתות': ['קוד כיתה', 'שם כיתה', 'מורה ת.ז.', 'שם מורה', 'דרגה', 'תאריך יצירה', 'פעיל'],
   'תלמידי כיתות': ['קוד כיתה', 'שם תלמיד', 'מזהה תלמיד', 'תאריך הצטרפות'],
@@ -185,6 +185,19 @@ function requireExamineeToken(p) {
   return null;
 }
 
+// Look up examiner's role ('בוחן' or 'מפקד'). Returns '' if not found.
+function getExaminerRole(examinerId) {
+  if (!examinerId) return '';
+  var sheet = getSheet('בוחנים');
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (normalizeId(data[i][1]) === normalizeId(examinerId)) {
+      return String(data[i][5] || 'בוחן').trim();
+    }
+  }
+  return '';
+}
+
 // Verify examiner owns the session (for sensitive actions)
 function verifyExaminerForSession(sessionCode, examinerId) {
   if (!examinerId) return false;
@@ -249,7 +262,7 @@ function doGet(e) {
     // Block sensitive state-mutating actions from GET — must come via POST.
     // Prevents URL-based forging (URLs leak to logs/history; trivially craftable).
     // Clients already use POST for these (apiPost / sendBeacon with JSON body).
-    var postOnlyActions = ['submitResult','submitFailOnClose','submitWrongAnswers','uploadResultHtml','registerExamQuestions','saveStudentProgress'];
+    var postOnlyActions = ['submitResult','submitFailOnClose','submitWrongAnswers','uploadResultHtml','registerExamQuestions','saveStudentProgress','commanderCorrectResult'];
     if (postOnlyActions.indexOf(action) !== -1) {
       return jsonResponse({ status: 'error', message: 'פעולה זו דורשת POST' });
     }
@@ -261,7 +274,8 @@ function doGet(e) {
     // Actions that require examiner token authentication
     var examinerActions = ['getSites','listSessions','createSession','updateSession','closeSession',
       'approveExaminee','rejectExaminee','examinerDashboard','resetExaminee',
-      'correctToPass','overturnDQ','forceComplete','markSent','commanderDashboard'];
+      'correctToPass','overturnDQ','forceComplete','markSent','commanderDashboard',
+      'commanderCorrectResult'];
     // Note: 'disqualify' is NOT in this list because it can be sent by the examinee client (no token)
     // — auth is enforced inside handleDisqualify itself (examiner token OR active pending row).
     if (examinerActions.indexOf(action) !== -1) {
@@ -513,6 +527,8 @@ function doPost(e) {
       return handleCancelDisqualify(data);
     } else if (action === 'saveStudentProgress') {
       return handleSaveStudentProgress(data);
+    } else if (action === 'commanderCorrectResult') {
+      return handleCommanderCorrectResult(data);
     } else {
       return jsonResponse({ status: 'error', message: 'Unknown POST action: ' + action });
     }
@@ -1378,6 +1394,72 @@ function handleCorrectToPass(p) {
         'תוצאה: *עבר*\n';
       var waLink = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(waMsg);
       sheet.getRange(i + 1, 19).setValue(waLink);    // column S = קישור וואטסאפ
+      SpreadsheetApp.flush();
+      return jsonResponse({ status: 'ok' });
+    }
+  }
+  return jsonResponse({ status: 'error', message: 'תוצאה לא נמצאה' });
+}
+
+// Commander-only result correction. Allows changing score and pass/fail/DQ
+// status on any result row, with a mandatory reason recorded for audit.
+// Caller must have a valid examiner token AND role 'מפקד' in the בוחנים sheet.
+// Required params: sessionCode, idNumber, newScore (e.g. "28"), newTotal (e.g. "30"),
+//                  newStatus ('עבר' | 'נכשל' | 'פסול'), reason (non-empty).
+function handleCommanderCorrectResult(data) {
+  // Token + role check (token already verified by examinerActions allowlist,
+  // but we re-check role here since the role doesn't appear in that allowlist).
+  if (!verifyToken(data.examinerId, data.token)) {
+    return jsonResponse({ status: 'error', message: 'טוקן בוחן לא תקין', tokenExpired: true });
+  }
+  var role = getExaminerRole(data.examinerId);
+  if (role !== 'מפקד') {
+    return jsonResponse({ status: 'error', message: 'פעולה זו זמינה רק למפקדים' });
+  }
+
+  // Validate inputs
+  var reason = String(data.reason || '').trim();
+  if (!reason) {
+    return jsonResponse({ status: 'error', message: 'יש להזין סיבת תיקון' });
+  }
+  var newScore = parseInt(data.newScore, 10);
+  var newTotal = parseInt(data.newTotal, 10);
+  if (isNaN(newScore) || isNaN(newTotal) || newTotal <= 0 || newScore < 0 || newScore > newTotal) {
+    return jsonResponse({ status: 'error', message: 'ציון חדש לא תקין' });
+  }
+  var newStatus = String(data.newStatus || '').trim();
+  if (newStatus !== 'עבר' && newStatus !== 'נכשל' && newStatus !== 'פסול') {
+    return jsonResponse({ status: 'error', message: 'סטטוס חדש לא תקין' });
+  }
+
+  var sheet = getSheet('תוצאות');
+  var rows = sheet.getDataRange().getValues();
+  for (var i = rows.length - 1; i >= 1; i--) {
+    if (String(rows[i][13]) === String(data.sessionCode) && normalizeId(rows[i][1]) === normalizeId(data.idNumber)) {
+      var rowIdx = i + 1;
+      var pct = Math.round((newScore / newTotal) * 100);
+      // Apply updates
+      sheet.getRange(rowIdx, 6).setValue(newScore + '/' + newTotal);  // F: ציון
+      sheet.getRange(rowIdx, 7).setValue(pct + '%');                   // G: אחוז
+      sheet.getRange(rowIdx, 8).setValue(newStatus);                   // H: עבר/נכשל
+      sheet.getRange(rowIdx, 18).setValue(newStatus === 'פסול');       // R: פסול?
+      sheet.getRange(rowIdx, 21).setValue(true);                       // U: תוקן?
+      // Audit trail (columns Z=26, AA=27, AB=28)
+      // Look up commander's display name from בוחנים sheet
+      var commanderName = '';
+      try {
+        var examSheet = getSheet('בוחנים');
+        var examData = examSheet.getDataRange().getValues();
+        for (var x = 1; x < examData.length; x++) {
+          if (normalizeId(examData[x][1]) === normalizeId(data.examinerId)) {
+            commanderName = String(examData[x][0] || '');
+            break;
+          }
+        }
+      } catch(e) {}
+      sheet.getRange(rowIdx, 26).setValue(commanderName + ' (' + normalizeId(data.examinerId) + ')');
+      sheet.getRange(rowIdx, 27).setValue(reason);
+      sheet.getRange(rowIdx, 28).setValue(todayStr());
       SpreadsheetApp.flush();
       return jsonResponse({ status: 'ok' });
     }

@@ -569,6 +569,37 @@
   </div>
 </div>
 
+<!-- Commander result correction modal (visible only to userRole === 'מפקד') -->
+<div class="modal-overlay" id="correctResultModal">
+  <div class="modal-box" style="max-width:440px;">
+    <h3>תיקון תוצאת מבחן</h3>
+    <p class="muted" id="correctResultExamineeInfo" style="margin:4px 0 14px;"></p>
+    <div style="display:grid; gap:14px; margin:14px 0;">
+      <label>ציון (נכון מתוך סה"כ)
+        <div style="display:flex; gap:6px; align-items:center;">
+          <input id="correctResultScore" type="number" min="0" max="999" style="width:80px;" />
+          <span>/</span>
+          <input id="correctResultTotal" type="number" min="1" max="999" style="width:80px;" />
+        </div>
+      </label>
+      <fieldset style="border:1px solid #cbd5e1; border-radius:8px; padding:10px;">
+        <legend style="padding:0 6px; font-size:13px; color:#64748b;">סטטוס</legend>
+        <label style="display:inline-flex; align-items:center; gap:6px; margin-left:14px;"><input type="radio" name="correctStatus" value="עבר"> עבר</label>
+        <label style="display:inline-flex; align-items:center; gap:6px; margin-left:14px;"><input type="radio" name="correctStatus" value="נכשל"> נכשל</label>
+        <label style="display:inline-flex; align-items:center; gap:6px;"><input type="radio" name="correctStatus" value="פסול"> פסול</label>
+      </fieldset>
+      <label>סיבת התיקון <span style="color:#dc2626;">*</span>
+        <textarea id="correctResultReason" rows="3" placeholder="לדוגמה: ועדת ערעור אישרה, טעות בבדיקה..." style="width:100%; padding:8px; border:1px solid #cbd5e1; border-radius:6px; font-family:inherit; resize:vertical;"></textarea>
+      </label>
+      <div id="correctResultError" style="color:#dc2626; font-size:13px; display:none;"></div>
+    </div>
+    <div style="display:flex; gap:8px; justify-content:flex-end;">
+      <button style="background:#64748b;" onclick="closeCorrectResultModal()">ביטול</button>
+      <button onclick="submitCorrectResult()" style="background:#dc2626;">תקן תוצאה</button>
+    </div>
+  </div>
+</div>
+
 <!-- Share dialog -->
 <div id="shareDialog" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:400;align-items:center;justify-content:center;">
   <div style="background:white;border-radius:16px;padding:24px;max-width:420px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,0.2);text-align:center;">
@@ -1448,6 +1479,7 @@
           '<button class="wa-btn" style="background:#64748b;margin-left:3px;" onclick="editPhone(' + i + ')" title="\u05E2\u05E8\u05D5\u05DA \u05D8\u05DC\u05E4\u05D5\u05DF">\u270E</button>' +
           (!isDQ ? ' <button class="btn-disqualify" onclick="disqualifyResult(' + i + ')" title="\u05E4\u05E1\u05D5\u05DC \u05E0\u05D1\u05D7\u05DF">\u26D4</button>' : ' <button style="background:#16a34a;color:white;padding:4px 8px;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;margin-left:3px;" onclick="overturnDQ(' + i + ')" title="\u05D1\u05D9\u05D8\u05D5\u05DC \u05E4\u05E1\u05D9\u05DC\u05D4">\u21A9 \u05D1\u05D8\u05DC</button> <button style="background:#dc2626;color:white;padding:4px 8px;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;margin-left:3px;" onclick="confirmDQ(' + i + ')" title="\u05D0\u05D9\u05E9\u05D5\u05E8 \u05E4\u05E1\u05D9\u05DC\u05D4">\u2714 \u05D0\u05E9\u05E8</button>') +
           (canCorrect ? ' <button style="background:#f59e0b;color:white;padding:4px 8px;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;margin-left:3px;" onclick="correctToPass(' + i + ')" title="\u05EA\u05E7\u05DF \u05DC\u05E2\u05D5\u05D1\u05E8">\u05EA\u05E7\u05DF</button>' : '') +
+          (userRole === 'מפקד' ? ' <button style="background:#7c2d12;color:white;padding:4px 8px;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;margin-left:3px;" onclick="openCorrectResultModal(' + i + ')" title="תקן תוצאה (מפקד)">✎ תקן</button>' : '') +
         '</td></tr>';
     }
     html += '</tbody></table></div>';
@@ -1522,6 +1554,80 @@
     var savedCount = prevCompletedCount;
     updateCompletedList(completedResults);
     prevCompletedCount = savedCount; // Prevent notification sound on re-render
+  };
+
+  // ========== Commander result correction ==========
+  // Stores the index of the row currently being edited so submitCorrectResult
+  // can read it back without trusting DOM state.
+  var correctResultEditingIdx = -1;
+
+  window.openCorrectResultModal = function(idx) {
+    if (userRole !== 'מפקד') return;
+    var r = completedResults[idx];
+    if (!r) return;
+    correctResultEditingIdx = idx;
+    // Pre-fill with the current values so the commander only changes what they need.
+    var scoreParts = String(r.score || '').split('/');
+    var curCorrect = parseInt(scoreParts[0]) || 0;
+    var curTotal = parseInt(scoreParts[1]) || 30;
+    document.getElementById('correctResultScore').value = curCorrect;
+    document.getElementById('correctResultTotal').value = curTotal;
+    var curStatus = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === 'פסול'
+      ? 'פסול'
+      : (r.passed === 'עבר' ? 'עבר' : 'נכשל');
+    var radios = document.querySelectorAll('input[name="correctStatus"]');
+    for (var ri = 0; ri < radios.length; ri++) radios[ri].checked = (radios[ri].value === curStatus);
+    document.getElementById('correctResultReason').value = '';
+    document.getElementById('correctResultError').style.display = 'none';
+    document.getElementById('correctResultExamineeInfo').textContent =
+      r.name + '  |  ת.ז. ' + r.idNumber + '  |  ' + (r.score || '') + '  |  ' + curStatus;
+    document.getElementById('correctResultModal').classList.add('show');
+  };
+
+  window.closeCorrectResultModal = function() {
+    document.getElementById('correctResultModal').classList.remove('show');
+    correctResultEditingIdx = -1;
+  };
+
+  window.submitCorrectResult = function() {
+    var errEl = document.getElementById('correctResultError');
+    errEl.style.display = 'none';
+    if (correctResultEditingIdx < 0) { errEl.textContent = 'אין שורה נבחרת'; errEl.style.display = 'block'; return; }
+    var r = completedResults[correctResultEditingIdx];
+    if (!r) { errEl.textContent = 'תוצאה לא נמצאה'; errEl.style.display = 'block'; return; }
+
+    var newScore = parseInt(document.getElementById('correctResultScore').value, 10);
+    var newTotal = parseInt(document.getElementById('correctResultTotal').value, 10);
+    if (isNaN(newScore) || isNaN(newTotal) || newTotal <= 0 || newScore < 0 || newScore > newTotal) {
+      errEl.textContent = 'ציון לא תקין'; errEl.style.display = 'block'; return;
+    }
+    var statusEl = document.querySelector('input[name="correctStatus"]:checked');
+    if (!statusEl) { errEl.textContent = 'יש לבחור סטטוס'; errEl.style.display = 'block'; return; }
+    var newStatus = statusEl.value;
+    var reason = document.getElementById('correctResultReason').value.trim();
+    if (!reason) { errEl.textContent = 'יש להזין סיבת תיקון'; errEl.style.display = 'block'; return; }
+
+    apiPost({
+      action: 'commanderCorrectResult',
+      sessionCode: r.sessionCode || sessionCode,
+      idNumber: r.idNumber,
+      newScore: newScore,
+      newTotal: newTotal,
+      newStatus: newStatus,
+      reason: reason
+    }).then(function(data) {
+      if (data.status === 'ok') {
+        closeCorrectResultModal();
+        // Force immediate refresh so the corrected row appears with new values
+        if (typeof pollDashboard === 'function') pollDashboard();
+      } else {
+        errEl.textContent = data.message || 'שגיאה בתיקון';
+        errEl.style.display = 'block';
+      }
+    }).catch(function(err) {
+      errEl.textContent = 'שגיאת תקשורת: ' + err;
+      errEl.style.display = 'block';
+    });
   };
 
   // ========== Formatting helpers ==========
