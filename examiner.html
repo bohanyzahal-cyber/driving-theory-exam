@@ -453,8 +453,7 @@
       </div>
       <div class="bulk-actions" id="bulkActions" style="display:none;">
         <button class="wa-btn" style="padding:8px 16px; font-size:14px;" onclick="sendBulkToManager()">שלח סיכום למנהל אתר</button>
-        <!-- HIDDEN (pending approval): bulk send to all examinees. To restore, remove the style="display:none;" -->
-        <button class="wa-btn" style="display:none; padding:8px 16px; font-size:14px; background:#1a73e8;" onclick="sendToAllExaminees()">שלח לכל הנבחנים</button>
+        <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#1a73e8;" onclick="sendToAllExaminees()">📱 שלח WhatsApp לכל הנבחנים</button>
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#1a5276;" onclick="generateExaminerReport()">&#x1f4cb; דו"ח בוחן</button>
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#0e4a6e;" onclick="generateSiteManagerReport()">&#x1f4ca; דו"ח מנהל אתר</button>
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#7c3aed;" onclick="shareSiteManagerReport()">&#x1f4e4; שתף דו"ח למנהל</button>
@@ -565,6 +564,41 @@
     <div style="display:flex; gap:8px; justify-content:flex-end;">
       <button style="background:#64748b;" onclick="closeSettingsModal()">ביטול</button>
       <button onclick="saveSettings()">שמור</button>
+    </div>
+  </div>
+</div>
+
+<!-- Bulk WhatsApp send queue modal -->
+<div class="modal-overlay" id="bulkSendModal">
+  <div class="modal-box" style="max-width:500px;">
+    <h3>שליחת WhatsApp לנבחנים</h3>
+    <p class="muted" style="margin:4px 0 10px; font-size:13px;">לחץ "פתח WhatsApp" → לחץ Send בחלון WhatsApp → חזור לכאן ולחץ "הבא"</p>
+
+    <div style="display:flex; justify-content:space-between; align-items:center; margin:10px 0;">
+      <div style="font-size:16px; font-weight:700;" id="bulkSendCounter">0 / 0</div>
+      <div style="font-size:13px; color:#64748b;">
+        <span style="color:#16a34a;">נשלחו: <span id="bulkSendSentCount">0</span></span> ·
+        <span style="color:#94a3b8;">דולגו: <span id="bulkSendSkippedCount">0</span></span>
+      </div>
+    </div>
+
+    <div style="background:#e2e8f0; border-radius:6px; height:6px; overflow:hidden; margin-bottom:14px;">
+      <div id="bulkSendProgress" style="background:#1a73e8; height:100%; width:0%; transition:width 0.2s;"></div>
+    </div>
+
+    <div id="bulkSendCurrentInfo" style="background:#f1f5f9; padding:14px; border-radius:8px; margin-bottom:10px;">
+      <!-- Populated by bulkSendShowCurrent() -->
+    </div>
+
+    <details style="margin-bottom:14px;">
+      <summary style="cursor:pointer; font-size:13px; color:#64748b;">תצוגה מקדימה של ההודעה</summary>
+      <div id="bulkSendMessagePreview" style="background:#fefce8; padding:10px; border-radius:8px; font-size:13px; color:#475569; margin-top:6px; white-space:pre-wrap; direction:rtl;"></div>
+    </details>
+
+    <div style="display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap;">
+      <button onclick="bulkSendStop()" style="background:#dc2626;">סיום</button>
+      <button onclick="bulkSendSkip()" style="background:#64748b;">דלג</button>
+      <button onclick="bulkSendNext()" id="bulkSendNextBtn" style="background:#22c55e;">📱 פתח WhatsApp + הבא</button>
     </div>
   </div>
 </div>
@@ -2391,9 +2425,126 @@
     window.open('https://wa.me/' + phone + '?text=' + encodeURIComponent(msg), '_blank');
   };
 
+  // ========== Bulk WhatsApp send queue ==========
+  // Sequential workflow: open WA tab for each non-sent examinee, mark as sent,
+  // advance. Uses the examiner's logged-in WhatsApp Web — free, but each
+  // message still requires the examiner to click Send in the WA tab.
+  var bulkSendState = null; // { queue: [resultIdx,...], pos, sent, skipped }
+
   window.sendToAllExaminees = function() {
-    alert('\u05DC\u05D7\u05E5 \u05E2\u05DC \u05DB\u05E4\u05EA\u05D5\u05E8 WA \u05DC\u05D9\u05D3 \u05DB\u05DC \u05E0\u05D1\u05D7\u05DF \u05D1\u05D8\u05D1\u05DC\u05D4. \u05E9\u05DE\u05D5\u05E8 \u05E7\u05D5\u05D3\u05DD PDF \u05D5\u05E6\u05E8\u05E3 \u05DC\u05D5\u05D5\u05D0\u05D8\u05E1\u05D0\u05E4.');
+    if (!completedResults || completedResults.length === 0) {
+      alert('אין תוצאות לשליחה'); return;
+    }
+    var queue = [];
+    var alreadySentCount = 0;
+    var noPhoneCount = 0;
+    for (var i = 0; i < completedResults.length; i++) {
+      var r = completedResults[i];
+      var already = r.sent === true || r.sent === 'TRUE';
+      if (already) { alreadySentCount++; continue; }
+      var phoneDigits = String(r.phone || '').replace(/[^0-9]/g, '');
+      if (!phoneDigits || phoneDigits.length < 9) { noPhoneCount++; continue; }
+      queue.push(i);
+    }
+    if (queue.length === 0) {
+      alert('אין נבחנים לשליחה.\nכבר נשלחו: ' + alreadySentCount + '\nללא טלפון: ' + noPhoneCount);
+      return;
+    }
+    var msg = 'תור שליחה הוכן: ' + queue.length + ' נבחנים';
+    if (alreadySentCount > 0) msg += '\n(' + alreadySentCount + ' כבר סומנו כנשלחו ויידלגו)';
+    if (noPhoneCount > 0) msg += '\n(' + noPhoneCount + ' ללא טלפון תקין — לא נכללו)';
+    msg += '\n\nלהתחיל?';
+    if (!confirm(msg)) return;
+
+    bulkSendState = { queue: queue, pos: 0, sent: 0, skipped: 0 };
+    document.getElementById('bulkSendModal').classList.add('show');
+    bulkSendShowCurrent();
   };
+
+  function bulkSendBuildMessage(r) {
+    var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === 'פסול';
+    var isPassed = !isDQ && (r.passed === 'עבר' || r.passed === true);
+    var isCorrected = r.corrected === true || r.corrected === 'TRUE';
+    var passText = isDQ ? 'פסול' : (isPassed ? 'עבר' : 'נכשל');
+    var scoreSuffix = isCorrected ? '' : ' (' + (r.score || '') + ')';
+    return 'שלום ' + r.name + ', תוצאת המבחן: ' + passText + scoreSuffix;
+  }
+
+  function bulkSendShowCurrent() {
+    if (!bulkSendState) return;
+    var state = bulkSendState;
+    var total = state.queue.length;
+    var pos = state.pos;
+    document.getElementById('bulkSendCounter').textContent = Math.min(pos + 1, total) + ' / ' + total;
+    document.getElementById('bulkSendSentCount').textContent = state.sent;
+    document.getElementById('bulkSendSkippedCount').textContent = state.skipped;
+    var progPct = total > 0 ? Math.round((pos / total) * 100) : 0;
+    document.getElementById('bulkSendProgress').style.width = progPct + '%';
+
+    if (pos >= total) { bulkSendFinish(); return; }
+    var r = completedResults[state.queue[pos]];
+    if (!r) { state.pos++; bulkSendShowCurrent(); return; }
+    var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === 'פסול';
+    var isPassed = !isDQ && (r.passed === 'עבר' || r.passed === true);
+    var statusBadge = isDQ ? '<span class="badge-disqualified">פסול</span>'
+                            : (isPassed ? '<span class="badge-pass">עבר</span>' : '<span class="badge-fail">נכשל</span>');
+    var info = '<div style="display:grid; grid-template-columns:auto 1fr; gap:6px 12px; font-size:14px;">' +
+      '<div style="color:#64748b;">שם:</div><div style="font-weight:700;">' + escHtml(r.name || '') + '</div>' +
+      '<div style="color:#64748b;">ת.ז.:</div><div>' + escHtml(String(r.idNumber || '')) + '</div>' +
+      '<div style="color:#64748b;">טלפון:</div><div dir="ltr">' + escHtml(r.phone || '') + '</div>' +
+      '<div style="color:#64748b;">ציון:</div><div>' + escHtml(r.score || '') + '</div>' +
+      '<div style="color:#64748b;">תוצאה:</div><div>' + statusBadge + '</div>' +
+      '</div>';
+    document.getElementById('bulkSendCurrentInfo').innerHTML = info;
+    document.getElementById('bulkSendMessagePreview').textContent = bulkSendBuildMessage(r);
+  }
+
+  window.bulkSendNext = function() {
+    if (!bulkSendState) return;
+    var state = bulkSendState;
+    if (state.pos >= state.queue.length) { bulkSendFinish(); return; }
+    var r = completedResults[state.queue[state.pos]];
+    if (!r) { state.pos++; bulkSendShowCurrent(); return; }
+
+    var phone = formatPhone(r.phone);
+    var msg = bulkSendBuildMessage(r);
+    if (phone) {
+      var waUrl = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(msg);
+      window.open(waUrl, '_blank');
+    }
+
+    // Mark as sent on server (fire-and-forget) and locally
+    apiGet({ action: 'markSent', sessionCode: r.sessionCode || sessionCode, idNumber: r.idNumber });
+    r.sent = true;
+    state.sent++;
+    state.pos++;
+    bulkSendShowCurrent();
+  };
+
+  window.bulkSendSkip = function() {
+    if (!bulkSendState) return;
+    bulkSendState.skipped++;
+    bulkSendState.pos++;
+    bulkSendShowCurrent();
+  };
+
+  window.bulkSendStop = function() {
+    if (bulkSendState && bulkSendState.pos < bulkSendState.queue.length) {
+      var remaining = bulkSendState.queue.length - bulkSendState.pos;
+      if (!confirm('להפסיק את התור? נשארו ' + remaining + ' נבחנים שלא נשלחו.')) return;
+    }
+    document.getElementById('bulkSendModal').classList.remove('show');
+    bulkSendState = null;
+  };
+
+  function bulkSendFinish() {
+    var state = bulkSendState;
+    var summary = 'הסתיים.\nנשלחו: ' + state.sent + '\nדולגו: ' + state.skipped;
+    document.getElementById('bulkSendModal').classList.remove('show');
+    bulkSendState = null;
+    alert(summary);
+    if (typeof pollDashboard === 'function') pollDashboard();
+  }
 
   // ========== Examiner Report (דו"ח בוחן) ==========
   window.generateExaminerReport = function() {
