@@ -590,15 +590,18 @@
       <!-- Populated by bulkSendShowCurrent() -->
     </div>
 
-    <details style="margin-bottom:14px;">
-      <summary style="cursor:pointer; font-size:13px; color:#64748b;">תצוגה מקדימה של ההודעה</summary>
-      <div id="bulkSendMessagePreview" style="background:#fefce8; padding:10px; border-radius:8px; font-size:13px; color:#475569; margin-top:6px; white-space:pre-wrap; direction:rtl;"></div>
-    </details>
+    <label style="display:block; font-size:13px; color:#64748b; margin-bottom:4px;">הודעה לשליחה (ניתן לערוך):</label>
+    <textarea id="bulkSendMessageEdit" rows="3" style="width:100%; padding:8px; border:1px solid #cbd5e1; border-radius:6px; font-family:inherit; font-size:13px; resize:vertical; direction:rtl; background:#fefce8; margin-bottom:14px;"></textarea>
 
-    <div style="display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap;">
-      <button onclick="bulkSendStop()" style="background:#dc2626;">סיום</button>
-      <button onclick="bulkSendSkip()" style="background:#64748b;">דלג</button>
-      <button onclick="bulkSendNext()" id="bulkSendNextBtn" style="background:#22c55e;">📱 פתח WhatsApp + הבא</button>
+    <div style="display:flex; gap:8px; justify-content:space-between; flex-wrap:wrap;">
+      <div style="display:flex; gap:6px;">
+        <button onclick="bulkSendStop()" style="background:#dc2626;">סיום</button>
+        <button onclick="bulkSendBack()" id="bulkSendBackBtn" style="background:#94a3b8;">⏮ הקודם</button>
+      </div>
+      <div style="display:flex; gap:6px;">
+        <button onclick="bulkSendSkip()" style="background:#64748b;">דלג</button>
+        <button onclick="bulkSendNext()" id="bulkSendNextBtn" style="background:#22c55e;">📱 פתח WhatsApp + הבא</button>
+      </div>
     </div>
   </div>
 </div>
@@ -2496,7 +2499,11 @@
       '<div style="color:#64748b;">תוצאה:</div><div>' + statusBadge + '</div>' +
       '</div>';
     document.getElementById('bulkSendCurrentInfo').innerHTML = info;
-    document.getElementById('bulkSendMessagePreview').textContent = bulkSendBuildMessage(r);
+    // Populate editable message textarea with the default. User can tweak per recipient.
+    document.getElementById('bulkSendMessageEdit').value = bulkSendBuildMessage(r);
+    // Disable "back" at the start of the queue
+    var backBtn = document.getElementById('bulkSendBackBtn');
+    if (backBtn) { backBtn.disabled = (pos === 0); backBtn.style.opacity = pos === 0 ? '0.5' : '1'; }
   }
 
   window.bulkSendNext = function() {
@@ -2507,24 +2514,40 @@
     if (!r) { state.pos++; bulkSendShowCurrent(); return; }
 
     var phone = formatPhone(r.phone);
-    var msg = bulkSendBuildMessage(r);
+    // Read the (possibly edited) message from the textarea instead of regenerating —
+    // lets the commander tweak the wording per recipient before opening WA.
+    var msgEl = document.getElementById('bulkSendMessageEdit');
+    var msg = (msgEl && msgEl.value) ? msgEl.value : bulkSendBuildMessage(r);
     if (phone) {
       var waUrl = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(msg);
       window.open(waUrl, '_blank');
     }
 
-    // Mark as sent on server (fire-and-forget) and locally
-    apiGet({ action: 'markSent', sessionCode: r.sessionCode || sessionCode, idNumber: r.idNumber });
-    r.sent = true;
-    state.sent++;
+    // Mark as sent on server (fire-and-forget) and locally — only if this row
+    // wasn't already counted as sent (re-visiting via "back" shouldn't double-count).
+    if (!r.sent) {
+      apiGet({ action: 'markSent', sessionCode: r.sessionCode || sessionCode, idNumber: r.idNumber });
+      r.sent = true;
+      state.sent++;
+    }
     state.pos++;
     bulkSendShowCurrent();
   };
 
   window.bulkSendSkip = function() {
     if (!bulkSendState) return;
-    bulkSendState.skipped++;
+    // Only count as a new skip if this row hasn't already been marked sent —
+    // re-visiting an already-sent row and clicking skip shouldn't inflate counters.
+    var r = completedResults[bulkSendState.queue[bulkSendState.pos]];
+    if (r && !r.sent) bulkSendState.skipped++;
     bulkSendState.pos++;
+    bulkSendShowCurrent();
+  };
+
+  window.bulkSendBack = function() {
+    if (!bulkSendState) return;
+    if (bulkSendState.pos === 0) return;
+    bulkSendState.pos--;
     bulkSendShowCurrent();
   };
 
