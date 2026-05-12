@@ -435,6 +435,13 @@
       <div class="section-header">
         <h3>תוצאות</h3>
       </div>
+      <div id="resultsSearchBar" style="display:none; padding:0 0 12px 0;">
+        <div style="position:relative; display:flex; align-items:center;">
+          <input id="resultsSearch" type="search" autocomplete="off" placeholder="חיפוש לפי שם או ת.ז...." style="width:100%; padding:9px 36px 9px 12px; border:1px solid #cbd5e1; border-radius:8px; font-size:15px; font-family:inherit; direction:rtl;" />
+          <button id="resultsSearchClear" type="button" title="נקה" style="position:absolute; left:6px; top:50%; transform:translateY(-50%); background:transparent; border:none; cursor:pointer; font-size:18px; color:#94a3b8; padding:4px 8px; display:none;">&times;</button>
+        </div>
+        <div id="resultsSearchCount" style="display:none; font-size:13px; color:#64748b; margin-top:6px;"></div>
+      </div>
       <div id="resultsArea">
         <p class="muted" style="text-align:center; padding:20px;">אין תוצאות עדיין</p>
       </div>
@@ -1341,6 +1348,9 @@
   }
 
   // ========== Completed list ==========
+  // Filter state lives outside updateCompletedList so polling re-renders preserve it.
+  var resultsSearchTerm = '';
+
   function updateCompletedList(completed) {
     var area = document.getElementById('resultsArea');
 
@@ -1361,26 +1371,45 @@
       area.innerHTML = '<p class="muted" style="text-align:center; padding:20px;">אין תוצאות עדיין</p>';
       document.getElementById('statsBar').style.display = 'none';
       document.getElementById('bulkActions').style.display = 'none';
+      document.getElementById('resultsSearchBar').style.display = 'none';
       return;
     }
+    document.getElementById('resultsSearchBar').style.display = 'block';
 
     var html = '<div style="overflow-x:auto;"><table class="results-table"><thead><tr>' +
       '<th>#</th><th>שם</th><th>ת.ז.</th><th>אוכלוסיה</th><th>ניסיון</th><th>ציון</th><th>תוצאה</th><th>זמן</th><th>פעולות</th>' +
       '</tr></thead><tbody>';
 
+    // First pass: tally global stats (independent of filter so user always sees the full picture).
     var passCount = 0, failCount = 0, dqCount = 0;
+    for (var si = 0; si < completed.length; si++) {
+      var sr = completed[si];
+      var sIsDQ = sr.disqualified === true || sr.disqualified === 'TRUE' || sr.passed === 'פסול';
+      var sIsPassed = !sIsDQ && (sr.passed === 'עבר' || sr.passed === true);
+      if (sIsDQ) dqCount++;
+      else if (sIsPassed) passCount++;
+      else failCount++;
+    }
+
+    // Second pass: render only rows that match the search filter.
+    // Match against full idNumber (9 digits) so typing the ID off a paper form
+    // works, and against the displayed name (substring, case-insensitive).
+    var q = (resultsSearchTerm || '').trim().toLowerCase();
+    var visibleCount = 0;
     for (var i = 0; i < completed.length; i++) {
       var r = completed[i];
+      if (q) {
+        var nameLc = String(r.name || '').toLowerCase();
+        var idLc = String(r.idNumber || '').toLowerCase();
+        if (nameLc.indexOf(q) === -1 && idLc.indexOf(q) === -1) continue;
+      }
+      visibleCount++;
       var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === 'פסול';
       var isPassed = !isDQ && (r.passed === 'עבר' || r.passed === true);
       var isCorrected = r.corrected === true || r.corrected === 'TRUE';
       var badgeClass = isDQ ? 'badge-disqualified' : (isPassed ? 'badge-pass' : 'badge-fail');
       var badgeText = isDQ ? 'פסול' : (isPassed ? (isCorrected ? 'עבר \u270E' : 'עבר') : 'נכשל');
       var id4 = String(r.idNumber).slice(-4);
-
-      if (isDQ) dqCount++;
-      else if (isPassed) passCount++;
-      else failCount++;
 
       // Score correction is currently DISABLED — pending approval to re-enable.
       // To restore: remove the next line and uncomment the block below.
@@ -1402,7 +1431,7 @@
       var smsUrl = phone ? ('sms:+' + phone + '?body=' + encodeURIComponent(shortMsg)) : '#';
 
       html += '<tr>' +
-        '<td>' + (i + 1) + '</td>' +
+        '<td>' + visibleCount + '</td>' +
         '<td>' + escHtml(r.name) + '</td>' +
         '<td>....' + id4 + '</td>' +
         '<td>' + escHtml(r.population || '') + '</td>' +
@@ -1422,7 +1451,22 @@
         '</td></tr>';
     }
     html += '</tbody></table></div>';
-    area.innerHTML = html;
+    if (q && visibleCount === 0) {
+      area.innerHTML = '<p class="muted" style="text-align:center; padding:20px;">אין תוצאות תואמות לחיפוש</p>';
+    } else {
+      area.innerHTML = html;
+    }
+
+    // Update the "showing N of M" indicator below the search box
+    var countEl = document.getElementById('resultsSearchCount');
+    if (countEl) {
+      if (q) {
+        countEl.textContent = 'מציג ' + visibleCount + ' מתוך ' + completed.length;
+        countEl.style.display = 'block';
+      } else {
+        countEl.style.display = 'none';
+      }
+    }
 
     // Stats (DQ counts as failed)
     var total = completed.length;
@@ -1434,6 +1478,35 @@
     document.getElementById('statsBar').style.display = 'flex';
     document.getElementById('bulkActions').style.display = 'flex';
   }
+
+  // Wire up the results search box. Re-rendering only touches resultsArea, so
+  // the input keeps focus and cursor position across polling cycles.
+  (function() {
+    var searchInput = document.getElementById('resultsSearch');
+    var clearBtn = document.getElementById('resultsSearchClear');
+    if (!searchInput || !clearBtn) return;
+    searchInput.addEventListener('input', function() {
+      resultsSearchTerm = searchInput.value;
+      clearBtn.style.display = resultsSearchTerm ? 'block' : 'none';
+      if (completedResults && completedResults.length) {
+        // Re-render with current data; suppress notification by preserving prevCompletedCount.
+        var savedPrev = prevCompletedCount;
+        updateCompletedList(completedResults);
+        prevCompletedCount = savedPrev;
+      }
+    });
+    clearBtn.addEventListener('click', function() {
+      searchInput.value = '';
+      resultsSearchTerm = '';
+      clearBtn.style.display = 'none';
+      if (completedResults && completedResults.length) {
+        var savedPrev2 = prevCompletedCount;
+        updateCompletedList(completedResults);
+        prevCompletedCount = savedPrev2;
+      }
+      searchInput.focus();
+    });
+  })();
 
   // ========== Edit examinee phone ==========
   window.editPhone = function(idx) {
