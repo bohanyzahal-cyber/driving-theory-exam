@@ -2464,13 +2464,56 @@
     bulkSendShowCurrent();
   };
 
-  function bulkSendBuildMessage(r) {
+  // Build the WhatsApp message for an examinee. If `link` is provided, uses the
+  // shared shareMsg template (which includes a {link} slot). If `link` is omitted,
+  // returns a placeholder so the textarea shows something while the upload runs.
+  function bulkSendBuildMessage(r, link) {
     var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === 'פסול';
     var isPassed = !isDQ && (r.passed === 'עבר' || r.passed === true);
     var isCorrected = r.corrected === true || r.corrected === 'TRUE';
-    var passText = isDQ ? 'פסול' : (isPassed ? 'עבר' : 'נכשל');
-    var scoreSuffix = isCorrected ? '' : ' (' + (r.score || '') + ')';
-    return 'שלום ' + r.name + ', תוצאת המבחן: ' + passText + scoreSuffix;
+    var shareLang = r.language || 'he';
+    var passKey = isDQ ? 'disqualified' : (isPassed ? 'passed' : 'failed');
+    var passTextHe = isDQ ? 'פסול' : (isPassed ? 'עבר' : 'נכשל');
+    var passText = (shareLang === 'he') ? passTextHe : (getPdfString(passKey, shareLang) + ' (' + passTextHe + ')');
+    var resultWithScore = passText + (isCorrected ? '' : ' (' + (r.score || '') + ')');
+    if (!link) {
+      // No link yet — return a version with a placeholder so the textarea shows something.
+      return getPdfString('shareMsg', shareLang)
+        .replace('{name}', r.name)
+        .replace('{result}', resultWithScore)
+        .replace('{link}', '(מעלה תעודה...)');
+    }
+    return getPdfString('shareMsg', shareLang)
+      .replace('{name}', r.name)
+      .replace('{result}', resultWithScore)
+      .replace('{link}', link);
+  }
+
+  // Upload the examinee's certificate HTML to the Cloudflare Worker.
+  // Cached in bulkSendState.uploadedLinks so revisits don't re-upload.
+  // Returns a Promise that resolves to the public link.
+  function bulkSendUploadCertificate(resultIdx) {
+    if (!bulkSendState) return Promise.reject(new Error('no active queue'));
+    if (!bulkSendState.uploadedLinks) bulkSendState.uploadedLinks = {};
+    var r = completedResults[resultIdx];
+    if (!r) return Promise.reject(new Error('result not found'));
+    var key = String(r.idNumber);
+    if (bulkSendState.uploadedLinks[key]) return Promise.resolve(bulkSendState.uploadedLinks[key]);
+    var html = buildResultHtml(resultIdx);
+    if (!html) return Promise.reject(new Error('failed to build HTML'));
+    return fetch(RESULTS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ html: html })
+    }).then(function(resp) { return resp.json(); }).then(function(data) {
+      if (data.status === 'ok' && data.link) {
+        if (bulkSendState && bulkSendState.uploadedLinks) {
+          bulkSendState.uploadedLinks[key] = data.link;
+        }
+        return data.link;
+      }
+      throw new Error(data.message || 'upload failed');
+    });
   }
 
   function bulkSendShowCurrent() {
@@ -2499,11 +2542,26 @@
       '<div style="color:#64748b;">תוצאה:</div><div>' + statusBadge + '</div>' +
       '</div>';
     document.getElementById('bulkSendCurrentInfo').innerHTML = info;
-    // Populate editable message textarea with the default. User can tweak per recipient.
-    document.getElementById('bulkSendMessageEdit').value = bulkSendBuildMessage(r);
+    // Populate editable message textarea — with link if cached, placeholder otherwise.
+    var cachedLink = (state.uploadedLinks && state.uploadedLinks[String(r.idNumber)]) || null;
+    document.getElementById('bulkSendMessageEdit').value = bulkSendBuildMessage(r, cachedLink);
     // Disable "back" at the start of the queue
     var backBtn = document.getElementById('bulkSendBackBtn');
     if (backBtn) { backBtn.disabled = (pos === 0); backBtn.style.opacity = pos === 0 ? '0.5' : '1'; }
+    // Kick off certificate upload in the background so the link is ready by the
+    // time the user clicks "Next". Position guard prevents stale async updates
+    // from clobbering the textarea if the user has moved on.
+    if (!cachedLink) {
+      var posAtRequest = pos;
+      bulkSendUploadCertificate(state.queue[pos]).then(function(link) {
+        if (!bulkSendState || bulkSendState.pos !== posAtRequest) return;
+        var msgEl = document.getElementById('bulkSendMessageEdit');
+        // Only replace if textarea still shows the placeholder version (user hasn't edited).
+        if (msgEl && msgEl.value.indexOf('(מעלה תעודה...)') !== -1) {
+          msgEl.value = bulkSendBuildMessage(r, link);
+        }
+      }).catch(function() { /* swallow — next-click path will retry and surface the error */ });
+    }
   }
 
   window.bulkSendNext = function() {
@@ -2512,26 +2570,51 @@
     if (state.pos >= state.queue.length) { bulkSendFinish(); return; }
     var r = completedResults[state.queue[state.pos]];
     if (!r) { state.pos++; bulkSendShowCurrent(); return; }
+    var resultIdx = state.queue[state.pos];
 
-    var phone = formatPhone(r.phone);
-    // Read the (possibly edited) message from the textarea instead of regenerating —
-    // lets the commander tweak the wording per recipient before opening WA.
-    var msgEl = document.getElementById('bulkSendMessageEdit');
-    var msg = (msgEl && msgEl.value) ? msgEl.value : bulkSendBuildMessage(r);
-    if (phone) {
-      var waUrl = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(msg);
-      window.open(waUrl, '_blank');
+    // Helper that actually opens WhatsApp + advances. Called once the link is ready.
+    function proceedWithLink(link) {
+      var phone = formatPhone(r.phone);
+      // Read the (possibly edited) message from the textarea. If the textarea
+      // still contains the loading placeholder, replace with the resolved link.
+      var msgEl = document.getElementById('bulkSendMessageEdit');
+      var msg = (msgEl && msgEl.value) ? msgEl.value : bulkSendBuildMessage(r, link);
+      if (msg.indexOf('(מעלה תעודה...)') !== -1) {
+        msg = bulkSendBuildMessage(r, link);
+      }
+      if (phone) {
+        var waUrl = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(msg);
+        window.open(waUrl, '_blank');
+      }
+      if (!r.sent) {
+        apiGet({ action: 'markSent', sessionCode: r.sessionCode || sessionCode, idNumber: r.idNumber });
+        r.sent = true;
+        state.sent++;
+      }
+      state.pos++;
+      bulkSendShowCurrent();
     }
 
-    // Mark as sent on server (fire-and-forget) and locally — only if this row
-    // wasn't already counted as sent (re-visiting via "back" shouldn't double-count).
-    if (!r.sent) {
-      apiGet({ action: 'markSent', sessionCode: r.sessionCode || sessionCode, idNumber: r.idNumber });
-      r.sent = true;
-      state.sent++;
-    }
-    state.pos++;
-    bulkSendShowCurrent();
+    var cachedLink = (state.uploadedLinks && state.uploadedLinks[String(r.idNumber)]);
+    if (cachedLink) { proceedWithLink(cachedLink); return; }
+
+    // Not cached — block the button and wait for upload.
+    var nextBtn = document.getElementById('bulkSendNextBtn');
+    var originalLabel = nextBtn ? nextBtn.textContent : '';
+    if (nextBtn) { nextBtn.disabled = true; nextBtn.textContent = '⏳ מעלה תעודה...'; }
+    var posAtClick = state.pos;
+    bulkSendUploadCertificate(resultIdx).then(function(link) {
+      // If the user moved on (back/skip) while we were waiting, don't act stale.
+      if (!bulkSendState || bulkSendState.pos !== posAtClick) {
+        if (nextBtn) { nextBtn.disabled = false; nextBtn.textContent = originalLabel; }
+        return;
+      }
+      if (nextBtn) { nextBtn.disabled = false; nextBtn.textContent = originalLabel; }
+      proceedWithLink(link);
+    }).catch(function(err) {
+      if (nextBtn) { nextBtn.disabled = false; nextBtn.textContent = originalLabel; }
+      alert('שגיאה בהעלאת תעודה: ' + (err && err.message ? err.message : err) + '\nניתן לדלג או לנסות שוב.');
+    });
   };
 
   window.bulkSendSkip = function() {
