@@ -12,7 +12,7 @@ var SHEET_HEADERS = {
   'בוחנים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'מס בוחן', 'תפקיד', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד'],
   'אתרים': ['שם אתר', 'מזהה', 'טלפון מנהל', 'כיתות'],
   'סשנים': ['קוד', 'בוחן ת.ז.', 'שם בוחן', 'אתר', 'כיתה', 'דרגה', 'שפה', 'מצב שמע', 'זמן יצירה', 'תקף עד', 'פעיל'],
-  'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה', 'דרגה', 'שמע', 'הארכת זמן'],
+  'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה', 'דרגה', 'שמע', 'הארכת זמן', 'התחלת מבחן', 'טוקן נבחן'],
   'תוצאות': ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר', 'כיתה', 'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ', 'אוכלוסיה', 'תוקן?', 'שמע', 'מאומת', 'חשוד', 'dqEventId'],
   'מורים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד'],
   'כיתות': ['קוד כיתה', 'שם כיתה', 'מורה ת.ז.', 'שם מורה', 'דרגה', 'תאריך יצירה', 'פעיל'],
@@ -136,6 +136,51 @@ function checkOrigin(p) {
   }
   if (ALLOWED_ORIGINS.indexOf(origin) === -1) {
     return jsonResponse({ status: 'error', message: 'Unauthorized origin', code: 'origin_denied' });
+  }
+  return null;
+}
+
+// ========== Examinee token (Stage 1c) ==========
+// Each examinee receives a random token at registration time. All subsequent
+// examinee-side calls (poll, submit, self-DQ) must echo that token. Prevents
+// an attacker registered to the same session from acting on a victim's row
+// using only sessionCode + idNumber.
+function generateExamineeToken() {
+  var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  var token = '';
+  for (var i = 0; i < 32; i++) {
+    token += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return token;
+}
+
+// Returns { valid: bool, legacy: bool, reason: string }
+// - legacy: true when the stored row predates token support (empty cell) —
+//   we accept the call but flag it so we can audit / tighten later.
+// - reason values (when invalid): 'not_found', 'missing', 'mismatch'.
+function verifyExamineeToken(sessionCode, idNumber, examineeToken) {
+  var sheet = getSheet('ממתינים');
+  var data = sheet.getDataRange().getValues();
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0]) === String(sessionCode) && normalizeId(data[i][1]) === normalizeId(idNumber)) {
+      var storedToken = String((data[i].length > 12 ? data[i][12] : '') || '').trim();
+      if (!storedToken) return { valid: true, legacy: true };
+      if (!examineeToken) return { valid: false, reason: 'missing' };
+      if (String(examineeToken).trim() === storedToken) return { valid: true, legacy: false };
+      return { valid: false, reason: 'mismatch' };
+    }
+  }
+  return { valid: false, reason: 'not_found' };
+}
+
+// Convenience wrapper for handlers. Returns null when OK, or a jsonResponse error.
+function requireExamineeToken(p) {
+  if (!p.sessionCode || !p.idNumber) {
+    return jsonResponse({ status: 'error', message: 'חסרים פרטי נבחן' });
+  }
+  var result = verifyExamineeToken(p.sessionCode, p.idNumber, p.examineeToken);
+  if (!result.valid) {
+    return jsonResponse({ status: 'error', message: 'טוקן נבחן לא תקין', examineeTokenError: result.reason });
   }
   return null;
 }
@@ -734,6 +779,7 @@ function handleRegisterExaminee(p) {
   if (activeCount >= MAX_PENDING_PER_SESSION) {
     return jsonResponse({ status: 'error', message: 'הסשן מלא — לא ניתן לרשום נבחנים נוספים' });
   }
+  var examineeToken = generateExamineeToken();
   pendSheet.appendRow([
     p.sessionCode,
     p.idNumber,
@@ -745,9 +791,11 @@ function handleRegisterExaminee(p) {
     p.population || '',
     p.license || '',
     p.audioMode || 'off',
-    ''  // הארכת זמן — נקבע ע"י הבוחן בעת אישור
+    '',           // K (10): הארכת זמן — נקבע ע"י הבוחן בעת אישור
+    '',           // L (11): התחלת מבחן — נקבע ע"י markExamStarted
+    examineeToken // M (12): טוקן נבחן — מוחזר ללקוח, נדרש בקריאות עוקבות
   ]);
-  return jsonResponse({ status: 'ok' });
+  return jsonResponse({ status: 'ok', examineeToken: examineeToken });
 }
 
 function handleCancelRegistration(p) {
@@ -782,6 +830,14 @@ function handleCheckApproval(p) {
       // Skip terminal statuses from previous exams — keep looking for active row
       // Note: dq_confirmed is NOT skipped — examinee needs to receive this status
       if (approval === 'completed' || approval === 'disqualified' || approval === 'cancelled') continue;
+      // Token check: when a token is stored for this row, reject mismatches.
+      // Legacy rows (no stored token) and the very first poll (client may not
+      // have echoed the token yet) are accepted so we don't break in-flight
+      // registrations during the deploy window.
+      var storedToken = String((data[i].length > 12 ? data[i][12] : '') || '').trim();
+      if (storedToken && p.examineeToken && String(p.examineeToken).trim() !== storedToken) {
+        return jsonResponse({ status: 'error', message: 'טוקן נבחן לא תקין', examineeTokenError: 'mismatch' });
+      }
       var response = { status: 'ok', approval: approval };
       // When approved, compute and return authorized exam duration
       if (approval === 'approved' || approval === 'in_exam') {
@@ -843,6 +899,8 @@ function handleRejectExaminee(p) {
 }
 
 function handleMarkExamStarted(p) {
+  var tokenErr = requireExamineeToken(p);
+  if (tokenErr) return tokenErr;
   var sheet = getSheet('ממתינים');
   var data = sheet.getDataRange().getValues();
   for (var i = data.length - 1; i >= 1; i--) {
@@ -1048,12 +1106,18 @@ function handleDisqualify(p) {
       return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
     }
   } else {
-    // Path B: self-DQ — pending row must exist in active state (in_exam/approved/disqualified for retry)
+    // Path B: self-DQ — pending row must exist in active state AND the caller
+    // must hold the examinee token issued at registration time. Legacy rows
+    // (no stored token) are accepted as a transitional measure.
     if (pendRowIdx === -1) {
       return jsonResponse({ status: 'error', message: 'אין נבחן רשום בסשן זה' });
     }
     if (pendStatus !== 'in_exam' && pendStatus !== 'approved' && pendStatus !== 'disqualified') {
       return jsonResponse({ status: 'error', message: 'מצב לא תקף לפסילה: ' + pendStatus });
+    }
+    var tokenCheck = verifyExamineeToken(p.sessionCode, p.idNumber, p.examineeToken);
+    if (!tokenCheck.valid) {
+      return jsonResponse({ status: 'error', message: 'טוקן נבחן לא תקין לפסילה עצמית', examineeTokenError: tokenCheck.reason });
     }
   }
 
@@ -1108,6 +1172,9 @@ function handleDisqualify(p) {
 
 // Cancel a provisional disqualification — called when examinee returns within grace period
 function handleCancelDisqualify(p) {
+  // Only the examinee whose token matches the row may cancel their provisional DQ.
+  var cdTokenErr = requireExamineeToken(p);
+  if (cdTokenErr) return cdTokenErr;
   var sc = String(p.sessionCode || '');
   var id = normalizeId(p.idNumber || '');
   if (!sc || !id) return jsonResponse({ status: 'ok' });
@@ -1337,6 +1404,10 @@ function handleMarkSent(p) {
 }
 
 function handleRegisterExamQuestions(data) {
+  // Reject the call if the examinee token doesn't match the registered row
+  // (legacy rows without a stored token still pass).
+  var reqTokenErr = requireExamineeToken(data);
+  if (reqTokenErr) return reqTokenErr;
   // Server-side score verification setup. The client tells us which questions
   // came up and how each was shuffled — but NOT which answer is correct. The
   // server looks up the canonical correct index in ANSWER_KEY_BY_LANG and
@@ -1429,6 +1500,10 @@ function handleRegisterExamQuestions(data) {
 }
 
 function handleSubmitResult(data) {
+  // Require the examinee token before accepting any result. Legacy rows
+  // (no stored token) pass through requireExamineeToken with legacy=true.
+  var srTokenErr = requireExamineeToken(data);
+  if (srTokenErr) return srTokenErr;
   var sheet = getSheet('תוצאות');
 
   // Verify examinee is approved (in_exam status) before accepting results
@@ -1630,6 +1705,8 @@ function markPendingCompleted(sessionCode, idNumber) {
 }
 
 function handleSubmitWrongAnswers(p) {
+  var swaTokenErr = requireExamineeToken(p);
+  if (swaTokenErr) return swaTokenErr;
   // Append a single wrong answer item to existing result row
   var sheet = getSheet('תוצאות');
   var data = sheet.getDataRange().getValues();
@@ -1673,6 +1750,8 @@ function handleSubmitWrongAnswers(p) {
 }
 
 function handleSubmitWrongAnswersBulk(data) {
+  var swabTokenErr = requireExamineeToken(data);
+  if (swabTokenErr) return swabTokenErr;
   // Receive ALL wrong answers in a single POST and write to result row
   var sheet = getSheet('תוצאות');
   var rows = sheet.getDataRange().getValues();
@@ -1724,6 +1803,8 @@ function handleSubmitWrongAnswersBulk(data) {
 }
 
 function handleSubmitFailOnClose(data) {
+  var focTokenErr = requireExamineeToken(data);
+  if (focTokenErr) return focTokenErr;
   var sheet = getSheet('תוצאות');
 
   // Duplicate protection: check if result already exists for this session+ID+license+language
@@ -1769,6 +1850,8 @@ function handleSubmitFailOnClose(data) {
 
 function handleCancelFailOnClose(data) {
   // Called when page reloads (refresh, not actual close) — undo the fail
+  var cfocTokenErr = requireExamineeToken(data);
+  if (cfocTokenErr) return cfocTokenErr;
   var sc = String(data.sessionCode || '');
   var id = normalizeId(data.idNumber || '');
   if (!sc || !id) return jsonResponse({ status: 'ok' });
