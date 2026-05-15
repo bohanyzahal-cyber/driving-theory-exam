@@ -835,6 +835,28 @@
     }).then(function(r) { return r.json(); });
   }
 
+  // Upload result HTML to the exam-results Cloudflare Worker.
+  // Authenticated via short-lived HMAC token from Apps Script — the worker
+  // refuses POSTs without a valid token, blocking abuse of the public endpoint.
+  // Returns a Promise resolving to { status, link, ... } matching the worker's
+  // existing JSON shape so callers don't need to change their handling.
+  function uploadResultHtml(html) {
+    return apiGet({ action: 'getResultUploadToken' }).then(function(tokenData) {
+      if (!tokenData || tokenData.status !== 'ok' || !tokenData.token) {
+        var msg = (tokenData && tokenData.message) ? tokenData.message : 'Failed to get upload token';
+        return { status: 'error', message: msg };
+      }
+      return fetch(RESULTS_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Auth-Token': tokenData.token
+        },
+        body: JSON.stringify({ html: html })
+      }).then(function(r) { return r.json(); });
+    });
+  }
+
   // ========== Login ==========
   document.getElementById('loginBtn').addEventListener('click', function() {
     var id = document.getElementById('loginId').value.trim();
@@ -2376,13 +2398,8 @@
     var passTextHe = isDQ ? '\u05E4\u05E1\u05D5\u05DC' : (isPassed ? '\u05E2\u05D1\u05E8' : '\u05E0\u05DB\u05E9\u05DC');
     var passText = (shareLang === 'he') ? passTextHe : getPdfString(passKey, shareLang) + ' (' + passTextHe + ')';
 
-    // Direct POST to Cloudflare Worker (CORS supported — returns link immediately)
-    fetch(RESULTS_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ html: html })
-    })
-    .then(function(response) { return response.json(); })
+    // Upload via Apps Script-signed token (worker rejects unsigned POSTs)
+    uploadResultHtml(html)
     .then(function(data) {
       if (data.status === 'ok' && data.link) {
         showShareLinks(r, data.link, passText, isCorrected);
@@ -2606,11 +2623,7 @@
     if (bulkSendState.uploadedLinks[key]) return Promise.resolve(bulkSendState.uploadedLinks[key]);
     var html = buildResultHtml(resultIdx);
     if (!html) return Promise.reject(new Error('failed to build HTML'));
-    return fetch(RESULTS_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ html: html })
-    }).then(function(resp) { return resp.json(); }).then(function(data) {
+    return uploadResultHtml(html).then(function(data) {
       if (data.status === 'ok' && data.link) {
         if (bulkSendState && bulkSendState.uploadedLinks) {
           bulkSendState.uploadedLinks[key] = data.link;
@@ -3475,13 +3488,8 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       document.getElementById('shareDialogContent').innerHTML = '<div style="font-size:14px;color:#64748b;padding:20px 0;">\u23F3 \u05DE\u05E2\u05DC\u05D4...</div>';
       dlg.style.display = 'flex';
 
-      // Upload to Cloudflare Worker
-      fetch(RESULTS_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ html: html })
-      })
-      .then(function(response) { return response.json(); })
+      // Upload via Apps Script-signed token (worker rejects unsigned POSTs)
+      uploadResultHtml(html)
       .then(function(data) {
         if (data.status === 'ok' && data.link) {
           showManagerShareLinks(data.link);
@@ -4211,12 +4219,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     document.getElementById('shareDialogContent').innerHTML = '<div style="font-size:14px;color:#64748b;padding:20px 0;">\u23F3 מעלה...</div>';
     dlg.style.display = 'flex';
 
-    fetch(RESULTS_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ html: html })
-    })
-    .then(function(response) { return response.json(); })
+    uploadResultHtml(html)
     .then(function(data) {
       if (data.status === 'ok' && data.link) {
         showCommanderShareLinks(data.link);

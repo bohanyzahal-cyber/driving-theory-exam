@@ -331,7 +331,7 @@ function doGet(e) {
     var examinerActions = ['getSites','listSessions','listAllSessions','createSession','updateSession','closeSession',
       'approveExaminee','rejectExaminee','examinerDashboard','resetExaminee',
       'correctToPass','overturnDQ','forceComplete','markSent','commanderDashboard',
-      'commanderCorrectResult'];
+      'commanderCorrectResult','getResultUploadToken'];
     // Note: 'disqualify' is NOT in this list because it can be sent by the examinee client (no token)
     // — auth is enforced inside handleDisqualify itself (examiner token OR active pending row).
     if (examinerActions.indexOf(action) !== -1) {
@@ -476,6 +476,9 @@ function doGet(e) {
 
       case 'getUploadResult':
         return handleGetUploadResult(p);
+
+      case 'getResultUploadToken':
+        return handleGetResultUploadToken(p);
 
       case 'viewResult':
         var resultId = p.id;
@@ -2075,6 +2078,33 @@ function handleCancelFailOnClose(data) {
     }
   }
   return jsonResponse({ status: 'ok' });
+}
+
+// ========== Result-upload HMAC token (for Cloudflare Worker auth) ==========
+// Issues a short-lived signed token that the browser sends in X-Auth-Token
+// when POSTing exam-result HTML to the exam-results Cloudflare Worker.
+// The Worker verifies the same HMAC with its own copy of the secret.
+//
+// Setup: in Apps Script, set ScriptProperty 'RESULT_UPLOAD_SECRET' to a long
+// random string. Set the IDENTICAL value as a Worker secret binding named
+// UPLOAD_SECRET. The secret never reaches the browser.
+function handleGetResultUploadToken(p) {
+  // Examiner auth (token+id) is already enforced by the doGet dispatcher
+  // before this handler runs — see examinerActions list.
+  var props = PropertiesService.getScriptProperties();
+  var secret = props.getProperty('RESULT_UPLOAD_SECRET');
+  if (!secret) {
+    return jsonResponse({
+      status: 'error',
+      message: 'RESULT_UPLOAD_SECRET not configured in Apps Script properties',
+      code: 'not_configured'
+    });
+  }
+  var payload = JSON.stringify({ exp: Date.now() + 5 * 60 * 1000 });
+  var payloadB64 = Utilities.base64EncodeWebSafe(payload).replace(/=+$/, '');
+  var sigBytes = Utilities.computeHmacSha256Signature(payloadB64, secret);
+  var sigB64 = Utilities.base64EncodeWebSafe(sigBytes).replace(/=+$/, '');
+  return jsonResponse({ status: 'ok', token: payloadB64 + '.' + sigB64 });
 }
 
 function unmarkPendingCompleted(sessionCode, idNumber) {
