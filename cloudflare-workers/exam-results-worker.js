@@ -37,6 +37,50 @@ function generateId() {
   return crypto.randomUUID();
 }
 
+// --- HMAC token verification (matches handleGetResultUploadToken in Apps Script) ---
+// Token format: "<payloadB64>.<sigB64>" where payload is JSON({"exp": <ms>})
+// and signature = HMAC-SHA256(payloadB64, UPLOAD_SECRET), both base64url-encoded.
+function base64UrlDecode(s) {
+  s = s.replace(/-/g, '+').replace(/_/g, '/');
+  var pad = (4 - (s.length % 4)) % 4;
+  if (pad) s += '='.repeat(pad);
+  var bin = atob(s);
+  var bytes = new Uint8Array(bin.length);
+  for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+async function verifyUploadToken(tokenStr, secret) {
+  if (!tokenStr || typeof tokenStr !== 'string' || tokenStr.indexOf('.') < 0) {
+    return { valid: false, reason: 'malformed' };
+  }
+  var parts = tokenStr.split('.');
+  if (parts.length !== 2) return { valid: false, reason: 'malformed' };
+  var payloadB64 = parts[0];
+  var sigB64 = parts[1];
+  try {
+    var key = await crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['verify']
+    );
+    var sigBytes = base64UrlDecode(sigB64);
+    var dataBytes = new TextEncoder().encode(payloadB64);
+    var valid = await crypto.subtle.verify('HMAC', key, sigBytes, dataBytes);
+    if (!valid) return { valid: false, reason: 'bad_signature' };
+    var payloadJson = new TextDecoder().decode(base64UrlDecode(payloadB64));
+    var payload = JSON.parse(payloadJson);
+    if (typeof payload.exp !== 'number' || Date.now() > payload.exp) {
+      return { valid: false, reason: 'expired' };
+    }
+    return { valid: true };
+  } catch (e) {
+    return { valid: false, reason: 'verify_error' };
+  }
+}
+
 export default {
   async fetch(request, env) {
     var url = new URL(request.url);
@@ -49,6 +93,23 @@ export default {
 
     // --- POST / — store result HTML ---
     if (request.method === 'POST' && url.pathname === '/') {
+      // Auth: require valid HMAC token issued by Apps Script.
+      // The UPLOAD_SECRET worker binding must match the RESULT_UPLOAD_SECRET
+      // ScriptProperty in Apps Script (both sides hold the same secret string).
+      if (!env.UPLOAD_SECRET) {
+        return Response.json(
+          { status: 'error', message: 'UPLOAD_SECRET binding not configured on worker' },
+          { status: 500, headers: cors }
+        );
+      }
+      var authToken = request.headers.get('X-Auth-Token') || '';
+      var authResult = await verifyUploadToken(authToken, env.UPLOAD_SECRET);
+      if (!authResult.valid) {
+        return Response.json(
+          { status: 'error', message: 'Unauthorized', reason: authResult.reason },
+          { status: 401, headers: cors }
+        );
+      }
       try {
         var body = await request.json();
         var html = body.html;
