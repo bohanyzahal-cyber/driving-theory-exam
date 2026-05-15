@@ -2275,18 +2275,21 @@ function handleGetExamQuestions(p) {
   try { allQuestions = loadQuestionsForLanguageServer(lang); }
   catch (e) { return jsonResponse({ status: 'error', message: 'Cannot load questions: ' + e.message }); }
 
-  // Dedupe by id
+  // Order matters: filter by license BEFORE dedupe. The source data has the
+  // same question id repeated for multiple license types (e.g. id 1276 appears
+  // once with licenseType=B and once with C1). If we dedupe first, we might
+  // keep the C1 row and then the license filter rejects it. Filter first so
+  // we only see rows that already match the license, then dedupe within that.
+  var filtered = filterByLicenseServer(allQuestions, license);
   var seen = {};
   var pool = [];
-  for (var i = 0; i < allQuestions.length; i++) {
-    var q = allQuestions[i];
+  for (var i = 0; i < filtered.length; i++) {
+    var q = filtered[i];
     if (!q || !q.id || seen[q.id]) continue;
     if (!Array.isArray(q.answers) || q.answers.length < 2) continue;
     seen[q.id] = true;
     pool.push(q);
   }
-
-  pool = filterByLicenseServer(pool, license);
 
   // Category-quiz mode (student.html practice by topic): return up to N
   // questions matching one category, skipping the 30-question blueprint.
