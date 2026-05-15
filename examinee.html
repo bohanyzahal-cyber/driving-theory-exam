@@ -412,15 +412,14 @@
 
 <footer>מבחן תאוריה חיצוני</footer>
 
-<script src="questions.js"></script>
 <script>
 (function() {
   'use strict';
 
-  // ========== Freeze questions to prevent tampering ==========
-  if (typeof QUESTIONS !== 'undefined' && Array.isArray(QUESTIONS)) {
-    try { QUESTIONS.forEach(function(q) { Object.freeze(q); }); Object.freeze(QUESTIONS); } catch(e) {}
-  }
+  // Questions are no longer loaded as a bulk JS file. The Apps Script
+  // `getExamQuestions` action returns only the 30 questions for the current
+  // exam, in the requested language. Bulk download of the full bank from
+  // GitHub Pages is no longer possible.
 
   // ========== Anti-cheat ==========
   document.addEventListener('contextmenu', function(e) { e.preventDefault(); }, true);
@@ -1334,33 +1333,16 @@
     approvalInterval = setInterval(doCheckApproval, 5000);
   }
 
-  // Load translation file dynamically if needed
-  var translationLoaded = false;
-  var loadedTranslations = {'he': true, 'ru': true};
+  // Translation files are no longer fetched from GitHub Pages — the server
+  // (Apps Script getExamQuestions) returns questions already merged into the
+  // requested language. We keep this function as an immediate-callback stub
+  // so the existing call sites don't break.
+  var translationLoaded = true;
+  var loadedTranslations = {'he': true, 'ru': true, 'en': true, 'ar': true, 'fr': true, 'es': true, 'am': true};
   function loadTranslationFile(lang, callback) {
-    if (lang === 'he' || lang === 'ru' || loadedTranslations[lang]) {
-      // Hebrew uses base questions, Russian has separate entries in questions.js
-      translationLoaded = true;
-      loadedTranslations[lang] = true;
-      if (callback) callback();
-      return;
-    }
-    var fileName = 'questions_' + lang + '.js';
-    console.log('[TRANS] Loading translation file: ' + fileName);
-    var script = document.createElement('script');
-    script.src = fileName;
-    script.onload = function() {
-      console.log('[TRANS] Loaded ' + fileName + ' successfully');
-      translationLoaded = true;
-      loadedTranslations[lang] = true;
-      if (callback) callback();
-    };
-    script.onerror = function() {
-      console.log('[TRANS] ERROR loading ' + fileName + ', falling back to Hebrew');
-      translationLoaded = true; // continue without translation (will use Hebrew fallback)
-      if (callback) callback();
-    };
-    document.head.appendChild(script);
+    loadedTranslations[lang] = true;
+    translationLoaded = true;
+    if (callback) callback();
   }
 
   function showInstructions() {
@@ -1442,30 +1424,47 @@
     // Use examinee's chosen license/language (may differ from session defaults)
     var license = String(examineeData.license || sessionData.license || 'B');
     var language = String(examineeData.language || sessionData.language || 'he');
-    var exam = buildExam(license, language);
-    if (exam.length < TOTAL_QUESTIONS) {
-      var qsLoaded = (typeof QUESTIONS !== 'undefined' && Array.isArray(QUESTIONS)) ? QUESTIONS.length : 0;
-      var debugPool = getFilteredQuestions(license, language);
-      var debugStr = 'מאגר כללי: ' + qsLoaded + ' שאלות\nדרגה: ' + license + ' | שפה: ' + language + ' | שאלות מסוננות: ' + debugPool.length;
-      if (debugPool.length > 0) {
-        var structure = EXAM_STRUCTURE[license] || {};
-        var byT = {};
-        for (var dt in structure) byT[dt] = 0;
-        debugPool.forEach(function(q) { var t = classifyCategory(q.category); if (byT[t] !== undefined) byT[t]++; });
-        for (var dt2 in structure) debugStr += '\n' + dt2 + ': ' + (byT[dt2]||0) + ' (צריך ' + structure[dt2] + ')';
-      }
-      var langName = LANG_LABELS[language] || language;
-      var licName = LICENSE_LABELS[license] || license;
-      document.getElementById('examArea').innerHTML =
-        '<div class="info-banner warn" style="font-size:15px;">' +
-        '<strong>אין מספיק שאלות לשילוב שנבחר:</strong><br>' +
-        'דרגה: ' + escHtml(licName) + ' | שפה: ' + escHtml(langName) +
-        '<br><br>פנה לבוחן — ייתכן שצריך לשנות שפה או דרגה.</div>' +
-        '<pre style="font-size:11px;color:#64748b;margin:12px;white-space:pre-wrap;text-align:right;">' + debugStr + '</pre>';
-      showScreen('screenExam');
-      return;
-    }
 
+    // Show loading state while server picks the questions
+    var examAreaEl = document.getElementById('examArea');
+    if (examAreaEl) {
+      examAreaEl.innerHTML = '<div class="info-banner" style="font-size:15px;text-align:center;">טוען שאלות...</div>';
+    }
+    showScreen('screenExam');
+
+    apiGet({
+      action: 'getExamQuestions',
+      sessionCode: sessionCode,
+      idNumber: examineeData.idNumber,
+      examineeToken: examineeToken,
+      language: language,
+      license: license
+    }).then(function(resp) {
+      if (!resp || resp.status !== 'ok' || !Array.isArray(resp.questions) || resp.questions.length < TOTAL_QUESTIONS) {
+        var errMsg = (resp && resp.message) ? resp.message : 'שגיאה בטעינת שאלות';
+        var langName = LANG_LABELS[language] || language;
+        var licName = LICENSE_LABELS[license] || license;
+        if (examAreaEl) {
+          examAreaEl.innerHTML =
+            '<div class="info-banner warn" style="font-size:15px;">' +
+            '<strong>אין מספיק שאלות לשילוב שנבחר:</strong><br>' +
+            'דרגה: ' + escHtml(licName) + ' | שפה: ' + escHtml(langName) + '<br><br>' +
+            'פנה לבוחן — ייתכן שצריך לשנות שפה או דרגה.' +
+            '<pre style="font-size:11px;color:#64748b;margin:12px;white-space:pre-wrap;text-align:right;">' + escHtml(errMsg) + '</pre></div>';
+        }
+        return;
+      }
+      _finishStartingExam(resp.questions, license, language);
+    }).catch(function(err) {
+      if (examAreaEl) {
+        examAreaEl.innerHTML =
+          '<div class="info-banner warn" style="font-size:15px;">שגיאת תקשורת בטעינת השאלות. נסה שוב.</div>';
+      }
+    });
+  }
+
+  // Second half of doStartExam — runs after we have the questions from server.
+  function _finishStartingExam(exam, license, language) {
     activeQuestions = exam;
     currentIndex = 0;
     userAnswers = new Array(TOTAL_QUESTIONS);
@@ -1482,7 +1481,7 @@
       var sqAnswers = getQAnswers(sq);
       var sqCorrectIdx = getQCorrectIndex(sq);
       var sqOrder = shuffle(sqAnswers.map(function(_, idx) { return idx; }));
-      var sqShuffledCorrect = sqOrder.indexOf(sqCorrectIdx);
+      var sqShuffledCorrect = (sqCorrectIdx == null) ? 0 : sqOrder.indexOf(sqCorrectIdx);
       shuffledOrders[si] = { order: sqOrder, correctIdx: sqShuffledCorrect };
       regQuestions.push({
         qIdx: si,
@@ -1491,12 +1490,14 @@
         correctShuffledIdx: sqShuffledCorrect
       });
     }
-    // Register exam questions with server (fire-and-forget)
+    // Register exam questions with server (fire-and-forget). The server already
+    // knows which IDs it issued via the issued_qs_ cache key, so this is mostly
+    // bookkeeping + the shuffle permutation for scoring.
     apiPostNoWait({
       action: 'registerExamQuestions',
       sessionCode: sessionCode,
       idNumber: examineeData.idNumber,
-      language: examineeData.language || sessionData.language || 'he',
+      language: language,
       questions: regQuestions
     });
     timeRemaining = examTimeMinutes * 60;
@@ -2534,8 +2535,11 @@
     return t && t.t && t.a && t.a.length >= 2;
   }
 
-  var ruQuestionMap=null;
-  function getRuQuestion(id){if(!ruQuestionMap){ruQuestionMap={};var qs=(typeof QUESTIONS!=='undefined')?QUESTIONS:window.QUESTIONS;for(var i=0;i<qs.length;i++){if((qs[i].language||'he')==='ru')ruQuestionMap[qs[i].id]=qs[i];}}return ruQuestionMap[id]||null;}
+  // Legacy: looked up a Russian-language question by id from the global
+  // QUESTIONS array. With server-side delivery we receive each exam already
+  // in the right language, so this returns null (the callers fall back to
+  // q.text / q.answers, which are correct for the active language).
+  function getRuQuestion(_id) { return null; }
 
   // Get question text for the current language
   function getQText(q) {
@@ -2585,7 +2589,12 @@
     return decodeCI(q.ci, q.id);
   }
 
-  function getFilteredQuestions(license, language) {
+  // Legacy: client-side filtering used a global QUESTIONS array that no
+  // longer exists (the server picks questions now). Kept as a stub so any
+  // remaining call sites (e.g. error/debug paths) don't blow up.
+  function getFilteredQuestions(_license, _language) { return []; }
+
+  function _legacyGetFilteredQuestions_DEPRECATED(license, language) {
     license = String(license || '');
     language = String(language || 'he');
     var qs = (typeof QUESTIONS !== 'undefined') ? QUESTIONS : window.QUESTIONS;
@@ -2622,10 +2631,15 @@
     });
   }
 
-  function buildExam(license, language) {
+  // Legacy: client-side exam picker, replaced by the server-side
+  // `getExamQuestions` Apps Script action. Stubbed; the actual logic
+  // (kept below) is dead code retained for reference only.
+  function buildExam(_license, _language) { return []; }
+
+  function _legacyBuildExam_DEPRECATED(license, language) {
     var structure = EXAM_STRUCTURE[license];
     if (!structure) return [];
-    var pool = getFilteredQuestions(license, language);
+    var pool = _legacyGetFilteredQuestions_DEPRECATED(license, language);
     // Deduplicate by question ID - keep first occurrence only
     var seenIds = {};
     pool = pool.filter(function(q) {

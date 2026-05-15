@@ -288,7 +288,11 @@
 
 <footer>מבחן שמע תאוריה — גרסה עצמאית</footer>
 
-<script src="questions.js"></script>
+<!--
+  Questions are no longer loaded as a bulk JS file. Each exam fetches its
+  30 questions from the main external-exam Apps Script (`getExamQuestions`).
+  See QUESTIONS_API_URL below.
+-->
 <script>
 (function() {
   'use strict';
@@ -305,6 +309,9 @@
   // ========== GOOGLE SHEETS CONFIG ==========
   // *** שנה את ה-URL הזה אחרי ה-Deploy של ה-Apps Script ***
   var GOOGLE_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbzAZ0Dtsi4zdzp2V23ZraQdxZ6M08lEAMiNfbB3sPRV1Yjb04zXeDkVzgLVKkyhlpdU/exec';
+  // Question delivery uses the main external-exam Apps Script (separate
+  // project) since that's where the question DB + answer key live.
+  var QUESTIONS_API_URL = 'https://script.google.com/macros/s/AKfycbzOI0zrDEngP-GvlRblhOk8tQsYBvWZ2gGliIQHTpS67WrDZl4la8NPpwtJr_Vjsh3Gzg/exec';
 
   // ========== Config ==========
   var TOTAL_QUESTIONS = 30;
@@ -531,7 +538,12 @@
     return '';
   }
 
-  function getFilteredQuestions(license) {
+  // Legacy: client-side filtering used the global QUESTIONS array, which is
+  // gone now (server picks questions). Kept as a stub so UI helpers that
+  // still call it (updateAvailableCount, etc.) don't blow up.
+  function getFilteredQuestions(_license) { return []; }
+
+  function _legacyGetFilteredQuestions_DEPRECATED(license) {
     if (!window.QUESTIONS || !Array.isArray(QUESTIONS)) return [];
     return QUESTIONS.filter(function(q) {
       if ((q.language || 'he') !== 'he') return false;
@@ -554,10 +566,13 @@
     });
   }
 
-  function buildExam(license) {
+  // Legacy: client-side picker, replaced by server-side `getExamQuestions`.
+  function buildExam(_license) { return []; }
+
+  function _legacyBuildExam_DEPRECATED(license) {
     var structure = EXAM_STRUCTURE[license];
     if (!structure) return [];
-    var pool = getFilteredQuestions(license);
+    var pool = _legacyGetFilteredQuestions_DEPRECATED(license);
     // Deduplicate by question ID - keep first occurrence only
     var seenIds = {};
     pool = pool.filter(function(q) {
@@ -597,25 +612,11 @@
   }
 
   // ========== Available count ==========
+  // The full question bank is no longer in the browser \u2014 questions are
+  // fetched per-exam from the server. We just show the license label here.
   function updateAvailableCount() {
-    var license = licenseSelect.value;
-    var pool = getFilteredQuestions(license);
-    var structure = EXAM_STRUCTURE[license];
     var label = licenseSelect.options[licenseSelect.selectedIndex].text;
-    var details = [];
-    if (structure) {
-      var byTopic = {};
-      for (var t in structure) byTopic[t] = 0;
-      pool.forEach(function(q) {
-        var topic = classifyCategory(q.category);
-        if (byTopic[topic] !== undefined) byTopic[topic]++;
-      });
-      for (var t in structure) {
-        details.push(t + ': ' + byTopic[t] + ' (\u05E0\u05D3\u05E8\u05E9 ' + structure[t] + ')');
-      }
-    }
-    availableCount.innerHTML = '\u05DE\u05D0\u05D2\u05E8 ' + label + ': ' + pool.length + ' \u05E9\u05D0\u05DC\u05D5\u05EA' +
-      (details.length > 0 ? '<br><span style="font-size:12px;color:#94a3b8;">' + details.join(' | ') + '</span>' : '');
+    availableCount.innerHTML = '\u05DE\u05D0\u05D2\u05E8 ' + label + ': \u05E0\u05D8\u05E2\u05DF \u05DE\u05D4\u05E9\u05E8\u05EA \u05D1\u05E2\u05EA \u05D4\u05EA\u05D7\u05DC\u05EA \u05D4\u05DE\u05D1\u05D7\u05DF';
   }
   licenseSelect.addEventListener('change', updateAvailableCount);
   updateAvailableCount();
@@ -702,19 +703,35 @@
     }
 
     var license = licenseSelect.value;
-    var exam = buildExam(license);
-    if (exam.length < TOTAL_QUESTIONS) {
-      examArea.innerHTML = '<div class="info-banner warn">\u05D0\u05D9\u05DF \u05DE\u05E1\u05E4\u05D9\u05E7 \u05E9\u05D0\u05DC\u05D5\u05EA \u05DC\u05D3\u05E8\u05D2\u05D4 \u05E9\u05E0\u05D1\u05D7\u05E8\u05D4.</div>';
-      return;
-    }
-    activeQuestions = exam;
-    currentIndex = 0;
-    userAnswers = [];
-    stopSpeaking();
-    settingsCard.style.display = 'none';
-    idFormCard.style.display = 'none';
-    startTimer();
-    renderQuestion();
+    examArea.innerHTML = '<div class="info-banner" style="text-align:center;">\u05D8\u05D5\u05E2\u05DF \u05E9\u05D0\u05DC\u05D5\u05EA...</div>';
+    startBtn.disabled = true;
+
+    var idNumber = (document.getElementById('phoneNumber') ? document.getElementById('phoneNumber').value : '') || '';
+    var qs = 'action=getExamQuestions&license=' + encodeURIComponent(license) +
+             '&language=he&standaloneIdNumber=' + encodeURIComponent(idNumber) +
+             '&_t=' + Date.now();
+    fetch(QUESTIONS_API_URL + '?' + qs, { cache: 'no-store' })
+      .then(function(r) { return r.json(); })
+      .then(function(resp) {
+        startBtn.disabled = false;
+        if (!resp || resp.status !== 'ok' || !Array.isArray(resp.questions) || resp.questions.length < TOTAL_QUESTIONS) {
+          var msg = (resp && resp.message) ? resp.message : '\u05E9\u05D2\u05D9\u05D0\u05D4 \u05D1\u05D8\u05E2\u05D9\u05E0\u05EA \u05E9\u05D0\u05DC\u05D5\u05EA';
+          examArea.innerHTML = '<div class="info-banner warn">' + msg + '</div>';
+          return;
+        }
+        activeQuestions = resp.questions;
+        currentIndex = 0;
+        userAnswers = [];
+        stopSpeaking();
+        settingsCard.style.display = 'none';
+        idFormCard.style.display = 'none';
+        startTimer();
+        renderQuestion();
+      })
+      .catch(function(_err) {
+        startBtn.disabled = false;
+        examArea.innerHTML = '<div class="info-banner warn">\u05E9\u05D2\u05D9\u05D0\u05EA \u05EA\u05E7\u05E9\u05D5\u05E8\u05EA. \u05E0\u05E1\u05D4 \u05E9\u05D5\u05D1.</div>';
+      });
   });
 
   // ========== Render question ==========

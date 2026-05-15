@@ -20,6 +20,12 @@ deployment/answer_key.gs
 # Run deployment/generate_questions_data.js to regenerate.
 deployment/generated/
 
+# Question files — moved to server-side delivery (Drive + getExamQuestions).
+# The local files stay for the generator script to read, but never get
+# committed to the public repo.
+questions.js
+questions_*.js
+
 # Internal docs — security plans, meeting notes etc must stay local
 deployment/security-roadmap.md
 deployment/meeting-checklist.md

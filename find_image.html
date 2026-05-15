@@ -262,18 +262,27 @@
   <img id="fullImg" alt="">
 </div>
 
-<script src="questions.js"></script>
-<script src="questions_ru.js" onerror="this.remove()"></script>
-<script src="questions_ar.js" onerror="this.remove()"></script>
-<script src="questions_en.js" onerror="this.remove()"></script>
-<script src="questions_am.js" onerror="this.remove()"></script>
-<script src="questions_fr.js" onerror="this.remove()"></script>
-<script src="questions_es.js" onerror="this.remove()"></script>
+<!--
+  questions.js and per-language translation files removed — search now runs
+  server-side via the Apps Script `searchQuestions` action. Requires examiner
+  credentials (read from localStorage, set by examiner.html on login).
+-->
 <script>
 (function() {
   'use strict';
 
   var IMAGE_PROXY_BASE = 'https://image-proxy.bohanyzahal.workers.dev';
+  var API_URL = 'https://script.google.com/macros/s/AKfycbzOI0zrDEngP-GvlRblhOk8tQsYBvWZ2gGliIQHTpS67WrDZl4la8NPpwtJr_Vjsh3Gzg/exec';
+  var API_ORIGIN = 'examiner-app';
+
+  // Read examiner credentials from localStorage (set by examiner.html on login).
+  // Without these, the server rejects searchQuestions calls.
+  var examinerCreds = (function() {
+    try {
+      var raw = localStorage.getItem('ext_examiner_remember');
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  })();
 
   function toProxyUrl(originalUrl) {
     if (!originalUrl) return '';
@@ -291,30 +300,16 @@
     return stored ^ (id % 256);
   }
 
-  // Translation tables (when the source files load)
-  var TRANSLATIONS = {
-    'he': null,
-    'ru': typeof TRANSLATIONS_RU !== 'undefined' ? TRANSLATIONS_RU : null,
-    'ar': typeof TRANSLATIONS_AR !== 'undefined' ? TRANSLATIONS_AR : null,
-    'en': typeof TRANSLATIONS_EN !== 'undefined' ? TRANSLATIONS_EN : null,
-    'am': typeof TRANSLATIONS_AM !== 'undefined' ? TRANSLATIONS_AM : null,
-    'fr': typeof TRANSLATIONS_FR !== 'undefined' ? TRANSLATIONS_FR : null,
-    'es': typeof TRANSLATIONS_ES !== 'undefined' ? TRANSLATIONS_ES : null
-  };
-
   var currentLang = 'he';
 
-  function getQuestionInLang(q, lang) {
-    // questions.js uses {text, answers}; translation files use {t, a}
-    if (lang === 'he' || !TRANSLATIONS[lang]) {
-      return { t: q.text, a: q.answers, ci: decodeCI(q.ci, q.id) };
-    }
-    var tr = TRANSLATIONS[lang][q.id];
-    if (!tr) return null; // not translated
+  // Server returns each match already in the requested language, so just
+  // hand back text/answers as-is. `ci` is the encoded correct index
+  // (legacy format) — server includes it for this examiner-only utility.
+  function getQuestionInLang(q, _lang) {
     return {
-      t: tr.t,
-      a: tr.a,
-      ci: typeof tr.ci !== 'undefined' ? decodeCI(tr.ci, q.id) : decodeCI(q.ci, q.id)
+      t: q.text,
+      a: q.answers,
+      ci: (typeof q.ci !== 'undefined') ? decodeCI(q.ci, q.id) : -1
     };
   }
 
@@ -411,54 +406,58 @@
     });
   }
 
-  function search(query) {
-    if (typeof QUESTIONS === 'undefined' || !Array.isArray(QUESTIONS)) {
-      return [];
+  // Server-side search — sends query to Apps Script, gets up to 20 matches.
+  // The full question bank stays on the server; we don't load it client-side.
+  function searchServer(query, onResults, onError) {
+    if (!examinerCreds || !examinerCreds.id || !examinerCreds.token) {
+      onError('יש להתחבר תחילה דרך examiner.html');
+      return;
     }
-    if (!query || query.length < 3) return [];
-    var q = query.toLowerCase().trim();
-    var words = q.split(/\s+/).filter(function(w) { return w.length >= 2; });
-    if (words.length === 0) return [];
-
-    var matches = [];
-    for (var i = 0; i < QUESTIONS.length; i++) {
-      var loc = getQuestionInLang(QUESTIONS[i], currentLang);
-      if (!loc) continue;
-      var hay = (loc.t || '').toLowerCase() + ' ' + (loc.a || []).join(' ').toLowerCase();
-      var allMatch = true;
-      for (var w = 0; w < words.length; w++) {
-        if (hay.indexOf(words[w]) === -1) { allMatch = false; break; }
-      }
-      if (allMatch) {
-        matches.push(QUESTIONS[i]);
-        if (matches.length > 50) break; // cap
-      }
-    }
-    return matches;
+    if (!query || query.length < 3) { onResults([]); return; }
+    var qs = 'action=searchQuestions' +
+      '&q=' + encodeURIComponent(query) +
+      '&language=' + encodeURIComponent(currentLang) +
+      '&examinerId=' + encodeURIComponent(examinerCreds.id) +
+      '&token=' + encodeURIComponent(examinerCreds.token) +
+      '&origin=' + encodeURIComponent(API_ORIGIN) +
+      '&_t=' + Date.now();
+    fetch(API_URL + '?' + qs, { cache: 'no-store' })
+      .then(function(r) { return r.json(); })
+      .then(function(resp) {
+        if (!resp || resp.status !== 'ok') { onError((resp && resp.message) || 'שגיאה'); return; }
+        onResults(resp.matches || []);
+      })
+      .catch(function() { onError('שגיאת תקשורת'); });
   }
 
-  // Wait for QUESTIONS to load
-  function checkReady() {
-    if (typeof QUESTIONS !== 'undefined' && Array.isArray(QUESTIONS)) {
-      document.getElementById('loading').style.display = 'none';
-      document.getElementById('empty').style.display = '';
-      document.getElementById('meta').style.display = '';
-      document.getElementById('countBadge').textContent = '0 תוצאות';
-      document.getElementById('dbStatus').textContent = QUESTIONS.length.toLocaleString() + ' שאלות במאגר';
-    } else {
-      setTimeout(checkReady, 200);
-    }
-  }
-  checkReady();
+  // Initialize UI immediately (no client-side wait — server handles questions)
+  (function initUI() {
+    var loadingEl = document.getElementById('loading');
+    if (loadingEl) loadingEl.style.display = 'none';
+    var emptyEl = document.getElementById('empty');
+    if (emptyEl) emptyEl.style.display = '';
+    var metaEl = document.getElementById('meta');
+    if (metaEl) metaEl.style.display = '';
+    var countBadge = document.getElementById('countBadge');
+    if (countBadge) countBadge.textContent = '0 תוצאות';
+    var dbStatus = document.getElementById('dbStatus');
+    if (dbStatus) dbStatus.textContent = examinerCreds ? 'חיפוש דרך השרת' : 'לא מחובר — היכנס דרך examiner.html';
+  })();
 
   var debounceTimer = null;
+  function runSearch(val) {
+    searchServer(val,
+      function(matches) { showResults(matches); },
+      function(err) {
+        var results = document.getElementById('results');
+        if (results) results.innerHTML = '<div class="info-banner warn" style="margin:12px;color:#dc2626;">' + escHtml(err) + '</div>';
+      }
+    );
+  }
   document.getElementById('searchInput').addEventListener('input', function() {
     var val = this.value;
     if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(function() {
-      var matches = search(val);
-      showResults(matches);
-    }, 200);
+    debounceTimer = setTimeout(function() { runSearch(val); }, 350);
   });
 
   // Language picker
@@ -470,7 +469,7 @@
     currentLang = e.target.getAttribute('data-lang');
     // Re-run current search
     var val = document.getElementById('searchInput').value;
-    if (val.length >= 3) showResults(search(val));
+    if (val.length >= 3) runSearch(val);
   });
 
   // Esc closes overlay

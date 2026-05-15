@@ -480,6 +480,12 @@ function doGet(e) {
       case 'getResultUploadToken':
         return handleGetResultUploadToken(p);
 
+      case 'getExamQuestions':
+        return handleGetExamQuestions(p);
+
+      case 'searchQuestions':
+        return handleSearchQuestions(p);
+
       case 'viewResult':
         var resultId = p.id;
         if (!resultId) return HtmlService.createHtmlOutput('<h1 style="text-align:center;padding:40px;font-family:Arial;">Missing ID</h1>');
@@ -1628,6 +1634,32 @@ function handleRegisterExamQuestions(data) {
     return jsonResponse({ status: 'error', message: 'חסרים נתונים לרישום מבחן' });
   }
 
+  // If server-side question delivery (getExamQuestions) was used, an entry
+  // for `issued_qs_<session>_<id>` will exist in cache. Verify the IDs the
+  // client is registering all came from that set — otherwise reject.
+  // (No cache entry means legacy flow where the client picked questions
+  // locally from questions.js; that path stays open for now.)
+  try {
+    var issuedKey = 'issued_qs_' + String(data.sessionCode) + '_' + normalizeId(data.idNumber);
+    var issuedJson = CacheService.getScriptCache().get(issuedKey);
+    if (issuedJson) {
+      var issuedSet = {};
+      var issuedArr = JSON.parse(issuedJson) || [];
+      for (var iz = 0; iz < issuedArr.length; iz++) issuedSet[String(issuedArr[iz])] = true;
+      for (var iq = 0; iq < data.questions.length; iq++) {
+        var qq = data.questions[iq];
+        if (!qq || !qq.qId) continue;
+        if (!issuedSet[String(qq.qId)]) {
+          return jsonResponse({
+            status: 'error',
+            message: 'Question ID not in issued set — rejecting registration',
+            unexpectedId: qq.qId
+          });
+        }
+      }
+    }
+  } catch (e) { /* cache failure — fall through to existing flow */ }
+
   // Verify examinee is in_exam / approved status
   var pendSheet = getSheet('ממתינים');
   var pendData = pendSheet.getDataRange().getValues();
@@ -2078,6 +2110,304 @@ function handleCancelFailOnClose(data) {
     }
   }
   return jsonResponse({ status: 'ok' });
+}
+
+// ========== Server-side question delivery ==========
+// Loads question data from a private Google Drive folder (one JSON file per
+// language) and returns a curated 30-question exam to authenticated clients.
+// The full question bank never reaches the browser — only the questions for
+// the current exam, without the correct-answer index.
+//
+// Setup:
+//   1) Run deployment/generate_questions_data.js locally to produce
+//      deployment/generated/questions_<lang>.json files.
+//   2) Upload all 7 files to a private Drive folder (only this account
+//      should have access; do NOT share publicly).
+//   3) Copy the folder ID (the long string in the Drive URL) and set it
+//      as ScriptProperty: QUESTIONS_DRIVE_FOLDER_ID = <folder-id>
+//   4) Deploy this Apps Script.
+//   5) Push updated HTMLs (examinee, exam, student, find_image) so they call
+//      getExamQuestions instead of loading questions.js.
+
+var EXAM_STRUCTURE_SERVER = {
+  'B':  { 'בטיחות': 7, 'הכרת הרכב': 7, 'חוק': 7, 'תמרורים': 9 },
+  '1':  { 'בטיחות': 5, 'הכרת הרכב': 5, 'חוק': 6, 'תמרורים': 6, 'ספציפי': 8 },
+  'C1': { 'בטיחות': 5, 'הכרת הרכב': 5, 'חוק': 5, 'תמרורים': 5, 'ספציפי': 10 },
+  'C':  { 'בטיחות': 5, 'הכרת הרכב': 4, 'חוק': 3, 'תמרורים': 4, 'ספציפי': 14 },
+  'D':  { 'בטיחות': 4, 'הכרת הרכב': 2, 'חוק': 5, 'תמרורים': 4, 'ספציפי': 15 }
+};
+
+function classifyCategoryServer(cat) {
+  var c = String(cat || '').trim();
+  if (/ספציפי/.test(c)) return 'ספציפי'; // ספציפי
+  if (/בטיחות/.test(c)) return 'בטיחות'; // בטיחות
+  if (/הכרת הרכב/.test(c)) return 'הכרת הרכב'; // הכרת הרכב
+  if (/חוק/.test(c)) return 'חוק'; // חוק
+  if (/תמרורים/.test(c)) return 'תמרורים'; // תמרורים
+  if (/זכות קדימה/.test(c)) return 'חוק'; // זכות קדימה → חוק
+  return '';
+}
+
+function filterByLicenseServer(pool, license) {
+  return pool.filter(function(q) {
+    var cat = String(q.category || '');
+    // "מתן זכות קדימה" applies to all license types
+    if (/זכות קדימה/.test(cat)) return true;
+    if (license === '1') {
+      var lt = String(q.licenseType || '').trim();
+      if (lt !== '' && lt !== 'N/A') return false;
+      if (cat.indexOf('1') === -1) return false;
+      return true;
+    }
+    if (license === 'C') {
+      var lic = String(q.licenseType || '').trim();
+      return lic === 'C' || lic === 'C/E' || lic === 'C+E' || lic === 'CE';
+    }
+    var lic2 = String(q.licenseType || '').trim();
+    return lic2 === license;
+  });
+}
+
+function shuffleArrayServer(arr) {
+  var a = arr.slice();
+  for (var i = a.length - 1; i > 0; i--) {
+    var j = Math.floor(Math.random() * (i + 1));
+    var t = a[i]; a[i] = a[j]; a[j] = t;
+  }
+  return a;
+}
+
+// Read questions for a given language. Uses chunked CacheService caching so
+// subsequent calls within 6h don't hit Drive again. Cold start: ~2-4 sec
+// (Drive read + JSON.parse). Warm: ~300 ms (cache reassembly).
+function loadQuestionsForLanguageServer(lang) {
+  var safeLang = String(lang || 'he').toLowerCase();
+  if (!/^[a-z]{2}$/.test(safeLang)) throw new Error('Invalid language code');
+
+  var cache = CacheService.getScriptCache();
+  var metaKey = 'qdata_' + safeLang + '_meta';
+  var meta = cache.get(metaKey);
+
+  if (meta) {
+    var numChunks = parseInt(meta, 10);
+    var keys = [];
+    for (var i = 0; i < numChunks; i++) keys.push('qdata_' + safeLang + '_part_' + i);
+    var chunks = cache.getAll(keys);
+    var json = '';
+    var allPresent = true;
+    for (var k = 0; k < numChunks; k++) {
+      var c = chunks['qdata_' + safeLang + '_part_' + k];
+      if (c === null || c === undefined) { allPresent = false; break; }
+      json += c;
+    }
+    if (allPresent) {
+      try { return JSON.parse(json); } catch (e) { /* fall through to Drive */ }
+    }
+  }
+
+  // Cache miss → read from Drive
+  var folderId = PropertiesService.getScriptProperties().getProperty('QUESTIONS_DRIVE_FOLDER_ID');
+  if (!folderId) {
+    throw new Error('QUESTIONS_DRIVE_FOLDER_ID not configured in ScriptProperties');
+  }
+  var folder;
+  try { folder = DriveApp.getFolderById(folderId); }
+  catch (e) { throw new Error('Cannot access Drive folder: ' + e.message); }
+
+  var fileName = 'questions_' + safeLang + '.json';
+  var files = folder.getFilesByName(fileName);
+  if (!files.hasNext()) throw new Error(fileName + ' not found in Drive folder');
+  var file = files.next();
+
+  var jsonStr = file.getBlob().getDataAsString('UTF-8');
+
+  // Write back to cache in chunks (CacheService cap: 100 KB per key)
+  var CHUNK_SIZE = 90000;
+  var totalChunks = Math.ceil(jsonStr.length / CHUNK_SIZE);
+  var putMap = {};
+  for (var pi = 0; pi < totalChunks; pi++) {
+    putMap['qdata_' + safeLang + '_part_' + pi] = jsonStr.substr(pi * CHUNK_SIZE, CHUNK_SIZE);
+  }
+  putMap[metaKey] = String(totalChunks);
+  try { cache.putAll(putMap, 21600); } catch (e) { /* cache full or unavailable — proceed without */ }
+
+  return JSON.parse(jsonStr);
+}
+
+// Pick 30 questions per the license blueprint, return them WITHOUT the
+// correct-answer index. Authenticated clients only — falls back to a
+// rate-limited guest path for the standalone exam.html flow.
+function handleGetExamQuestions(p) {
+  // Determine auth context
+  var auth = 'guest';
+  if (p.sessionCode && p.idNumber && p.examineeToken) {
+    var ev = verifyExamineeToken(p.sessionCode, p.idNumber, p.examineeToken);
+    if (!ev.valid) {
+      return jsonResponse({ status: 'error', message: 'Examinee token invalid', reason: ev.reason });
+    }
+    auth = 'examinee';
+  } else if (p.token && p.examinerId) {
+    if (!verifyToken(p.examinerId, p.token)) {
+      return jsonResponse({ status: 'error', message: 'Examiner token invalid', tokenExpired: true });
+    }
+    auth = 'examiner';
+  } else if (p.classCode && p.studentId) {
+    // Student practice mode — looser auth, just rate-limit
+    auth = 'student';
+  } else if (p.standaloneIdNumber) {
+    // Standalone exam.html — examinee enters their ID, no token; rate-limit hard
+    auth = 'standalone';
+  }
+
+  // Rate limit (per auth + identifier)
+  var rlId = p.sessionCode || p.idNumber || p.examinerId || p.studentId || p.standaloneIdNumber || 'anon';
+  var rlMax = (auth === 'guest' || auth === 'standalone') ? 5 : 20;
+  var rlErr = requireRateLimit('getExamQuestions_' + auth, rlId, rlMax, 60);
+  if (rlErr) return rlErr;
+
+  var lang = String(p.language || 'he').toLowerCase();
+  var license = String(p.license || p.licenseType || 'B');
+  if (!EXAM_STRUCTURE_SERVER[license]) {
+    return jsonResponse({ status: 'error', message: 'Unknown license: ' + license });
+  }
+
+  var allQuestions;
+  try { allQuestions = loadQuestionsForLanguageServer(lang); }
+  catch (e) { return jsonResponse({ status: 'error', message: 'Cannot load questions: ' + e.message }); }
+
+  // Dedupe by id
+  var seen = {};
+  var pool = [];
+  for (var i = 0; i < allQuestions.length; i++) {
+    var q = allQuestions[i];
+    if (!q || !q.id || seen[q.id]) continue;
+    if (!Array.isArray(q.answers) || q.answers.length < 2) continue;
+    seen[q.id] = true;
+    pool.push(q);
+  }
+
+  pool = filterByLicenseServer(pool, license);
+
+  // Category-quiz mode (student.html practice by topic): return up to N
+  // questions matching one category, skipping the 30-question blueprint.
+  var mode = String(p.mode || 'exam');
+  var selected;
+  if (mode === 'category' && p.categoryFilter) {
+    var wantTopic = String(p.categoryFilter);
+    var catPool = pool.filter(function(q) { return classifyCategoryServer(q.category) === wantTopic; });
+    catPool = shuffleArrayServer(catPool);
+    var max = Number(p.maxCount) || 15;
+    selected = catPool.slice(0, Math.min(catPool.length, max));
+    if (selected.length === 0) {
+      return jsonResponse({ status: 'error', message: 'No questions in category', topic: wantTopic });
+    }
+  } else {
+    // Default exam mode: pick per EXAM_STRUCTURE blueprint.
+    var byTopic = {};
+    for (var j = 0; j < pool.length; j++) {
+      var t = classifyCategoryServer(pool[j].category);
+      if (!t) continue;
+      if (!byTopic[t]) byTopic[t] = [];
+      byTopic[t].push(pool[j]);
+    }
+    var blueprint = EXAM_STRUCTURE_SERVER[license];
+    selected = [];
+    var usedIds = {};
+    for (var topic in blueprint) {
+      var needed = blueprint[topic];
+      var avail = shuffleArrayServer(byTopic[topic] || []);
+      var count = 0;
+      for (var ai = 0; ai < avail.length && count < needed; ai++) {
+        if (usedIds[avail[ai].id]) continue;
+        usedIds[avail[ai].id] = true;
+        selected.push(avail[ai]);
+        count++;
+      }
+      if (count < needed) {
+        return jsonResponse({
+          status: 'error',
+          message: 'Not enough questions for topic',
+          topic: topic,
+          have: (byTopic[topic] || []).length,
+          need: needed
+        });
+      }
+    }
+    selected = shuffleArrayServer(selected);
+  }
+
+  // Remember which IDs we issued so handleRegisterExamQuestions can refuse
+  // submissions that name questions we didn't actually give the examinee.
+  // Only meaningful for the examinee-token path (we have a stable identifier).
+  if (auth === 'examinee' && p.sessionCode && p.idNumber) {
+    var issuedKey = 'issued_qs_' + p.sessionCode + '_' + normalizeId(p.idNumber);
+    var ids = selected.map(function(q) { return q.id; });
+    try { CacheService.getScriptCache().put(issuedKey, JSON.stringify(ids), 21600); } catch (e) { /* skip */ }
+  }
+
+  // For real exams (auth === 'examinee') we deliberately omit the correct
+  // index — scoring happens server-side via handleRegisterExamQuestions /
+  // handleSubmitResult using ANSWER_KEY_BY_LANG. For practice/standalone
+  // flows (exam.html, student.html) the client needs to score locally, so
+  // we include the encoded `ci` field that matches the legacy questions.js
+  // format: ci = correctIndex XOR (id mod 256).
+  if (auth !== 'examinee' && typeof lookupCorrectIndex === 'function') {
+    for (var ci_i = 0; ci_i < selected.length; ci_i++) {
+      var origCorrect = lookupCorrectIndex(Number(selected[ci_i].id), lang);
+      if (origCorrect !== null && origCorrect !== undefined) {
+        selected[ci_i].ci = origCorrect ^ (selected[ci_i].id % 256);
+      }
+    }
+  }
+
+  return jsonResponse({ status: 'ok', auth: auth, count: selected.length, questions: selected });
+}
+
+// ========== Question search (for find_image.html examiner utility) ==========
+// Returns up to 20 questions whose text/answers/category match the query
+// substring. Requires examiner token — this is an internal staff utility,
+// not for examinees. Cross-language search: caller passes the language and
+// we search that language's pre-translated dataset.
+function handleSearchQuestions(p) {
+  var authErr = requireToken(p);
+  if (authErr) return authErr;
+  var rlErr = requireRateLimit('searchQuestions', String(p.examinerId || ''), 30, 60);
+  if (rlErr) return rlErr;
+
+  var query = String(p.q || '').trim().toLowerCase();
+  if (query.length < 2) return jsonResponse({ status: 'ok', matches: [], note: 'Query too short' });
+
+  var lang = String(p.language || 'he').toLowerCase();
+  var allQuestions;
+  try { allQuestions = loadQuestionsForLanguageServer(lang); }
+  catch (e) { return jsonResponse({ status: 'error', message: 'Cannot load questions: ' + e.message }); }
+
+  var matches = [];
+  var MAX_MATCHES = 20;
+  for (var i = 0; i < allQuestions.length && matches.length < MAX_MATCHES; i++) {
+    var q = allQuestions[i];
+    if (!q || !q.text) continue;
+    var hay = (q.text + ' ' + (q.answers || []).join(' ') + ' ' + (q.category || '')).toLowerCase();
+    if (hay.indexOf(query) === -1) continue;
+    var match = {
+      id: q.id,
+      text: q.text,
+      answers: q.answers,
+      category: q.category,
+      licenseType: q.licenseType,
+      imageUrl: q.imageUrl
+    };
+    // Include encoded ci for the search utility (examiner trusted view)
+    if (typeof lookupCorrectIndex === 'function') {
+      var orig = lookupCorrectIndex(Number(q.id), lang);
+      if (orig !== null && orig !== undefined) {
+        match.ci = orig ^ (q.id % 256);
+      }
+    }
+    matches.push(match);
+  }
+
+  return jsonResponse({ status: 'ok', matches: matches, language: lang, query: query });
 }
 
 // ========== Result-upload HMAC token (for Cloudflare Worker auth) ==========
