@@ -498,7 +498,9 @@
 
 <footer>תרגול תאוריה &copy; 2026</footer>
 
-<script src="questions.js"></script>
+<!-- questions.js removed — student.html now fetches each practice set from
+     the Apps Script `getExamQuestions` endpoint. See API_URL below. -->
+
 <script>
 (function(){'use strict';
 var TOTAL_QUESTIONS=30,PASS_SCORE=26,BASE_EXAM_MINUTES=40;
@@ -629,25 +631,25 @@ function loadProgressFromCloud(callback){
 
 function showScreen(id){var s=document.querySelectorAll('.screen');for(var i=0;i<s.length;i++)s[i].classList.remove('active');var t=document.getElementById(id);if(t)t.classList.add('active');window.scrollTo(0,0);}
 
-function loadTranslationFile(lang,cb){if(lang==='he'||lang==='ru'||loadedTranslations[lang]){translationLoaded=true;if(cb)cb();return;}var s=document.createElement('script');s.src='questions_'+lang+'.js';s.onload=function(){translationLoaded=true;loadedTranslations[lang]=true;if(cb)cb();};s.onerror=function(){translationLoaded=true;if(cb)cb();};document.head.appendChild(s);}
+function loadTranslationFile(lang,cb){loadedTranslations[lang]=true;translationLoaded=true;if(cb)cb();} // server now returns pre-translated questions
 
 function classifyCategory(cat){var c=(cat||'').trim();if(/\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9/.test(c))return'\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9';if(/\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA/.test(c))return'\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA';if(/\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1/.test(c))return'\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1';if(/\u05D7\u05D5\u05E7/.test(c))return'\u05D7\u05D5\u05E7';if(/\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD/.test(c))return'\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD';if(/\u05D6\u05DB\u05D5\u05EA \u05E7\u05D3\u05D9\u05DE\u05D4/.test(c))return'\u05D7\u05D5\u05E7';return'';}
 function categoryClass(cat){var n=classifyCategory(cat);if(n==='\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA')return'q-cat-safety';if(n==='\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1')return'q-cat-vehicle';if(n==='\u05D7\u05D5\u05E7')return'q-cat-law';if(n==='\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD')return'q-cat-signs';if(n==='\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9')return'q-cat-specific';return'';}
 function getTransDict(){var v=TRANSLATION_VARS[currentLanguage];if(v&&window[v])return window[v];return null;}
-function hasTranslation(q,lang){var v=TRANSLATION_VARS[lang];if(!v||!window[v])return false;var t=window[v][q.id];return t&&t.t&&t.a&&t.a.length>=2;}
-var ruQuestionMap=null;function getRuQuestion(id){if(!ruQuestionMap){ruQuestionMap={};var qs=(typeof QUESTIONS!=='undefined')?QUESTIONS:window.QUESTIONS;for(var i=0;i<qs.length;i++){if((qs[i].language||'he')==='ru')ruQuestionMap[qs[i].id]=qs[i];}}return ruQuestionMap[id]||null;}
+function hasTranslation(_q,_lang){return true;} // server delivers in requested language
+function getRuQuestion(_id){return null;} // legacy lookup — server now delivers Russian directly
 function getQText(q){if(currentLanguage==='he')return q.text;if(currentLanguage==='ru'){if(q.language==='ru')return q.text;var rq=getRuQuestion(q.id);if(rq)return rq.text;return q.text;}var d=getTransDict();if(d&&d[q.id])return d[q.id].t;return q.text;}
 function getQAnswers(q){if(currentLanguage==='he')return q.answers;if(currentLanguage==='ru'){if(q.language==='ru')return q.answers;var rq=getRuQuestion(q.id);if(rq)return rq.answers;return q.answers;}var d=getTransDict();if(d&&d[q.id])return d[q.id].a;return q.answers;}
 function decodeCI(ci,id){return ci^(id%256);}
 function getQCorrectIndex(q){if(currentLanguage==='he')return decodeCI(q.ci,q.id);if(currentLanguage==='ru'){if(q.language==='ru')return decodeCI(q.ci,q.id);var rq=getRuQuestion(q.id);if(rq)return decodeCI(rq.ci,rq.id);return decodeCI(q.ci,q.id);}var d=getTransDict();if(d&&d[q.id]&&d[q.id].ci!==undefined)return decodeCI(d[q.id].ci,q.id);return decodeCI(q.ci,q.id);}
 
-function getFilteredQuestions(license,language){license=String(license||'');language=String(language||'he');var qs=(typeof QUESTIONS!=='undefined')?QUESTIONS:window.QUESTIONS;if(!qs||!Array.isArray(qs))return[];var filterLang=language,needTrans=false;if(language!=='he'&&language!=='ru'){filterLang='he';needTrans=true;}return qs.filter(function(q){if((q.language||'he')!==filterLang)return false;if(!q.answers||q.answers.length<2)return false;if(needTrans&&!hasTranslation(q,language))return false;if(/\u05D6\u05DB\u05D5\u05EA \u05E7\u05D3\u05D9\u05DE\u05D4/.test(q.category||''))return true;if(license==='1'){var lt=(q.licenseType||'').trim();if(lt!==''&&lt!=='N/A')return false;var cat=(q.category||'');if(cat.indexOf('1')===-1)return false;}else if(license==='C'){var lic=(q.licenseType||'').trim();if(lic!=='C'&&lic!=='C/E'&&lic!=='C+E'&&lic!=='CE')return false;}else{var lic=(q.licenseType||'').trim();if(lic!==license)return false;}return true;});}
+function getFilteredQuestions(_license,_language){return[];} // stubbed \u2014 server picks now
 
 function shuffle(arr){var a=arr.slice();for(var i=a.length-1;i>0;i--){var j=Math.floor(Math.random()*(i+1));var t=a[i];a[i]=a[j];a[j]=t;}return a;}
 
-function buildExam(license,language){var structure=EXAM_STRUCTURE[license];if(!structure)return[];var pool=getFilteredQuestions(license,language);var seen={};pool=pool.filter(function(q){if(seen[q.id])return false;seen[q.id]=true;return true;});var byTopic={};for(var t in structure)byTopic[t]=[];pool.forEach(function(q){var topic=classifyCategory(q.category);if(byTopic[topic])byTopic[topic].push(q);});var selected=[],usedIds={};for(var topic in structure){var needed=structure[topic];var avail=shuffle(byTopic[topic]||[]);if(avail.length<needed)return[];var count=0;for(var i=0;i<avail.length&&count<needed;i++){if(!usedIds[avail[i].id]){usedIds[avail[i].id]=true;selected.push(avail[i]);count++;}}if(count<needed)return[];}return shuffle(selected);}
+function buildExam(_license,_language){return[];} // server-side picker replaces this
 
-function buildCategoryQuiz(license,language,category){var pool=getFilteredQuestions(license,language);var seen={};pool=pool.filter(function(q){if(seen[q.id])return false;seen[q.id]=true;return true;});pool=pool.filter(function(q){return classifyCategory(q.category)===category;});pool=shuffle(pool);var max=15;if(category==='\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9'&&pool.length<15)max=Math.min(pool.length,10);return pool.slice(0,Math.min(pool.length,max));}
+function buildCategoryQuiz(_license,_language,_category){return[];} // server-side picker replaces this
 
 function shuffleAnswers(q,qIdx){if(shuffledOrders[qIdx]){var cached=shuffledOrders[qIdx];var freshAnswers=getQAnswers(q);var freshCorrect=getQCorrectIndex(q);cached.answers=cached.order.map(function(idx){return freshAnswers[idx];});cached.correctIndex=cached.order.indexOf(freshCorrect);return cached;}var answers=getQAnswers(q);var correctIdx=getQCorrectIndex(q);var indices=[];for(var i=0;i<answers.length;i++)indices.push(i);for(var i=indices.length-1;i>0;i--){var j=Math.floor(Math.random()*(i+1));var t=indices[i];indices[i]=indices[j];indices[j]=t;}var shuffled=indices.map(function(idx){return answers[idx];});var newCorrect=indices.indexOf(correctIdx);var result={answers:shuffled,correctIndex:newCorrect,order:indices};shuffledOrders[qIdx]=result;return result;}
 
@@ -657,9 +659,22 @@ function updateTimerDisplay(secs){var el=document.getElementById('timerDisplay')
 function stopTimer(){if(timerInterval){clearInterval(timerInterval);timerInterval=null;}examDeadline=null;document.removeEventListener('visibilitychange',onVisTimer);}
 function getTimeRemaining(){if(!examDeadline)return 0;return Math.max(0,Math.ceil((examDeadline-Date.now())/1000));}
 
-function startExam(){currentMode='exam';immediateMode=false;currentCategory='';currentIndex=0;userAnswers=[];shuffledOrders=[];answerLocked=false;examStartTime=Date.now();examQuestions=buildExam(currentLicense,currentLanguage);if(examQuestions.length===0){alert('\u05DC\u05D0 \u05E0\u05DE\u05E6\u05D0\u05D5 \u05DE\u05E1\u05E4\u05D9\u05E7 \u05E9\u05D0\u05DC\u05D5\u05EA. \u05E0\u05E1\u05D5 \u05E9\u05E4\u05D4/\u05E8\u05D9\u05E9\u05D9\u05D5\u05DF \u05D0\u05D7\u05E8.');return;}for(var i=0;i<examQuestions.length;i++)userAnswers.push(null);showScreen('screenPractice');startTimer();renderQuestion();}
+function _fetchServerQuestions(extraParams,onOk,onFail){
+  var qs='action=getExamQuestions&license='+encodeURIComponent(currentLicense)+'&language='+encodeURIComponent(currentLanguage)+'&studentId='+encodeURIComponent(currentStudentId||'anon')+'&classCode='+encodeURIComponent(currentClassCode||'')+'&_t='+Date.now();
+  for(var k in extraParams){if(extraParams.hasOwnProperty(k)){qs+='&'+encodeURIComponent(k)+'='+encodeURIComponent(extraParams[k]);}}
+  fetch(API_URL+'?'+qs,{cache:'no-store'}).then(function(r){return r.json();}).then(function(resp){
+    if(!resp||resp.status!=='ok'||!Array.isArray(resp.questions)||resp.questions.length===0){onFail((resp&&resp.message)?resp.message:'\u05E9\u05D2\u05D9\u05D0\u05D4 \u05D1\u05D8\u05E2\u05D9\u05E0\u05EA \u05E9\u05D0\u05DC\u05D5\u05EA');return;}
+    onOk(resp.questions);
+  }).catch(function(){onFail('\u05E9\u05D2\u05D9\u05D0\u05EA \u05EA\u05E7\u05E9\u05D5\u05E8\u05EA');});
+}
 
-function startCategoryQuiz(category){currentMode='category';immediateMode=true;currentCategory=category;currentIndex=0;userAnswers=[];shuffledOrders=[];answerLocked=false;examStartTime=Date.now();examQuestions=buildCategoryQuiz(currentLicense,currentLanguage,category);if(examQuestions.length===0){alert('\u05DC\u05D0 \u05E0\u05DE\u05E6\u05D0\u05D5 \u05E9\u05D0\u05DC\u05D5\u05EA \u05D1\u05E0\u05D5\u05E9\u05D0 \u05D6\u05D4.');return;}for(var i=0;i<examQuestions.length;i++)userAnswers.push(null);showScreen('screenPractice');renderQuestion();}
+function startExam(){currentMode='exam';immediateMode=false;currentCategory='';currentIndex=0;userAnswers=[];shuffledOrders=[];answerLocked=false;examStartTime=Date.now();
+  _fetchServerQuestions({mode:'exam'},function(qs){examQuestions=qs;for(var i=0;i<examQuestions.length;i++)userAnswers.push(null);showScreen('screenPractice');startTimer();renderQuestion();},function(msg){alert(msg||'\u05DC\u05D0 \u05E0\u05DE\u05E6\u05D0\u05D5 \u05DE\u05E1\u05E4\u05D9\u05E7 \u05E9\u05D0\u05DC\u05D5\u05EA. \u05E0\u05E1\u05D5 \u05E9\u05E4\u05D4/\u05E8\u05D9\u05E9\u05D9\u05D5\u05DF \u05D0\u05D7\u05E8.');});
+}
+
+function startCategoryQuiz(category){currentMode='category';immediateMode=true;currentCategory=category;currentIndex=0;userAnswers=[];shuffledOrders=[];answerLocked=false;examStartTime=Date.now();
+  _fetchServerQuestions({mode:'category',categoryFilter:category,maxCount:15},function(qs){examQuestions=qs;for(var i=0;i<examQuestions.length;i++)userAnswers.push(null);showScreen('screenPractice');renderQuestion();},function(msg){alert(msg||'\u05DC\u05D0 \u05E0\u05DE\u05E6\u05D0\u05D5 \u05E9\u05D0\u05DC\u05D5\u05EA \u05D1\u05E0\u05D5\u05E9\u05D0 \u05D6\u05D4.');});
+}
 
 // ===== TTS Engine =====
 function unlockAudio(){if(audioUnlocked)return;audioUnlocked=true;try{var ctx=new(window.AudioContext||window.webkitAudioContext)();var buf=ctx.createBuffer(1,1,22050);var src=ctx.createBufferSource();src.buffer=buf;src.connect(ctx.destination);src.start(0);ctx.resume();}catch(e){}}
