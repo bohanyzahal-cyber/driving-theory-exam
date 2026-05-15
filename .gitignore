@@ -16,6 +16,10 @@ driving questions.zip
 # Regenerate locally with deployment/generate_answer_key.js and paste into Apps Script.
 deployment/answer_key.gs
 
+# Per-language question dumps — generated for upload to private Drive folder.
+# Run deployment/generate_questions_data.js to regenerate.
+deployment/generated/
+
 # Internal docs — security plans, meeting notes etc must stay local
 deployment/security-roadmap.md
 deployment/meeting-checklist.md
