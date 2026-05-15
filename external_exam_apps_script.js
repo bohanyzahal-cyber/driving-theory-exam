@@ -328,7 +328,7 @@ function doGet(e) {
     if (originErr) return originErr;
 
     // Actions that require examiner token authentication
-    var examinerActions = ['getSites','listSessions','createSession','updateSession','closeSession',
+    var examinerActions = ['getSites','listSessions','listAllSessions','createSession','updateSession','closeSession',
       'approveExaminee','rejectExaminee','examinerDashboard','resetExaminee',
       'correctToPass','overturnDQ','forceComplete','markSent','commanderDashboard',
       'commanderCorrectResult'];
@@ -362,6 +362,9 @@ function doGet(e) {
 
       case 'listSessions':
         return handleListSessions(p);
+
+      case 'listAllSessions':
+        return handleListAllSessions(p);
 
       case 'createSession':
         return handleCreateSession(p);
@@ -731,6 +734,51 @@ function handleListSessions(p) {
   }
   // Return up to 20 most recent sessions
   return jsonResponse({ status: 'ok', sessions: sessions.slice(0, 20) });
+}
+
+// Commander-only: return every active, non-expired session across all examiners.
+// Used by the commander UI to load and inspect/correct results in another
+// examiner's session (audit / appeal-committee workflow).
+function handleListAllSessions(p) {
+  // Token already verified upstream (in examinerActions allowlist). Add a role
+  // check here since the action isn't restricted by ownership.
+  var role = getExaminerRole(p.examinerId);
+  if (role !== 'מפקד') {
+    return jsonResponse({ status: 'error', message: 'פעולה זו זמינה רק למפקדים' });
+  }
+  var sheet = getSheet('סשנים');
+  var data = sheet.getDataRange().getValues();
+  var sitesSheet = getSheet('אתרים');
+  var sitesData = sitesSheet.getDataRange().getValues();
+  var sitesMap = {};
+  for (var s = 1; s < sitesData.length; s++) {
+    sitesMap[String(sitesData[s][0]).trim()] = { managerPhone: sitesData[s][2] || '' };
+  }
+  var now = new Date();
+  var sessions = [];
+  for (var i = data.length - 1; i >= 1; i--) {
+    var active = data[i][10] === true || String(data[i][10]).toUpperCase() === 'TRUE';
+    if (!active) continue;
+    var validUntil = data[i][9] ? new Date(data[i][9]) : null;
+    if (validUntil && now > validUntil) continue;
+    var siteName = String(data[i][3] || '').trim();
+    sessions.push({
+      code: String(data[i][0]),
+      examinerId: normalizeId(data[i][1]),
+      examinerName: data[i][2] || '',
+      site: data[i][3] || '',
+      classroom: data[i][4] || '',
+      license: data[i][5] || '',
+      language: data[i][6] || 'he',
+      audioMode: data[i][7] || 'off',
+      created: data[i][8] || '',
+      validUntil: data[i][9] || '',
+      active: true,
+      managerPhone: sitesMap[siteName] ? sitesMap[siteName].managerPhone : ''
+    });
+  }
+  // Cap response size — newest first (we already iterate in reverse)
+  return jsonResponse({ status: 'ok', sessions: sessions.slice(0, 100) });
 }
 
 function handleCreateSession(p) {
