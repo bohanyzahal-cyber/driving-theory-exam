@@ -8,5 +8,18 @@ spanish_*.html
 system_flowchart.html
 _translation_progress/
 _zip_extracted/
-_ul
+_ul*
 driving questions.zip
+
+# --- Security: never commit these ---
+# Server-side answer key — was leaking exam answers publicly.
+# Regenerate locally with deployment/generate_answer_key.js and paste into Apps Script.
+deployment/answer_key.gs
+
+# Internal docs — security plans, meeting notes etc must stay local
+deployment/security-roadmap.md
+deployment/meeting-checklist.md
+
+# Tooling / build artifacts
+node_modules/
+.claude/
