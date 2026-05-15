@@ -374,6 +374,13 @@
       <h3 style="font-size:16px; color:#334155; margin:0 0 12px; font-weight:800;">📋 סשנים פעילים — חזרה לסשן קודם</h3>
       <div id="prevSessionsList"></div>
     </div>
+
+    <!-- Commander-only: open any session across all examiners -->
+    <div id="allSessionsArea" style="display:none; margin-top:20px; border-top:2px solid #fde68a; padding-top:20px;">
+      <h3 style="font-size:16px; color:#7c2d12; margin:0 0 8px; font-weight:800;">🛡 פיקוח: סשנים של בוחנים אחרים</h3>
+      <p class="muted" style="margin:0 0 12px; font-size:13px;">כניסה לכל סשן פעיל לצורך בקרה ותיקון תוצאות</p>
+      <button onclick="openAllSessionsModal()" style="width:100%; padding:12px; font-size:15px; background:#7c2d12;">📂 הצג רשימת כל הסשנים הפעילים</button>
+    </div>
   </section>
 
   <!-- ===== Screen 3: Dashboard ===== -->
@@ -486,6 +493,17 @@
       <div id="cmdLoading" style="display:none;margin:12px 0;color:#64748b;">טוען נתונים...</div>
     </div>
 
+    <!-- Commander quick access to any session -->
+    <div class="card" style="background:#fff7ed; border:1px solid #fed7aa;">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+        <div>
+          <h3 style="margin:0 0 4px; color:#7c2d12; font-size:16px;">🛡 כניסה לסשן של בוחן אחר</h3>
+          <p class="muted" style="margin:0; font-size:13px;">לבקרה, תיקון תוצאות וועדות ערעור</p>
+        </div>
+        <button onclick="openAllSessionsModal()" style="background:#7c2d12; padding:10px 16px; font-size:14px;">📂 הצג כל הסשנים הפעילים</button>
+      </div>
+    </div>
+
     <div id="cmdKPIs" class="card" style="display:none;">
       <div style="display:flex;gap:16px;flex-wrap:wrap;justify-content:center;">
         <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdTotal">0</div><div class="cmd-kpi-lbl">סה"כ נבחנים</div></div>
@@ -564,6 +582,20 @@
     <div style="display:flex; gap:8px; justify-content:flex-end;">
       <button style="background:#64748b;" onclick="closeSettingsModal()">ביטול</button>
       <button onclick="saveSettings()">שמור</button>
+    </div>
+  </div>
+</div>
+
+<!-- Commander all-sessions modal -->
+<div class="modal-overlay" id="allSessionsModal">
+  <div class="modal-box" style="max-width:680px;">
+    <h3>סשנים פעילים — כל הבוחנים</h3>
+    <p class="muted" style="margin:4px 0 14px; font-size:13px;">לחץ על שורה כדי להיכנס לסשן ולערוך תוצאות</p>
+    <div id="allSessionsContent" style="max-height:60vh; overflow-y:auto;">
+      <div style="text-align:center; padding:20px; color:#64748b;">⏳ טוען...</div>
+    </div>
+    <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:14px;">
+      <button style="background:#64748b;" onclick="closeAllSessionsModal()">סגור</button>
     </div>
   </div>
 </div>
@@ -839,6 +871,11 @@
           fetchSites();
           fetchPreviousSessions();
         }
+        // Commander-only: reveal the "open another examiner's session" panel on the setup screen
+        if (userRole === 'מפקד') {
+          var allArea = document.getElementById('allSessionsArea');
+          if (allArea) allArea.style.display = 'block';
+        }
       } else {
         errEl.textContent = data.message || 'שגיאת כניסה';
         errEl.style.display = 'block';
@@ -922,6 +959,74 @@
       }
     }).catch(function() {});
   }
+
+  // ========== Commander: list all active sessions across examiners ==========
+  window.openAllSessionsModal = function() {
+    if (userRole !== 'מפקד') return;
+    var modal = document.getElementById('allSessionsModal');
+    var content = document.getElementById('allSessionsContent');
+    content.innerHTML = '<div style="text-align:center; padding:20px; color:#64748b;">⏳ טוען...</div>';
+    modal.classList.add('show');
+
+    apiGet({ action: 'listAllSessions' }).then(function(data) {
+      if (data.status !== 'ok') {
+        content.innerHTML = '<div style="color:#dc2626; padding:20px; text-align:center;">' + escHtml(data.message || 'שגיאה בטעינה') + '</div>';
+        return;
+      }
+      var sessions = data.sessions || [];
+      if (sessions.length === 0) {
+        content.innerHTML = '<div style="color:#64748b; padding:20px; text-align:center;">אין סשנים פעילים</div>';
+        return;
+      }
+      var html = '<div style="overflow-x:auto;"><table class="results-table" style="font-size:13px;"><thead><tr>' +
+        '<th>בוחן</th><th>אתר</th><th>כיתה</th><th>דרגה</th><th>שפה</th><th>קוד</th><th>תקף עד</th>' +
+        '</tr></thead><tbody>';
+      var now = new Date();
+      for (var i = 0; i < sessions.length; i++) {
+        var s = sessions[i];
+        var licLabel = LICENSE_LABELS[s.license] || s.license || '';
+        var remaining = '';
+        if (s.validUntil) {
+          var ms = new Date(s.validUntil).getTime() - now.getTime();
+          if (ms > 0) {
+            var mins = Math.floor(ms / 60000);
+            var h = Math.floor(mins / 60), m = mins % 60;
+            remaining = h + ':' + (m < 10 ? '0' : '') + m;
+          } else {
+            remaining = 'פג';
+          }
+        }
+        // Encode the full session object as data attribute so the click handler can hydrate it.
+        var encoded = encodeURIComponent(JSON.stringify(s));
+        html += '<tr style="cursor:pointer;" onmouseover="this.style.background=\'#fef3c7\';" onmouseout="this.style.background=\'\';" onclick="loadForeignSession(\'' + encoded + '\')">' +
+          '<td>' + escHtml(s.examinerName || '') + '</td>' +
+          '<td>' + escHtml(s.site || '') + '</td>' +
+          '<td>' + escHtml(s.classroom || '') + '</td>' +
+          '<td>' + escHtml(licLabel) + '</td>' +
+          '<td>' + escHtml(s.language || 'he') + '</td>' +
+          '<td style="font-family:monospace; font-weight:700;">' + escHtml(s.code) + '</td>' +
+          '<td>' + escHtml(remaining) + '</td>' +
+          '</tr>';
+      }
+      html += '</tbody></table></div>';
+      content.innerHTML = html;
+    }).catch(function(err) {
+      content.innerHTML = '<div style="color:#dc2626; padding:20px; text-align:center;">שגיאת תקשורת: ' + escHtml(String(err)) + '</div>';
+    });
+  };
+
+  window.closeAllSessionsModal = function() {
+    document.getElementById('allSessionsModal').classList.remove('show');
+  };
+
+  window.loadForeignSession = function(encoded) {
+    var sess;
+    try { sess = JSON.parse(decodeURIComponent(encoded)); } catch(e) { alert('שגיאה בקריאת נתוני הסשן'); return; }
+    closeAllSessionsModal();
+    // Reuse the existing session-load flow. resumeSession handles everything:
+    // state save, dashboard render, polling, countdown.
+    resumeSession(sess);
+  };
 
   function resumeSession(sess) {
     sessionCode = sess.code;
@@ -4152,6 +4257,11 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     fetchPreviousSessions();
     // Show "back to commander" on setup screen
     document.getElementById('backToCommanderSetup').style.display = '';
+    // Reveal commander-only "all sessions" panel when relevant
+    if (userRole === 'מפקד') {
+      var allArea = document.getElementById('allSessionsArea');
+      if (allArea) allArea.style.display = 'block';
+    }
   };
 
   window.switchToCommander = function() {
