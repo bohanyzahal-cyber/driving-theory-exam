@@ -2119,6 +2119,39 @@ function handleCancelFailOnClose(data) {
   return jsonResponse({ status: 'ok' });
 }
 
+// ========== Question-cache warmup (for scheduled trigger) ==========
+// Apps Script's CacheService keeps entries for up to 6 hours. Loading the
+// 7 language files from Drive on a cold cache takes ~10-15 sec, which is
+// the main reason exam-start feels slow for the first user after a long
+// idle period. This function pre-loads every language file into cache so
+// real user requests always hit warm cache.
+//
+// Setup (one-time): in Apps Script editor →
+//   Triggers (clock icon, left sidebar) → Add Trigger
+//   Function: warmupQuestionCaches
+//   Event source: Time-driven
+//   Type: Hour timer
+//   Every: 4 hours
+//   Save (you'll be asked to authorize)
+//
+// After that, the cache is continuously warm; users always see ~3-5 sec
+// exam-start instead of 15-20 sec.
+function warmupQuestionCaches() {
+  var LANGS = ['he', 'ru', 'en', 'ar', 'fr', 'es', 'am'];
+  var summary = [];
+  for (var i = 0; i < LANGS.length; i++) {
+    var t0 = Date.now();
+    try {
+      var data = loadQuestionsForLanguageServer(LANGS[i]);
+      summary.push(LANGS[i] + ': ' + (data ? data.length : 0) + ' questions cached in ' + (Date.now() - t0) + 'ms');
+    } catch (e) {
+      summary.push(LANGS[i] + ': ERROR - ' + (e && e.message ? e.message : e));
+    }
+  }
+  Logger.log('warmupQuestionCaches complete:\n' + summary.join('\n'));
+  return summary;
+}
+
 // ========== Server-side question delivery ==========
 // Loads question data from a private Google Drive folder (one JSON file per
 // language) and returns a curated 30-question exam to authenticated clients.
