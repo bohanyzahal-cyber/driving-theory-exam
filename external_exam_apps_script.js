@@ -486,6 +486,9 @@ function doGet(e) {
       case 'searchQuestions':
         return handleSearchQuestions(p);
 
+      case 'bohanSiteAuth':
+        return handleBohanSiteAuth(p);
+
       case 'viewResult':
         var resultId = p.id;
         if (!resultId) return HtmlService.createHtmlOutput('<h1 style="text-align:center;padding:40px;font-family:Arial;">Missing ID</h1>');
@@ -2411,6 +2414,152 @@ function handleSearchQuestions(p) {
   }
 
   return jsonResponse({ status: 'ok', matches: matches, language: lang, query: query });
+}
+
+// ========== Bohan-site (IDF examiners portal) — server-side data + auth ==========
+// The names, Waze links, and external URLs used by bohan-site.pages.dev live
+// here on the server. The HTML on Pages is a thin shell that asks the user
+// for the shared password, then fetches this data via bohanSiteAuth and
+// renders it. Without the password, the browser receives no sensitive data
+// — protects both the live Pages URL AND the public GitHub source.
+//
+// Setup:
+//   1) Set ScriptProperty BOHAN_SITE_PASSWORD = <shared examiner password>
+//   2) Set ScriptProperty BOHAN_SITE_SECRET = <random 32-char HMAC secret>
+//   3) Deploy. Push the updated bohan-site/index.html to GitHub.
+
+var BOHAN_SITE_EXAMINERS = [
+  'אללוף יצחק',
+  'גיטלמן ויטלי',
+  'אלבלה אברהם',
+  'נגאוקר שמשון',
+  'מלל דרור',
+  'קורנבליט אלכס',
+  'שרון צרימי',
+  'יניר נאוגאוקר',
+  'פלס דוד',
+  'לוי בנימין',
+  'רון יהוד'
+];
+
+var BOHAN_SITE_LOCATIONS = [
+  { name: 'אופקים', wazeUrl: 'https://ul.waze.com/ul?ll=31.32266385%2C34.62266207&navigate=yes&zoom=17&utm_campaign=default&utm_source=waze_website&utm_medium=lm_share_location' },
+  { name: 'אשדוד', wazeUrl: 'https://waze.com/ul/hsv8sudz4t' },
+  { name: 'אשקלון', wazeUrl: 'https://ul.waze.com/ul?ll=31.66465059%2C34.55991983&navigate=yes&zoom=17&utm_campaign=default&utm_source=waze_website&utm_medium=lm_share_location' },
+  { name: 'אילת', wazeUrl: 'https://waze.com/ul/hsv2b5mzn7' },
+  { name: 'באר שבע', wazeUrl: 'https://ul.waze.com/ul?ll=31.24712197%2C34.76847768&navigate=yes&zoom=17&utm_campaign=default&utm_source=waze_website&utm_medium=lm_share_location' },
+  { name: 'באר שבע בית החייל', wazeUrl: 'https://www.ufis.org.il/?categoryId=123860' },
+  { name: 'באר שבע ל"ג', wazeUrl: 'https://waze.com/ul/hsv89zc1eu' },
+  { name: 'בח"א 6 חצרים', wazeUrl: 'https://ul.waze.com/ul?ll=31.24938755%2C34.66291666&navigate=yes&zoom=17&utm_campaign=default&utm_source=waze_website&utm_medium=lm_share_location' },
+  { name: 'בח"א 8 תל נוף', wazeUrl: 'https://ul.waze.com/ul?ll=31.83986809%2C34.81412888&navigate=yes&zoom=14&utm_campaign=default&utm_source=waze_website&utm_medium=lm_share_location' },
+  { name: 'פלמחים', wazeUrl: 'https://ul.waze.com/ul?ll=31.92554940%2C34.71307397&navigate=yes&zoom=17&utm_campaign=default&utm_source=waze_website&utm_medium=lm_share_location' },
+  { name: 'ביס"ט 21 טכני', wazeUrl: 'https://ul.waze.com/ul?ll=32.86343939%2C35.04089355&navigate=yes&zoom=9&utm_campaign=default&utm_source=waze_website&utm_medium=lm_share_location' },
+  { name: 'בית נבאללה', wazeUrl: 'https://waze.com/ul/hsv8vgj8r9' },
+  { name: 'בית שמש', wazeUrl: 'https://waze.com/ul/hsv8us7hey' },
+  { name: 'בהל"צ', wazeUrl: 'https://waze.com/ul/hsv2fff46z' },
+  { name: 'דימונה', wazeUrl: 'https://waze.com/ul/hsv8btpv88' },
+  { name: 'הדר יוסף', wazeUrl: 'https://waze.com/ul/hsv8y8hwnu' },
+  { name: 'חדרה', wazeUrl: 'https://waze.com/ul/hsvbb6zm8x' },
+  { name: 'חיפה', wazeUrl: 'https://waze.com/ul/hsvbfe9sg0' },
+  { name: 'חיפה ל"ג', wazeUrl: 'https://waze.com/ul/hsvbft3gwz' },
+  { name: 'טבריה', wazeUrl: 'https://ul.waze.com/ul?ll=32.78839400%2C35.53756700&navigate=yes&utm_campaign=share_drive&utm_source=waze_app&utm_medium=lm_share_location' },
+  { name: 'טבריה ל"ג', wazeUrl: 'https://waze.com/ul/hsvc62ppwf' },
+  { name: 'יפו', wazeUrl: 'https://waze.com/ul/hsv8wr1gvv' },
+  { name: 'ירושלים', wazeUrl: 'https://waze.com/ul/hsv9h8u42r' },
+  { name: 'ירושלים ל"ג', wazeUrl: 'https://waze.com/ul/hsv9h9ryht' },
+  { name: 'כנף 1 רמת דוד', wazeUrl: 'https://waze.com/ul/hsvc1b53fy' },
+  { name: 'כנף 25 רמון', wazeUrl: 'https://waze.com/ul/hsv2xhgew9' },
+  { name: 'כנף 28 נבטים', wazeUrl: 'https://waze.com/ul/hsv8ct9tb0' },
+  { name: 'כפר סבא', wazeUrl: 'https://waze.com/ul/hsv8yfxfp0' },
+  { name: 'לוד', wazeUrl: 'https://waze.com/ul/hsv8v9vemx' },
+  { name: 'מחנה עמוס', wazeUrl: 'https://waze.com/ul/hsvc16rd7e' },
+  { name: 'משמר הנגב', wazeUrl: 'https://waze.com/ul/hsv8djxbxr' },
+  { name: 'נתיבות', wazeUrl: 'https://waze.com/ul/hsv8ddwrsd' },
+  { name: 'נתניה', wazeUrl: 'https://waze.com/ul/hsv8zcd4ss' },
+  { name: 'עיר הבהדים', wazeUrl: 'https://waze.com/ul/hsv8b8y09k' },
+  { name: 'עכו', wazeUrl: 'https://waze.com/ul/hsvbgq3ccg' },
+  { name: 'עפולה', wazeUrl: 'https://waze.com/ul/hsvc17pke7' },
+  { name: 'עפולה משא כבד', wazeUrl: 'https://waze.com/ul/hsvc1ed03e' },
+  { name: 'פתח תקווה', wazeUrl: 'https://waze.com/ul/hsv8y9kdg1' },
+  { name: 'קרית גת', wazeUrl: 'https://waze.com/ul/hsv8ez31n2' },
+  { name: 'קרית חיים', wazeUrl: 'https://waze.com/ul/hsvbftyx0z' },
+  { name: 'קרית שמונה', wazeUrl: 'https://waze.com/ul/hsvckc7vk8' },
+  { name: 'ראשון לציון', wazeUrl: 'https://waze.com/ul/hsv8tzcr54' },
+  { name: 'רחובות', wazeUrl: 'https://waze.com/ul/hsv8trzeke' },
+  { name: 'תה"ש ל"ג', wazeUrl: 'https://waze.com/ul/hsv8wrkzz3' }
+];
+
+var BOHAN_SITE_SHEETS_URL = 'https://docs.google.com/spreadsheets/d/1KAX96KcGNQU7aOS7lf6oMZY-FiDuJ_j5npcDSVfiW5E/edit?usp=sharing';
+var BOHAN_SITE_SITES_URL = 'https://sites.google.com/view/bohanyzahal/%D7%91%D7%99%D7%AA';
+
+function _bohanSiteData() {
+  return {
+    examiners: BOHAN_SITE_EXAMINERS,
+    locations: BOHAN_SITE_LOCATIONS,
+    sheetsUrl: BOHAN_SITE_SHEETS_URL,
+    sitesUrl: BOHAN_SITE_SITES_URL
+  };
+}
+
+function _bohanSiteIssueToken(secret) {
+  var payload = JSON.stringify({ exp: Date.now() + 24 * 60 * 60 * 1000 });
+  var pB64 = Utilities.base64EncodeWebSafe(payload).replace(/=+$/, '');
+  var sigBytes = Utilities.computeHmacSha256Signature(pB64, secret);
+  var sigB64 = Utilities.base64EncodeWebSafe(sigBytes).replace(/=+$/, '');
+  return pB64 + '.' + sigB64;
+}
+
+function _bohanSiteVerifyToken(token, secret) {
+  if (!token || token.indexOf('.') < 0) return false;
+  var parts = String(token).split('.');
+  if (parts.length !== 2) return false;
+  var pB64 = parts[0];
+  var sigB64 = parts[1];
+  var sigBytes = Utilities.computeHmacSha256Signature(pB64, secret);
+  var expectedB64 = Utilities.base64EncodeWebSafe(sigBytes).replace(/=+$/, '');
+  if (sigB64 !== expectedB64) return false;
+  try {
+    var pad = (4 - (pB64.length % 4)) % 4;
+    var decoded = Utilities.base64DecodeWebSafe(pB64 + Array(pad + 1).join('='));
+    var payload = JSON.parse(Utilities.newBlob(decoded).getDataAsString());
+    if (typeof payload.exp !== 'number' || Date.now() > payload.exp) return false;
+    return true;
+  } catch (e) { return false; }
+}
+
+function handleBohanSiteAuth(p) {
+  // Light rate limit
+  var rlErr = requireRateLimit('bohanSiteAuth', p.token ? 'tok' : 'pwd', 20, 60);
+  if (rlErr) return rlErr;
+
+  var props = PropertiesService.getScriptProperties();
+  var secret = props.getProperty('BOHAN_SITE_SECRET');
+  var password = props.getProperty('BOHAN_SITE_PASSWORD');
+  if (!secret || !password) {
+    return jsonResponse({ status: 'error', message: 'BOHAN_SITE_PASSWORD / BOHAN_SITE_SECRET not configured' });
+  }
+
+  // Path A: token-based access (subsequent visits)
+  if (p.token) {
+    if (!_bohanSiteVerifyToken(p.token, secret)) {
+      return jsonResponse({ status: 'error', message: 'טוקן לא חוקי או פג תוקף', tokenExpired: true });
+    }
+    return jsonResponse({ status: 'ok', data: _bohanSiteData() });
+  }
+
+  // Path B: password login (first visit / after token expiry)
+  if (p.password) {
+    if (String(p.password) !== String(password)) {
+      return jsonResponse({ status: 'error', message: 'סיסמה שגויה' });
+    }
+    return jsonResponse({
+      status: 'ok',
+      token: _bohanSiteIssueToken(secret),
+      data: _bohanSiteData()
+    });
+  }
+
+  return jsonResponse({ status: 'error', message: 'Missing password or token' });
 }
 
 // ========== Result-upload HMAC token (for Cloudflare Worker auth) ==========
