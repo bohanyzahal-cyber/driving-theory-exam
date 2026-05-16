@@ -660,7 +660,7 @@ function stopTimer(){if(timerInterval){clearInterval(timerInterval);timerInterva
 function getTimeRemaining(){if(!examDeadline)return 0;return Math.max(0,Math.ceil((examDeadline-Date.now())/1000));}
 
 function _fetchServerQuestions(extraParams,onOk,onFail){
-  var qs='action=getExamQuestions&license='+encodeURIComponent(currentLicense)+'&language='+encodeURIComponent(currentLanguage)+'&studentId='+encodeURIComponent(currentStudentId||'anon')+'&classCode='+encodeURIComponent(currentClassCode||'')+'&_t='+Date.now();
+  var qs='action=getExamQuestions&license='+encodeURIComponent(currentLicense)+'&language='+encodeURIComponent(currentLanguage)+'&studentId='+encodeURIComponent(currentStudentId||'anon')+'&classCode='+encodeURIComponent(currentClassCode||'')+'&origin=student-app&_t='+Date.now();
   for(var k in extraParams){if(extraParams.hasOwnProperty(k)){qs+='&'+encodeURIComponent(k)+'='+encodeURIComponent(extraParams[k]);}}
   fetch(API_URL+'?'+qs,{cache:'no-store'}).then(function(r){return r.json();}).then(function(resp){
     if(!resp||resp.status!=='ok'||!Array.isArray(resp.questions)||resp.questions.length===0){onFail((resp&&resp.message)?resp.message:'\u05E9\u05D2\u05D9\u05D0\u05D4 \u05D1\u05D8\u05E2\u05D9\u05E0\u05EA \u05E9\u05D0\u05DC\u05D5\u05EA');return;}

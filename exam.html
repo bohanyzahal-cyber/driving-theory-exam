@@ -709,6 +709,7 @@
     var idNumber = (document.getElementById('phoneNumber') ? document.getElementById('phoneNumber').value : '') || '';
     var qs = 'action=getExamQuestions&license=' + encodeURIComponent(license) +
              '&language=he&standaloneIdNumber=' + encodeURIComponent(idNumber) +
+             '&origin=examinee-app' +
              '&_t=' + Date.now();
     fetch(QUESTIONS_API_URL + '?' + qs, { cache: 'no-store' })
       .then(function(r) { return r.json(); })
