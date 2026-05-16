@@ -2747,12 +2747,38 @@
   function switchExamLanguage(newLang) {
     if (newLang === getExamLang()) return;
     if (typeof stopSpeaking === 'function') stopSpeaking();
-    loadTranslationFile(newLang, function() {
+    if (!Array.isArray(activeQuestions) || activeQuestions.length === 0) return;
+    // Re-fetch the current question set in the new language from the server.
+    // The shuffled answer order map (shuffledOrders) is index-based so it stays
+    // valid even though the answer TEXT changes — the same shuffled position
+    // still maps to the same underlying original index.
+    var ids = activeQuestions.map(function(q) { return q.id; }).join(',');
+    apiGet({
+      action: 'getQuestionsByIds',
+      sessionCode: sessionCode,
+      idNumber: examineeData.idNumber,
+      ids: ids,
+      language: newLang
+    }).then(function(resp) {
+      if (!resp || resp.status !== 'ok' || !Array.isArray(resp.questions)) {
+        console.warn('[LANG] Could not re-fetch questions in ' + newLang, resp);
+        return;
+      }
+      for (var i = 0; i < activeQuestions.length; i++) {
+        var nq = resp.questions[i];
+        if (nq && nq.id === activeQuestions[i].id) {
+          activeQuestions[i].text = nq.text;
+          activeQuestions[i].answers = nq.answers;
+          activeQuestions[i].imageUrl = nq.imageUrl || activeQuestions[i].imageUrl;
+        }
+      }
       sessionData.language = newLang;
       var isRTL = (newLang === 'he' || newLang === 'ar');
       document.documentElement.dir = isRTL ? 'rtl' : 'ltr';
       document.documentElement.lang = newLang;
       renderQuestion();
+    }).catch(function(err) {
+      console.error('[LANG] switchExamLanguage error', err);
     });
   }
 

@@ -772,7 +772,40 @@ if(currentIndex<total-1){var nb=document.createElement('button');nb.className='n
 
 if(immediateMode&&prev!==null){answerLocked=true;if(currentIndex<total-1){var nbr=document.createElement('button');nbr.className='btn-next-q';nbr.textContent='\u05D4\u05D1\u05D0 \u2190';nbr.addEventListener('click',function(){answerLocked=false;currentIndex++;renderQuestion();});card.appendChild(nbr);}else{var ad=true;for(var ai=0;ai<userAnswers.length;ai++){if(userAnswers[ai]===null){ad=false;break;}}if(ad){var fbr=document.createElement('button');fbr.className='btn-next-q';fbr.style.background='linear-gradient(135deg,#16a34a,#15803d)';fbr.textContent='\u05E1\u05D9\u05D9\u05DD \u05EA\u05E8\u05D2\u05D5\u05DC';fbr.addEventListener('click',function(){finishExam();});card.appendChild(fbr);}}}}
 
-function switchLanguage(newLang){if(newLang===currentLanguage)return;if(typeof stopSpeaking==='function')stopSpeaking();loadTranslationFile(newLang,function(){currentLanguage=newLang;var isRTL=(newLang==='he'||newLang==='ar');document.documentElement.dir=isRTL?'rtl':'ltr';document.documentElement.lang=newLang;var ls=document.getElementById('examLangSwitcher');if(ls)ls.value=newLang;var activeScreen='';if(document.getElementById('screenPractice').classList.contains('active'))activeScreen='practice';else if(document.getElementById('screenFlashcards')&&document.getElementById('screenFlashcards').classList.contains('active'))activeScreen='flashcard';if(activeScreen==='flashcard'&&typeof renderFlashcard==='function')renderFlashcard();else if(activeScreen==='practice')renderQuestion();});}
+function switchLanguage(newLang){
+  if(newLang===currentLanguage)return;
+  if(typeof stopSpeaking==='function')stopSpeaking();
+  function _finishSwitch(){
+    currentLanguage=newLang;
+    var isRTL=(newLang==='he'||newLang==='ar');
+    document.documentElement.dir=isRTL?'rtl':'ltr';
+    document.documentElement.lang=newLang;
+    var ls=document.getElementById('examLangSwitcher');if(ls)ls.value=newLang;
+    var activeScreen='';
+    if(document.getElementById('screenPractice').classList.contains('active'))activeScreen='practice';
+    else if(document.getElementById('screenFlashcards')&&document.getElementById('screenFlashcards').classList.contains('active'))activeScreen='flashcard';
+    if(activeScreen==='flashcard'&&typeof renderFlashcard==='function')renderFlashcard();
+    else if(activeScreen==='practice')renderQuestion();
+  }
+  // If no exam is active yet, just flip the language locally.
+  if(!Array.isArray(examQuestions)||examQuestions.length===0){_finishSwitch();return;}
+  // Otherwise re-fetch the same question IDs in the new language from server.
+  var ids=examQuestions.map(function(q){return q.id;}).join(',');
+  var qs='action=getQuestionsByIds&language='+encodeURIComponent(newLang)+'&ids='+encodeURIComponent(ids)+'&studentId='+encodeURIComponent(currentStudentId||'anon')+'&classCode='+encodeURIComponent(currentClassCode||'')+'&origin=student-app&_t='+Date.now();
+  fetch(API_URL+'?'+qs,{cache:'no-store'}).then(function(r){return r.json();}).then(function(resp){
+    if(!resp||resp.status!=='ok'||!Array.isArray(resp.questions)){console.warn('[LANG] re-fetch failed',resp);return;}
+    for(var i=0;i<examQuestions.length;i++){
+      var nq=resp.questions[i];
+      if(nq&&nq.id===examQuestions[i].id){
+        examQuestions[i].text=nq.text;
+        examQuestions[i].answers=nq.answers;
+        if(typeof nq.ci==='number')examQuestions[i].ci=nq.ci;
+        if(nq.imageUrl)examQuestions[i].imageUrl=nq.imageUrl;
+      }
+    }
+    _finishSwitch();
+  }).catch(function(err){console.error('[LANG] switchLanguage error',err);});
+}
 function finishExam(){stopTimer();showResults();}
 
 // ===== Streak System =====

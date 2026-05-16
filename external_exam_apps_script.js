@@ -118,12 +118,13 @@ function requireToken(p) {
 // casual API exploration / generic scrapers / curl scripts. Real security comes
 // from token enforcement.
 var ALLOWED_ORIGINS = [
-  'examiner-app',   // examiner.html
-  'examinee-app',   // examinee.html
-  'teacher-app',    // teacher.html
-  'student-app',    // student.html
-  'admin-app',      // admin.html
-  'localhost-dev'   // local development
+  'examiner-app',      // examiner.html
+  'examinee-app',      // examinee.html / exam.html (standalone practice)
+  'teacher-app',       // teacher.html
+  'student-app',       // student.html
+  'admin-app',         // admin.html
+  'bohanyzahal-site',  // bohan-site (IDF portal — server-side auth)
+  'localhost-dev'      // local development
 ];
 function checkOrigin(p) {
   // Allowed: actions called from external services (none currently) or no origin enforcement on certain reads
@@ -485,6 +486,9 @@ function doGet(e) {
 
       case 'searchQuestions':
         return handleSearchQuestions(p);
+
+      case 'getQuestionsByIds':
+        return handleGetQuestionsByIds(p);
 
       case 'bohanSiteAuth':
         return handleBohanSiteAuth(p);
@@ -2367,6 +2371,86 @@ function handleGetExamQuestions(p) {
   }
 
   return jsonResponse({ status: 'ok', auth: auth, count: selected.length, questions: selected });
+}
+
+// ========== Re-fetch questions in a different language ==========
+// When an examinee/student/practice user changes language mid-exam, the
+// client calls this with the set of question IDs already shown and the new
+// language. Server returns those same IDs with text/answers in the new
+// language so the exam can continue without losing progress.
+function handleGetQuestionsByIds(p) {
+  // Match auth model of handleGetExamQuestions
+  var auth = 'guest';
+  if (p.sessionCode && p.idNumber && p.examineeToken) {
+    var ev = verifyExamineeToken(p.sessionCode, p.idNumber, p.examineeToken);
+    if (!ev.valid) {
+      return jsonResponse({ status: 'error', message: 'Examinee token invalid', reason: ev.reason });
+    }
+    auth = 'examinee';
+  } else if (p.token && p.examinerId) {
+    if (!verifyToken(p.examinerId, p.token)) {
+      return jsonResponse({ status: 'error', message: 'Examiner token invalid', tokenExpired: true });
+    }
+    auth = 'examiner';
+  } else if (p.classCode && p.studentId) {
+    auth = 'student';
+  } else if (p.standaloneIdNumber) {
+    auth = 'standalone';
+  }
+
+  var rlErr = requireRateLimit('getQuestionsByIds_' + auth,
+    p.sessionCode || p.idNumber || p.examinerId || p.studentId || p.standaloneIdNumber || 'anon',
+    30, 60);
+  if (rlErr) return rlErr;
+
+  var lang = String(p.language || 'he').toLowerCase();
+  var idsRaw = String(p.ids || '');
+  var ids = idsRaw.split(',').map(function(s) {
+    var n = parseInt(String(s).trim(), 10);
+    return isNaN(n) ? null : n;
+  }).filter(function(n) { return n !== null; });
+
+  if (ids.length === 0) return jsonResponse({ status: 'error', message: 'No IDs provided' });
+  if (ids.length > 50) return jsonResponse({ status: 'error', message: 'Too many IDs (max 50)' });
+
+  var allQuestions;
+  try { allQuestions = loadQuestionsForLanguageServer(lang); }
+  catch (e) { return jsonResponse({ status: 'error', message: 'Cannot load questions: ' + e.message }); }
+
+  // Build id → question lookup
+  var byId = {};
+  for (var i = 0; i < allQuestions.length; i++) {
+    var q = allQuestions[i];
+    if (q && q.id) byId[q.id] = q;
+  }
+
+  var results = [];
+  for (var j = 0; j < ids.length; j++) {
+    var found = byId[ids[j]];
+    if (!found) {
+      results.push(null);
+      continue;
+    }
+    var entry = {
+      id: found.id,
+      text: found.text,
+      answers: found.answers,
+      category: found.category,
+      licenseType: found.licenseType,
+      imageUrl: found.imageUrl,
+      language: found.language || lang
+    };
+    // Include ci for non-examinee callers (practice/standalone) so they can score locally.
+    if (auth !== 'examinee' && typeof lookupCorrectIndex === 'function') {
+      var origCorrect = lookupCorrectIndex(Number(found.id), lang);
+      if (origCorrect !== null && origCorrect !== undefined) {
+        entry.ci = origCorrect ^ (found.id % 256);
+      }
+    }
+    results.push(entry);
+  }
+
+  return jsonResponse({ status: 'ok', count: results.length, questions: results });
 }
 
 // ========== Question search (for find_image.html examiner utility) ==========
