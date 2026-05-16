@@ -503,6 +503,23 @@
 
 <script>
 (function(){'use strict';
+// Full-screen loading overlay — blocks interaction while we wait for the server.
+var _loadingCount=0;
+function showLoadingOverlay(msg){
+  _loadingCount++;
+  var ov=document.getElementById('_app_loading_overlay');
+  if(!ov){
+    var st=document.createElement('style');st.textContent='@keyframes _appLoadSpin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}';document.head.appendChild(st);
+    ov=document.createElement('div');ov.id='_app_loading_overlay';
+    ov.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,0.78);z-index:100000;display:flex;align-items:center;justify-content:center;font-family:Arial,sans-serif;backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px);';
+    ov.innerHTML='<div style="text-align:center;color:#fff;padding:24px;background:#1e293b;border-radius:12px;min-width:200px;box-shadow:0 10px 40px rgba(0,0,0,0.5);"><div style="width:48px;height:48px;border:4px solid rgba(255,255,255,0.18);border-top-color:#7bc67e;border-radius:50%;margin:0 auto 16px;animation:_appLoadSpin 0.9s linear infinite;"></div><div id="_app_loading_msg" style="font-size:16px;font-weight:600;">טוען...</div></div>';
+    document.body.appendChild(ov);
+  }
+  var m=document.getElementById('_app_loading_msg');if(m&&msg)m.textContent=msg;
+  ov.style.display='flex';
+}
+function hideLoadingOverlay(){_loadingCount=Math.max(0,_loadingCount-1);if(_loadingCount>0)return;var ov=document.getElementById('_app_loading_overlay');if(ov)ov.style.display='none';}
+
 var TOTAL_QUESTIONS=30,PASS_SCORE=26,BASE_EXAM_MINUTES=40;
 var ANSWER_LABELS=['\u05d0','\u05d1','\u05d2','\u05d3'];
 var EXAM_STRUCTURE={'B':{'\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA':7,'\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1':7,'\u05D7\u05D5\u05E7':7,'\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD':9},'1':{'\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA':5,'\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1':5,'\u05D7\u05D5\u05E7':6,'\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD':6,'\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9':8},'C1':{'\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA':5,'\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1':5,'\u05D7\u05D5\u05E7':5,'\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD':5,'\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9':10},'C':{'\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA':5,'\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1':4,'\u05D7\u05D5\u05E7':3,'\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD':4,'\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9':14},'D':{'\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA':4,'\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1':2,'\u05D7\u05D5\u05E7':5,'\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD':4,'\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9':15}};
@@ -660,12 +677,14 @@ function stopTimer(){if(timerInterval){clearInterval(timerInterval);timerInterva
 function getTimeRemaining(){if(!examDeadline)return 0;return Math.max(0,Math.ceil((examDeadline-Date.now())/1000));}
 
 function _fetchServerQuestions(extraParams,onOk,onFail){
+  showLoadingOverlay('\u05D8\u05D5\u05E2\u05DF \u05E9\u05D0\u05DC\u05D5\u05EA\u2026');
   var qs='action=getExamQuestions&license='+encodeURIComponent(currentLicense)+'&language='+encodeURIComponent(currentLanguage)+'&studentId='+encodeURIComponent(currentStudentId||'anon')+'&classCode='+encodeURIComponent(currentClassCode||'')+'&origin=student-app&_t='+Date.now();
   for(var k in extraParams){if(extraParams.hasOwnProperty(k)){qs+='&'+encodeURIComponent(k)+'='+encodeURIComponent(extraParams[k]);}}
   fetch(API_URL+'?'+qs,{cache:'no-store'}).then(function(r){return r.json();}).then(function(resp){
+    hideLoadingOverlay();
     if(!resp||resp.status!=='ok'||!Array.isArray(resp.questions)||resp.questions.length===0){onFail((resp&&resp.message)?resp.message:'\u05E9\u05D2\u05D9\u05D0\u05D4 \u05D1\u05D8\u05E2\u05D9\u05E0\u05EA \u05E9\u05D0\u05DC\u05D5\u05EA');return;}
     onOk(resp.questions);
-  }).catch(function(){onFail('\u05E9\u05D2\u05D9\u05D0\u05EA \u05EA\u05E7\u05E9\u05D5\u05E8\u05EA');});
+  }).catch(function(){hideLoadingOverlay();onFail('\u05E9\u05D2\u05D9\u05D0\u05EA \u05EA\u05E7\u05E9\u05D5\u05E8\u05EA');});
 }
 
 function startExam(){currentMode='exam';immediateMode=false;currentCategory='';currentIndex=0;userAnswers=[];shuffledOrders=[];answerLocked=false;examStartTime=Date.now();
@@ -790,10 +809,12 @@ function switchLanguage(newLang){
   // If no exam is active yet, just flip the language locally.
   if(!Array.isArray(examQuestions)||examQuestions.length===0){_finishSwitch();return;}
   // Otherwise re-fetch the same question IDs in the new language from server.
+  showLoadingOverlay('מתחלף לשפה…');
   var ids=examQuestions.map(function(q){return q.id;}).join(',');
   var qs='action=getQuestionsByIds&language='+encodeURIComponent(newLang)+'&ids='+encodeURIComponent(ids)+'&studentId='+encodeURIComponent(currentStudentId||'anon')+'&classCode='+encodeURIComponent(currentClassCode||'')+'&origin=student-app&_t='+Date.now();
   fetch(API_URL+'?'+qs,{cache:'no-store'}).then(function(r){return r.json();}).then(function(resp){
-    if(!resp||resp.status!=='ok'||!Array.isArray(resp.questions)){console.warn('[LANG] re-fetch failed',resp);return;}
+    hideLoadingOverlay();
+    if(!resp||resp.status!=='ok'||!Array.isArray(resp.questions)){console.warn('[LANG] re-fetch failed',resp);alert('שגיאה בטעינת שאלות בשפה החדשה');return;}
     for(var i=0;i<examQuestions.length;i++){
       var nq=resp.questions[i];
       if(nq&&nq.id===examQuestions[i].id){
@@ -804,7 +825,7 @@ function switchLanguage(newLang){
       }
     }
     _finishSwitch();
-  }).catch(function(err){console.error('[LANG] switchLanguage error',err);});
+  }).catch(function(err){hideLoadingOverlay();console.error('[LANG] switchLanguage error',err);alert('שגיאת תקשורת');});
 }
 function finishExam(){stopTimer();showResults();}
 
