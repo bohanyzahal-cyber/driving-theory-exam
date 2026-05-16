@@ -2313,7 +2313,10 @@ function handleGetExamQuestions(p) {
 
   var allQuestions;
   try { allQuestions = loadQuestionsForLanguageServer(lang); }
-  catch (e) { return jsonResponse({ status: 'error', message: 'Cannot load questions: ' + e.message }); }
+  catch (e) {
+    Logger.log('loadQuestionsForLanguageServer(' + lang + ') failed: ' + (e && e.message));
+    return jsonResponse({ status: 'error', message: 'שגיאה בטעינת שאלות. נסה שוב.' });
+  }
 
   // Order matters: filter by license BEFORE dedupe. The source data has the
   // same question id repeated for multiple license types (e.g. id 1276 appears
@@ -2475,7 +2478,10 @@ function handleGetQuestionsByIds(p) {
 
   var allQuestions;
   try { allQuestions = loadQuestionsForLanguageServer(lang); }
-  catch (e) { return jsonResponse({ status: 'error', message: 'Cannot load questions: ' + e.message }); }
+  catch (e) {
+    Logger.log('loadQuestionsForLanguageServer(' + lang + ') failed: ' + (e && e.message));
+    return jsonResponse({ status: 'error', message: 'שגיאה בטעינת שאלות. נסה שוב.' });
+  }
 
   // Build id → question lookup
   var byId = {};
@@ -2530,7 +2536,10 @@ function handleSearchQuestions(p) {
   var lang = String(p.language || 'he').toLowerCase();
   var allQuestions;
   try { allQuestions = loadQuestionsForLanguageServer(lang); }
-  catch (e) { return jsonResponse({ status: 'error', message: 'Cannot load questions: ' + e.message }); }
+  catch (e) {
+    Logger.log('loadQuestionsForLanguageServer(' + lang + ') failed: ' + (e && e.message));
+    return jsonResponse({ status: 'error', message: 'שגיאה בטעינת שאלות. נסה שוב.' });
+  }
 
   var matches = [];
   var MAX_MATCHES = 20;
