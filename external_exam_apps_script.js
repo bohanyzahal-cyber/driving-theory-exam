@@ -2370,7 +2370,34 @@ function handleGetExamQuestions(p) {
     }
   }
 
-  return jsonResponse({ status: 'ok', auth: auth, count: selected.length, questions: selected });
+  // Pre-fetch all 7 languages so mid-exam language switches are instant
+  // (no extra round trip). Adds ~120-150 KB to the response. Cold-start
+  // server cost is real (7 Drive reads) but cached for 6h after that.
+  var translations = null;
+  if (p.includeTranslations === 'true' || p.includeTranslations === '1') {
+    translations = {};
+    var SUPPORTED_LANGS = ['he', 'ru', 'en', 'ar', 'fr', 'es', 'am'];
+    var idSet = {};
+    for (var ix = 0; ix < selected.length; ix++) idSet[selected[ix].id] = true;
+    for (var li = 0; li < SUPPORTED_LANGS.length; li++) {
+      var altLang = SUPPORTED_LANGS[li];
+      try {
+        var altData = loadQuestionsForLanguageServer(altLang);
+        var altMap = {};
+        for (var ai = 0; ai < altData.length; ai++) {
+          var aq = altData[ai];
+          if (aq && idSet[aq.id]) {
+            altMap[aq.id] = { t: aq.text, a: aq.answers };
+          }
+        }
+        translations[altLang] = altMap;
+      } catch (e) { /* language file missing — skip */ }
+    }
+  }
+
+  var responseBody = { status: 'ok', auth: auth, count: selected.length, questions: selected };
+  if (translations) responseBody.translations = translations;
+  return jsonResponse(responseBody);
 }
 
 // ========== Re-fetch questions in a different language ==========

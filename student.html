@@ -678,11 +678,13 @@ function getTimeRemaining(){if(!examDeadline)return 0;return Math.max(0,Math.cei
 
 function _fetchServerQuestions(extraParams,onOk,onFail){
   showLoadingOverlay('\u05D8\u05D5\u05E2\u05DF \u05E9\u05D0\u05DC\u05D5\u05EA\u2026');
-  var qs='action=getExamQuestions&license='+encodeURIComponent(currentLicense)+'&language='+encodeURIComponent(currentLanguage)+'&studentId='+encodeURIComponent(currentStudentId||'anon')+'&classCode='+encodeURIComponent(currentClassCode||'')+'&origin=student-app&_t='+Date.now();
+  var qs='action=getExamQuestions&license='+encodeURIComponent(currentLicense)+'&language='+encodeURIComponent(currentLanguage)+'&studentId='+encodeURIComponent(currentStudentId||'anon')+'&classCode='+encodeURIComponent(currentClassCode||'')+'&origin=student-app&includeTranslations=true&_t='+Date.now();
   for(var k in extraParams){if(extraParams.hasOwnProperty(k)){qs+='&'+encodeURIComponent(k)+'='+encodeURIComponent(extraParams[k]);}}
   fetch(API_URL+'?'+qs,{cache:'no-store'}).then(function(r){return r.json();}).then(function(resp){
     hideLoadingOverlay();
     if(!resp||resp.status!=='ok'||!Array.isArray(resp.questions)||resp.questions.length===0){onFail((resp&&resp.message)?resp.message:'\u05E9\u05D2\u05D9\u05D0\u05D4 \u05D1\u05D8\u05E2\u05D9\u05E0\u05EA \u05E9\u05D0\u05DC\u05D5\u05EA');return;}
+    // Cache translations for instant mid-practice language switching
+    if(resp.translations)window._practiceTranslations=resp.translations;
     onOk(resp.questions);
   }).catch(function(){hideLoadingOverlay();onFail('\u05E9\u05D2\u05D9\u05D0\u05EA \u05EA\u05E7\u05E9\u05D5\u05E8\u05EA');});
 }
@@ -808,7 +810,18 @@ function switchLanguage(newLang){
   }
   // If no exam is active yet, just flip the language locally.
   if(!Array.isArray(examQuestions)||examQuestions.length===0){_finishSwitch();return;}
-  // Otherwise re-fetch the same question IDs in the new language from server.
+  // Fast path: translations cached at exam start → instant switch, no server call.
+  var _pCache=window._practiceTranslations;
+  if(_pCache&&_pCache[newLang]){
+    var t=_pCache[newLang];var missingAny=false;
+    for(var i=0;i<examQuestions.length;i++){
+      var tr=t[examQuestions[i].id];
+      if(tr){examQuestions[i].text=tr.t;examQuestions[i].answers=tr.a;}
+      else{missingAny=true;}
+    }
+    if(!missingAny){_finishSwitch();return;}
+  }
+  // Fallback: re-fetch the same question IDs in the new language from server.
   showLoadingOverlay('מתחלף לשפה…');
   var ids=examQuestions.map(function(q){return q.id;}).join(',');
   var qs='action=getQuestionsByIds&language='+encodeURIComponent(newLang)+'&ids='+encodeURIComponent(ids)+'&studentId='+encodeURIComponent(currentStudentId||'anon')+'&classCode='+encodeURIComponent(currentClassCode||'')+'&origin=student-app&_t='+Date.now();

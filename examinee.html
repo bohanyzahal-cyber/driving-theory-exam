@@ -1472,9 +1472,12 @@
       idNumber: examineeData.idNumber,
       examineeToken: examineeToken,
       language: language,
-      license: license
+      license: license,
+      includeTranslations: 'true'  // pre-fetch all 7 languages so switches are instant
     }).then(function(resp) {
       hideLoadingOverlay();
+      // Cache translations for instant mid-exam language switching
+      if (resp && resp.translations) window._examTranslations = resp.translations;
       if (!resp || resp.status !== 'ok' || !Array.isArray(resp.questions) || resp.questions.length < TOTAL_QUESTIONS) {
         var errMsg = (resp && resp.message) ? resp.message : 'שגיאה בטעינת שאלות';
         var langName = LANG_LABELS[language] || language;
@@ -2784,8 +2787,34 @@
     if (newLang === getExamLang()) return;
     if (typeof stopSpeaking === 'function') stopSpeaking();
     if (!Array.isArray(activeQuestions) || activeQuestions.length === 0) return;
-    // Block UI while we wait for server — examinee shouldn't be able to
-    // press anything (other answers, next/prev, etc) until questions arrive.
+
+    // Fast path: translations were pre-fetched at exam start, so we have all
+    // 7 languages in memory. Switch is INSTANT — no server call, no overlay.
+    var cache = window._examTranslations;
+    if (cache && cache[newLang]) {
+      var t = cache[newLang];
+      var missingAny = false;
+      for (var i = 0; i < activeQuestions.length; i++) {
+        var tr = t[activeQuestions[i].id];
+        if (tr) {
+          activeQuestions[i].text = tr.t;
+          activeQuestions[i].answers = tr.a;
+        } else {
+          missingAny = true;
+        }
+      }
+      if (!missingAny) {
+        sessionData.language = newLang;
+        var isRTL = (newLang === 'he' || newLang === 'ar');
+        document.documentElement.dir = isRTL ? 'rtl' : 'ltr';
+        document.documentElement.lang = newLang;
+        renderQuestion();
+        return;
+      }
+      // If some translations missing, fall through to server fetch
+    }
+
+    // Fallback (cache miss / partial / old client): server fetch with overlay.
     showLoadingOverlay('מתחלף לשפה ' + (LANG_LABELS[newLang] || newLang) + '…');
     var ids = activeQuestions.map(function(q) { return q.id; }).join(',');
     apiGet({
