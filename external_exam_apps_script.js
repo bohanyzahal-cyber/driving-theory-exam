@@ -12,7 +12,7 @@ var SHEET_HEADERS = {
   'בוחנים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'מס בוחן', 'תפקיד', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד'],
   'אתרים': ['שם אתר', 'מזהה', 'טלפון מנהל', 'כיתות'],
   'סשנים': ['קוד', 'בוחן ת.ז.', 'שם בוחן', 'אתר', 'כיתה', 'דרגה', 'שפה', 'מצב שמע', 'זמן יצירה', 'תקף עד', 'פעיל'],
-  'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה', 'דרגה', 'שמע', 'הארכת זמן', 'התחלת מבחן', 'טוקן נבחן'],
+  'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה', 'דרגה', 'שמע', 'הארכת זמן', 'התחלת מבחן', 'טוקן נבחן', 'ספירת DQ'],
   'תוצאות': ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר', 'כיתה', 'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ', 'אוכלוסיה', 'תוקן?', 'שמע', 'מאומת', 'חשוד', 'dqEventId', 'תוקן ע"י', 'סיבת תיקון', 'תאריך תיקון'],
   'מורים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד'],
   'כיתות': ['קוד כיתה', 'שם כיתה', 'מורה ת.ז.', 'שם מורה', 'דרגה', 'תאריך יצירה', 'פעיל'],
@@ -1155,13 +1155,46 @@ function handleExaminerDashboard(p) {
     }
   }
 
+  // Pre-compute attempts-today by examinee id (for "second attempt today" warning).
+  // Counts non-disqualified terminal entries (real attempts) made today regardless
+  // of which session — so an examinee who tried earlier today in another session
+  // also triggers the warning.
+  var attemptsTodayById = {};
+  var todayDateStr = (function() {
+    var d = new Date();
+    return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
+  })();
+  function isToday(val) {
+    if (!val) return false;
+    try {
+      var d = (val instanceof Date) ? val : new Date(val);
+      if (isNaN(d.getTime())) return false;
+      return (d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate()) === todayDateStr;
+    } catch(_) { return false; }
+  }
+  for (var ai2 = 1; ai2 < resData.length; ai2++) {
+    if (!isToday(resData[ai2][0])) continue;
+    var aiPassed = String(resData[ai2][7] || '').trim();
+    if (aiPassed === 'בוטל') continue; // overturned, not a real attempt
+    var aiId = normalizeId(resData[ai2][1]);
+    attemptsTodayById[aiId] = (attemptsTodayById[aiId] || 0) + 1;
+  }
+
   for (var i = 1; i < pendData.length; i++) {
     if (String(pendData[i][0]) !== code) continue;
     var s = String(pendData[i][5] || '').trim();
-    var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], examStartTime: pendData[i][11] || '', status: s, language: pendData[i][6] || '', population: pendData[i][7] || '', license: pendData[i][8] || '', audioMode: pendData[i][9] || 'off', timeExtension: String(pendData[i][10] || '') };
+    var dqCount = (pendData[i].length > 13) ? (Number(pendData[i][13]) || 0) : 0;
+    var idNorm = normalizeId(pendData[i][1]);
+    var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], examStartTime: pendData[i][11] || '', status: s, language: pendData[i][6] || '', population: pendData[i][7] || '', license: pendData[i][8] || '', audioMode: pendData[i][9] || 'off', timeExtension: String(pendData[i][10] || ''), dqCount: dqCount, attemptsToday: attemptsTodayById[idNorm] || 0 };
     if (s === 'waiting') pending.push(item);
     else if (s === 'approved') pending.push(item);
     else if (s === 'in_exam') active.push(item);
+    else if (s === 'disqualified') {
+      // Surface DQ events that examiner needs to decide on (was previously
+      // invisible — caused examiner to be unaware that DQ happened, see Bug #2/#4).
+      item.dqPending = true;
+      active.push(item);
+    }
   }
 
   // Re-read resData in case cleanup added new results
@@ -1288,9 +1321,15 @@ function handleDisqualify(p) {
     }
   }
 
-  // Update pending status to 'disqualified' (only if a row exists)
+  // Update pending status to 'disqualified' (only if a row exists) AND increment
+  // the DQ-event counter in column N so the examiner can see how many times this
+  // examinee triggered an anti-cheat event — even if some were auto-reverted in
+  // grace period via cancelDisqualify.
   if (pendRowIdx !== -1) {
     pendSheet.getRange(pendRowIdx + 1, 6).setValue('disqualified');
+    var prevCount = 0;
+    if (pendData[pendRowIdx].length > 13) prevCount = Number(pendData[pendRowIdx][13]) || 0;
+    pendSheet.getRange(pendRowIdx + 1, 14).setValue(prevCount + 1);
   }
 
   // Idempotency: if the latest result is already "פסול" with the SAME dqEventId, this is a retry — skip.

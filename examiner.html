@@ -740,6 +740,7 @@
   var failedPolls = 0;
   var prevCompletedCount = 0;
   var prevPendingIds = {};
+  var prevDqCounts = {}; // idNumber → known DQ count; used to detect new DQ events
   var completedResults = [];
   var phoneOverrides = {}; // idNumber → corrected phone
   var timeExtOverrides = {}; // idNumber → selected time extension value
@@ -1271,7 +1272,19 @@
         }
         var licBadge = '';
         if (item.license && item.license !== currentLicense) {
-          licBadge = ' <span style="background:#dcfce7;color:#166534;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">' + escHtml(LICENSE_LABELS[item.license] || item.license) + '</span>';
+          // Per-license color scheme (examiner request): make the badge instantly
+          // recognizable so the examiner spots a mismatch at a glance.
+          // B=green, 1=orange, C1=blue, C=white with black border, D=yellow.
+          var licStyle = 'padding:2px 8px;border-radius:8px;font-size:0.8em;font-weight:700;';
+          switch (String(item.license)) {
+            case 'B':  licStyle += 'background:#16a34a;color:#fff;'; break;
+            case '1':  licStyle += 'background:#f97316;color:#fff;'; break;
+            case 'C1': licStyle += 'background:#1d4ed8;color:#fff;'; break;
+            case 'C':  licStyle += 'background:#ffffff;color:#000;border:2px solid #000;'; break;
+            case 'D':  licStyle += 'background:#facc15;color:#000;'; break;
+            default:   licStyle += 'background:#dcfce7;color:#166534;'; break;
+          }
+          licBadge = ' <span style="' + licStyle + '">' + escHtml(LICENSE_LABELS[item.license] || item.license) + '</span>';
         }
         var audioBadge = '';
         if (item.audioMode === 'on') {
@@ -1279,10 +1292,14 @@
         }
         var repeatBadge = '';
         var repeatWarning = '';
-        if (item.todayExams && item.todayExams.length > 0) {
+        var isRepeat = item.todayExams && item.todayExams.length > 0;
+        if (isRepeat) {
           var langMap = { he: '\u05E2\u05D1', ru: '\u05E8\u05D5', ar: '\u05E2\u05E8', en: 'EN', fr: 'FR', es: 'ES' };
           var details = item.todayExams.map(function(e) { return e.license + (e.language ? '/' + (langMap[e.language] || e.language) : '') + ' - ' + e.passed + ' (' + e.score + ')'; }).join(', ');
-          repeatBadge = ' <div style="background:#fef2f2;color:#991b1b;padding:3px 8px;border-radius:8px;font-size:0.8em;font-weight:600;margin-top:4px;">\u26A0\uFE0F \u05DB\u05D1\u05E8 \u05E0\u05D1\u05D7\u05DF \u05D4\u05D9\u05D5\u05DD: ' + escHtml(details) + '</div>';
+          // Stronger visual: large red banner with warning icon and animated background.
+          // Examiners asked for a more prominent alert because the previous small badge
+          // was easy to miss in a busy session.
+          repeatBadge = ' <div style="background:linear-gradient(90deg,#dc2626,#991b1b);color:#fff;padding:8px 12px;border-radius:8px;font-size:0.95em;font-weight:800;margin-top:6px;border:2px solid #fca5a5;box-shadow:0 0 0 3px #fee2e2;">\u26A0\uFE0F \u05E0\u05D9\u05E1\u05D9\u05D5\u05DF ' + (item.todayExams.length + 1) + ' \u05D4\u05D9\u05D5\u05DD! &nbsp;|&nbsp; \u05E7\u05D5\u05D3\u05DD: ' + escHtml(details) + '</div>';
           repeatWarning = '\u26A0\uFE0F \u05E0\u05D1\u05D7\u05DF \u05D6\u05D4 \u05DB\u05D1\u05E8 \u05E2\u05E9\u05D4 \u05DE\u05D1\u05D7\u05DF \u05D4\u05D9\u05D5\u05DD (' + details + ').\n\u05DC\u05D0\u05E9\u05E8 \u05D7\u05E8\u05D9\u05D2?';
         }
         var isApproved = item.status === 'approved';
@@ -1297,6 +1314,12 @@
           '<div class="person-info"><div class="person-name">' + escHtml(item.name) + statusBadge + timeBadge + langBadge + popBadge + licBadge + audioBadge + '</div>' +
           '<div class="person-meta">ת.ז. ....' + id4 + ' | ' + escHtml(item.phone) + '</div>' + repeatBadge + '</div>' +
           '<div class="person-actions"></div>';
+        // Stronger red visual treatment when this examinee already tested today
+        if (isRepeat) {
+          li.style.borderColor = '#dc2626';
+          li.style.borderWidth = '2px';
+          li.style.background = '#fef2f2';
+        }
         var actions = li.querySelector('.person-actions');
 
         if (!isApproved) {
@@ -1403,6 +1426,20 @@
     badge.textContent = active.length;
     badge.className = 'badge-count' + (active.length === 0 ? ' zero' : '');
 
+    // Detect NEW DQ events since the last poll → play notification chime so the
+    // examiner is aware immediately (Bug #2/#4: previously DQ events were silent).
+    var hadNewDQ = false;
+    for (var di = 0; di < active.length; di++) {
+      var di_id = String(active[di].idNumber);
+      var di_count = Number(active[di].dqCount) || 0;
+      var di_prev = Number(prevDqCounts[di_id]) || 0;
+      if (di_count > di_prev) hadNewDQ = true;
+      prevDqCounts[di_id] = di_count;
+    }
+    if (hadNewDQ && typeof playNotif === 'function') {
+      try { playNotif(); } catch(e) {}
+    }
+
     if (active.length === 0) {
       list.innerHTML = '<li class="muted" style="text-align:center; padding:20px;">אין נבחנים במבחן כרגע</li>';
       return;
@@ -1436,7 +1473,19 @@
         }
         var licBadge = '';
         if (item.license && item.license !== currentLicense) {
-          licBadge = ' <span style="background:#dcfce7;color:#166534;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">' + escHtml(LICENSE_LABELS[item.license] || item.license) + '</span>';
+          // Per-license color scheme (examiner request): make the badge instantly
+          // recognizable so the examiner spots a mismatch at a glance.
+          // B=green, 1=orange, C1=blue, C=white with black border, D=yellow.
+          var licStyle = 'padding:2px 8px;border-radius:8px;font-size:0.8em;font-weight:700;';
+          switch (String(item.license)) {
+            case 'B':  licStyle += 'background:#16a34a;color:#fff;'; break;
+            case '1':  licStyle += 'background:#f97316;color:#fff;'; break;
+            case 'C1': licStyle += 'background:#1d4ed8;color:#fff;'; break;
+            case 'C':  licStyle += 'background:#ffffff;color:#000;border:2px solid #000;'; break;
+            case 'D':  licStyle += 'background:#facc15;color:#000;'; break;
+            default:   licStyle += 'background:#dcfce7;color:#166534;'; break;
+          }
+          licBadge = ' <span style="' + licStyle + '">' + escHtml(LICENSE_LABELS[item.license] || item.license) + '</span>';
         }
         var audioBadge = '';
         if (item.audioMode === 'on') {
@@ -1454,15 +1503,68 @@
           elapsedStyle = 'color:#dc2626;font-weight:700;';
           overtimeWarning = ' <span style="color:#dc2626;font-size:0.85em;">⚠️ חריגה מזמן המבחן — כנראה ניתוק</span>';
         }
+        // DQ-pending banner: shown when examinee triggered anti-cheat and is
+        // awaiting examiner decision (Bug #2/#4 fix).
+        var dqBanner = '';
+        if (item.dqPending) {
+          dqBanner = '<div style="background:#fee2e2;color:#991b1b;padding:6px 10px;border-radius:6px;margin-top:4px;font-size:0.9em;font-weight:700;">⚠️ פסילה אוטומטית — דורש החלטה</div>';
+        }
+        // DQ-count badge: shown when examinee had prior DQ events (even if auto-cancelled
+        // during grace period — examiner should know about repeated cheat attempts).
+        var dqCountBadge = '';
+        if (item.dqCount && item.dqCount > 0 && !item.dqPending) {
+          dqCountBadge = ' <span style="background:#fee2e2;color:#991b1b;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:700;">⚠ ' + item.dqCount + ' אירועי פסילה</span>';
+        } else if (item.dqCount && item.dqCount > 1 && item.dqPending) {
+          // Multiple DQ events, currently pending — show extra severity
+          dqCountBadge = ' <span style="background:#7f1d1d;color:#fff;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:700;">⚠ ניסיון ' + item.dqCount + '</span>';
+        }
         li.innerHTML =
-          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + timeBadge + langBadge + popBadge + licBadge + audioBadge + '</div>' +
-          '<div class="person-meta">ת.ז. ....' + id4 + (elapsed ? ' | <span style="' + elapsedStyle + '">זמן: ' + elapsed + '</span>' : '') + overtimeWarning + '</div></div>' +
+          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + dqCountBadge + timeBadge + langBadge + popBadge + licBadge + audioBadge + '</div>' +
+          '<div class="person-meta">ת.ז. ....' + id4 + (elapsed ? ' | <span style="' + elapsedStyle + '">זמן: ' + elapsed + '</span>' : '') + overtimeWarning + '</div>' +
+          dqBanner + '</div>' +
           '<div class="person-actions"></div>';
-        if (isOvertime) {
+        if (item.dqPending) {
+          li.style.borderColor = '#dc2626';
+          li.style.background = '#fef2f2';
+          li.style.borderWidth = '2px';
+        } else if (isOvertime) {
           li.style.borderColor = '#fca5a5';
           li.style.background = '#fef2f2';
         }
         var actions = li.querySelector('.person-actions');
+
+        // DQ-pending decision buttons (Bug #2/#4 fix)
+        if (item.dqPending) {
+          var confirmDqBtn = document.createElement('button');
+          confirmDqBtn.style.cssText = 'background:#dc2626;color:#fff;border:none;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:0.85em;margin-left:6px;font-weight:700;';
+          confirmDqBtn.textContent = '✔ אשר פסילה';
+          confirmDqBtn.title = 'אשר את הפסילה — הנבחן יסומן סופית כפסול';
+          confirmDqBtn.addEventListener('click', function() {
+            if (!confirm('לאשר פסילה של ' + item.name + '?\nהנבחן יסומן סופית כפסול.')) return;
+            confirmDqBtn.disabled = true;
+            confirmDqBtn.textContent = 'מאשר...';
+            apiGet({ action: 'confirmDQ', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
+              if (data.status === 'ok') pollDashboard();
+              else alert('שגיאה: ' + (data.message || 'לא ידוע'));
+            }).catch(function() { alert('שגיאת תקשורת'); });
+          });
+          actions.appendChild(confirmDqBtn);
+
+          var overturnDqBtn = document.createElement('button');
+          overturnDqBtn.style.cssText = 'background:#16a34a;color:#fff;border:none;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:0.85em;margin-left:6px;font-weight:700;';
+          overturnDqBtn.textContent = '↩ בטל פסילה';
+          overturnDqBtn.title = 'בטל פסילה — הנבחן יחזור למבחן';
+          overturnDqBtn.addEventListener('click', function() {
+            if (!confirm('לבטל פסילה של ' + item.name + '?\nהנבחן יחזור למבחן.')) return;
+            overturnDqBtn.disabled = true;
+            overturnDqBtn.textContent = 'מבטל...';
+            apiGet({ action: 'overturnDQ', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
+              if (data.status === 'ok') pollDashboard();
+              else alert('שגיאה: ' + (data.message || 'לא ידוע'));
+            }).catch(function() { alert('שגיאת תקשורת'); });
+          });
+          actions.appendChild(overturnDqBtn);
+        }
 
         // Force-complete button (only for overtime examinees)
         if (isOvertime) {
