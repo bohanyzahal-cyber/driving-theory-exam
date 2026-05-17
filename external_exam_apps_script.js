@@ -1701,23 +1701,25 @@ function handleRegisterExamQuestions(data) {
       var origCorrect = lookupCorrectIndex(Number(q.qId), lang);
       if (origCorrect === null || origCorrect === undefined) {
         // Question id missing from answer key → fall back to client's claim if present
-        canonicalMap.push({ qIdx: q.qIdx, correctShuffledIdx: Number(q.correctShuffledIdx || 0) });
+        canonicalMap.push({ qIdx: q.qIdx, qId: Number(q.qId), shuffleOrder: q.shuffleOrder, correctShuffledIdx: Number(q.correctShuffledIdx || 0) });
         unverifiedCount++;
         continue;
       }
       var idxInShuffle = q.shuffleOrder.indexOf(Number(origCorrect));
       if (idxInShuffle < 0) {
         // shuffleOrder doesn't contain the correct original index → malformed
-        canonicalMap.push({ qIdx: q.qIdx, correctShuffledIdx: Number(q.correctShuffledIdx || 0) });
+        canonicalMap.push({ qIdx: q.qIdx, qId: Number(q.qId), shuffleOrder: q.shuffleOrder, correctShuffledIdx: Number(q.correctShuffledIdx || 0) });
         unverifiedCount++;
         continue;
       }
-      canonicalMap.push({ qIdx: q.qIdx, correctShuffledIdx: idxInShuffle });
+      // Store qId + shuffleOrder so submitResult can build wrongDetails server-side
+      // (needed because we no longer send `ci` to examinees — see handleGetExamQuestions).
+      canonicalMap.push({ qIdx: q.qIdx, qId: Number(q.qId), shuffleOrder: q.shuffleOrder, correctShuffledIdx: idxInShuffle });
       continue;
     }
 
     // Legacy / fallback: client sent correctShuffledIdx directly → trust but flag
-    canonicalMap.push({ qIdx: q.qIdx, correctShuffledIdx: Number(q.correctShuffledIdx || 0) });
+    canonicalMap.push({ qIdx: q.qIdx, qId: q.qId ? Number(q.qId) : null, shuffleOrder: Array.isArray(q.shuffleOrder) ? q.shuffleOrder : null, correctShuffledIdx: Number(q.correctShuffledIdx || 0) });
     unverifiedCount++;
   }
 
@@ -1781,6 +1783,7 @@ function handleSubmitResult(data) {
       var examData = examSheet.getDataRange().getValues();
       var questionMap = null;
       var unverifiedCount = 0;
+      var registeredLang = '';
       // Find the latest registered exam for this session+ID
       for (var ei = examData.length - 1; ei >= 1; ei--) {
         if (String(examData[ei][0]) === String(data.sessionCode) && normalizeId(examData[ei][1]) === normalizeId(data.idNumber)) {
@@ -1788,6 +1791,8 @@ function handleSubmitResult(data) {
           // Column F (index 5) = unverified-count (added when registerExamQuestions stored this row).
           // Older rows may not have this column → treat as fully unverified to be safe.
           unverifiedCount = (examData[ei].length > 5) ? Number(examData[ei][5] || 0) : questionMap.length;
+          // Column E (index 4) = language (added in registerExamQuestions)
+          registeredLang = (examData[ei].length > 4) ? String(examData[ei][4] || '') : '';
           break;
         }
       }
@@ -1810,6 +1815,59 @@ function handleSubmitResult(data) {
         // verified=true ONLY when every question in the map was scored against
         // a server-trusted answer key. Any fallback entry → unverified.
         data.verified = (unverifiedCount === 0);
+
+        // ===== Server-side wrong-answers reconstruction =====
+        // We don't trust client-built wrongAnswers because the examinee response
+        // from handleGetExamQuestions intentionally strips the `ci` field — so
+        // the client can't compute correct-vs-wrong, and ends up sending
+        // "undefined - undefined". Rebuild here from authoritative state.
+        try {
+          var langForLookup = String(data.language || registeredLang || 'he').toLowerCase();
+          var allQs = (typeof loadQuestionsForLanguageServer === 'function') ? loadQuestionsForLanguageServer(langForLookup) : null;
+          if (allQs && allQs.length) {
+            var byId = {};
+            for (var qq = 0; qq < allQs.length; qq++) {
+              if (allQs[qq] && allQs[qq].id !== undefined) byId[String(allQs[qq].id)] = allQs[qq];
+            }
+            var ansLabels = (langForLookup === 'he') ? ['א','ב','ג','ד','ה','ו'] : ['A','B','C','D','E','F'];
+            var serverWrong = [];
+            for (var wi = 0; wi < data.answers.length && wi < questionMap.length; wi++) {
+              var mapEntry = questionMap[wi];
+              var ans2 = data.answers[wi];
+              if (!mapEntry) continue;
+              var selected2 = ans2 ? Number(ans2.selected) : -1;
+              var correctIdx2 = Number(mapEntry.correctShuffledIdx);
+              if (selected2 === correctIdx2) continue; // got it right
+              // We need qId + shuffleOrder from the stored map to build texts
+              var qInfo = (mapEntry.qId !== undefined && mapEntry.qId !== null) ? byId[String(mapEntry.qId)] : null;
+              if (!qInfo || !Array.isArray(mapEntry.shuffleOrder) || !Array.isArray(qInfo.answers)) continue;
+              var shuffled = mapEntry.shuffleOrder.map(function(origIdx) { return qInfo.answers[origIdx]; });
+              var yourLabel = '', yourText = '';
+              if (selected2 === -1 || selected2 < 0 || selected2 >= shuffled.length) {
+                yourText = (langForLookup === 'he') ? 'לא נענתה' : 'Not answered';
+              } else {
+                yourLabel = ansLabels[selected2] || '';
+                yourText = shuffled[selected2] || '';
+              }
+              var correctLabel = (correctIdx2 >= 0 && correctIdx2 < shuffled.length) ? (ansLabels[correctIdx2] || '') : '';
+              var correctText = (correctIdx2 >= 0 && correctIdx2 < shuffled.length) ? (shuffled[correctIdx2] || '') : '';
+              serverWrong.push({
+                question: qInfo.text || ('שאלה ' + (wi + 1)),
+                yourAnswer: yourLabel ? (yourLabel + ' - ' + yourText) : yourText,
+                correctAnswer: correctLabel ? (correctLabel + ' - ' + correctText) : correctText,
+                category: qInfo.category || ''
+              });
+            }
+            // Always replace client-provided wrongAnswers — server is authoritative.
+            // (Client values are unreliable because `ci` is stripped from examinee
+            // responses, so client-computed correct answers are bogus.)
+            data.wrongAnswers = serverWrong;
+          }
+        } catch (rwe) {
+          // Reconstruction failed (Drive load, etc.) — keep whatever client sent
+          // rather than wiping it. Log for diagnosis.
+          try { Logger.log('wrong-answer rebuild failed: ' + (rwe && rwe.message)); } catch(_) {}
+        }
       }
     } catch(ve) {
       // If verification fails, fall through to client-provided score with flag
@@ -2002,6 +2060,24 @@ function handleSubmitWrongAnswersBulk(data) {
   var rows = sheet.getDataRange().getValues();
   for (var i = rows.length - 1; i >= 1; i--) {
     if (String(rows[i][13]) === String(data.sessionCode) && normalizeId(rows[i][1]) === normalizeId(data.idNumber)) {
+      // Detect the bug pattern where client sent "undefined" because it doesn't
+      // know correct answers (handleGetExamQuestions strips `ci` from examinee
+      // responses). If client data is bogus AND the sheet already has good data
+      // (written by handleSubmitResult's server-side rebuild), keep the sheet's version.
+      var clientHasBogus = false;
+      if (data.wrongAnswers && data.wrongAnswers.length > 0) {
+        for (var bi = 0; bi < data.wrongAnswers.length; bi++) {
+          var ca = String((data.wrongAnswers[bi] && data.wrongAnswers[bi].correctAnswer) || '');
+          if (ca.indexOf('undefined') !== -1) { clientHasBogus = true; break; }
+        }
+      }
+      var existingWrong = String(rows[i][15] || '');
+      if (clientHasBogus && existingWrong && existingWrong.indexOf('undefined') === -1) {
+        // Sheet already has authoritative data → keep it, skip overwrite.
+        SpreadsheetApp.flush();
+        return jsonResponse({ status: 'ok', skipped: true, reason: 'client_bogus_server_good' });
+      }
+
       var wrongDetails = '';
       var wrongForWA = '';
       if (data.wrongAnswers && data.wrongAnswers.length > 0) {
