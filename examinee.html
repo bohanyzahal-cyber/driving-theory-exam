@@ -1160,6 +1160,13 @@
     // Update topbar to reflect chosen license
     document.getElementById('topbarSub').textContent = sessionData.site + ' | ' + (LICENSE_LABELS[sessionData.license] || sessionData.license);
 
+    // Detect external monitor (cheating risk indicator — examinee could be
+    // sharing the exam window to a second screen visible to an accomplice).
+    // screen.isExtended is true when the device has multiple displays connected.
+    // Permission API doesn't require user prompt for this property.
+    var hasExtendedScreen = false;
+    try { hasExtendedScreen = !!(screen && screen.isExtended); } catch (e) {}
+
     apiGet({
       action: 'registerExaminee',
       sessionCode: sessionCode,
@@ -1169,7 +1176,8 @@
       language: examineeData.language,
       population: examineeData.population,
       license: examineeData.license,
-      audioMode: sessionData.audioMode || 'off'
+      audioMode: sessionData.audioMode || 'off',
+      hasExtendedScreen: hasExtendedScreen ? '1' : '0'
     }).then(function(data) {
       registerBtn.disabled = false;
       registerBtn.textContent = 'הירשם למבחן';

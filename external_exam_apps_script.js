@@ -12,7 +12,7 @@ var SHEET_HEADERS = {
   'בוחנים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'מס בוחן', 'תפקיד', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד'],
   'אתרים': ['שם אתר', 'מזהה', 'טלפון מנהל', 'כיתות'],
   'סשנים': ['קוד', 'בוחן ת.ז.', 'שם בוחן', 'אתר', 'כיתה', 'דרגה', 'שפה', 'מצב שמע', 'זמן יצירה', 'תקף עד', 'פעיל'],
-  'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה', 'דרגה', 'שמע', 'הארכת זמן', 'התחלת מבחן', 'טוקן נבחן', 'ספירת DQ'],
+  'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה', 'דרגה', 'שמע', 'הארכת זמן', 'התחלת מבחן', 'טוקן נבחן', 'ספירת DQ', 'מסך נוסף'],
   'תוצאות': ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר', 'כיתה', 'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ', 'אוכלוסיה', 'תוקן?', 'שמע', 'מאומת', 'חשוד', 'dqEventId', 'תוקן ע"י', 'סיבת תיקון', 'תאריך תיקון'],
   'מורים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד'],
   'כיתות': ['קוד כיתה', 'שם כיתה', 'מורה ת.ז.', 'שם מורה', 'דרגה', 'תאריך יצירה', 'פעיל'],
@@ -938,6 +938,9 @@ function handleRegisterExaminee(p) {
     return jsonResponse({ status: 'error', message: 'הסשן מלא — לא ניתן לרשום נבחנים נוספים' });
   }
   var examineeToken = generateExamineeToken();
+  // External-monitor indicator from client (screen.isExtended). Cheating risk
+  // signal — examinee may be sharing window to a second screen with accomplice.
+  var hasExtendedScreen = (p.hasExtendedScreen === '1' || p.hasExtendedScreen === 1 || p.hasExtendedScreen === true);
   pendSheet.appendRow([
     p.sessionCode,
     p.idNumber,
@@ -949,9 +952,11 @@ function handleRegisterExaminee(p) {
     p.population || '',
     p.license || '',
     p.audioMode || 'off',
-    '',           // K (10): הארכת זמן — נקבע ע"י הבוחן בעת אישור
-    '',           // L (11): התחלת מבחן — נקבע ע"י markExamStarted
-    examineeToken // M (12): טוקן נבחן — מוחזר ללקוח, נדרש בקריאות עוקבות
+    '',                       // K (10): הארכת זמן — נקבע ע"י הבוחן בעת אישור
+    '',                       // L (11): התחלת מבחן — נקבע ע"י markExamStarted
+    examineeToken,            // M (12): טוקן נבחן — מוחזר ללקוח, נדרש בקריאות עוקבות
+    0,                        // N (13): ספירת DQ — מתעלה עם כל disqualify
+    hasExtendedScreen ? 'כן' : '' // O (14): מסך נוסף — סימן אזהרה
   ]);
   return jsonResponse({ status: 'ok', examineeToken: examineeToken });
 }
@@ -1184,8 +1189,9 @@ function handleExaminerDashboard(p) {
     if (String(pendData[i][0]) !== code) continue;
     var s = String(pendData[i][5] || '').trim();
     var dqCount = (pendData[i].length > 13) ? (Number(pendData[i][13]) || 0) : 0;
+    var hasExtScreen = (pendData[i].length > 14) ? (String(pendData[i][14] || '').trim() === 'כן') : false;
     var idNorm = normalizeId(pendData[i][1]);
-    var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], examStartTime: pendData[i][11] || '', status: s, language: pendData[i][6] || '', population: pendData[i][7] || '', license: pendData[i][8] || '', audioMode: pendData[i][9] || 'off', timeExtension: String(pendData[i][10] || ''), dqCount: dqCount, attemptsToday: attemptsTodayById[idNorm] || 0 };
+    var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], examStartTime: pendData[i][11] || '', status: s, language: pendData[i][6] || '', population: pendData[i][7] || '', license: pendData[i][8] || '', audioMode: pendData[i][9] || 'off', timeExtension: String(pendData[i][10] || ''), dqCount: dqCount, attemptsToday: attemptsTodayById[idNorm] || 0, hasExtendedScreen: hasExtScreen };
     if (s === 'waiting') pending.push(item);
     else if (s === 'approved') pending.push(item);
     else if (s === 'in_exam') active.push(item);
@@ -1332,19 +1338,44 @@ function handleDisqualify(p) {
     pendSheet.getRange(pendRowIdx + 1, 14).setValue(prevCount + 1);
   }
 
-  // Idempotency: if the latest result is already "פסול" with the SAME dqEventId, this is a retry — skip.
-  // Different dqEventId or no dqEventId = new DQ event → create new row.
+  // Idempotency: prevent duplicate פסול rows when examinee anti-cheat AND examiner
+  // manual DQ fire on the same examinee close in time (different dqEventIds).
+  // Rules:
+  //   1. Same dqEventId on a פסול/בוטל row -> retry, skip silently.
+  //   2. Recent (≤2 min) פסול row WITHOUT 'בוטל' status -> same logical DQ event from
+  //      another path (e.g. examiner clicked after auto-DQ already fired) -> skip.
+  //   3. Otherwise (latest is not פסול, or it's old/cancelled) -> create new row.
   var dqEventId = String(p.dqEventId || '');
   var sheet = getSheet('תוצאות');
   var data = sheet.getDataRange().getValues();
+  var nowMs = Date.now();
   for (var i = data.length - 1; i >= 1; i--) {
     if (String(data[i][13]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
       var rowStatus = String(data[i][7]).trim();
+      // Rule 1: same dqEventId (active or cancelled) — retry from sendDQToServer, skip
       if ((rowStatus === 'פסול' || rowStatus === 'בוטל') && dqEventId && String(data[i][24] || '') === dqEventId) {
-        // Same DQ event (active or cancelled) — retry from sendDQToServer, skip
         return jsonResponse({ status: 'ok' });
       }
-      // Either latest is not "פסול", or different/missing dqEventId → new attempt, create new row
+      // Rule 2: latest is an active 'פסול' (not cancelled) within last 2 minutes
+      // → treat as the same DQ episode even if dqEventId differs/missing.
+      if (rowStatus === 'פסול') {
+        var rowDateRaw = data[i][0];
+        var rowDate = null;
+        try {
+          if (rowDateRaw instanceof Date) rowDate = rowDateRaw;
+          else if (rowDateRaw) {
+            // Sheet date column F may be "DD/MM/YYYY HH:mm" — parse manually
+            var m = String(rowDateRaw).match(/(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})/);
+            if (m) rowDate = new Date(+m[3], (+m[2]) - 1, +m[1], +m[4], +m[5]);
+          }
+        } catch (e) { rowDate = null; }
+        if (rowDate && (nowMs - rowDate.getTime()) < 120000) {
+          // Within 2 minutes of an active פסול → duplicate from race between
+          // examiner button and examinee anti-cheat. Skip.
+          return jsonResponse({ status: 'ok', deduped: true });
+        }
+      }
+      // Rule 3: not a duplicate — fall through to create new row
       break;
     }
   }
