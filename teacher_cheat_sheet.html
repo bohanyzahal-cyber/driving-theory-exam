@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>דף עזר למורה — מערכת תאוריה דיגיטלית</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI','Heebo',Tahoma,sans-serif;background:#f1f5f9;color:#1e293b;direction:rtl;padding:20px;line-height:1.4}
+.page{max-width:820px;margin:0 auto;background:#fff;border-radius:14px;box-shadow:0 4px 20px rgba(0,0,0,0.08);overflow:hidden}
+.header{background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;padding:18px 24px}
+.header h1{font-size:24px;font-weight:900;margin:0}
+.header p{font-size:13px;opacity:0.9;margin-top:2px}
+.body{padding:18px 24px}
+.section{margin-bottom:14px;page-break-inside:avoid}
+.section-title{background:#fbbf24;color:#1e293b;padding:6px 10px;font-weight:900;font-size:14px;border-radius:6px;display:inline-block;margin-bottom:8px}
+.section-title.highlight{background:#16a34a;color:#fff}
+.section-title.warn{background:#dc2626;color:#fff}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+.box{background:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;padding:10px 12px}
+.box h3{font-size:13px;color:#15803d;margin-bottom:5px;font-weight:800}
+.box ol,.box ul{padding-right:18px;margin:0}
+.box li{font-size:12px;line-height:1.45;margin-bottom:2px}
+.btns{display:flex;gap:6px;flex-wrap:wrap;margin-top:5px}
+.btn{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border-radius:5px;font-size:11px;font-weight:700;color:#fff}
+.btn-create{background:#16a34a}
+.btn-view{background:#1a73e8}
+.btn-export{background:#7c3aed}
+.btn-delete{background:#dc2626}
+.scenarios{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.scenario{background:#fef3c7;border-right:3px solid #f59e0b;padding:7px 10px;border-radius:5px}
+.scenario .q{font-weight:800;font-size:12px;color:#92400e;margin-bottom:2px}
+.scenario .a{font-size:11px;color:#78350f;line-height:1.45}
+.dont,.do{padding:10px;border-radius:8px}
+.do{background:#dcfce7;border:1px solid #16a34a}
+.dont{background:#fee2e2;border:1px solid #dc2626}
+.do h3{color:#15803d;font-size:13px;margin-bottom:4px}
+.dont h3{color:#b91c1c;font-size:13px;margin-bottom:4px}
+.do ul,.dont ul{padding-right:16px}
+.do li,.dont li{font-size:12px;line-height:1.45;margin-bottom:1px}
+.qr-box{background:linear-gradient(135deg,#dcfce7,#bbf7d0);border:2px dashed #16a34a;padding:14px;border-radius:10px;text-align:center}
+.qr-box h3{color:#14532d;font-size:14px;margin-bottom:6px}
+.qr-box p{font-size:12px;color:#166534;line-height:1.5}
+.device-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:6px}
+.device-card{background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:10px;text-align:center}
+.device-card .icon{font-size:28px;margin-bottom:4px}
+.device-card .label{font-size:12px;font-weight:700;color:#15803d}
+.footer{padding:10px 24px;background:#f1f5f9;border-top:1px solid #cbd5e1;font-size:11px;color:#64748b;display:flex;justify-content:space-between}
+.footer strong{color:#1e293b}
+.tip{background:#eff6ff;border-right:3px solid #1a73e8;padding:8px 12px;border-radius:5px;font-size:12px;color:#1e3a8a;margin-bottom:8px}
+.tip strong{color:#1d4ed8}
+
+@media print{
+  body{padding:0;background:#fff}
+  .page{box-shadow:none;border-radius:0;max-width:none}
+  .no-print{display:none}
+}
+.print-btn{position:fixed;top:20px;left:20px;background:#16a34a;color:#fff;border:none;border-radius:8px;padding:10px 18px;font-size:14px;font-weight:700;cursor:pointer;box-shadow:0 4px 12px rgba(22,163,74,0.4)}
+</style>
+</head>
+<body>
+
+<button class="print-btn no-print" onclick="window.print()">🖨 הדפס דף עזר</button>
+
+<div class="page">
+  <div class="header">
+    <h1>👨‍🏫 דף עזר למורה — תאוריה דיגיטלית</h1>
+    <p>גרסה מעודכנת • סמכות הרישוי צה"ל</p>
+  </div>
+
+  <div class="body">
+
+    <div class="section">
+      <div class="section-title">1️⃣ כניסה למערכת</div>
+      <div class="grid">
+        <div class="box">
+          <h3>איך נכנסים</h3>
+          <ol>
+            <li>פתח קיצור "מורה" שעל המסך</li>
+            <li>הכנס ת.ז. + סיסמה</li>
+            <li>תוקף הטוקן: 12 שעות</li>
+          </ol>
+        </div>
+        <div class="box">
+          <h3>מה רואים מיד</h3>
+          <ul>
+            <li>רשימת הכיתות שלך</li>
+            <li>מספר תלמידים בכל כיתה</li>
+            <li>ציון ממוצע + אחוז הצלחה</li>
+            <li>פעילות אחרונה</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title highlight">2️⃣ פתיחת כיתה חדשה</div>
+      <div class="grid">
+        <div class="box">
+          <h3>צעדים</h3>
+          <ol>
+            <li>לחץ <span class="btn btn-create">+ כיתה חדשה</span></li>
+            <li>בחר שם כיתה (לדוגמה: "מחזור 2026א")</li>
+            <li>בחר דרגות רישיון לכיתה (ניתן לבחור כמה)</li>
+            <li>המערכת מייצרת <strong>קוד כיתה</strong> אוטומטית</li>
+          </ol>
+        </div>
+        <div class="box">
+          <h3>חלוקת הקוד לתלמידים</h3>
+          <ul>
+            <li>📋 הצג בלוח / בכיתה</li>
+            <li>📱 שלח ב-WhatsApp</li>
+            <li>📧 שלח במייל</li>
+            <li>🖨 הדפס QR מהמערכת ותלה</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title warn">⭐ ברקוד QR — קישור מהיר לדף תלמיד</div>
+      <div class="qr-box">
+        <h3>🎯 תלה ברקודים בכל הבסיס!</h3>
+        <p>במערכת יש כפתור <strong>"הדפס QR לתלמידים"</strong> שמייצר ברקוד עם קישור ישיר לדף התלמיד. תלמיד שסורק במצלמת הטלפון נכנס מיד — בלי הקלדת כתובת וסיסמה.</p>
+        <p style="margin-top:8px"><strong>איפה כדאי לתלות:</strong></p>
+        <div style="text-align:right;display:inline-block;margin-top:4px">
+          <ul style="font-size:12px;color:#166534;padding-right:18px;line-height:1.7">
+            <li>📍 בכניסה לכיתה (לוח מודעות)</li>
+            <li>📍 בחדר אוכל / קנטינה (לתרגול בארוחת צהריים)</li>
+            <li>📍 בחדר תרבות / מועדון</li>
+            <li>📍 לוחות מודעות ראשיים בבסיס</li>
+            <li>📍 בכניסה לחדרי שינה</li>
+            <li>📍 בארגון של מקומות המתנה (חולית רישוי / מנהלה)</li>
+          </ul>
+        </div>
+        <p style="margin-top:8px;font-size:11px;color:#166534"><strong>תוצאה:</strong> תלמיד מנצל כל דקה פנויה לתרגול. תרגול עקבי = מעבר.</p>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title highlight">📱 התלמיד יכול ללמוד מכל מכשיר</div>
+      <div class="tip">💡 כל ההתקדמות של התלמיד מסונכרנת אוטומטית — מתחיל בטלפון, ממשיך במחשב, חוזר לטלפון. הכל זמין מהמקום שעצר.</div>
+      <div class="device-grid">
+        <div class="device-card">
+          <div class="icon">📱</div>
+          <div class="label">טלפון נייד</div>
+          <p style="font-size:11px;color:#15803d;margin-top:4px">בכל זמן פנוי — בתור, בנסיעה, בהפסקה</p>
+        </div>
+        <div class="device-card">
+          <div class="icon">💻</div>
+          <div class="label">מחשב / לפטופ</div>
+          <p style="font-size:11px;color:#15803d;margin-top:4px">בכיתה, בבית, בכל מסך גדול יותר</p>
+        </div>
+      </div>
+      <p style="font-size:11px;color:#64748b;margin-top:6px">💬 תזכיר לתלמידים: "סרקת פעם — לא צריך לרשום כתובת שוב. הדפדפן זוכר אותך."</p>
+    </div>
+
+    <div class="section">
+      <div class="section-title">3️⃣ מעקב אחר תלמידים</div>
+      <div class="grid">
+        <div class="box">
+          <h3>מה תראה לכל תלמיד</h3>
+          <ul>
+            <li>שם + ת.ז.</li>
+            <li>תאריך הצטרפות לכיתה</li>
+            <li>מספר תרגולים</li>
+            <li>ציון ממוצע</li>
+            <li>אחוז הצלחה</li>
+            <li>פירוט לפי קטגוריות (בטיחות, חוק, תמרורים וכו')</li>
+          </ul>
+        </div>
+        <div class="box">
+          <h3>פעולות זמינות</h3>
+          <div class="btns">
+            <span class="btn btn-view">👁 פרטים</span>
+            <span class="btn btn-export">📤 ייצוא Excel</span>
+            <span class="btn btn-delete">🗑 הסר</span>
+          </div>
+          <p style="font-size:11px;margin-top:5px;color:#64748b">"פרטים" — פותח חלון עם היסטוריה מלאה של התרגולים</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">4️⃣ פירוט תרגול תלמיד</div>
+      <div class="box">
+        <h3>בלחיצה על תלמיד תראה:</h3>
+        <ul>
+          <li>📊 גרף התקדמות לפי תאריך</li>
+          <li>📋 רשימת כל התרגולים — תאריך, מצב (תרגול/מבחן), ציון, זמן</li>
+          <li>🎯 פירוט לפי נושאים — איפה חזק ואיפה צריך עוד</li>
+          <li>❌ רשימת שאלות שגויות נפוצות</li>
+          <li>🏆 רצף הצלחה (streak) של תשובות נכונות</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">5️⃣ דוחות + ייצוא</div>
+      <div class="grid">
+        <div class="box">
+          <h3>📋 דו"ח כיתה</h3>
+          <p style="font-size:12px">סיכום מקצועי לכל הכיתה — ממוצעים, פילוח לפי דרגות, נושאים חזקים/חלשים</p>
+        </div>
+        <div class="box">
+          <h3>📊 ייצוא Excel</h3>
+          <p style="font-size:12px">הורדת קובץ עם כל הנתונים — לעבודה במחשב או להעברה למפקדים</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">⚠️ תרחישים נפוצים</div>
+      <div class="scenarios">
+        <div class="scenario">
+          <div class="q">תלמיד אומר "המערכת לא זוכרת אותי"</div>
+          <div class="a">שייכנס שוב עם אותו שם/ת.ז. שהירשם בהתחלה. הנתונים בענן, לא במכשיר</div>
+        </div>
+        <div class="scenario">
+          <div class="q">תלמיד עבר טלפון/מחשב</div>
+          <div class="a">פותח את הקישור (או סורק QR), נכנס עם הקוד והשם — הכל מסתנכרן</div>
+        </div>
+        <div class="scenario">
+          <div class="q">תלמיד שכח את הקוד</div>
+          <div class="a">תפתח את הכיתה בלוח שלך, לחץ "הצג קוד" → תקריא לו</div>
+        </div>
+        <div class="scenario">
+          <div class="q">רוצה להעביר תלמיד לכיתה אחרת</div>
+          <div class="a">הסר מהכיתה הקיימת, תן לו את הקוד החדש</div>
+        </div>
+        <div class="scenario">
+          <div class="q">QR לא נסרק טוב</div>
+          <div class="a">תהדפס אותו גדול יותר (לפחות 8×8 ס"מ), על נייר מט (לא מבריק)</div>
+        </div>
+        <div class="scenario">
+          <div class="q">תלמיד לא בטוח אם זה תרגול או מבחן אמיתי</div>
+          <div class="a">דף תלמיד = תרגול לימוד. מבחן אמיתי = רק דרך בוחן עם קוד בחינה</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">📌 כללי אצבע</div>
+      <div class="grid">
+        <div class="do">
+          <h3>✅ לעשות</h3>
+          <ul>
+            <li>תלה ברקודים בכל מקום אפשרי בבסיס</li>
+            <li>תזכיר לתלמידים שמתרגלים בטלפון = מתקדם</li>
+            <li>בדוק התקדמות לפחות פעמיים בשבוע</li>
+            <li>תן משוב אישי לחלשים — תראה איפה הם נופלים</li>
+            <li>שתף נתונים עם מפקדים — Excel/PDF</li>
+          </ul>
+        </div>
+        <div class="dont">
+          <h3>❌ לא לעשות</h3>
+          <ul>
+            <li>לא לתת את הסיסמה האישית שלך לאחרים</li>
+            <li>לא להסיר תלמיד בלי לבדוק שזה נכון</li>
+            <li>לא לסמוך רק על ציון אחד — תסתכל על מגמה</li>
+            <li>לא לבלבל בין דף תלמיד (תרגול) למבחן אמיתי</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="footer">
+    <span>💡 <strong>טיפ:</strong> תרגול עקבי של 15-30 דקות ביום עדיף על שעה ביום אחד</span>
+    <span><strong>מקש עזרה:</strong> F1 בדף המורה</span>
+  </div>
+</div>
+
+</body>
+</html>
