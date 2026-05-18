@@ -2813,6 +2813,11 @@
       }
       if (!missingAny) {
         sessionData.language = newLang;
+        // Also update examineeData.language so submitResult / submitFailOnClose
+        // / wrong-answer reconstruction all use the FINAL language the examinee
+        // actually saw, not the one they registered with.
+        examineeData.language = newLang;
+        try { saveExamineeState(); } catch (e) {}
         var isRTL = (newLang === 'he' || newLang === 'ar');
         document.documentElement.dir = isRTL ? 'rtl' : 'ltr';
         document.documentElement.lang = newLang;
@@ -2847,6 +2852,9 @@
         }
       }
       sessionData.language = newLang;
+      // Also sync examineeData.language (see fast-path comment above).
+      examineeData.language = newLang;
+      try { saveExamineeState(); } catch (e) {}
       var isRTL = (newLang === 'he' || newLang === 'ar');
       document.documentElement.dir = isRTL ? 'rtl' : 'ltr';
       document.documentElement.lang = newLang;
