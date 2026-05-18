@@ -322,7 +322,7 @@
 
   <!-- ===== Screen 2: Session Setup ===== -->
   <section class="card screen" id="screenSetup">
-    <h2>פתיחת סשן חדש</h2>
+    <h2>פתיחת בחינה חדשה</h2>
     <p class="muted" id="setupExaminerName"></p>
     <div class="form-grid">
       <label>
@@ -366,7 +366,7 @@
       </label>
     </div>
     <div class="form-error" id="setupError"></div>
-    <button id="createSessionBtn" style="display:block; width:100%; padding:14px; font-size:17px; margin-top:12px;">פתח סשן</button>
+    <button id="createSessionBtn" style="display:block; width:100%; padding:14px; font-size:17px; margin-top:12px;">פתח בחינה</button>
     <button id="backToCommanderSetup" onclick="switchToCommander()" style="display:none; width:100%; padding:12px; font-size:15px; margin-top:8px; background:#0d47a1;">חזרה ללוח מפקד</button>
 
     <!-- Previous active sessions -->
@@ -413,7 +413,7 @@
       <div class="item"><span class="lbl">תוקף:</span> <span class="countdown" id="barCountdown">--:--:--</span></div>
       <div style="margin-right:auto;"></div>
       <button style="font-size:13px; padding:6px 12px; background:#64748b;" onclick="openSettingsModal()">שנה הגדרות</button>
-      <button style="font-size:13px; padding:6px 12px; background:#ef4444;" onclick="confirmCloseSession()">סגור סשן</button>
+      <button style="font-size:13px; padding:6px 12px; background:#ef4444;" onclick="confirmCloseSession()">סגור בחינה</button>
       <button id="backToCommanderBtn" style="display:none; font-size:13px; padding:6px 12px; background:#0d47a1;" onclick="switchToCommander()">חזרה למפקד</button>
     </div>
 
@@ -540,7 +540,7 @@
     </div>
 
     <div class="card" style="text-align:center;">
-      <button onclick="switchToExaminer()" style="padding:12px 24px;font-size:15px;background:#0d47a1;color:white;border:none;border-radius:8px;cursor:pointer;">מעבר ללוח בוחן (פתיחת סשן)</button>
+      <button onclick="switchToExaminer()" style="padding:12px 24px;font-size:15px;background:#0d47a1;color:white;border:none;border-radius:8px;cursor:pointer;">מעבר ללוח בוחן (פתיחת בחינה)</button>
     </div>
   </div>
 
@@ -1153,7 +1153,7 @@
       site: site, classroom: classroom,
       license: license, language: language, audioMode: audioMode
     }).then(function(data) {
-      btn.disabled = false; btn.textContent = 'פתח סשן';
+      btn.disabled = false; btn.textContent = 'פתח בחינה';
       if (data.status === 'ok') {
         sessionCode = data.sessionCode;
         sessionValidUntil = new Date(data.validUntil);
@@ -1178,7 +1178,7 @@
         errEl.style.display = 'block';
       }
     }).catch(function() {
-      btn.disabled = false; btn.textContent = 'פתח סשן';
+      btn.disabled = false; btn.textContent = 'פתח בחינה';
       errEl.textContent = 'שגיאת תקשורת. נסה שוב.';
       errEl.style.display = 'block';
     });
