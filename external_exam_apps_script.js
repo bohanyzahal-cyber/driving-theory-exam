@@ -1908,11 +1908,20 @@ function handleSubmitResult(data) {
               }
               var correctLabel = (correctIdx2 >= 0 && correctIdx2 < shuffled.length) ? (ansLabels[correctIdx2] || '') : '';
               var correctText = (correctIdx2 >= 0 && correctIdx2 < shuffled.length) ? (shuffled[correctIdx2] || '') : '';
+              // Classify the raw question category to the bucket name used by
+              // EXAM_STRUCTURE (בטיחות / הכרת הרכב / חוק / תמרורים / ספציפי).
+              // Without classification, the certificate's per-category analysis
+              // sees unknown categories and treats every bucket as 0 wrongs →
+              // all bars green at 100%, which is exactly the bug examiners
+              // reported (a 7/30 examinee showing as 100% in every category).
+              var classifiedCat = (typeof classifyCategoryServer === 'function')
+                ? classifyCategoryServer(qInfo.category)
+                : '';
               serverWrong.push({
                 question: qInfo.text || ('שאלה ' + (wi + 1)),
                 yourAnswer: yourLabel ? (yourLabel + ' - ' + yourText) : yourText,
                 correctAnswer: correctLabel ? (correctLabel + ' - ' + correctText) : correctText,
-                category: qInfo.category || ''
+                category: classifiedCat || qInfo.category || ''
               });
             }
             // Always replace client-provided wrongAnswers — server is authoritative.
