@@ -145,6 +145,7 @@
     .timer-bar.warn-time .timer-text { color: #dc2626; }
     .timer-bar.warn-time { border-color: #fca5a5; background: #fef2f2; animation: pulse-red 1.5s infinite; }
     @keyframes pulse-red { 0%, 100% { opacity: 1; } 50% { opacity: 0.85; } }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
     .question-card {
       background: white; border-radius: 14px; padding: 1.2rem 1.4rem;
@@ -536,6 +537,9 @@ try {
 var API_URL='https://script.google.com/macros/s/AKfycbzOI0zrDEngP-GvlRblhOk8tQsYBvWZ2gGliIQHTpS67WrDZl4la8NPpwtJr_Vjsh3Gzg/exec';
 // Origin tag — required by Apps Script allowlist; must match a value in ALLOWED_ORIGINS server-side.
 var API_ORIGIN='student-app';
+// Cloudflare Worker that proxies + caches gov.il images. iPhones often block direct
+// gov.il loads (ITP, Referrer Policy, Mixed Content) — proxy bypasses these.
+var IMAGE_PROXY_BASE='https://image-proxy.bohanyzahal.workers.dev';
 var currentName='',currentLicense='B',currentLanguage='he',currentMode='',currentCategory='';
 var currentClassCode='',currentStudentId='';
 var examQuestions=[],currentIndex=0,userAnswers=[],shuffledOrders=[];
@@ -746,6 +750,66 @@ function buildAudioControls(){
   return wrap;
 }
 
+// ========== Resilient image loader (gov.il via Cloudflare proxy) ==========
+// Tries proxy first (bypasses iOS Safari ITP + carrier blocking of gov.il).
+// Falls back to direct gov.il if proxy fails. Shows loading + retry UI.
+function toProxyUrl(originalUrl){
+  if(!IMAGE_PROXY_BASE)return originalUrl;
+  try{
+    var u=new URL(originalUrl);
+    if(u.hostname!=='www.gov.il'&&u.hostname!=='gov.il')return originalUrl;
+    return IMAGE_PROXY_BASE.replace(/\/$/,'')+'/img'+u.pathname;
+  }catch(e){return originalUrl;}
+}
+function buildResilientImage(originalUrl,cssClass){
+  var wrap=document.createElement('div');
+  wrap.className='q-image-wrap';
+  wrap.style.cssText='position:relative;min-height:120px;display:flex;align-items:center;justify-content:center;margin:8px 0;';
+  var loading=document.createElement('div');
+  loading.style.cssText='color:#94a3b8;font-size:13px;text-align:center;padding:20px;';
+  loading.innerHTML='<div style="display:inline-block;width:24px;height:24px;border:3px solid #cbd5e1;border-top-color:#1a73e8;border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:middle;margin-inline-end:8px;"></div>טוען תמונה...';
+  wrap.appendChild(loading);
+  var img=document.createElement('img');
+  img.className=cssClass||'q-image';
+  img.referrerPolicy='no-referrer';
+  img.loading='eager';
+  img.alt='תמונה לשאלה';
+  img.style.display='none';
+  var attempt=0;
+  var sources=[toProxyUrl(originalUrl),originalUrl];
+  if(sources[0]===sources[1])sources=[sources[0]];
+  var maxRetriesPerSource=2;
+  var retriesThisSource=0;
+  function tryNext(){
+    var src=sources[attempt];
+    if(!src){showError();return;}
+    var bust=retriesThisSource>0?(src.indexOf('?')>=0?'&':'?')+'t='+Date.now():'';
+    img.src=src+bust;
+  }
+  img.onload=function(){loading.style.display='none';img.style.display='';var err=wrap.querySelector('.q-image-error');if(err)err.parentNode.removeChild(err);};
+  img.onerror=function(){
+    retriesThisSource++;
+    if(retriesThisSource<maxRetriesPerSource){setTimeout(tryNext,800);}
+    else{attempt++;retriesThisSource=0;if(attempt<sources.length){tryNext();}else{showError();}}
+  };
+  function showError(){
+    loading.style.display='none';
+    img.style.display='none';
+    var err=document.createElement('div');
+    err.className='q-image-error';
+    err.style.cssText='background:#fef2f2;border:2px solid #fca5a5;border-radius:10px;padding:14px;text-align:center;color:#991b1b;font-size:14px;';
+    err.innerHTML='<div style="font-size:32px;margin-bottom:6px;">⚠️</div><div style="font-weight:700;margin-bottom:4px;">התמונה לא נטענה</div><div style="font-size:12px;color:#7f1d1d;margin-bottom:10px;">ייתכן שזו בעיית רשת.</div><button type="button" style="background:#1a73e8;color:#fff;border:none;border-radius:8px;padding:8px 18px;font-size:14px;font-weight:700;cursor:pointer;">🔄 נסה שוב</button>';
+    err.querySelector('button').addEventListener('click',function(){
+      wrap.innerHTML='';wrap.appendChild(loading);wrap.appendChild(img);
+      loading.style.display='';attempt=0;retriesThisSource=0;tryNext();
+    });
+    wrap.appendChild(err);
+  }
+  wrap.appendChild(img);
+  tryNext();
+  return wrap;
+}
+
 function renderQuestion(){var q=examQuestions[currentIndex],total=examQuestions.length,area=document.getElementById('practiceArea');area.innerHTML='';var qText=getQText(q),sa=shuffleAnswers(q,currentIndex),sAns=sa.answers,sCI=sa.correctIndex,prev=userAnswers[currentIndex];
 var topBar=document.createElement('div');topBar.className='practice-topbar';var catName=currentMode==='exam'?'\u05DE\u05D1\u05D7\u05DF \u05EA\u05E8\u05D2\u05D5\u05DC':(CATEGORY_LABELS[currentCategory]||'');var badge=document.createElement('span');badge.className='cat-badge';if(currentMode==='exam')badge.classList.add('cat-badge-exam');else{var cs=CATEGORY_CSS[currentCategory];if(cs)badge.classList.add(cs.badgeClass);}badge.textContent=catName;topBar.appendChild(badge);var ctr=document.createElement('span');ctr.className='q-counter';ctr.textContent='\u05E9\u05D0\u05DC\u05D4 '+(currentIndex+1)+' / '+total;topBar.appendChild(ctr);var langSwitch=document.createElement('select');langSwitch.id='examLangSwitcher';langSwitch.className='exam-lang-switcher';var langOpts=[{v:'he',l:'עב'},{v:'ru',l:'RU'},{v:'en',l:'EN'},{v:'ar',l:'عر'},{v:'fr',l:'FR'},{v:'es',l:'ES'},{v:'am',l:'AM'}];for(var li=0;li<langOpts.length;li++){var opt=document.createElement('option');opt.value=langOpts[li].v;opt.textContent=langOpts[li].l;if(langOpts[li].v===currentLanguage)opt.selected=true;langSwitch.appendChild(opt);}langSwitch.addEventListener('change',function(){switchLanguage(this.value);});topBar.appendChild(langSwitch);area.appendChild(topBar);
 
@@ -758,7 +822,7 @@ var meta=document.createElement('div');meta.className='q-number';var mn=document
 
 var qte=document.createElement('div');qte.className='q-text';qte.textContent=qText;if(currentLanguage==='ar')qte.dir='rtl';else if(currentLanguage!=='he'){qte.dir='ltr';qte.style.textAlign='left';}card.appendChild(qte);
 
-if(q.imageUrl&&q.imageUrl.trim()!==''){var img=document.createElement('img');img.className='q-image';img.referrerPolicy='no-referrer';img.loading='eager';img.src=q.imageUrl;img.alt='\u05EA\u05DE\u05D5\u05E0\u05D4';img.onerror=function(){img.style.display='none';};card.appendChild(img);}
+if(q.imageUrl&&q.imageUrl.trim()!==''){card.appendChild(buildResilientImage(q.imageUrl,'q-image'));}
 
 if(audioEnabled){
   var audioRow=document.createElement('div');audioRow.className='audio-row';
@@ -1070,14 +1134,7 @@ function renderFlashcard(){
 
   // Image
   if(q.imageUrl&&q.imageUrl.trim()!==''){
-    var img=document.createElement('img');
-    img.className='fc-image';
-    img.referrerPolicy='no-referrer';
-    img.loading='eager';
-    img.src=q.imageUrl;
-    img.alt='\u05EA\u05DE\u05D5\u05E0\u05D4';
-    img.onerror=function(){img.style.display='none';};
-    card.appendChild(img);
+    card.appendChild(buildResilientImage(q.imageUrl,'fc-image'));
   }
 
   if(!flashcardRevealed){
