@@ -849,6 +849,9 @@ function handleCenterManagerReport(p) {
   var overall = { total: 0, passed: 0, failed: 0, dq: 0 };
   var bySite = {};
   var byLicense = {};
+  // Per-examinee details — needed to render the same rich report style as
+  // the site-manager report (KPIs + pie + weak topics + per-examinee table).
+  var results = [];
   for (var ri = 1; ri < rows.length; ri++) {
     var r = rows[ri];
     dbg.totalRows++;
@@ -889,6 +892,29 @@ function handleCenterManagerReport(p) {
     if (isDQ) bySite[siteKey].dq++;
     else if (isPassed) bySite[siteKey].passed++;
     else bySite[siteKey].failed++;
+
+    // Capture per-examinee row for the rich report
+    results.push({
+      date: r[0],
+      idNumber: r[1],
+      name: r[2],
+      phone: r[3],
+      license: r[4],
+      score: r[5],
+      percent: r[6],
+      passed: r[7],
+      time: r[8],
+      examiner: r[9],
+      site: siteKey,
+      classroom: r[11],
+      language: r[12],
+      attempt: r[14],
+      wrongDetails: r[15],
+      disqualified: r[17],
+      population: r[19] || '',
+      corrected: r[20] || false,
+      audioMode: r[21] || 'off'
+    });
 
     if (!byLicense[rowLic]) byLicense[rowLic] = { license: rowLic, total: 0, passed: 0, failed: 0, dq: 0 };
     byLicense[rowLic].total++;
@@ -943,6 +969,7 @@ function handleCenterManagerReport(p) {
     overall: overall,
     bySite: bySiteArr,
     byLicense: byLicArr,
+    results: results,
     // Diagnostic info shown when the report is empty — helps identify the
     // cause (wrong site name in column K, no exams in date range, etc.)
     diagnostics: {

@@ -506,6 +506,7 @@
         <div id="ccmByLicenseContent" style="overflow-x:auto;"></div>
       </div>
       <div class="card" style="text-align:center;">
+        <button onclick="openCenterReportInTab()" style="background:#7c2d12;padding:12px 24px;font-size:15px;margin-left:8px;">📊 פתח דו"ח מלא</button>
         <button onclick="shareCenterReport()" style="background:#25D366;padding:12px 24px;font-size:15px;">📱 שלח דו"ח ב-WhatsApp</button>
       </div>
     </div>
@@ -4100,40 +4101,223 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     return dd + '/' + mm + '/' + d.getFullYear();
   }
 
+  // Build a rich HTML report — same style as the site-manager report
+  // (KPIs + pie + weak-topics + per-examinee table), extended for multi-site.
+  function buildCenterReportHtml(d, range) {
+    var fromLbl = ccmFmtDate(range.from);
+    var toLbl = ccmFmtDate(range.to);
+    var results = d.results || [];
+
+    // Compute score stats (avg, median) and category aggregate across all sites.
+    var scores = [];
+    for (var i = 0; i < results.length; i++) {
+      var r = results[i];
+      var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === 'פסול';
+      if (!isDQ) {
+        var pctVal = parseInt(String(r.percent || '').replace('%','')) || 0;
+        scores.push(pctVal);
+      }
+    }
+    var avgScore = scores.length ? Math.round(scores.reduce(function(a,b){return a+b;},0) / scores.length) : 0;
+    scores.sort(function(a,b){return a-b;});
+    var medianScore = scores.length ? scores[Math.floor(scores.length / 2)] : 0;
+
+    // Aggregate wrong-by-category (cross-site, cross-license — use union of buckets)
+    var catTotals = {}, catWrong = {}, hasCatData = false;
+    for (var ci = 0; ci < results.length; ci++) {
+      var rc = results[ci];
+      var isDQc = rc.disqualified === true || rc.disqualified === 'TRUE' || rc.passed === 'פסול';
+      var isCorrectedC = rc.corrected === true || rc.corrected === 'TRUE';
+      if (isDQc && !isCorrectedC) continue;
+      if (isCorrectedC) continue;
+      var wd = parseWrongDetails(rc.wrongDetails);
+      var wrongByCat = {};
+      var examHasCats = false;
+      for (var wc = 0; wc < wd.length; wc++) {
+        if (wd[wc].category) {
+          examHasCats = true; hasCatData = true;
+          if (!wrongByCat[wd[wc].category]) wrongByCat[wd[wc].category] = 0;
+          wrongByCat[wd[wc].category]++;
+        }
+      }
+      if (examHasCats) {
+        var rLic = String(rc.license || 'B');
+        var structC = EXAM_STRUCTURE[rLic] || EXAM_STRUCTURE['B'];
+        for (var ck in structC) {
+          if (!catTotals[ck]) catTotals[ck] = 0;
+          if (!catWrong[ck]) catWrong[ck] = 0;
+          catTotals[ck] += structC[ck];
+          catWrong[ck] += (wrongByCat[ck] || 0);
+        }
+      }
+    }
+
+    var ov = d.overall;
+    var H = [];
+    H.push('<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"/>');
+    H.push('<meta name="viewport" content="width=device-width,initial-scale=1"/>');
+    H.push('<title>דו"ח מפקד מרכז — ' + escHtml(fromLbl) + ' - ' + escHtml(toLbl) + '</title>');
+    H.push('<style>*{box-sizing:border-box;margin:0;padding:0}');
+    H.push('body{font-family:"Segoe UI",Tahoma,Arial,sans-serif;background:#f0f2f5;color:#333;direction:rtl;padding:20px}');
+    H.push('.container{max-width:900px;margin:0 auto;background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.08);overflow:hidden}');
+    H.push('.header-bar{background:linear-gradient(135deg,#7c2d12,#9a3412);color:#fff;padding:20px 30px;text-align:center}');
+    H.push('.header-bar h1{font-size:22px;margin-bottom:4px}.header-bar p{font-size:13px;opacity:.85}');
+    H.push('.section{padding:20px 30px;border-bottom:1px solid #eee}');
+    H.push('.section-title{font-size:16px;font-weight:bold;color:#7c2d12;margin-bottom:15px;padding-bottom:8px;border-bottom:2px solid #ea580c;display:flex;align-items:center;gap:8px}');
+    H.push('.kpi-row{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}');
+    H.push('.kpi{text-align:center;padding:14px 10px;border-radius:12px;border:1px solid #e2e8f0}');
+    H.push('.kpi .num{font-size:28px;font-weight:900;line-height:1.1}.kpi .lbl{font-size:11px;color:#64748b;margin-top:2px}');
+    H.push('.kpi.blue{background:#eaf2f8}.kpi.blue .num{color:#2980b9}');
+    H.push('.kpi.green{background:#eafaf1}.kpi.green .num{color:#27ae60}');
+    H.push('.kpi.red{background:#fdedec}.kpi.red .num{color:#c0392b}');
+    H.push('.kpi.orange{background:#fef3c7}.kpi.orange .num{color:#d97706}');
+    H.push('.tw{overflow-x:auto}');
+    H.push('table{width:100%;border-collapse:collapse;font-size:12px}');
+    H.push('thead th{background:#2c3e50;color:#fff;padding:8px;font-weight:600;white-space:nowrap;font-size:11px;border:1px solid #1a252f}');
+    H.push('tbody td{padding:8px;text-align:center;vertical-align:middle;border:1px solid #eee}');
+    H.push('tbody tr:nth-child(even){background:#fafbfc}');
+    H.push('.badge{display:inline-block;padding:2px 10px;border-radius:20px;font-weight:700;font-size:11px}');
+    H.push('.badge.pass{background:#dcfce7;color:#166534}.badge.fail{background:#fef2f2;color:#991b1b}.badge.dq{background:#fef3c7;color:#92400e}');
+    H.push('.weak-topic{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #f1f5f9}');
+    H.push('.weak-topic:last-child{border-bottom:none}');
+    H.push('.smr-pie{border-radius:50%;display:inline-block;box-shadow:0 2px 8px rgba(0,0,0,.12)}');
+    H.push('.smr-pie-wrap{display:flex;align-items:center;justify-content:center;gap:14px;margin:14px 0 6px}');
+    H.push('.smr-pie-legend{display:flex;flex-direction:column;gap:4px;font-size:12px}');
+    H.push('.smr-pie-dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-left:6px}');
+    H.push('@page{size:A4;margin:8mm 10mm}@media print{body{background:#fff;padding:0}.container{box-shadow:none;max-width:100%}.no-print{display:none!important}thead th,.kpi{-webkit-print-color-adjust:exact;print-color-adjust:exact}}');
+    H.push('</style></head><body><div class="container">');
+
+    // Header
+    H.push('<div class="header-bar"><h1>📊 דו"ח מפקד מרכז</h1>');
+    H.push('<p>' + escHtml(fromLbl) + ' — ' + escHtml(toLbl) + '</p>');
+    H.push('<p style="margin-top:4px;">אתרים: ' + escHtml((d.managedSites || []).join(' | ')) + '</p></div>');
+
+    // KPI Cards
+    H.push('<div class="section">');
+    H.push('<div class="kpi-row">');
+    H.push('<div class="kpi blue"><div class="num">' + ov.total + '</div><div class="lbl">סה"כ נבחנים</div></div>');
+    H.push('<div class="kpi green"><div class="num">' + ov.passed + '</div><div class="lbl">עברו ✅</div></div>');
+    H.push('<div class="kpi red"><div class="num">' + ov.failed + '</div><div class="lbl">נכשלו ❌</div></div>');
+    H.push('<div class="kpi orange"><div class="num">' + ov.dq + '</div><div class="lbl">פסולים ⛔</div></div>');
+    H.push('</div>');
+    H.push('<div style="text-align:center;font-size:13px;color:#64748b;margin-top:6px;">');
+    H.push('אחוז הצלחה: <strong style="font-size:18px;color:' + (ov.passRate >= 50 ? '#16a34a' : '#dc2626') + ';">' + ov.passRate + '%</strong>');
+    H.push(' &nbsp;|&nbsp; ממוצע: <strong style="font-size:18px;color:' + (avgScore >= 50 ? '#2563eb' : '#dc2626') + ';">' + avgScore + '%</strong>');
+    H.push(' &nbsp;|&nbsp; חציון: <strong style="font-size:18px;color:' + (medianScore >= 50 ? '#2563eb' : '#dc2626') + ';">' + medianScore + '%</strong>');
+    H.push('</div></div>');
+
+    // Pie chart
+    if (ov.total > 0) {
+      var dP = Math.round(ov.passed / ov.total * 360);
+      var dF = Math.round(ov.failed / ov.total * 360);
+      var pP = Math.round(ov.passed / ov.total * 100);
+      var pF = Math.round(ov.failed / ov.total * 100);
+      var pD = 100 - pP - pF;
+      var g = 'conic-gradient(#27ae60 0deg ' + dP + 'deg, #c0392b ' + dP + 'deg ' + (dP+dF) + 'deg, #d97706 ' + (dP+dF) + 'deg 360deg)';
+      H.push('<div class="section"><div class="smr-pie-wrap">');
+      H.push('<div class="smr-pie" style="width:90px;height:90px;background:' + g + ';"></div>');
+      H.push('<div class="smr-pie-legend">');
+      H.push('<span><span class="smr-pie-dot" style="background:#27ae60;"></span>עברו: ' + ov.passed + ' (' + pP + '%)</span>');
+      H.push('<span><span class="smr-pie-dot" style="background:#c0392b;"></span>נכשלו: ' + ov.failed + ' (' + pF + '%)</span>');
+      H.push('<span><span class="smr-pie-dot" style="background:#d97706;"></span>פסולים: ' + ov.dq + ' (' + pD + '%)</span>');
+      H.push('</div></div></div>');
+    }
+
+    // By site breakdown
+    H.push('<div class="section">');
+    H.push('<div class="section-title"><span style="font-size:20px;">📍</span> לפי אתר</div>');
+    H.push('<div class="tw">' + ccmTable(d.bySite || [], 'site', 'אתר') + '</div></div>');
+
+    // By license breakdown
+    H.push('<div class="section">');
+    H.push('<div class="section-title"><span style="font-size:20px;">🎫</span> לפי דרגת רישיון</div>');
+    H.push('<div class="tw">' + ccmTable(d.byLicense || [], 'license', 'דרגה') + '</div></div>');
+
+    // Weak topics (aggregate across all sites)
+    if (hasCatData) {
+      H.push('<div class="section">');
+      H.push('<div class="section-title"><span style="font-size:20px;">🔴</span> נושאים חלשים (מצטבר)</div>');
+      var catArr = [];
+      for (var ck2 in catTotals) {
+        var cTotal = catTotals[ck2]; var cWrong = catWrong[ck2] || 0;
+        var cCorrect = cTotal - cWrong;
+        var cPct = cTotal > 0 ? Math.round((cCorrect / cTotal) * 100) : 0;
+        catArr.push({ key: ck2, total: cTotal, wrong: cWrong, pct: cPct });
+      }
+      catArr.sort(function(a, b) { return a.pct - b.pct; });
+      for (var ca = 0; ca < catArr.length; ca++) {
+        var ct = catArr[ca];
+        var barColor = ct.pct >= 80 ? '#22c55e' : (ct.pct >= 50 ? '#f59e0b' : '#ef4444');
+        var rank = ca + 1;
+        var rkBg = rank <= 2 ? '#dc2626' : (rank <= 3 ? '#f59e0b' : '#94a3b8');
+        H.push('<div class="weak-topic">');
+        H.push('<div style="width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:13px;color:white;flex-shrink:0;background:' + rkBg + ';">' + rank + '</div>');
+        H.push('<div style="flex:1;"><div style="font-weight:700;font-size:13px;color:#1e293b;">' + escHtml(ct.key) + '</div>');
+        H.push('<div style="font-size:11px;color:#64748b;">' + ct.wrong + ' שגיאות מתוך ' + ct.total + ' שאלות</div></div>');
+        H.push('<div style="width:120px;height:20px;background:#f1f5f9;border-radius:6px;overflow:hidden;border:1px solid #e2e8f0;">');
+        H.push('<div style="height:100%;width:' + Math.max(ct.pct, 10) + '%;background:' + barColor + ';border-radius:6px;display:flex;align-items:center;justify-content:flex-end;padding-right:4px;font-size:10px;font-weight:700;color:white;">' + ct.pct + '%</div></div>');
+        H.push('</div>');
+      }
+      H.push('</div>');
+    }
+
+    // Per-examinee table — adds the SITE column since we're cross-site
+    H.push('<div class="section">');
+    H.push('<div class="section-title"><span style="font-size:20px;">👥</span> פירוט לפי נבחן</div>');
+    H.push('<div class="tw"><table><thead><tr>');
+    H.push('<th>#</th><th>אתר</th><th>שם</th><th>דרגה</th><th>שפה</th><th>ציון</th><th>אחוז</th><th>תוצאה</th><th>בוחן</th>');
+    H.push('</tr></thead><tbody>');
+    var sortedResults = results.slice().sort(function(a, b) {
+      // Sort by site, then by name
+      var siteCmp = String(a.site || '').localeCompare(String(b.site || ''), 'he');
+      if (siteCmp !== 0) return siteCmp;
+      return String(a.name || '').localeCompare(String(b.name || ''), 'he');
+    });
+    for (var ti = 0; ti < sortedResults.length; ti++) {
+      var tr = sortedResults[ti];
+      var isDQt = tr.disqualified === true || tr.disqualified === 'TRUE' || tr.passed === 'פסול';
+      var isPassedT = !isDQt && (tr.passed === 'עבר' || tr.passed === true);
+      var badgeClass = isDQt ? 'dq' : (isPassedT ? 'pass' : 'fail');
+      var badgeText = isDQt ? 'פסול' : (isPassedT ? 'עבר' : 'נכשל');
+      var langFlag = { 'he': '🇮🇱', 'am': '🇪🇹', 'ru': '🇷🇺', 'en': '🇬🇧', 'ar': '🇸🇦', 'fr': '🇫🇷', 'es': '🇪🇸' };
+      var flag = langFlag[tr.language] || '';
+      H.push('<tr>');
+      H.push('<td>' + (ti + 1) + '</td>');
+      H.push('<td style="font-weight:600;text-align:right;">' + escHtml(tr.site || '') + '</td>');
+      H.push('<td style="font-weight:700;text-align:right;">' + escHtml(tr.name) + '</td>');
+      H.push('<td>' + escHtml(tr.license || '') + '</td>');
+      H.push('<td>' + flag + ' ' + escHtml(tr.language || '') + '</td>');
+      H.push('<td>' + escHtml(String(tr.score || '')) + '</td>');
+      H.push('<td>' + escHtml(String(tr.percent || '')) + '</td>');
+      H.push('<td><span class="badge ' + badgeClass + '">' + badgeText + '</span></td>');
+      H.push('<td>' + escHtml(tr.examiner || '—') + '</td>');
+      H.push('</tr>');
+    }
+    H.push('</tbody></table></div></div>');
+
+    // Print button
+    H.push('<div class="section no-print" style="text-align:center;">');
+    H.push('<button onclick="window.print()" style="padding:12px 30px;font-size:16px;font-weight:800;background:#7c2d12;color:white;border:none;border-radius:10px;cursor:pointer;">🖨️ הדפס / שמור PDF</button>');
+    H.push('</div>');
+    H.push('</div></body></html>');
+    return H.join('');
+  }
+
+  // Open the rich report in a new tab — for quick viewing/printing without sharing.
+  window.openCenterReportInTab = function() {
+    if (!ccmCurrentData) { alert('אין דו"ח טעון'); return; }
+    var html = buildCenterReportHtml(ccmCurrentData, ccmGetDateRange());
+    var w = window.open('', '_blank');
+    if (w) { w.document.write(html); w.document.close(); }
+  };
+
   window.shareCenterReport = function() {
     if (!ccmCurrentData) { alert('אין דו"ח טעון'); return; }
     var d = ccmCurrentData;
     var range = ccmGetDateRange();
     var fromLbl = ccmFmtDate(range.from);
     var toLbl = ccmFmtDate(range.to);
-    var html = '<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"/>' +
-      '<title>דו"ח מפקד מרכז</title><style>' +
-      'body{font-family:Arial,"Segoe UI",sans-serif;margin:24px;color:#1e293b;direction:rtl;}' +
-      'h1{font-size:22px;margin:0 0 6px;color:#0f172a;}' +
-      'h2{font-size:16px;margin:18px 0 8px;color:#1e40af;}' +
-      '.muted{color:#64748b;font-size:13px;margin-bottom:14px;}' +
-      'table{width:100%;border-collapse:collapse;margin-top:8px;}' +
-      'th,td{border:1px solid #cbd5e1;padding:8px 10px;text-align:center;font-size:13px;}' +
-      'th{background:#e2e8f0;font-weight:700;}' +
-      '.kpi-row{display:flex;gap:14px;flex-wrap:wrap;justify-content:center;margin:10px 0 20px;}' +
-      '.kpi{text-align:center;min-width:100px;padding:10px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;}' +
-      '.kpi .v{font-size:24px;font-weight:900;}' +
-      '.kpi .l{font-size:12px;color:#64748b;}' +
-      '</style></head><body>' +
-      '<h1>📊 דו"ח מפקד מרכז</h1>' +
-      '<div class="muted">אתרים: ' + escHtml((d.managedSites || []).join(' | ')) +
-      '<br>טווח: ' + fromLbl + ' — ' + toLbl + '</div>' +
-      '<h2>סיכום כללי</h2>' +
-      '<div class="kpi-row">' +
-      '<div class="kpi"><div class="v">' + d.overall.total + '</div><div class="l">סה"כ נבחנים</div></div>' +
-      '<div class="kpi"><div class="v" style="color:#16a34a;">' + d.overall.passed + '</div><div class="l">עברו</div></div>' +
-      '<div class="kpi"><div class="v" style="color:#dc2626;">' + d.overall.failed + '</div><div class="l">נכשלו</div></div>' +
-      '<div class="kpi"><div class="v" style="color:#f59e0b;">' + d.overall.dq + '</div><div class="l">פסולים</div></div>' +
-      '<div class="kpi"><div class="v" style="color:#1a73e8;">' + d.overall.passRate + '%</div><div class="l">אחוז הצלחה</div></div>' +
-      '</div>' +
-      '<h2>📍 לפי אתר</h2>' + ccmTable(d.bySite || [], 'site', 'אתר') +
-      '<h2>🎫 לפי דרגת רישיון</h2>' + ccmTable(d.byLicense || [], 'license', 'דרגה') +
-      '</body></html>';
+    var html = buildCenterReportHtml(d, range);
 
     var dlg = document.getElementById('shareDialog');
     document.getElementById('shareDialogTitle').textContent = 'שיתוף דו"ח מפקד מרכז';
