@@ -4324,11 +4324,10 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     document.getElementById('shareDialogContent').innerHTML = '<div style="font-size:14px;color:#64748b;padding:20px 0;">⏳ מעלה דו"ח...</div>';
     dlg.style.display = 'flex';
 
-    fetch(RESULTS_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ html: html })
-    }).then(function(r) { return r.json(); }).then(function(resp) {
+    // Use the same auth flow as the site-manager report — fetches an HMAC token
+    // from Apps Script, then POSTs to the Cloudflare worker with X-Auth-Token.
+    // Without the token the worker returns Unauthorized.
+    uploadResultHtml(html).then(function(resp) {
       if (resp.status === 'ok' && resp.link) {
         var msgText = '📊 *דו"ח מפקד מרכז*\n' +
           'אתרים: ' + (d.managedSites || []).join(' | ') + '\n' +
