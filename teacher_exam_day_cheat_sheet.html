@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>דף עזר למורה — יום בחינה אמיתית</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI','Heebo',Tahoma,sans-serif;background:#f1f5f9;color:#1e293b;direction:rtl;padding:20px;line-height:1.4}
+.page{max-width:820px;margin:0 auto;background:#fff;border-radius:14px;box-shadow:0 4px 20px rgba(0,0,0,0.08);overflow:hidden}
+.header{background:linear-gradient(135deg,#7c3aed,#5b21b6);color:#fff;padding:18px 24px}
+.header h1{font-size:24px;font-weight:900;margin:0}
+.header p{font-size:13px;opacity:0.9;margin-top:2px}
+.body{padding:18px 24px}
+.section{margin-bottom:14px;page-break-inside:avoid}
+.section-title{background:#fbbf24;color:#1e293b;padding:6px 10px;font-weight:900;font-size:14px;border-radius:6px;display:inline-block;margin-bottom:8px}
+.section-title.phase{background:#7c3aed;color:#fff}
+.section-title.warn{background:#dc2626;color:#fff}
+.section-title.done{background:#16a34a;color:#fff}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+.box{background:#f8fafc;border:1px solid #cbd5e1;border-radius:8px;padding:10px 12px}
+.box h3{font-size:13px;color:#6d28d9;margin-bottom:5px;font-weight:800}
+.box ol,.box ul{padding-right:18px;margin:0}
+.box li{font-size:12px;line-height:1.45;margin-bottom:2px}
+.checklist{background:#faf5ff;border:1px solid #d8b4fe;border-radius:8px;padding:10px 12px}
+.checklist h3{color:#6d28d9;font-size:13px;font-weight:800;margin-bottom:5px}
+.checklist li{list-style:none;font-size:12px;line-height:1.55;margin-bottom:3px;padding-right:20px;position:relative}
+.checklist li::before{content:'☐';position:absolute;right:0;color:#7c3aed;font-weight:900;font-size:14px}
+.scenarios{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.scenario{background:#fef3c7;border-right:3px solid #f59e0b;padding:7px 10px;border-radius:5px}
+.scenario .q{font-weight:800;font-size:12px;color:#92400e;margin-bottom:2px}
+.scenario .a{font-size:11px;color:#78350f;line-height:1.45}
+.dont,.do{padding:10px;border-radius:8px}
+.do{background:#dcfce7;border:1px solid #16a34a}
+.dont{background:#fee2e2;border:1px solid #dc2626}
+.do h3{color:#15803d;font-size:13px;margin-bottom:4px}
+.dont h3{color:#b91c1c;font-size:13px;margin-bottom:4px}
+.do ul,.dont ul{padding-right:16px}
+.do li,.dont li{font-size:12px;line-height:1.45;margin-bottom:1px}
+.alert{background:linear-gradient(90deg,#dc2626,#991b1b);color:#fff;padding:8px 12px;border-radius:6px;font-size:12px;font-weight:700;margin-bottom:8px}
+.tip{background:#eff6ff;border-right:3px solid #1a73e8;padding:8px 12px;border-radius:5px;font-size:12px;color:#1e3a8a;margin-bottom:8px}
+.tip strong{color:#1d4ed8}
+.footer{padding:10px 24px;background:#f1f5f9;border-top:1px solid #cbd5e1;font-size:11px;color:#64748b;display:flex;justify-content:space-between}
+.footer strong{color:#1e293b}
+.timeline{display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+.timeline-step{background:#ede9fe;color:#5b21b6;padding:4px 10px;border-radius:14px;font-size:11px;font-weight:700}
+.timeline-arrow{color:#a78bfa;font-weight:900}
+
+@media print{
+  body{padding:0;background:#fff}
+  .page{box-shadow:none;border-radius:0;max-width:none}
+  .no-print{display:none}
+}
+.print-btn{position:fixed;top:20px;left:20px;background:#7c3aed;color:#fff;border:none;border-radius:8px;padding:10px 18px;font-size:14px;font-weight:700;cursor:pointer;box-shadow:0 4px 12px rgba(124,58,237,0.4)}
+</style>
+</head>
+<body>
+
+<button class="print-btn no-print" onclick="window.print()">🖨 הדפס דף עזר</button>
+
+<div class="page">
+  <div class="header">
+    <h1>🎓 דף עזר למורה — יום בחינה אמיתית</h1>
+    <p>מה עושים כשהבוחן מגיע לאתר העבודה • מהבוקר ועד סוף היום</p>
+  </div>
+
+  <div class="body">
+
+    <div class="timeline">
+      <span class="timeline-step">📅 ערב לפני</span>
+      <span class="timeline-arrow">←</span>
+      <span class="timeline-step">🌅 בוקר ההגעה</span>
+      <span class="timeline-arrow">←</span>
+      <span class="timeline-step">📋 קליטת הבוחן</span>
+      <span class="timeline-arrow">←</span>
+      <span class="timeline-step">🤫 תוך כדי בחינות</span>
+      <span class="timeline-arrow">←</span>
+      <span class="timeline-step">📊 סגירת יום</span>
+    </div>
+
+    <div class="section">
+      <div class="section-title phase">1️⃣ ערב לפני — להכין הכל מראש</div>
+      <div class="grid">
+        <div class="checklist">
+          <h3>ציוד טכני</h3>
+          <ul>
+            <li>כל המכשירים טעונים 100% (מחשב/טאבלט/טלפון)</li>
+            <li>בדיקת חיבור לאינטרנט בכל עמדה</li>
+            <li>שולחנות פנויים, מסכים פונים לקיר</li>
+          </ul>
+        </div>
+        <div class="checklist">
+          <h3>תלמידים</h3>
+          <ul>
+            <li>שלח תזכורת ב-WhatsApp לכולם</li>
+            <li>"להביא תעודת זהות פיזית — חובה"</li>
+            <li>"בלי כובע/מצנפת שמסתירה אוזניים"</li>
+            <li>"בלי אוזניות / שעון חכם / טלפון נוסף"</li>
+            <li>שעת הגעה — לפחות 15 דק' לפני</li>
+          </ul>
+        </div>
+      </div>
+      <div class="tip" style="margin-top:8px">💡 <strong>טיפ:</strong> רשימת נבחנים מודפסת ביד — שמות, ת.ז., דרגה, האם יש תוספת זמן (1.25/1.5). זה חוסך זמן עצום לבוחן בקליטה.</div>
+    </div>
+
+    <div class="section">
+      <div class="section-title phase">2️⃣ בוקר — לפני הבוחן</div>
+      <div class="grid">
+        <div class="box">
+          <h3>בדיקה אחרונה (30 דק' לפני)</h3>
+          <ol>
+            <li>הדלק את כל המחשבים</li>
+            <li>פתח את הקיצור "נבחן" בכל מסך — ודא שטוען</li>
+            <li>בדוק מסך מלא (F11) על כל עמדה</li>
+            <li>נקה השולחנות — בלי דפים/ספרים</li>
+          </ol>
+        </div>
+        <div class="box">
+          <h3>תלמידים בהמתנה</h3>
+          <ol>
+            <li>אספו את כולם בחדר/חצר נפרדים</li>
+            <li>בדוק ת.ז. של כל אחד</li>
+            <li>הסבר קצר: "תיכנסו אחד-אחד כשהבוחן יקרא"</li>
+            <li>אל תפתחו דיון על שאלות/תוכן הבחינה</li>
+            <li>טלפונים — לשים בארגז בכניסה</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title" style="background:#0891b2;color:#fff">📱 דגשים מיוחדים — בחינה בטלפון / טאבלט</div>
+      <div class="tip" style="background:#cffafe;border-right-color:#0891b2;color:#164e63">⚠️ <strong>חשוב:</strong> בנייד יש פחות כלי אנטי-צ'יט אוטומטיים מאשר במחשב. <strong>אתה והבוחן</strong> צריכים לפקח חזק יותר.</div>
+      <div class="grid">
+        <div class="box" style="background:#ecfeff;border-color:#67e8f9">
+          <h3 style="color:#0e7490">🔧 הכנת המכשיר — לפני כל בחינה</h3>
+          <ol>
+            <li><strong>"אל תפריע"</strong> (Do Not Disturb) — חוסם שיחות, SMS והתראות בלי לפגוע באינטרנט</li>
+            <li>סגירת כל האפליקציות ברקע (recent apps)</li>
+            <li>ביטול פיצול מסך / Picture-in-Picture</li>
+            <li>בהירות מסך מקסימלית</li>
+            <li>נעילת סיבוב — אנכי לטלפון, אופקי לטאבלט</li>
+            <li>ניקוי מסך — לפני כל נבחן</li>
+          </ol>
+        </div>
+        <div class="box" style="background:#ecfeff;border-color:#67e8f9">
+          <h3 style="color:#0e7490">👀 אנטי-צ'יט בנייד</h3>
+          <ul>
+            <li>שעון חכם — <strong>להסיר ולשים בצד</strong></li>
+            <li>אוזניות אלחוטיות (AirPods) — להוציא מהאוזן וגם מהכיס</li>
+            <li>הקלטת מסך / שידור — נדיר אבל אפשרי. וודא שאין אייקון אדום בשורת הסטטוס</li>
+            <li>טאבלט במצב מפתחים (Developer mode) — להימנע, יש שם אפשרויות חשודות</li>
+            <li>טלפון נוסף של הנבחן — להניח רחוק מהשולחן</li>
+          </ul>
+        </div>
+      </div>
+      <div class="alert" style="margin-top:8px">🛑 <strong>אסור בנייד:</strong> מצב פיצול מסך, מצב תמונה-בתוך-תמונה, מצב מפתחים, חיבור למסך חיצוני, hotspot פעיל מהמכשיר עצמו</div>
+    </div>
+
+    <div class="section">
+      <div class="section-title" style="background:#0891b2;color:#fff">🚪 איך הנבחנים מתחברים למבחן</div>
+      <div class="tip" style="background:#cffafe;border-right-color:#0891b2;color:#164e63">⚠️ <strong>חובה:</strong> וודא שהקוד מוצג <strong>בולט וברור</strong> — כתוב על הלוח באותיות גדולות או מוקרן ממסך. ללא קוד אין כניסה.</div>
+      <div class="grid">
+        <div class="box" style="background:#ecfeff;border-color:#67e8f9">
+          <h3 style="color:#0e7490">🖥 כניסה במחשב</h3>
+          <ol>
+            <li>הנבחן פותח את הקיצור "נבחן" במחשב</li>
+            <li>מקליד את <strong>הקוד בן 8 התווים</strong> שכתוב על הלוח / מוקרן</li>
+            <li>ממלא ת.ז., שם מלא, וטלפון</li>
+            <li>ממתין לאישור הבוחן</li>
+          </ol>
+        </div>
+        <div class="box" style="background:#ecfeff;border-color:#67e8f9">
+          <h3 style="color:#0e7490">📱 כניסה בטלפון / טאבלט</h3>
+          <ol>
+            <li>פותח <strong>מצלמה רגילה</strong> וסורק את ה-QR שמציג הבוחן</li>
+            <li>אחרי סריקה — התחברות אוטומטית</li>
+            <li>נשאר רק למלא פרטים אישיים, לבחור שפה (אם צריך) ודרגת נהיגה (אם שונה מברירת מחדל)</li>
+            <li>ממתין לאישור הבוחן</li>
+          </ol>
+        </div>
+      </div>
+      <div class="tip" style="margin-top:8px">💡 <strong>הצגת הקוד:</strong> כתוב באותיות גדולות וברורות על הלוח, או הקרן ממסך. בנייד — תמיד גם הקוד הכתוב, לא רק QR. אופציה: הדפס QR גדול ותלה ליד הכניסה.</div>
+    </div>
+
+    <div class="section">
+      <div class="section-title warn">3️⃣ הבוחן הגיע! קליטה ראשונה</div>
+      <div class="grid">
+        <div class="box" style="background:#fef3c7">
+          <h3 style="color:#92400e">קבלת פנים (5 דקות)</h3>
+          <ol>
+            <li>קבל פנים והוביל אותו לחדר הבחינה</li>
+            <li>הצג לו את העמדות</li>
+            <li>תן את <strong>מספר הטלפון שלך</strong> לחירום</li>
+          </ol>
+        </div>
+        <div class="box" style="background:#dbeafe">
+          <h3 style="color:#1e40af">תדרוך מקצועי (3 דקות)</h3>
+          <ul>
+            <li>📊 כמה נבחנים היום (סה"כ ולפי דרגה)</li>
+            <li>⏱ מי צריך תוספת זמן (1.25 / 1.5)</li>
+            <li>🔊 מי צריך הקראה (audio)</li>
+            <li>🌍 שפות מיוחדות (אם יש)</li>
+            <li>🚨 מקרים מיוחדים — קושי קריאה, ניסיון חוזר, וכו'</li>
+          </ul>
+        </div>
+      </div>
+      <div class="alert">🛑 חובה: אחרי הקליטה — צא מהחדר. הבוחן הוא הסמכות הבלעדית מרגע שמתחיל. אל תיכנס אלא אם הוא קורא לך.</div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">4️⃣ תוך כדי הבחינה — תפקיד שקט</div>
+      <div class="grid">
+        <div class="do">
+          <h3>✅ מה כן לעשות</h3>
+          <ul>
+            <li>הישאר זמין בקרבת מקום (חדר ליד / מסדרון)</li>
+            <li>נהל את התור — הכן את הבא בתור</li>
+            <li>שמור על שקט סביב חדר הבחינה</li>
+            <li>אם הבוחן יוצא לרגע — שמור על הדלת</li>
+            <li>הכן את הציוד למקרה תקלה (לפטופ גיבוי)</li>
+          </ul>
+        </div>
+        <div class="dont">
+          <h3>❌ מה לא לעשות</h3>
+          <ul>
+            <li>אל תיכנס לחדר ללא קריאה</li>
+            <li>אל תדבר עם נבחנים על תוכן הבחינה</li>
+            <li>אל תעמוד מאחורי הנבחן ותסתכל במסך</li>
+            <li>אל תתערב בהחלטות הבוחן (פסילות וכו')</li>
+            <li>אל תעזוב את האתר עד שכל הבחינות סגורות</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title warn">⚠️ תקלות נפוצות + פתרונות מיידיים</div>
+      <div class="scenarios">
+        <div class="scenario">
+          <div class="q">האינטרנט נפל באמצע בחינה</div>
+          <div class="a">נתוני הבחינה שמורים בענן — הנבחן ימשיך מבדיוק אותו מקום אחרי שיתחבר מחדש</div>
+        </div>
+        <div class="scenario">
+          <div class="q">תלמיד הגיע מאוחר</div>
+          <div class="a">הצג לו את הבוחן והוא יחליט אם לאשר. אל תבטיח כלום מראש</div>
+        </div>
+        <div class="scenario">
+          <div class="q">תלמיד לא ברשימה</div>
+          <div class="a">בדוק ת.ז., התקשר למפקד/מנהל אם צריך, ההחלטה של הבוחן</div>
+        </div>
+        <div class="scenario">
+          <div class="q">תלמיד יוצא בכעס ("פסלו אותי לא בצדק!")</div>
+          <div class="a">הרגע, אל תתווכח, אל תבטיח כלום. הפנה למפקד/מנהל לאחר היום</div>
+        </div>
+        <div class="scenario">
+          <div class="q">הבוחן לא הצליח להתחבר למערכת</div>
+          <div class="a">לרענן דף, לבדוק WiFi, להתחבר מטלפון כגיבוי. אם אין פתרון — להתקשר לתמיכת המערכת</div>
+        </div>
+        <div class="scenario">
+          <div class="q">מספר רב של פסילות (DQ) בו-זמנית</div>
+          <div class="a">אל תגיב, אל תפסיק. הבוחן רואה את הצבעים ומקבל החלטות. אתה לא מתערב</div>
+        </div>
+        <div class="scenario" style="background:#cffafe;border-right-color:#0891b2">
+          <div class="q">📱 שיחה / הודעה נכנסת לטלפון של נבחן באמצע</div>
+          <div class="a">אם DND לא היה דלוק — תקלה. הבוחן יחליט אם לאשר המשך או לפסול. הפתרון הקבוע: לוודא "אל תפריע" (DND) פעיל לפני התחלת כל בחינה</div>
+        </div>
+        <div class="scenario" style="background:#cffafe;border-right-color:#0891b2">
+          <div class="q">📱 הסוללה בטלפון/טאבלט עומדת להיגמר</div>
+          <div class="a">חבר מטען מיד תוך כדי בחינה — אין צורך להפסיק. ודא שהכבל מספיק ארוך ולא מפריע</div>
+        </div>
+        <div class="scenario" style="background:#cffafe;border-right-color:#0891b2">
+          <div class="q">📱 נבחן לחץ "home" / "back" בטעות ויצא מהמסך</div>
+          <div class="a">המערכת מזהה ופוסלת אוטומטית. הבוחן יחליט לבטל פסילה אם זה היה ברור בטעות. תזכיר לנבחנים לפני: "אל תיגעו בכפתורי המכשיר"</div>
+        </div>
+        <div class="scenario" style="background:#cffafe;border-right-color:#0891b2">
+          <div class="q">📱 המכשיר מתחמם / איטי באמצע</div>
+          <div class="a">הוצא ממעמד / כיסוי, הנח אותו על משטח קר. אם ממש איטי — החלף למכשיר אחר, הנבחן ייכנס שוב עם אותו קוד</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title done">5️⃣ סוף יום — סגירה מסודרת</div>
+      <div class="grid">
+        <div class="box" style="background:#dcfce7">
+          <h3 style="color:#15803d">עזרה לבוחן (10 דק')</h3>
+          <ol>
+            <li>וודא שהבוחן לחץ "🔒 סגור בחינה"</li>
+            <li>המערכת תנקה אוטומטית פסילות תקועות — לא צריך לעבור אחד-אחד</li>
+            <li>הצע לו לשלוח דו"ח WhatsApp למנהל אתר</li>
+          </ol>
+        </div>
+        <div class="box" style="background:#fef3c7">
+          <h3 style="color:#92400e">תלמידים בסוף</h3>
+          <ul>
+            <li>הם יקבלו תוצאה ב-WhatsApp ישירות מהמערכת</li>
+            <li>תעודת הפנייה הדיגיטלית נשלחת אוטומטית</li>
+            <li>אל תפרסם תוצאות לכלל הקבוצה</li>
+            <li>שיחה אישית עם מי שנכשל — בנפרד</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title done">6️⃣ אחרי שהבוחן עזב</div>
+      <div class="grid-3">
+        <div class="box">
+          <h3>📋 דיווח</h3>
+          <ul>
+            <li>שלח דו"ח למפקד/מנהל</li>
+            <li>תעד כל אירוע חריג</li>
+            <li>שמור עותק בענן/דרייב</li>
+          </ul>
+        </div>
+        <div class="box">
+          <h3>🧹 ניקיון</h3>
+          <ul>
+            <li>נקה השולחנות</li>
+            <li>החזר ציוד למקום</li>
+            <li>וודא שמכשירים מטעינים ללילה</li>
+          </ul>
+        </div>
+        <div class="box">
+          <h3>💬 משוב</h3>
+          <ul>
+            <li>שיחה עם הבוחן — איך היה</li>
+            <li>הערות לשיפור הפעם הבאה</li>
+            <li>תזכיר מי לא הגיע — לתאם מועד חדש</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">📌 כללי זהב — לזכור תמיד</div>
+      <div class="grid">
+        <div class="do">
+          <h3>✅ כן</h3>
+          <ul>
+            <li>תהיה מוכן מראש — חצי הקרב</li>
+            <li>שמור על קור רוח גם בלחץ</li>
+            <li>הבוחן הוא הסמכות — תכבד</li>
+            <li>היה זמין אבל לא נוכח</li>
+            <li>תעד הכל — תקלות, חריגות, החלטות</li>
+          </ul>
+        </div>
+        <div class="dont">
+          <h3>❌ לא</h3>
+          <ul>
+            <li>אל תבטיח לתלמידים תוצאות מראש</li>
+            <li>אל תתווכח עם הבוחן ליד תלמידים</li>
+            <li>אל תיכנס לחדר הבחינה ללא קריאה</li>
+            <li>אל תעזוב את האתר באמצע יום</li>
+            <li>אל תדון בתוצאות בקבוצות וואטסאפ</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="footer">
+    <span>🎯 <strong>הזהב:</strong> הכנה מסודרת מערב = יום בחינות שקט</span>
+    <span><strong>גרסה:</strong> 1.0 • <strong>הדפס דו-צדדי</strong></span>
+  </div>
+</div>
+
+</body>
+</html>
