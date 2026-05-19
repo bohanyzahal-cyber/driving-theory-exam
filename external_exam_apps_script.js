@@ -13,7 +13,7 @@ var SHEET_HEADERS = {
   'אתרים': ['שם אתר', 'מזהה', 'טלפון מנהל', 'כיתות'],
   'סשנים': ['קוד', 'בוחן ת.ז.', 'שם בוחן', 'אתר', 'כיתה', 'דרגה', 'שפה', 'מצב שמע', 'זמן יצירה', 'תקף עד', 'פעיל'],
   'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה', 'דרגה', 'שמע', 'הארכת זמן', 'התחלת מבחן', 'טוקן נבחן', 'ספירת DQ', 'מסך נוסף'],
-  'תוצאות': ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר', 'כיתה', 'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ', 'אוכלוסיה', 'תוקן?', 'שמע', 'מאומת', 'חשוד', 'dqEventId', 'תוקן ע"י', 'סיבת תיקון', 'תאריך תיקון'],
+  'תוצאות': ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר', 'כיתה', 'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ', 'אוכלוסיה', 'תוקן?', 'שמע', 'מאומת', 'חשוד', 'dqEventId', 'תוקן ע"י', 'סיבת תיקון', 'תאריך תיקון', 'מסלול שפות'],
   'מורים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד'],
   'כיתות': ['קוד כיתה', 'שם כיתה', 'מורה ת.ז.', 'שם מורה', 'דרגה', 'תאריך יצירה', 'פעיל'],
   'תלמידי כיתות': ['קוד כיתה', 'שם תלמיד', 'מזהה תלמיד', 'תאריך הצטרפות'],
@@ -1905,61 +1905,75 @@ function handleSubmitResult(data) {
         data.verified = (unverifiedCount === 0);
 
         // ===== Server-side wrong-answers reconstruction =====
-        // We don't trust client-built wrongAnswers because the examinee response
-        // from handleGetExamQuestions intentionally strips the `ci` field — so
-        // the client can't compute correct-vs-wrong, and ends up sending
-        // "undefined - undefined". Rebuild here from authoritative state.
+        // Each wrong answer is rendered in the language the examinee was viewing
+        // WHEN they answered that specific question (data.answers[i].langAtAnswer).
+        // Without this, an examinee who switched mid-exam sees mixed-language
+        // feedback that doesn't match what they actually saw.
         try {
-          var langForLookup = String(data.language || registeredLang || 'he').toLowerCase();
-          var allQs = (typeof loadQuestionsForLanguageServer === 'function') ? loadQuestionsForLanguageServer(langForLookup) : null;
-          if (allQs && allQs.length) {
-            var byId = {};
-            for (var qq = 0; qq < allQs.length; qq++) {
-              if (allQs[qq] && allQs[qq].id !== undefined) byId[String(allQs[qq].id)] = allQs[qq];
-            }
-            var ansLabels = (langForLookup === 'he') ? ['א','ב','ג','ד','ה','ו'] : ['A','B','C','D','E','F'];
-            var serverWrong = [];
-            for (var wi = 0; wi < data.answers.length && wi < questionMap.length; wi++) {
-              var mapEntry = questionMap[wi];
-              var ans2 = data.answers[wi];
-              if (!mapEntry) continue;
-              var selected2 = ans2 ? Number(ans2.selected) : -1;
-              var correctIdx2 = Number(mapEntry.correctShuffledIdx);
-              if (selected2 === correctIdx2) continue; // got it right
-              // We need qId + shuffleOrder from the stored map to build texts
-              var qInfo = (mapEntry.qId !== undefined && mapEntry.qId !== null) ? byId[String(mapEntry.qId)] : null;
-              if (!qInfo || !Array.isArray(mapEntry.shuffleOrder) || !Array.isArray(qInfo.answers)) continue;
-              var shuffled = mapEntry.shuffleOrder.map(function(origIdx) { return qInfo.answers[origIdx]; });
-              var yourLabel = '', yourText = '';
-              if (selected2 === -1 || selected2 < 0 || selected2 >= shuffled.length) {
-                yourText = (langForLookup === 'he') ? 'לא נענתה' : 'Not answered';
-              } else {
-                yourLabel = ansLabels[selected2] || '';
-                yourText = shuffled[selected2] || '';
+          // Lazy per-language cache: questions DB + byId map per language code.
+          // Avoids loading every language up-front when most exams use one.
+          var langDbCache = {};
+          function getLangDb(lang) {
+            var safeLang = String(lang || 'he').toLowerCase();
+            if (langDbCache[safeLang]) return langDbCache[safeLang];
+            try {
+              var qs = loadQuestionsForLanguageServer(safeLang);
+              if (!qs || !qs.length) return null;
+              var idx = {};
+              for (var q = 0; q < qs.length; q++) {
+                if (qs[q] && qs[q].id !== undefined) idx[String(qs[q].id)] = qs[q];
               }
-              var correctLabel = (correctIdx2 >= 0 && correctIdx2 < shuffled.length) ? (ansLabels[correctIdx2] || '') : '';
-              var correctText = (correctIdx2 >= 0 && correctIdx2 < shuffled.length) ? (shuffled[correctIdx2] || '') : '';
-              // Classify the raw question category to the bucket name used by
-              // EXAM_STRUCTURE (בטיחות / הכרת הרכב / חוק / תמרורים / ספציפי).
-              // Without classification, the certificate's per-category analysis
-              // sees unknown categories and treats every bucket as 0 wrongs →
-              // all bars green at 100%, which is exactly the bug examiners
-              // reported (a 7/30 examinee showing as 100% in every category).
-              var classifiedCat = (typeof classifyCategoryServer === 'function')
-                ? classifyCategoryServer(qInfo.category)
-                : '';
-              serverWrong.push({
-                question: qInfo.text || ('שאלה ' + (wi + 1)),
-                yourAnswer: yourLabel ? (yourLabel + ' - ' + yourText) : yourText,
-                correctAnswer: correctLabel ? (correctLabel + ' - ' + correctText) : correctText,
-                category: classifiedCat || qInfo.category || ''
-              });
+              langDbCache[safeLang] = { byId: idx, labels: (safeLang === 'he') ? ['א','ב','ג','ד','ה','ו'] : ['A','B','C','D','E','F'] };
+              return langDbCache[safeLang];
+            } catch (loadErr) {
+              langDbCache[safeLang] = null;
+              return null;
             }
-            // Always replace client-provided wrongAnswers — server is authoritative.
-            // (Client values are unreliable because `ci` is stripped from examinee
-            // responses, so client-computed correct answers are bogus.)
-            data.wrongAnswers = serverWrong;
           }
+          var defaultLang = String(data.language || registeredLang || 'he').toLowerCase();
+          // Pre-warm the default so we have a fallback for missing per-question langs.
+          var defaultDb = getLangDb(defaultLang);
+
+          var serverWrong = [];
+          for (var wi = 0; wi < data.answers.length && wi < questionMap.length; wi++) {
+            var mapEntry = questionMap[wi];
+            var ans2 = data.answers[wi];
+            if (!mapEntry) continue;
+            var selected2 = ans2 ? Number(ans2.selected) : -1;
+            var correctIdx2 = Number(mapEntry.correctShuffledIdx);
+            if (selected2 === correctIdx2) continue; // got it right
+            // Pick the language the examinee was viewing when they answered this Q.
+            // Falls back to the exam's primary language when missing (old clients).
+            var perAnsLang = (ans2 && ans2.langAtAnswer) ? String(ans2.langAtAnswer).toLowerCase() : defaultLang;
+            var db = getLangDb(perAnsLang) || defaultDb;
+            if (!db || !db.byId) continue;
+            var qInfo = (mapEntry.qId !== undefined && mapEntry.qId !== null) ? db.byId[String(mapEntry.qId)] : null;
+            if (!qInfo || !Array.isArray(mapEntry.shuffleOrder) || !Array.isArray(qInfo.answers)) continue;
+            var shuffled = mapEntry.shuffleOrder.map(function(origIdx) { return qInfo.answers[origIdx]; });
+            var yourLabel = '', yourText = '';
+            if (selected2 === -1 || selected2 < 0 || selected2 >= shuffled.length) {
+              yourText = (perAnsLang === 'he') ? 'לא נענתה' : 'Not answered';
+            } else {
+              yourLabel = db.labels[selected2] || '';
+              yourText = shuffled[selected2] || '';
+            }
+            var correctLabel = (correctIdx2 >= 0 && correctIdx2 < shuffled.length) ? (db.labels[correctIdx2] || '') : '';
+            var correctText = (correctIdx2 >= 0 && correctIdx2 < shuffled.length) ? (shuffled[correctIdx2] || '') : '';
+            // Classify the raw question category to the bucket name used by
+            // EXAM_STRUCTURE (בטיחות / הכרת הרכב / חוק / תמרורים / ספציפי).
+            // Without classification the certificate shows all-100%.
+            var classifiedCat = (typeof classifyCategoryServer === 'function')
+              ? classifyCategoryServer(qInfo.category)
+              : '';
+            serverWrong.push({
+              question: qInfo.text || ('שאלה ' + (wi + 1)),
+              yourAnswer: yourLabel ? (yourLabel + ' - ' + yourText) : yourText,
+              correctAnswer: correctLabel ? (correctLabel + ' - ' + correctText) : correctText,
+              category: classifiedCat || qInfo.category || ''
+            });
+          }
+          // Always replace client-provided wrongAnswers — server is authoritative.
+          if (defaultDb) data.wrongAnswers = serverWrong;
         } catch (rwe) {
           // Reconstruction failed (Drive load, etc.) — keep whatever client sent
           // rather than wiping it. Log for diagnosis.
@@ -2059,6 +2073,18 @@ function handleSubmitResult(data) {
   }
   var waLink = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(waMessage2);
 
+  // Format language history into a readable path. Single language = just the
+  // code (e.g. "he"). Multiple = arrow-joined (e.g. "he → ru → he") so the
+  // examiner can see at a glance that the examinee switched languages.
+  var langPath = '';
+  if (Array.isArray(data.languageHistory) && data.languageHistory.length > 0) {
+    langPath = data.languageHistory.length === 1
+      ? String(data.languageHistory[0])
+      : data.languageHistory.join(' → ');
+  } else {
+    langPath = data.language || 'he';
+  }
+
   sheet.appendRow([
     todayStr(),
     data.idNumber,
@@ -2083,7 +2109,12 @@ function handleSubmitResult(data) {
     false,
     data.audioMode || 'off',
     data.verified ? 'מאומת' : '',
-    data.suspicious ? 'חשוד' : ''
+    data.suspicious ? 'חשוד' : '',
+    '',                                 // Y (24) dqEventId — not a DQ row
+    '',                                 // Z (25) תוקן ע"י — empty (no correction yet)
+    '',                                 // AA (26) סיבת תיקון — empty
+    '',                                 // AB (27) תאריך תיקון — empty
+    langPath                            // AC (28) מסלול שפות — full path he → ru → he
   ]);
 
   // Update pending status to completed

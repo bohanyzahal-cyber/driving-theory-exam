@@ -822,6 +822,10 @@
   var examineeData = { idNumber: '', fullName: '', phone: '', population: '', license: '', language: '' };
   // Token returned by registerExaminee; required by all subsequent examinee-side API calls (Stage 1c).
   var examineeToken = '';
+  // History of languages used during this exam. First entry seeded when exam
+  // starts; new entry pushed on every switchExamLanguage. Sent to server on
+  // submit so the gov sheet records the full path (he → ru → he).
+  var languageHistory = [];
   var activeQuestions = [];
   var currentIndex = 0;
   var userAnswers = [];
@@ -1552,6 +1556,10 @@
     examInProgress = true;
     examSubmitted = false;
     startDevToolsTrap();
+
+    // Seed the language history with the initial exam language so we can
+    // record the full path on submit even if the examinee never switches.
+    languageHistory = [language || examineeData.language || 'he'];
 
     saveExamineeState('screenExam');
     showScreen('screenExam');
@@ -2817,6 +2825,11 @@
         // / wrong-answer reconstruction all use the FINAL language the examinee
         // actually saw, not the one they registered with.
         examineeData.language = newLang;
+        // Record the switch in the language history (only if it's actually
+        // a change from the last entry — guards against duplicate pushes).
+        if (languageHistory.length === 0 || languageHistory[languageHistory.length - 1] !== newLang) {
+          languageHistory.push(newLang);
+        }
         try { saveExamineeState(); } catch (e) {}
         var isRTL = (newLang === 'he' || newLang === 'ar');
         document.documentElement.dir = isRTL ? 'rtl' : 'ltr';
@@ -2854,6 +2867,9 @@
       sessionData.language = newLang;
       // Also sync examineeData.language (see fast-path comment above).
       examineeData.language = newLang;
+      if (languageHistory.length === 0 || languageHistory[languageHistory.length - 1] !== newLang) {
+        languageHistory.push(newLang);
+      }
       try { saveExamineeState(); } catch (e) {}
       var isRTL = (newLang === 'he' || newLang === 'ar');
       document.documentElement.dir = isRTL ? 'rtl' : 'ltr';
@@ -3181,7 +3197,11 @@
           userAnswers[currentIndex] = {
             question: q, chosenIndex: idx,
             shuffledCorrectIndex: shuffledCorrectIndex,
-            shuffledAnswers: shuffledAnswers, isCorrect: isCorrect
+            shuffledAnswers: shuffledAnswers, isCorrect: isCorrect,
+            // Language active at moment of answer — used server-side to render
+            // wrongDetails text in the language the examinee actually saw for
+            // this specific question (may differ if they switched mid-exam).
+            langAtAnswer: getExamLang()
           };
           saveActiveExam();
 
@@ -3359,11 +3379,17 @@
       }
     }
 
-    // Build raw answers array for server-side verification
+    // Build raw answers array for server-side verification. Include the
+    // language active when each answer was given so the server can build the
+    // feedback certificate in the language the examinee actually saw per Q.
     var rawAnswers = [];
     for (var ra = 0; ra < userAnswers.length; ra++) {
       if (userAnswers[ra] !== null) {
-        rawAnswers.push({ qIdx: ra, selected: userAnswers[ra].chosenIndex });
+        rawAnswers.push({
+          qIdx: ra,
+          selected: userAnswers[ra].chosenIndex,
+          langAtAnswer: userAnswers[ra].langAtAnswer || getExamLang()
+        });
       } else {
         rawAnswers.push({ qIdx: ra, selected: -1 }); // unanswered
       }
@@ -3378,6 +3404,9 @@
       phone: examineeData.phone,
       license: examineeData.license || sessionData.license || 'B',
       language: examineeData.language || sessionData.language || 'he',
+      // Full sequence of languages the examinee navigated through this exam.
+      // Server formats it into the new "מסלול שפות" column (e.g. "he → ru → he").
+      languageHistory: languageHistory.slice(),
       score: correctCount,
       total: TOTAL_QUESTIONS,
       percent: pct,
