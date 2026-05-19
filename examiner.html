@@ -4013,7 +4013,40 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     var dl = document.getElementById('ccmDateLabel');
     if (dl) dl.textContent = ccmFmtDate(range.from) + ' — ' + ccmFmtDate(range.to);
     if (!data.overall || data.overall.total === 0) {
-      document.getElementById('ccmEmpty').style.display = 'block';
+      // Empty report — render diagnostics so the commander can debug why
+      // (wrong site name? no exams today? sites mismatched?)
+      var emptyDiv = document.getElementById('ccmEmpty');
+      var diagHtml = '<p class="muted" style="text-align:center;padding:14px;">לא נמצאו תוצאות בטווח התאריכים שנבחר.</p>';
+      if (data.diagnostics) {
+        var d2 = data.diagnostics;
+        diagHtml += '<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:12px;margin:10px 0;font-size:13px;">' +
+          '<div style="font-weight:700;color:#92400e;margin-bottom:6px;">🔍 מידע לאבחון</div>' +
+          '<ul style="padding-right:18px;line-height:1.6;">' +
+          '<li>שורות בגיליון בסה"כ: ' + d2.totalRowsInSheet + '</li>' +
+          '<li>שורות בטווח התאריכים: ' + d2.rowsInDateRange + '</li>' +
+          '<li>שורות בוטלו: ' + d2.rowsCancelled + '</li>' +
+          '<li>תאמו לאתרים שלך: ' + d2.rowsMatchedSite + '</li>' +
+          '<li>לא תאמו לאתרים שלך: ' + d2.rowsMismatchedSite + '</li>' +
+          '</ul>';
+        if (d2.sitesSeenInRange && d2.sitesSeenInRange.length) {
+          diagHtml += '<div style="margin-top:10px;font-weight:700;color:#92400e;">שמות אתרים שנמצאו בטווח (בכל המערכת):</div><ul style="padding-right:18px;line-height:1.5;font-family:monospace;font-size:12px;">';
+          for (var i = 0; i < d2.sitesSeenInRange.length; i++) {
+            diagHtml += '<li>"' + escHtml(d2.sitesSeenInRange[i].site) + '" — ' + d2.sitesSeenInRange[i].count + ' תוצאות</li>';
+          }
+          diagHtml += '</ul>';
+        }
+        if (d2.configuredSites && d2.configuredSites.length) {
+          diagHtml += '<div style="margin-top:10px;font-weight:700;color:#92400e;">האתרים שמוגדרים לך:</div><ul style="padding-right:18px;line-height:1.5;font-family:monospace;font-size:12px;">';
+          for (var j = 0; j < d2.configuredSites.length; j++) {
+            diagHtml += '<li>"' + escHtml(d2.configuredSites[j]) + '"</li>';
+          }
+          diagHtml += '</ul>';
+        }
+        diagHtml += '<p style="margin-top:10px;color:#78350f;font-size:12px;">💡 אם השמות לא מתאימים: עדכן את עמודה K בגיליון "בוחנים" כך שתהיה התאמה מדויקת.</p>';
+        diagHtml += '</div>';
+      }
+      emptyDiv.innerHTML = diagHtml;
+      emptyDiv.style.display = 'block';
       document.getElementById('ccmReport').style.display = 'none';
       return;
     }

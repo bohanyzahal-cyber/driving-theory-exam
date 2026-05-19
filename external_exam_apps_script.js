@@ -810,9 +810,18 @@ function handleCenterManagerReport(p) {
   if (!managedSites.length) {
     return jsonResponse({ status: 'error', message: 'לא הוקצו אתרים מנוהלים — פנה למנהל המערכת' });
   }
-  // Normalise site names for case/space-insensitive matching
-  var sitesLower = {};
-  for (var s = 0; s < managedSites.length; s++) sitesLower[managedSites[s].trim()] = true;
+  // Normalise site names: strip all whitespace + lowercase for forgiving match
+  // (handles "ב.ה. 6910" vs "ב.ה.6910" vs " ב.ה. 6910 " — common manual-entry drift).
+  function normalizeSiteName(s) {
+    return String(s || '').replace(/\s+/g, '').toLowerCase();
+  }
+  var sitesNormalized = {};
+  for (var s = 0; s < managedSites.length; s++) {
+    var ns = normalizeSiteName(managedSites[s]);
+    if (ns) sitesNormalized[ns] = managedSites[s]; // map normalized → display name
+  }
+  // Diagnostic counters so the UI can show why a report is empty.
+  var dbg = { totalRows: 0, inDateRange: 0, statusCancelled: 0, siteMatched: 0, siteMismatched: 0, distinctSitesSeenInRange: {} };
 
   // Parse date range. Defaults to today (00:00 today → now).
   var dateFrom, dateTo;
@@ -842,10 +851,8 @@ function handleCenterManagerReport(p) {
   var byLicense = {};
   for (var ri = 1; ri < rows.length; ri++) {
     var r = rows[ri];
+    dbg.totalRows++;
     var status = String(r[7] || '').trim();
-    if (status === 'בוטל') continue; // cancelled DQ — not a real result
-    var rowSite = String(r[10] || '').trim();
-    if (!rowSite || !sitesLower[rowSite]) continue;
     // Parse row date (column A is "DD/MM/YYYY HH:mm" — see todayStr())
     var rawDate = r[0];
     var rowDate = null;
@@ -856,6 +863,18 @@ function handleCenterManagerReport(p) {
     }
     if (!rowDate) continue;
     if (rowDate < dateFrom || rowDate > dateTo) continue;
+    dbg.inDateRange++;
+    if (status === 'בוטל') { dbg.statusCancelled++; continue; }
+    var rowSite = String(r[10] || '').trim();
+    // Track every distinct site we see in range so the commander can see
+    // exactly what site names appear in the sheet vs what they configured.
+    if (rowSite) dbg.distinctSitesSeenInRange[rowSite] = (dbg.distinctSitesSeenInRange[rowSite] || 0) + 1;
+    var rowSiteNorm = normalizeSiteName(rowSite);
+    var matchedDisplay = sitesNormalized[rowSiteNorm];
+    if (!matchedDisplay) { dbg.siteMismatched++; continue; }
+    dbg.siteMatched++;
+    // Use the configured display name so aggregation is consistent
+    var siteKey = matchedDisplay;
 
     var rowLic = String(r[4] || '').trim() || '-';
     var isDQ = (status === 'פסול');
@@ -865,11 +884,11 @@ function handleCenterManagerReport(p) {
     else if (isPassed) overall.passed++;
     else overall.failed++;
 
-    if (!bySite[rowSite]) bySite[rowSite] = { site: rowSite, total: 0, passed: 0, failed: 0, dq: 0 };
-    bySite[rowSite].total++;
-    if (isDQ) bySite[rowSite].dq++;
-    else if (isPassed) bySite[rowSite].passed++;
-    else bySite[rowSite].failed++;
+    if (!bySite[siteKey]) bySite[siteKey] = { site: siteKey, total: 0, passed: 0, failed: 0, dq: 0 };
+    bySite[siteKey].total++;
+    if (isDQ) bySite[siteKey].dq++;
+    else if (isPassed) bySite[siteKey].passed++;
+    else bySite[siteKey].failed++;
 
     if (!byLicense[rowLic]) byLicense[rowLic] = { license: rowLic, total: 0, passed: 0, failed: 0, dq: 0 };
     byLicense[rowLic].total++;
@@ -909,6 +928,13 @@ function handleCenterManagerReport(p) {
     return oa - ob || a.license.localeCompare(b.license);
   });
 
+  // Convert distinct-sites-seen map → sorted array for display
+  var seenArr = [];
+  for (var ds in dbg.distinctSitesSeenInRange) {
+    seenArr.push({ site: ds, count: dbg.distinctSitesSeenInRange[ds] });
+  }
+  seenArr.sort(function(a, b) { return b.count - a.count; });
+
   return jsonResponse({
     status: 'ok',
     managedSites: managedSites,
@@ -916,7 +942,18 @@ function handleCenterManagerReport(p) {
     dateTo: dateTo.toISOString(),
     overall: overall,
     bySite: bySiteArr,
-    byLicense: byLicArr
+    byLicense: byLicArr,
+    // Diagnostic info shown when the report is empty — helps identify the
+    // cause (wrong site name in column K, no exams in date range, etc.)
+    diagnostics: {
+      totalRowsInSheet: dbg.totalRows,
+      rowsInDateRange: dbg.inDateRange,
+      rowsCancelled: dbg.statusCancelled,
+      rowsMatchedSite: dbg.siteMatched,
+      rowsMismatchedSite: dbg.siteMismatched,
+      sitesSeenInRange: seenArr,
+      configuredSites: managedSites
+    }
   });
 }
 
