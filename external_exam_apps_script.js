@@ -1745,33 +1745,63 @@ function handleOverturnDQ(p) {
   if (p.examinerId && !verifyExaminerForSession(p.sessionCode, p.examinerId)) {
     return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
   }
+
+  // Find the latest result row + the pending row for this examinee in one pass each.
   var sheet = getSheet('תוצאות');
   var data = sheet.getDataRange().getValues();
+  var resultRowIdx = -1;
+  var resultStatus = '';
   for (var i = data.length - 1; i >= 1; i--) {
     if (String(data[i][13]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
-      var status = String(data[i][7]).trim();
-      if (status !== 'פסול') {
-        return jsonResponse({ status: 'error', message: 'תוצאה זו אינה פסולה' });
-      }
-      // Change status from פסול to בוטל (hidden from results, allow retake)
-      sheet.getRange(i + 1, 8).setValue('בוטל');
-      // Clear the DQ flag
-      sheet.getRange(i + 1, 18).setValue(false);
-      // Revert pending status from 'disqualified' back to 'in_exam' so examinee can resume
-      var pendSheet = getSheet('ממתינים');
-      var pendData = pendSheet.getDataRange().getValues();
-      for (var j = pendData.length - 1; j >= 1; j--) {
-        if (String(pendData[j][0]) === String(p.sessionCode) && normalizeId(pendData[j][1]) === normalizeId(p.idNumber)) {
-          if (String(pendData[j][5]).trim() === 'disqualified') {
-            pendSheet.getRange(j + 1, 6).setValue('in_exam');
-          }
-          break;
-        }
-      }
-      SpreadsheetApp.flush();
-      return jsonResponse({ status: 'ok' });
+      resultRowIdx = i;
+      resultStatus = String(data[i][7]).trim();
+      break;
     }
   }
+
+  var pendSheet = getSheet('ממתינים');
+  var pendData = pendSheet.getDataRange().getValues();
+  var pendRowIdx = -1;
+  var pendStatusNow = '';
+  for (var j = pendData.length - 1; j >= 1; j--) {
+    if (String(pendData[j][0]) === String(p.sessionCode) && normalizeId(pendData[j][1]) === normalizeId(p.idNumber)) {
+      pendRowIdx = j;
+      pendStatusNow = String(pendData[j][5] || '').trim();
+      break;
+    }
+  }
+
+  // Case 1: latest result is פסול → normal overturn flow
+  if (resultStatus === 'פסול') {
+    sheet.getRange(resultRowIdx + 1, 8).setValue('בוטל');
+    sheet.getRange(resultRowIdx + 1, 18).setValue(false);
+    if (pendRowIdx !== -1 && pendStatusNow === 'disqualified') {
+      pendSheet.getRange(pendRowIdx + 1, 6).setValue('in_exam');
+    }
+    SpreadsheetApp.flush();
+    return jsonResponse({ status: 'ok' });
+  }
+
+  // Case 2: stuck pending in 'disqualified' but latest result is already
+  // a final outcome (עבר/נכשל/בוטל). Happens when DQ fired transiently
+  // during a deploy window — examinee continued and finished the exam, but
+  // the pending row stayed stuck. Just clean up the pending row.
+  if (pendRowIdx !== -1 && pendStatusNow === 'disqualified' &&
+      (resultStatus === 'עבר' || resultStatus === 'נכשל' || resultStatus === 'בוטל')) {
+    pendSheet.getRange(pendRowIdx + 1, 6).setValue('completed');
+    SpreadsheetApp.flush();
+    return jsonResponse({ status: 'ok', resolved: 'stale_dq_cleared' });
+  }
+
+  // Case 3: pending is disqualified but no result row yet → revert so the
+  // examinee can resume the exam (in_exam state, just like case 1).
+  if (pendRowIdx !== -1 && pendStatusNow === 'disqualified' && resultRowIdx === -1) {
+    pendSheet.getRange(pendRowIdx + 1, 6).setValue('in_exam');
+    SpreadsheetApp.flush();
+    return jsonResponse({ status: 'ok', resolved: 'no_result_reverted' });
+  }
+
+  // Fall-through: nothing to do
   return jsonResponse({ status: 'error', message: 'תוצאה לא נמצאה' });
 }
 
