@@ -9,7 +9,7 @@
 // ========== פונקציות עזר ==========
 
 var SHEET_HEADERS = {
-  'בוחנים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'מס בוחן', 'תפקיד', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד'],
+  'בוחנים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'מס בוחן', 'תפקיד', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד', 'אתרים מנוהלים'],
   'אתרים': ['שם אתר', 'מזהה', 'טלפון מנהל', 'כיתות'],
   'סשנים': ['קוד', 'בוחן ת.ז.', 'שם בוחן', 'אתר', 'כיתה', 'דרגה', 'שפה', 'מצב שמע', 'זמן יצירה', 'תקף עד', 'פעיל'],
   'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה', 'דרגה', 'שמע', 'הארכת זמן', 'התחלת מבחן', 'טוקן נבחן', 'ספירת DQ', 'מסך נוסף'],
@@ -256,6 +256,23 @@ function requireExamineeToken(p) {
   return null;
 }
 
+// Look up the list of sites a center commander oversees (column K in בוחנים).
+// Format in the sheet: comma-separated site names matching column K in תוצאות.
+// Returns array of trimmed names (empty if not found / empty cell).
+function getExaminerManagedSites(examinerId) {
+  if (!examinerId) return [];
+  var sheet = getSheet('בוחנים');
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (normalizeId(data[i][1]) === normalizeId(examinerId)) {
+      var raw = (data[i].length > 10) ? String(data[i][10] || '') : '';
+      if (!raw) return [];
+      return raw.split(',').map(function(s) { return s.trim(); }).filter(function(s) { return s; });
+    }
+  }
+  return [];
+}
+
 // Look up examiner's role ('בוחן' or 'מפקד'). Returns '' if not found.
 function getExaminerRole(examinerId) {
   if (!examinerId) return '';
@@ -346,7 +363,7 @@ function doGet(e) {
     var examinerActions = ['getSites','listSessions','listAllSessions','createSession','updateSession','closeSession',
       'approveExaminee','rejectExaminee','examinerDashboard','resetExaminee',
       'correctToPass','overturnDQ','forceComplete','markSent','commanderDashboard',
-      'commanderCorrectResult','getResultUploadToken'];
+      'commanderCorrectResult','getResultUploadToken','centerManagerReport'];
     // Note: 'disqualify' is NOT in this list because it can be sent by the examinee client (no token)
     // — auth is enforced inside handleDisqualify itself (examiner token OR active pending row).
     if (examinerActions.indexOf(action) !== -1) {
@@ -380,6 +397,9 @@ function doGet(e) {
 
       case 'listAllSessions':
         return handleListAllSessions(p);
+
+      case 'centerManagerReport':
+        return handleCenterManagerReport(p);
 
       case 'getOfficeNumber':
         // Public read of the office WA number — used by clients for display.
@@ -773,6 +793,133 @@ function handleListSessions(p) {
 // Commander-only: return every active, non-expired session across all examiners.
 // Used by the commander UI to load and inspect/correct results in another
 // examiner's session (audit / appeal-committee workflow).
+// Center-commander aggregate report across multiple sites.
+// Role 'מפקד מרכז' has read-only access — cannot enter sessions, cannot correct
+// results. Just sees aggregated stats across their assigned sites (column K of
+// בוחנים). Date range optional (defaults to today). Three categories: overall,
+// per-site, per-license.
+function handleCenterManagerReport(p) {
+  if (!verifyToken(p.examinerId, p.token)) {
+    return jsonResponse({ status: 'error', message: 'טוקן לא תקין', tokenExpired: true });
+  }
+  var role = getExaminerRole(p.examinerId);
+  if (role !== 'מפקד מרכז') {
+    return jsonResponse({ status: 'error', message: 'פעולה זו זמינה רק למפקד מרכז' });
+  }
+  var managedSites = getExaminerManagedSites(p.examinerId);
+  if (!managedSites.length) {
+    return jsonResponse({ status: 'error', message: 'לא הוקצו אתרים מנוהלים — פנה למנהל המערכת' });
+  }
+  // Normalise site names for case/space-insensitive matching
+  var sitesLower = {};
+  for (var s = 0; s < managedSites.length; s++) sitesLower[managedSites[s].trim()] = true;
+
+  // Parse date range. Defaults to today (00:00 today → now).
+  var dateFrom, dateTo;
+  if (p.dateFrom) {
+    dateFrom = new Date(p.dateFrom);
+    if (isNaN(dateFrom.getTime())) dateFrom = null;
+  }
+  if (p.dateTo) {
+    dateTo = new Date(p.dateTo);
+    if (isNaN(dateTo.getTime())) dateTo = null;
+    else dateTo.setHours(23, 59, 59, 999);
+  }
+  if (!dateFrom) {
+    dateFrom = new Date();
+    dateFrom.setHours(0, 0, 0, 0);
+  }
+  if (!dateTo) {
+    dateTo = new Date();
+    dateTo.setHours(23, 59, 59, 999);
+  }
+
+  // Walk תוצאות, filter by site IN managed + date range. Skip 'בוטל' (cancelled DQ).
+  var sheet = getSheet('תוצאות');
+  var rows = sheet.getDataRange().getValues();
+  var overall = { total: 0, passed: 0, failed: 0, dq: 0 };
+  var bySite = {};
+  var byLicense = {};
+  for (var ri = 1; ri < rows.length; ri++) {
+    var r = rows[ri];
+    var status = String(r[7] || '').trim();
+    if (status === 'בוטל') continue; // cancelled DQ — not a real result
+    var rowSite = String(r[10] || '').trim();
+    if (!rowSite || !sitesLower[rowSite]) continue;
+    // Parse row date (column A is "DD/MM/YYYY HH:mm" — see todayStr())
+    var rawDate = r[0];
+    var rowDate = null;
+    if (rawDate instanceof Date) rowDate = rawDate;
+    else if (rawDate) {
+      var m = String(rawDate).match(/(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})/);
+      if (m) rowDate = new Date(+m[3], (+m[2]) - 1, +m[1], +m[4], +m[5]);
+    }
+    if (!rowDate) continue;
+    if (rowDate < dateFrom || rowDate > dateTo) continue;
+
+    var rowLic = String(r[4] || '').trim() || '-';
+    var isDQ = (status === 'פסול');
+    var isPassed = (status === 'עבר');
+    overall.total++;
+    if (isDQ) overall.dq++;
+    else if (isPassed) overall.passed++;
+    else overall.failed++;
+
+    if (!bySite[rowSite]) bySite[rowSite] = { site: rowSite, total: 0, passed: 0, failed: 0, dq: 0 };
+    bySite[rowSite].total++;
+    if (isDQ) bySite[rowSite].dq++;
+    else if (isPassed) bySite[rowSite].passed++;
+    else bySite[rowSite].failed++;
+
+    if (!byLicense[rowLic]) byLicense[rowLic] = { license: rowLic, total: 0, passed: 0, failed: 0, dq: 0 };
+    byLicense[rowLic].total++;
+    if (isDQ) byLicense[rowLic].dq++;
+    else if (isPassed) byLicense[rowLic].passed++;
+    else byLicense[rowLic].failed++;
+  }
+
+  // Ensure every managed site appears in bySite (even with zero rows) so the
+  // commander can spot missing data instead of being confused by absence.
+  for (var ms = 0; ms < managedSites.length; ms++) {
+    var name = managedSites[ms];
+    if (!bySite[name]) bySite[name] = { site: name, total: 0, passed: 0, failed: 0, dq: 0 };
+  }
+
+  function pct(part, whole) { return whole > 0 ? Math.round((part / whole) * 100) : 0; }
+  overall.passRate = pct(overall.passed, overall.total);
+
+  var bySiteArr = [];
+  for (var sk in bySite) {
+    var bsr = bySite[sk];
+    bsr.passRate = pct(bsr.passed, bsr.total);
+    bySiteArr.push(bsr);
+  }
+  bySiteArr.sort(function(a, b) { return a.site.localeCompare(b.site, 'he'); });
+
+  var byLicArr = [];
+  for (var lk in byLicense) {
+    var blr = byLicense[lk];
+    blr.passRate = pct(blr.passed, blr.total);
+    byLicArr.push(blr);
+  }
+  // Sort by typical license order: B, 1, C1, C, D, other
+  var licOrder = { 'B': 1, '1': 2, 'C1': 3, 'C': 4, 'D': 5 };
+  byLicArr.sort(function(a, b) {
+    var oa = licOrder[a.license] || 99, ob = licOrder[b.license] || 99;
+    return oa - ob || a.license.localeCompare(b.license);
+  });
+
+  return jsonResponse({
+    status: 'ok',
+    managedSites: managedSites,
+    dateFrom: dateFrom.toISOString(),
+    dateTo: dateTo.toISOString(),
+    overall: overall,
+    bySite: bySiteArr,
+    byLicense: byLicArr
+  });
+}
+
 function handleListAllSessions(p) {
   // Token already verified upstream (in examinerActions allowlist). Add a role
   // check here since the action isn't restricted by ownership.

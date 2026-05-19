@@ -470,6 +470,51 @@
 
   </div>
 
+  <!-- ===== Screen 4b: Center Commander Dashboard (read-only across multiple sites) ===== -->
+  <div class="screen" id="screenCenterCommander">
+    <div class="card" style="text-align:center;">
+      <h2 style="margin:0 0 6px;">לוח מפקד מרכז — סיכום אתרים</h2>
+      <p class="muted" id="ccmSitesLabel" style="margin:0 0 12px;font-size:13px;"></p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:12px 0;">
+        <button class="cmd-period-btn active" data-period="daily" onclick="ccmSelectPeriod(this)">יומי</button>
+        <button class="cmd-period-btn" data-period="weekly" onclick="ccmSelectPeriod(this)">שבועי</button>
+        <button class="cmd-period-btn" data-period="monthly" onclick="ccmSelectPeriod(this)">חודשי</button>
+        <button class="cmd-period-btn" data-period="custom" onclick="ccmSelectPeriod(this)">מותאם</button>
+      </div>
+      <div id="ccmCustomRange" style="display:none;margin:12px auto;max-width:400px;">
+        <div style="display:flex;gap:8px;align-items:center;justify-content:center;">
+          <label style="font-size:13px;">מ-<input type="date" id="ccmDateFrom" style="padding:6px;border-radius:6px;border:1px solid #cbd5e1;"></label>
+          <label style="font-size:13px;">עד<input type="date" id="ccmDateTo" style="padding:6px;border-radius:6px;border:1px solid #cbd5e1;"></label>
+          <button onclick="fetchCenterReport()" style="padding:6px 16px;font-size:13px;background:#1a73e8;color:white;border:none;border-radius:6px;cursor:pointer;">הצג</button>
+        </div>
+      </div>
+      <div id="ccmDateLabel" style="font-size:13px;color:#64748b;margin-top:4px;"></div>
+      <div id="ccmLoading" style="display:none;margin:12px 0;color:#64748b;">טוען נתונים...</div>
+    </div>
+
+    <div id="ccmReport" style="display:none;">
+      <div class="card" id="ccmOverall">
+        <h3 style="margin:0 0 10px;font-size:16px;">סיכום כללי</h3>
+        <div id="ccmOverallContent"></div>
+      </div>
+      <div class="card" id="ccmBySite">
+        <h3 style="margin:0 0 10px;font-size:16px;">📍 לפי אתר</h3>
+        <div id="ccmBySiteContent" style="overflow-x:auto;"></div>
+      </div>
+      <div class="card" id="ccmByLicense">
+        <h3 style="margin:0 0 10px;font-size:16px;">🎫 לפי דרגת רישיון</h3>
+        <div id="ccmByLicenseContent" style="overflow-x:auto;"></div>
+      </div>
+      <div class="card" style="text-align:center;">
+        <button onclick="shareCenterReport()" style="background:#25D366;padding:12px 24px;font-size:15px;">📱 שלח דו"ח ב-WhatsApp</button>
+      </div>
+    </div>
+
+    <div id="ccmEmpty" style="display:none;" class="card">
+      <p class="muted" style="text-align:center;padding:20px;">לא נמצאו תוצאות בטווח התאריכים שנבחר</p>
+    </div>
+  </div>
+
   <!-- ===== Screen 4: Commander Dashboard ===== -->
   <div class="screen" id="screenCommander">
     <div class="card" style="text-align:center;">
@@ -883,7 +928,13 @@
         }
         document.getElementById('topbarInfo').textContent = examinerData.name;
         document.getElementById('logoutBtn').style.display = 'inline-block';
-        if (userRole === 'מפקד') {
+        if (userRole === 'מפקד מרכז') {
+          // Center commander — read-only aggregate across multiple sites.
+          // No session creation, no result correction, no examiner dashboard.
+          document.querySelector('.topbar h1').textContent = 'לוח בקרה — מפקד מרכז';
+          showScreen('screenCenterCommander');
+          initCenterCommanderDashboard();
+        } else if (userRole === 'מפקד') {
           document.querySelector('.topbar h1').textContent = 'לוח בקרה — מפקד';
           showScreen('screenCommander');
           initCommanderDashboard();
@@ -3886,6 +3937,205 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     if (cmdData) renderBreakdownTable(cmdData, cmdCurrentTab);
   };
 
+  // ========== Center Commander Dashboard (read-only multi-site aggregate) ==========
+  var ccmCurrentPeriod = 'daily';
+  var ccmCurrentData = null;
+
+  function initCenterCommanderDashboard() {
+    ccmCurrentPeriod = 'daily';
+    ccmCurrentData = null;
+    var todayIso = new Date().toISOString().slice(0, 10);
+    var df = document.getElementById('ccmDateFrom');
+    var dt = document.getElementById('ccmDateTo');
+    if (df) df.value = todayIso;
+    if (dt) dt.value = todayIso;
+    fetchCenterReport();
+  }
+
+  window.ccmSelectPeriod = function(btn) {
+    var btns = document.querySelectorAll('#screenCenterCommander .cmd-period-btn');
+    for (var b = 0; b < btns.length; b++) btns[b].classList.remove('active');
+    btn.classList.add('active');
+    ccmCurrentPeriod = btn.dataset.period;
+    var customDiv = document.getElementById('ccmCustomRange');
+    if (ccmCurrentPeriod === 'custom') {
+      customDiv.style.display = 'block';
+      return;
+    }
+    customDiv.style.display = 'none';
+    fetchCenterReport();
+  };
+
+  function ccmGetDateRange() {
+    var now = new Date();
+    var from = new Date(now), to = new Date(now);
+    to.setHours(23, 59, 59, 999);
+    if (ccmCurrentPeriod === 'daily') {
+      from.setHours(0, 0, 0, 0);
+    } else if (ccmCurrentPeriod === 'weekly') {
+      from.setDate(from.getDate() - 6);
+      from.setHours(0, 0, 0, 0);
+    } else if (ccmCurrentPeriod === 'monthly') {
+      from.setDate(1);
+      from.setHours(0, 0, 0, 0);
+    } else if (ccmCurrentPeriod === 'custom') {
+      var dfv = document.getElementById('ccmDateFrom').value;
+      var dtv = document.getElementById('ccmDateTo').value;
+      if (dfv) from = new Date(dfv + 'T00:00:00');
+      if (dtv) to = new Date(dtv + 'T23:59:59');
+    }
+    return { from: from, to: to };
+  }
+
+  window.fetchCenterReport = function() {
+    var range = ccmGetDateRange();
+    document.getElementById('ccmLoading').style.display = 'block';
+    document.getElementById('ccmReport').style.display = 'none';
+    document.getElementById('ccmEmpty').style.display = 'none';
+    apiGet({
+      action: 'centerManagerReport',
+      dateFrom: range.from.toISOString(),
+      dateTo: range.to.toISOString()
+    }).then(function(data) {
+      document.getElementById('ccmLoading').style.display = 'none';
+      if (data.status !== 'ok') { alert(data.message || 'שגיאה'); return; }
+      ccmCurrentData = data;
+      renderCenterReport(data, range);
+    }).catch(function(err) {
+      document.getElementById('ccmLoading').style.display = 'none';
+      alert('שגיאת תקשורת: ' + err);
+    });
+  };
+
+  function renderCenterReport(data, range) {
+    var sitesLabel = document.getElementById('ccmSitesLabel');
+    if (sitesLabel) sitesLabel.textContent = 'אתרים: ' + (data.managedSites || []).join(' | ');
+    var dl = document.getElementById('ccmDateLabel');
+    if (dl) dl.textContent = ccmFmtDate(range.from) + ' — ' + ccmFmtDate(range.to);
+    if (!data.overall || data.overall.total === 0) {
+      document.getElementById('ccmEmpty').style.display = 'block';
+      document.getElementById('ccmReport').style.display = 'none';
+      return;
+    }
+    var ov = data.overall;
+    var ovHtml = '<div style="display:flex;gap:14px;flex-wrap:wrap;justify-content:center;">' +
+      ccmKpi('סה"כ נבחנים', ov.total, '#1e293b') +
+      ccmKpi('עברו', ov.passed, '#16a34a') +
+      ccmKpi('נכשלו', ov.failed, '#dc2626') +
+      ccmKpi('פסולים', ov.dq, '#f59e0b') +
+      ccmKpi('אחוז הצלחה', ov.passRate + '%', '#1a73e8') +
+      '</div>';
+    document.getElementById('ccmOverallContent').innerHTML = ovHtml;
+    document.getElementById('ccmBySiteContent').innerHTML = ccmTable(data.bySite || [], 'site', 'אתר');
+    document.getElementById('ccmByLicenseContent').innerHTML = ccmTable(data.byLicense || [], 'license', 'דרגה');
+    document.getElementById('ccmReport').style.display = '';
+    document.getElementById('ccmEmpty').style.display = 'none';
+  }
+
+  function ccmKpi(label, val, color) {
+    return '<div style="text-align:center;min-width:90px;">' +
+      '<div style="font-size:24px;font-weight:900;color:' + color + ';">' + val + '</div>' +
+      '<div style="font-size:12px;color:#64748b;">' + label + '</div></div>';
+  }
+
+  function ccmTable(rows, keyField, keyLabel) {
+    if (!rows || rows.length === 0) return '<p class="muted">אין נתונים</p>';
+    var html = '<table class="results-table" style="font-size:13px;"><thead><tr>' +
+      '<th>' + keyLabel + '</th><th>סה"כ</th><th>עברו</th><th>נכשלו</th><th>פסולים</th><th>%</th>' +
+      '</tr></thead><tbody>';
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      var keyDisplay = r[keyField];
+      if (keyField === 'license') keyDisplay = (LICENSE_LABELS[r.license] || r.license);
+      html += '<tr>' +
+        '<td>' + escHtml(String(keyDisplay)) + '</td>' +
+        '<td>' + r.total + '</td>' +
+        '<td style="color:#16a34a;font-weight:700;">' + r.passed + '</td>' +
+        '<td style="color:#dc2626;">' + r.failed + '</td>' +
+        '<td style="color:#f59e0b;">' + r.dq + '</td>' +
+        '<td style="font-weight:700;">' + r.passRate + '%</td>' +
+        '</tr>';
+    }
+    html += '</tbody></table>';
+    return html;
+  }
+
+  function ccmFmtDate(d) {
+    if (!d || isNaN(d.getTime())) return '';
+    var dd = String(d.getDate()).padStart(2, '0');
+    var mm = String(d.getMonth() + 1).padStart(2, '0');
+    return dd + '/' + mm + '/' + d.getFullYear();
+  }
+
+  window.shareCenterReport = function() {
+    if (!ccmCurrentData) { alert('אין דו"ח טעון'); return; }
+    var d = ccmCurrentData;
+    var range = ccmGetDateRange();
+    var fromLbl = ccmFmtDate(range.from);
+    var toLbl = ccmFmtDate(range.to);
+    var html = '<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"/>' +
+      '<title>דו"ח מפקד מרכז</title><style>' +
+      'body{font-family:Arial,"Segoe UI",sans-serif;margin:24px;color:#1e293b;direction:rtl;}' +
+      'h1{font-size:22px;margin:0 0 6px;color:#0f172a;}' +
+      'h2{font-size:16px;margin:18px 0 8px;color:#1e40af;}' +
+      '.muted{color:#64748b;font-size:13px;margin-bottom:14px;}' +
+      'table{width:100%;border-collapse:collapse;margin-top:8px;}' +
+      'th,td{border:1px solid #cbd5e1;padding:8px 10px;text-align:center;font-size:13px;}' +
+      'th{background:#e2e8f0;font-weight:700;}' +
+      '.kpi-row{display:flex;gap:14px;flex-wrap:wrap;justify-content:center;margin:10px 0 20px;}' +
+      '.kpi{text-align:center;min-width:100px;padding:10px;border:1px solid #cbd5e1;border-radius:8px;background:#f8fafc;}' +
+      '.kpi .v{font-size:24px;font-weight:900;}' +
+      '.kpi .l{font-size:12px;color:#64748b;}' +
+      '</style></head><body>' +
+      '<h1>📊 דו"ח מפקד מרכז</h1>' +
+      '<div class="muted">אתרים: ' + escHtml((d.managedSites || []).join(' | ')) +
+      '<br>טווח: ' + fromLbl + ' — ' + toLbl + '</div>' +
+      '<h2>סיכום כללי</h2>' +
+      '<div class="kpi-row">' +
+      '<div class="kpi"><div class="v">' + d.overall.total + '</div><div class="l">סה"כ נבחנים</div></div>' +
+      '<div class="kpi"><div class="v" style="color:#16a34a;">' + d.overall.passed + '</div><div class="l">עברו</div></div>' +
+      '<div class="kpi"><div class="v" style="color:#dc2626;">' + d.overall.failed + '</div><div class="l">נכשלו</div></div>' +
+      '<div class="kpi"><div class="v" style="color:#f59e0b;">' + d.overall.dq + '</div><div class="l">פסולים</div></div>' +
+      '<div class="kpi"><div class="v" style="color:#1a73e8;">' + d.overall.passRate + '%</div><div class="l">אחוז הצלחה</div></div>' +
+      '</div>' +
+      '<h2>📍 לפי אתר</h2>' + ccmTable(d.bySite || [], 'site', 'אתר') +
+      '<h2>🎫 לפי דרגת רישיון</h2>' + ccmTable(d.byLicense || [], 'license', 'דרגה') +
+      '</body></html>';
+
+    var dlg = document.getElementById('shareDialog');
+    document.getElementById('shareDialogTitle').textContent = 'שיתוף דו"ח מפקד מרכז';
+    document.getElementById('shareDialogContent').innerHTML = '<div style="font-size:14px;color:#64748b;padding:20px 0;">⏳ מעלה דו"ח...</div>';
+    dlg.style.display = 'flex';
+
+    fetch(RESULTS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ html: html })
+    }).then(function(r) { return r.json(); }).then(function(resp) {
+      if (resp.status === 'ok' && resp.link) {
+        var msgText = '📊 *דו"ח מפקד מרכז*\n' +
+          'אתרים: ' + (d.managedSites || []).join(' | ') + '\n' +
+          'טווח: ' + fromLbl + ' — ' + toLbl + '\n' +
+          'סה"כ: ' + d.overall.total + ' | עברו: ' + d.overall.passed +
+          ' | אחוז הצלחה: ' + d.overall.passRate + '%\n\n' +
+          '📎 דו"ח מלא:\n' + resp.link;
+        var waUrl = 'https://wa.me/?text=' + encodeURIComponent(msgText);
+        var content = '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px;margin:12px 0;word-break:break-all;font-size:13px;direction:ltr;text-align:left;">' + escHtml(resp.link) + '</div>' +
+          '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:12px;">' +
+          '<a href="' + waUrl + '" target="_blank" style="flex:1;min-width:120px;padding:10px 12px;border-radius:10px;font-size:14px;font-weight:700;text-decoration:none;text-align:center;color:white;background:#25D366;">📱 WhatsApp</a>' +
+          '<button onclick="copyShareLink(this,\'' + resp.link.replace(/'/g, "\\'") + '\')" style="flex:1;min-width:120px;padding:10px 12px;border-radius:10px;font-size:14px;font-weight:700;text-align:center;color:white;background:#64748b;border:none;cursor:pointer;">📋 העתק קישור</button>' +
+          '</div>';
+        document.getElementById('shareDialogContent').innerHTML = content;
+      } else {
+        document.getElementById('shareDialogContent').innerHTML =
+          '<div style="color:#ef4444;">שגיאה: ' + escHtml(resp.message || 'Unknown error') + '</div>';
+      }
+    }).catch(function(err) {
+      document.getElementById('shareDialogContent').innerHTML =
+        '<div style="color:#ef4444;">שגיאת תקשורת: ' + escHtml(err.message || '') + '</div>';
+    });
+  };
+
   function initCommanderDashboard() {
     // Load default (daily)
     fetchCommanderData('daily');
@@ -4403,7 +4653,11 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       document.getElementById('topbarInfo').textContent = examinerData.name;
       document.getElementById('logoutBtn').style.display = 'inline-block';
       clearState();
-      if (userRole === 'מפקד') {
+      if (userRole === 'מפקד מרכז') {
+        document.querySelector('.topbar h1').textContent = 'לוח בקרה — מפקד מרכז';
+        showScreen('screenCenterCommander');
+        initCenterCommanderDashboard();
+      } else if (userRole === 'מפקד') {
         document.querySelector('.topbar h1').textContent = 'לוח בקרה — מפקד';
         showScreen('screenCommander');
         initCommanderDashboard();
@@ -4431,7 +4685,11 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
               userRole = examinerData.role || 'בוחן';
               document.getElementById('topbarInfo').textContent = examinerData.name;
               document.getElementById('logoutBtn').style.display = 'inline-block';
-              if (userRole === 'מפקד') {
+              if (userRole === 'מפקד מרכז') {
+                document.querySelector('.topbar h1').textContent = 'לוח בקרה — מפקד מרכז';
+                showScreen('screenCenterCommander');
+                initCenterCommanderDashboard();
+              } else if (userRole === 'מפקד') {
                 document.querySelector('.topbar h1').textContent = 'לוח בקרה — מפקד';
                 showScreen('screenCommander');
                 initCommanderDashboard();
