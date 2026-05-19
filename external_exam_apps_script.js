@@ -2824,6 +2824,12 @@ function handleGetExamQuestions(p) {
   // Pre-fetch all 7 languages so mid-exam language switches are instant
   // (no extra round trip). Adds ~120-150 KB to the response. Cold-start
   // server cost is real (7 Drive reads) but cached for 6h after that.
+  //
+  // For student/standalone auth we include each translation's `ci` (correct
+  // index, XOR-encoded) so the client can score correctly per language when
+  // the translator put answers in a different order. For examinee auth we
+  // keep `ci` stripped — server is sole source of truth for scoring.
+  var includeCiInTranslations = (auth === 'student' || auth === 'standalone');
   var translations = null;
   if (p.includeTranslations === 'true' || p.includeTranslations === '1') {
     translations = {};
@@ -2838,7 +2844,11 @@ function handleGetExamQuestions(p) {
         for (var ai = 0; ai < altData.length; ai++) {
           var aq = altData[ai];
           if (aq && idSet[aq.id]) {
-            altMap[aq.id] = { t: aq.text, a: aq.answers };
+            var entry = { t: aq.text, a: aq.answers };
+            if (includeCiInTranslations && typeof aq.ci === 'number') {
+              entry.ci = aq.ci;
+            }
+            altMap[aq.id] = entry;
           }
         }
         translations[altLang] = altMap;
