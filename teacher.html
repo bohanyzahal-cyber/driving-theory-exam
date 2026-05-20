@@ -474,6 +474,13 @@ var cmdData = null;
 var cmdCurrentTab = 'byTeacher';
 var userSite = '';
 
+// "מפקד קד״ץ" gets typed in many forms (Hebrew gershayim, ASCII quote, no
+// separator, extra whitespace). Match all of them so a sheet entry typed
+// casually still resolves to the role.
+function isKdtzRole(r) {
+  return /^\s*מפקד\s+קד[\s׳״'"]*ץ\s*$/.test(String(r || ''));
+}
+
 // ===== Utility =====
 function showScreen(id) {
   var screens = document.querySelectorAll('.screen');
@@ -539,10 +546,10 @@ function onLoggedIn() {
   document.getElementById('topbarTeacherName').textContent = teacher.name;
   userRole = teacher.role || 'מורה';
   userSite = teacher.site || '';
-  var isCommander = (userRole === 'מפקד' || userRole === 'מפקד מקומי' || userRole === 'מפקד ראשי' || userRole === 'מפקד קד״ץ');
+  var isCommander = (userRole === 'מפקד' || userRole === 'מפקד מקומי' || userRole === 'מפקד ראשי' || isKdtzRole(userRole));
   if (isCommander) {
     var isGlobal = (userRole === 'מפקד ראשי' || userRole === 'מפקד');
-    var isMultiSite = (userRole === 'מפקד קד״ץ');
+    var isMultiSite = isKdtzRole(userRole);
     var titleEl = document.getElementById('cmdTitle');
     if (titleEl) {
       if (isGlobal) {

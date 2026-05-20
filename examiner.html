@@ -794,6 +794,13 @@
   var cmdData = null; // cached commander dashboard data
   var cmdCurrentTab = 'byExaminer';
 
+  // "מפקד קד״ץ" gets typed in many forms (Hebrew gershayim, ASCII quote, no
+  // separator, extra whitespace). Match all of them so a sheet entry typed
+  // casually still resolves to the role.
+  function isKdtzRole(r) {
+    return /^\s*מפקד\s+קד[\s׳״'"]*ץ\s*$/.test(String(r || ''));
+  }
+
   // ========== Session persistence ==========
   function saveState() {
     try {
@@ -929,7 +936,7 @@
         }
         document.getElementById('topbarInfo').textContent = examinerData.name;
         document.getElementById('logoutBtn').style.display = 'inline-block';
-        if (userRole === 'מפקד מרכז' || userRole === 'מפקד קד״ץ') {
+        if (userRole === 'מפקד מרכז' || isKdtzRole(userRole)) {
           // Cross-site read-only commander. Both roles share the same
           // dashboard — only difference is which sites column K lists.
           document.querySelector('.topbar h1').textContent = 'לוח בקרה — ' + userRole;
@@ -4869,7 +4876,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       document.getElementById('topbarInfo').textContent = examinerData.name;
       document.getElementById('logoutBtn').style.display = 'inline-block';
       clearState();
-      if (userRole === 'מפקד מרכז' || userRole === 'מפקד קד״ץ') {
+      if (userRole === 'מפקד מרכז' || isKdtzRole(userRole)) {
         document.querySelector('.topbar h1').textContent = 'לוח בקרה — ' + userRole;
         showScreen('screenCenterCommander');
         initCenterCommanderDashboard();
