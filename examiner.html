@@ -473,7 +473,7 @@
   <!-- ===== Screen 4b: Center Commander Dashboard (read-only across multiple sites) ===== -->
   <div class="screen" id="screenCenterCommander">
     <div class="card" style="text-align:center;">
-      <h2 style="margin:0 0 6px;">לוח מפקד מרכז — סיכום אתרים</h2>
+      <h2 style="margin:0 0 6px;">לוח מפקד אתרים — סיכום</h2>
       <p class="muted" id="ccmSitesLabel" style="margin:0 0 12px;font-size:13px;"></p>
       <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:12px 0;">
         <button class="cmd-period-btn active" data-period="daily" onclick="ccmSelectPeriod(this)">יומי</button>
@@ -929,10 +929,10 @@
         }
         document.getElementById('topbarInfo').textContent = examinerData.name;
         document.getElementById('logoutBtn').style.display = 'inline-block';
-        if (userRole === 'מפקד מרכז') {
-          // Center commander — read-only aggregate across multiple sites.
-          // No session creation, no result correction, no examiner dashboard.
-          document.querySelector('.topbar h1').textContent = 'לוח בקרה — מפקד מרכז';
+        if (userRole === 'מפקד מרכז' || userRole === 'מפקד קד״ץ') {
+          // Cross-site read-only commander. Both roles share the same
+          // dashboard — only difference is which sites column K lists.
+          document.querySelector('.topbar h1').textContent = 'לוח בקרה — ' + userRole;
           showScreen('screenCenterCommander');
           initCenterCommanderDashboard();
         } else if (userRole === 'מפקד') {
@@ -4156,7 +4156,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     var H = [];
     H.push('<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"/>');
     H.push('<meta name="viewport" content="width=device-width,initial-scale=1"/>');
-    H.push('<title>דו"ח מפקד מרכז — ' + escHtml(fromLbl) + ' - ' + escHtml(toLbl) + '</title>');
+    H.push('<title>דו"ח ' + escHtml(userRole || 'מפקד אתרים') + ' — ' + escHtml(fromLbl) + ' - ' + escHtml(toLbl) + '</title>');
     H.push('<style>*{box-sizing:border-box;margin:0;padding:0}');
     H.push('body{font-family:"Segoe UI",Tahoma,Arial,sans-serif;background:#f0f2f5;color:#333;direction:rtl;padding:20px}');
     H.push('.container{max-width:900px;margin:0 auto;background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.08);overflow:hidden}');
@@ -4188,7 +4188,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     H.push('</style></head><body><div class="container">');
 
     // Header
-    H.push('<div class="header-bar"><h1>📊 דו"ח מפקד מרכז</h1>');
+    H.push('<div class="header-bar"><h1>📊 דו"ח ' + escHtml(userRole || 'מפקד אתרים') + '</h1>');
     H.push('<p>' + escHtml(fromLbl) + ' — ' + escHtml(toLbl) + '</p>');
     H.push('<p style="margin-top:4px;">אתרים: ' + escHtml((d.managedSites || []).join(' | ')) + '</p></div>');
 
@@ -4320,7 +4320,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     var html = buildCenterReportHtml(d, range);
 
     var dlg = document.getElementById('shareDialog');
-    document.getElementById('shareDialogTitle').textContent = 'שיתוף דו"ח מפקד מרכז';
+    document.getElementById('shareDialogTitle').textContent = 'שיתוף דו"ח ' + (userRole || 'מפקד אתרים');
     document.getElementById('shareDialogContent').innerHTML = '<div style="font-size:14px;color:#64748b;padding:20px 0;">⏳ מעלה דו"ח...</div>';
     dlg.style.display = 'flex';
 
@@ -4329,7 +4329,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     // Without the token the worker returns Unauthorized.
     uploadResultHtml(html).then(function(resp) {
       if (resp.status === 'ok' && resp.link) {
-        var msgText = '📊 *דו"ח מפקד מרכז*\n' +
+        var msgText = '📊 *דו"ח ' + (userRole || 'מפקד אתרים') + '*\n' +
           'אתרים: ' + (d.managedSites || []).join(' | ') + '\n' +
           'טווח: ' + fromLbl + ' — ' + toLbl + '\n' +
           'סה"כ: ' + d.overall.total + ' | עברו: ' + d.overall.passed +
@@ -4869,8 +4869,8 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       document.getElementById('topbarInfo').textContent = examinerData.name;
       document.getElementById('logoutBtn').style.display = 'inline-block';
       clearState();
-      if (userRole === 'מפקד מרכז') {
-        document.querySelector('.topbar h1').textContent = 'לוח בקרה — מפקד מרכז';
+      if (userRole === 'מפקד מרכז' || userRole === 'מפקד קד״ץ') {
+        document.querySelector('.topbar h1').textContent = 'לוח בקרה — ' + userRole;
         showScreen('screenCenterCommander');
         initCenterCommanderDashboard();
       } else if (userRole === 'מפקד') {

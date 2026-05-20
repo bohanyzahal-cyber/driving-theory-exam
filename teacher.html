@@ -539,15 +539,25 @@ function onLoggedIn() {
   document.getElementById('topbarTeacherName').textContent = teacher.name;
   userRole = teacher.role || 'מורה';
   userSite = teacher.site || '';
-  var isCommander = (userRole === 'מפקד' || userRole === 'מפקד מקומי' || userRole === 'מפקד ראשי');
+  var isCommander = (userRole === 'מפקד' || userRole === 'מפקד מקומי' || userRole === 'מפקד ראשי' || userRole === 'מפקד קד״ץ');
   if (isCommander) {
     var isGlobal = (userRole === 'מפקד ראשי' || userRole === 'מפקד');
+    var isMultiSite = (userRole === 'מפקד קד״ץ');
     var titleEl = document.getElementById('cmdTitle');
     if (titleEl) {
-      titleEl.textContent = isGlobal ? 'לוח מפקד — סיכום מערכת תרגול' : 'לוח מפקד — ' + userSite;
+      if (isGlobal) {
+        titleEl.textContent = 'לוח מפקד — סיכום מערכת תרגול';
+      } else if (isMultiSite) {
+        titleEl.textContent = 'לוח מפקד קד״ץ — ' + userSite;
+      } else {
+        titleEl.textContent = 'לוח מפקד — ' + userSite;
+      }
     }
+    // Show the per-site breakdown tab whenever the dashboard covers more
+    // than one site (global = all, multi-site = fixed list). Hide it for
+    // local commanders since they only have one site.
     var siteTab = document.getElementById('cmdTabSite');
-    if (siteTab) siteTab.style.display = isGlobal ? '' : 'none';
+    if (siteTab) siteTab.style.display = (isGlobal || isMultiSite) ? '' : 'none';
     showScreen('screenCommander');
     initCommanderDashboard();
   } else {
