@@ -439,8 +439,9 @@
 
     <!-- Results -->
     <div class="card">
-      <div class="section-header">
-        <h3>תוצאות</h3>
+      <div class="section-header" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
+        <h3 style="margin:0;">תוצאות</h3>
+        <button onclick="openManualResultModal()" style="background:#059669;color:#fff;border:none;border-radius:8px;padding:6px 12px;font-size:13px;font-weight:700;cursor:pointer;" title="הוספת תוצאת מבחן שנעשה בכתב">+ הוסף שורה ידנית</button>
       </div>
       <div id="resultsSearchBar" style="display:none; padding:0 0 12px 0;">
         <div style="position:relative; display:flex; align-items:center;">
@@ -711,6 +712,52 @@
     <div style="display:flex; gap:8px; justify-content:flex-end;">
       <button style="background:#64748b;" onclick="closeCorrectResultModal()">ביטול</button>
       <button onclick="submitCorrectResult()" style="background:#dc2626;">תקן תוצאה</button>
+    </div>
+  </div>
+</div>
+
+<!-- Manual result entry modal — for paper-based exams during transition period -->
+<div class="modal-overlay" id="manualResultModal">
+  <div class="modal-box" style="max-width:520px;">
+    <h3>הוספת תוצאה ידנית</h3>
+    <p class="muted" style="margin:4px 0 14px;font-size:13px;">לתקופת המעבר — מבחן שנעשה בכתב. השורה תישמר בגיליון התוצאות עם סימון "ידני".</p>
+    <div style="display:grid; gap:12px; margin:14px 0;">
+      <label>שם מלא <span style="color:#dc2626;">*</span>
+        <input id="manualResName" type="text" autocomplete="off" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-family:inherit;" />
+      </label>
+      <label>ת.ז. <span style="color:#dc2626;">*</span>
+        <input id="manualResId" type="text" inputmode="numeric" autocomplete="off" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-family:inherit;" />
+      </label>
+      <label>טלפון (לוואטסאפ)
+        <input id="manualResPhone" type="tel" inputmode="tel" placeholder="05X-XXXXXXX" autocomplete="off" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-family:inherit;" />
+      </label>
+      <div style="display:flex; gap:10px;">
+        <label style="flex:1;">דרגת רישיון
+          <select id="manualResLicense" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-family:inherit;">
+            <option value="B">B</option>
+            <option value="1">1</option>
+            <option value="C1">C1</option>
+            <option value="C">C</option>
+            <option value="D">D</option>
+          </select>
+        </label>
+        <label style="flex:1;">אוכלוסיה
+          <input id="manualResPopulation" type="text" placeholder="צבא / קד״ץ / אחר" autocomplete="off" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-family:inherit;" />
+        </label>
+      </div>
+      <label>ציון (נכון מתוך סה"כ) <span style="color:#dc2626;">*</span>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <input id="manualResScore" type="number" min="0" max="999" placeholder="26" style="width:80px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-family:inherit;" />
+          <span>/</span>
+          <input id="manualResTotal" type="number" min="1" max="999" value="30" style="width:80px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-family:inherit;" />
+          <span id="manualResPassPreview" class="muted" style="font-size:13px;margin-right:auto;"></span>
+        </div>
+      </label>
+      <div id="manualResError" style="color:#dc2626; font-size:13px; display:none;"></div>
+    </div>
+    <div style="display:flex; gap:8px; justify-content:flex-end;">
+      <button style="background:#64748b;" onclick="closeManualResultModal()">ביטול</button>
+      <button id="manualResSubmitBtn" onclick="submitManualResult()" style="background:#059669;">שמור תוצאה</button>
     </div>
   </div>
 </div>
@@ -1968,6 +2015,98 @@
         errEl.style.display = 'block';
       }
     }).catch(function(err) {
+      errEl.textContent = 'שגיאת תקשורת: ' + err;
+      errEl.style.display = 'block';
+    });
+  };
+
+  // ========== Manual result entry (paper-based exams during transition) ==========
+  window.openManualResultModal = function() {
+    if (!sessionCode) {
+      alert('יש לפתוח בחינה לפני הוספת שורה ידנית');
+      return;
+    }
+    // Reset fields. Pre-fill license from current session — the most common case.
+    document.getElementById('manualResName').value = '';
+    document.getElementById('manualResId').value = '';
+    document.getElementById('manualResPhone').value = '';
+    document.getElementById('manualResLicense').value = currentLicense || 'B';
+    document.getElementById('manualResPopulation').value = '';
+    document.getElementById('manualResScore').value = '';
+    document.getElementById('manualResTotal').value = 30;
+    document.getElementById('manualResPassPreview').textContent = '';
+    document.getElementById('manualResError').style.display = 'none';
+    document.getElementById('manualResSubmitBtn').disabled = false;
+    document.getElementById('manualResSubmitBtn').textContent = 'שמור תוצאה';
+    document.getElementById('manualResultModal').classList.add('show');
+    setTimeout(function() { document.getElementById('manualResName').focus(); }, 50);
+  };
+
+  window.closeManualResultModal = function() {
+    document.getElementById('manualResultModal').classList.remove('show');
+  };
+
+  // Live preview: as the examiner types score/total, show "עבר/נכשל" so they
+  // can sanity-check the threshold before clicking save.
+  function updateManualPassPreview() {
+    var s = parseInt(document.getElementById('manualResScore').value, 10);
+    var t = parseInt(document.getElementById('manualResTotal').value, 10) || 30;
+    var prev = document.getElementById('manualResPassPreview');
+    if (isNaN(s) || s < 0 || s > t) { prev.textContent = ''; return; }
+    var pct = Math.round((s / t) * 100);
+    var passed = s >= Math.ceil(t * 0.86);
+    prev.textContent = pct + '% — ' + (passed ? 'עבר ✓' : 'נכשל ✗');
+    prev.style.color = passed ? '#16a34a' : '#dc2626';
+  }
+  document.addEventListener('input', function(e) {
+    if (e.target && (e.target.id === 'manualResScore' || e.target.id === 'manualResTotal')) {
+      updateManualPassPreview();
+    }
+  });
+
+  window.submitManualResult = function() {
+    var errEl = document.getElementById('manualResError');
+    var btn = document.getElementById('manualResSubmitBtn');
+    errEl.style.display = 'none';
+    var fullName = document.getElementById('manualResName').value.trim();
+    var idNumber = document.getElementById('manualResId').value.trim();
+    var phone = document.getElementById('manualResPhone').value.trim();
+    var license = document.getElementById('manualResLicense').value;
+    var population = document.getElementById('manualResPopulation').value.trim();
+    var score = parseInt(document.getElementById('manualResScore').value, 10);
+    var total = parseInt(document.getElementById('manualResTotal').value, 10) || 30;
+    if (!fullName) { errEl.textContent = 'חובה למלא שם מלא'; errEl.style.display = 'block'; return; }
+    if (!idNumber) { errEl.textContent = 'חובה למלא ת.ז.'; errEl.style.display = 'block'; return; }
+    if (isNaN(score) || score < 0 || score > total) {
+      errEl.textContent = 'ציון לא תקין (בין 0 ל-' + total + ')'; errEl.style.display = 'block'; return;
+    }
+    btn.disabled = true;
+    btn.textContent = 'שומר...';
+    apiPost({
+      action: 'submitManualResult',
+      sessionCode: sessionCode,
+      examinerId: examinerData.id,
+      token: examinerToken,
+      fullName: fullName,
+      idNumber: idNumber,
+      phone: phone,
+      license: license,
+      population: population,
+      score: score,
+      total: total
+    }).then(function(data) {
+      if (data && data.status === 'ok') {
+        closeManualResultModal();
+        if (typeof pollDashboard === 'function') pollDashboard();
+      } else {
+        btn.disabled = false;
+        btn.textContent = 'שמור תוצאה';
+        errEl.textContent = (data && data.message) || 'שגיאה בשמירה';
+        errEl.style.display = 'block';
+      }
+    }).catch(function(err) {
+      btn.disabled = false;
+      btn.textContent = 'שמור תוצאה';
       errEl.textContent = 'שגיאת תקשורת: ' + err;
       errEl.style.display = 'block';
     });
