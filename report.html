@@ -180,7 +180,7 @@ td.row-num { font-weight: bold; }
 <div class="container">
   <div class="header-bar">
     <h1>&#x1f4cb; דו"ח בוחן — מבחן תאוריה חיצוני</h1>
-    <p>טעינת נתונים מהמערכת והפקת דו"ח לרב בוחן</p>
+    <p>טעינת נתונים מהמערכת והפקת דו"ח למנהל האתר</p>
   </div>
 
   <!-- Section 0: Connect to system -->
@@ -325,14 +325,14 @@ td.row-num { font-weight: bold; }
 
     <div class="no-print" style="margin-top:20px;">
       <div class="recipient-panel">
-        <label>&#x1f4f1; מספר טלפון רב בוחן (לשליחת הדו"ח)</label>
+        <label>&#x1f4f1; מספר טלפון מנהל האתר (לשליחת הדו"ח)</label>
         <input type="tel" id="managerPhone" placeholder="05X-XXXXXXX" inputmode="tel">
       </div>
     </div>
 
     <div class="actions-row no-print">
       <button class="btn btn-wa" onclick="sendToManager()">
-        &#x1f4f1; שלח דו"ח לרב בוחן
+        &#x1f4f1; שלח דו"ח למנהל האתר
       </button>
       <button class="btn btn-primary" onclick="window.print()">
         &#x1f5a8; הדפס / שמור PDF
@@ -683,11 +683,11 @@ function renderPopBreakdown(popStats, grandTotal, grandPassed, grandFailed) {
   document.getElementById('popBreakdown').style.display = sorted.length > 0 ? 'block' : 'none';
 }
 
-// ===== SEND TO MANAGER (רב בוחן) =====
+// ===== SEND TO MANAGER (מנהל האתר) =====
 window.sendToManager = function() {
   var phone = document.getElementById('managerPhone').value.trim();
   if (!phone) {
-    showStatus('actionStatus', 'error', 'יש להזין מספר טלפון של רב בוחן');
+    showStatus('actionStatus', 'error', 'יש להזין מספר טלפון של מנהל האתר');
     return;
   }
 
