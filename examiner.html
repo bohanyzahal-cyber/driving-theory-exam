@@ -364,15 +364,27 @@
           <option value="on">פועל</option>
         </select>
       </label>
-      <label>
-        <span>כמות נבחנים מבוקשת</span>
-        <input type="number" id="requestedCountSetup" min="1" max="200" inputmode="numeric" placeholder="לדוגמה: 20" />
-      </label>
-      <label>
-        <span>כמות נבחנים מאושרת</span>
-        <input type="number" id="approvedCountSetup" min="0" max="200" inputmode="numeric" placeholder="לדוגמה: 18" />
-      </label>
     </div>
+
+    <!-- Quotas table: one row per license type, like the plan table in the examiner report. -->
+    <div style="margin: 14px 0;">
+      <div style="font-size:14px; font-weight:600; margin-bottom:6px;">כמויות נבחנים לפי דרגה</div>
+      <div style="background:#f8fafc; border:1px solid #cbd5e1; border-radius:10px; padding:10px;">
+        <table style="width:100%; border-collapse:collapse; font-size:14px;">
+          <thead>
+            <tr style="font-size:12px; color:#64748b;">
+              <th style="text-align:right; padding:4px 6px; font-weight:600;">דרגה</th>
+              <th style="padding:4px 6px; font-weight:600;">מבוקשת</th>
+              <th style="padding:4px 6px; font-weight:600;">מאושרת</th>
+              <th style="width:36px;"></th>
+            </tr>
+          </thead>
+          <tbody id="quotasTableBody"></tbody>
+        </table>
+        <button type="button" id="addQuotaRowBtn" style="margin-top:8px; padding:6px 14px; background:#27ae60; font-size:13px; font-weight:600;">+ הוסף שורה</button>
+      </div>
+    </div>
+
     <div class="form-error" id="setupError"></div>
     <button id="createSessionBtn" style="display:block; width:100%; padding:14px; font-size:17px; margin-top:12px;">פתח בחינה</button>
     <button id="backToCommanderSetup" onclick="switchToCommander()" style="display:none; width:100%; padding:12px; font-size:15px; margin-top:8px; background:#0d47a1;">חזרה ללוח מפקד</button>
@@ -836,8 +848,12 @@
   var currentLicense = '';
   var currentLanguage = '';
   var currentAudioMode = '';
-  var currentRequestedCount = 0;
-  var currentApprovedCount = 0;
+  // Per-license quotas captured at session creation. Each row:
+  // {license: 'B'|'1'|'C1'|'C'|'D', requested: number, approved: number}.
+  // Surfaced in the examiner report (seeds the "סידור עבודה" plan table).
+  var currentQuotas = [];
+  // Working copy used while filling the setup form (before session is created).
+  var setupQuotas = [];
   var sitesData = [];
   var dashboardInterval = null;
   var countdownInterval = null;
@@ -873,8 +889,7 @@
         currentLicense: currentLicense,
         currentLanguage: currentLanguage,
         currentAudioMode: currentAudioMode,
-        currentRequestedCount: currentRequestedCount,
-        currentApprovedCount: currentApprovedCount
+        currentQuotas: currentQuotas
       }));
     } catch(e) {}
   }
@@ -895,8 +910,7 @@
       currentLicense = state.currentLicense || '';
       currentLanguage = state.currentLanguage || '';
       currentAudioMode = state.currentAudioMode || '';
-      currentRequestedCount = Number(state.currentRequestedCount) || 0;
-      currentApprovedCount = Number(state.currentApprovedCount) || 0;
+      currentQuotas = Array.isArray(state.currentQuotas) ? state.currentQuotas : [];
       return true;
     } catch(e) { return false; }
   }
@@ -910,6 +924,10 @@
     var screens = document.querySelectorAll('.screen');
     for (var i = 0; i < screens.length; i++) screens[i].classList.remove('active');
     document.getElementById(id).classList.add('active');
+    // Setup screen needs a fresh quotas table whenever it (re)opens — covers
+    // the "close session → return to setup" path so the next examiner starts
+    // clean instead of inheriting yesterday's rows.
+    if (id === 'screenSetup' && typeof resetSetupQuotas === 'function') resetSetupQuotas();
   }
 
   // ========== API Helper ==========
@@ -1180,8 +1198,7 @@
     currentLanguage = sess.language || 'he';
     currentAudioMode = sess.audioMode || 'off';
     currentSiteManagerPhone = sess.managerPhone || '';
-    currentRequestedCount = Number(sess.requestedCount) || 0;
-    currentApprovedCount = Number(sess.approvedCount) || 0;
+    currentQuotas = Array.isArray(sess.quotas) ? sess.quotas : [];
     sessionValidUntil = sess.validUntil ? new Date(sess.validUntil) : null;
 
     saveState();
@@ -1249,6 +1266,108 @@
     currentSiteManagerPhone = site ? site.managerPhone : '';
   });
 
+  // ========== Quotas table (per-license requested/approved) ==========
+  // Matches the license options in #licenseSetup so the examiner can map every
+  // examinee's grade to a quota row. If we add a new grade later, update both.
+  var QUOTA_LICENSE_OPTIONS = [
+    { value: 'B',  label: 'B — רכב פרטי' },
+    { value: '1',  label: '1 — טרקטור' },
+    { value: 'C1', label: 'C1 — משא קל' },
+    { value: 'C',  label: 'C+E — משא כבד / גורר' },
+    { value: 'D',  label: 'D — אוטובוס / מונית' }
+  ];
+
+  function quotaLicenseSelectHtml(selected, idx) {
+    var html = '<select onchange="updateQuotaCell(' + idx + ',\'license\',this.value)" style="background:#fff;border:1px solid #cbd5e1;border-radius:6px;padding:5px 8px;font-size:13px;width:100%;">';
+    for (var i = 0; i < QUOTA_LICENSE_OPTIONS.length; i++) {
+      var o = QUOTA_LICENSE_OPTIONS[i];
+      var sel = (selected === o.value) ? ' selected' : '';
+      html += '<option value="' + o.value + '"' + sel + '>' + escHtml(o.label) + '</option>';
+    }
+    html += '</select>';
+    return html;
+  }
+
+  function renderQuotasTable() {
+    var tbody = document.getElementById('quotasTableBody');
+    if (!tbody) return;
+    if (setupQuotas.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#94a3b8;padding:10px;font-size:13px;">לחץ "+ הוסף שורה" כדי להוסיף דרגה</td></tr>';
+      return;
+    }
+    var rows = '';
+    for (var i = 0; i < setupQuotas.length; i++) {
+      var q = setupQuotas[i];
+      var reqVal = (q.requested === '' || q.requested == null) ? '' : String(q.requested);
+      var apprVal = (q.approved === '' || q.approved == null) ? '' : String(q.approved);
+      rows += '<tr>' +
+        '<td style="padding:4px;">' + quotaLicenseSelectHtml(q.license, i) + '</td>' +
+        '<td style="padding:4px;"><input type="number" min="1" max="200" inputmode="numeric" value="' + escHtml(reqVal) + '" onchange="updateQuotaCell(' + i + ',\'requested\',this.value)" style="background:#fff;border:1px solid #cbd5e1;border-radius:6px;padding:5px 8px;font-size:13px;width:100%;text-align:center;" placeholder="מבוקש"></td>' +
+        '<td style="padding:4px;"><input type="number" min="0" max="200" inputmode="numeric" value="' + escHtml(apprVal) + '" onchange="updateQuotaCell(' + i + ',\'approved\',this.value)" style="background:#fff;border:1px solid #cbd5e1;border-radius:6px;padding:5px 8px;font-size:13px;width:100%;text-align:center;" placeholder="מאושר"></td>' +
+        '<td style="padding:4px;text-align:center;"><button type="button" onclick="removeQuotaRow(' + i + ')" style="background:#c0392b;color:#fff;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;" title="הסר שורה">✕</button></td>' +
+        '</tr>';
+    }
+    tbody.innerHTML = rows;
+  }
+
+  // Exposed on window so the inline onchange/onclick handlers in the rendered
+  // table can find them — keeps the rendering function pure HTML strings.
+  window.updateQuotaCell = function(idx, field, value) {
+    if (!setupQuotas[idx]) return;
+    setupQuotas[idx][field] = value;
+  };
+
+  window.removeQuotaRow = function(idx) {
+    setupQuotas.splice(idx, 1);
+    renderQuotasTable();
+  };
+
+  function addQuotaRow(license) {
+    setupQuotas.push({ license: license || 'B', requested: '', approved: '' });
+    renderQuotasTable();
+  }
+
+  function resetSetupQuotas() {
+    // Seed with one row matching the currently-selected primary license, so
+    // the simple case (one license per session) needs zero extra clicks.
+    var primary = (document.getElementById('licenseSetup') || {}).value || 'B';
+    setupQuotas = [{ license: primary, requested: '', approved: '' }];
+    renderQuotasTable();
+  }
+
+  // Wire up the "+ הוסף שורה" button + keep first row in sync with the primary
+  // license dropdown as long as the user hasn't typed values yet.
+  document.getElementById('addQuotaRowBtn').addEventListener('click', function() {
+    var primary = document.getElementById('licenseSetup').value || 'B';
+    // Pick a license not yet used, if possible — saves the examiner a click.
+    var used = {};
+    for (var i = 0; i < setupQuotas.length; i++) used[setupQuotas[i].license] = true;
+    var pick = used[primary] ? '' : primary;
+    if (!pick) {
+      for (var j = 0; j < QUOTA_LICENSE_OPTIONS.length; j++) {
+        if (!used[QUOTA_LICENSE_OPTIONS[j].value]) { pick = QUOTA_LICENSE_OPTIONS[j].value; break; }
+      }
+    }
+    addQuotaRow(pick || primary);
+  });
+
+  document.getElementById('licenseSetup').addEventListener('change', function() {
+    // Mirror the primary license to the first quota row IFF that row is still
+    // untouched (no numbers entered). Once the examiner starts filling it, we
+    // leave it alone so changing the primary doesn't wipe their numbers.
+    if (setupQuotas.length > 0) {
+      var first = setupQuotas[0];
+      if ((first.requested === '' || first.requested == null) && (first.approved === '' || first.approved == null)) {
+        first.license = this.value;
+        renderQuotasTable();
+      }
+    }
+  });
+
+  // Initial render — covers the first login flow where showScreen hasn't been
+  // called yet for screenSetup.
+  resetSetupQuotas();
+
   // ========== Create Session ==========
   document.getElementById('createSessionBtn').addEventListener('click', function() {
     var siteSelVal = document.getElementById('siteSelect').value;
@@ -1261,24 +1380,42 @@
     var license = document.getElementById('licenseSetup').value;
     var language = document.getElementById('languageSetup').value;
     var audioMode = document.getElementById('audioModeSetup').value;
-    var requestedCountRaw = document.getElementById('requestedCountSetup').value;
-    var approvedCountRaw = document.getElementById('approvedCountSetup').value;
     var errEl = document.getElementById('setupError');
     errEl.style.display = 'none';
 
     if (!site) { errEl.textContent = 'בחר אתר'; errEl.style.display = 'block'; return; }
     if (!classroom) { errEl.textContent = 'בחר כיתה'; errEl.style.display = 'block'; return; }
 
-    var requestedCount = parseInt(requestedCountRaw, 10);
-    var approvedCount = parseInt(approvedCountRaw, 10);
-    if (!isFinite(requestedCount) || requestedCount < 1) {
-      errEl.textContent = 'הזן כמות נבחנים מבוקשת (לפחות 1)'; errEl.style.display = 'block'; return;
+    // Collect quotas from the table. Validate each row + ensure at least one
+    // row exists. Duplicates of the same license type are caught too — the
+    // examiner should consolidate, otherwise the report gets confusing.
+    var quotas = [];
+    var seenLicenses = {};
+    for (var qi = 0; qi < setupQuotas.length; qi++) {
+      var q = setupQuotas[qi];
+      var qLic = String(q.license || '').trim();
+      var qReq = parseInt(q.requested, 10);
+      var qAppr = parseInt(q.approved, 10);
+      if (!qLic) {
+        errEl.textContent = 'בחר דרגה בכל שורה של כמויות'; errEl.style.display = 'block'; return;
+      }
+      if (seenLicenses[qLic]) {
+        errEl.textContent = 'דרגה "' + qLic + '" מופיעה יותר מפעם אחת — מזג לשורה אחת'; errEl.style.display = 'block'; return;
+      }
+      seenLicenses[qLic] = true;
+      if (!isFinite(qReq) || qReq < 1) {
+        errEl.textContent = 'כמות מבוקשת חייבת להיות לפחות 1 (דרגה ' + qLic + ')'; errEl.style.display = 'block'; return;
+      }
+      if (!isFinite(qAppr) || qAppr < 0) {
+        errEl.textContent = 'הזן כמות מאושרת (דרגה ' + qLic + ')'; errEl.style.display = 'block'; return;
+      }
+      if (qAppr > qReq) {
+        errEl.textContent = 'כמות מאושרת לא יכולה להיות גדולה מהמבוקשת (דרגה ' + qLic + ')'; errEl.style.display = 'block'; return;
+      }
+      quotas.push({ license: qLic, requested: qReq, approved: qAppr });
     }
-    if (!isFinite(approvedCount) || approvedCount < 0) {
-      errEl.textContent = 'הזן כמות נבחנים מאושרת'; errEl.style.display = 'block'; return;
-    }
-    if (approvedCount > requestedCount) {
-      errEl.textContent = 'כמות מאושרת לא יכולה להיות גדולה מהמבוקשת'; errEl.style.display = 'block'; return;
+    if (quotas.length === 0) {
+      errEl.textContent = 'הוסף לפחות שורת כמויות אחת'; errEl.style.display = 'block'; return;
     }
 
     var btn = document.getElementById('createSessionBtn');
@@ -1289,7 +1426,7 @@
       examinerId: examinerData.id,
       site: site, classroom: classroom,
       license: license, language: language, audioMode: audioMode,
-      requestedCount: requestedCount, approvedCount: approvedCount
+      quotas: JSON.stringify(quotas)
     }).then(function(data) {
       btn.disabled = false; btn.textContent = 'פתח בחינה';
       if (data.status === 'ok') {
@@ -1300,8 +1437,7 @@
         currentLicense = license;
         currentLanguage = language;
         currentAudioMode = audioMode;
-        currentRequestedCount = requestedCount;
-        currentApprovedCount = approvedCount;
+        currentQuotas = quotas;
 
         // Find manager phone
         for (var i = 0; i < sitesData.length; i++) {
@@ -3336,14 +3472,6 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     H.push('<div class="info-item"><label>\u05D1\u05D5\u05D7\u05DF</label><div class="val">' + escHtml(examiner) + '</div></div>');
     H.push('<div class="info-item"><label>\u05D3\u05E8\u05D2\u05D4</label><div class="val">' + escHtml(license) + '</div></div>');
     if (examinerNum) H.push('<div class="info-item"><label>\u05DE\u05E1\u05F3 \u05D1\u05D5\u05D7\u05DF</label><div class="val">' + escHtml(examinerNum) + '</div></div>');
-    // Quotas captured at session creation. Surfaced here so the report matches
-    // the physical form (\u05DB\u05DE\u05D5\u05EA \u05DE\u05D1\u05D5\u05E7\u05E9\u05EA / \u05DE\u05D0\u05D5\u05E9\u05E8\u05EA) without manual entry.
-    if (currentRequestedCount > 0) {
-      H.push('<div class="info-item"><label>\u05DB\u05DE\u05D5\u05EA \u05E0\u05D1\u05D7\u05E0\u05D9\u05DD \u05DE\u05D1\u05D5\u05E7\u05E9\u05EA</label><div class="val">' + currentRequestedCount + '</div></div>');
-    }
-    if (currentApprovedCount > 0 || currentRequestedCount > 0) {
-      H.push('<div class="info-item"><label>\u05DB\u05DE\u05D5\u05EA \u05E0\u05D1\u05D7\u05E0\u05D9\u05DD \u05DE\u05D0\u05D5\u05E9\u05E8\u05EA</label><div class="val">' + currentApprovedCount + '</div></div>');
-    }
     H.push('</div></div>');
 
     // ===== WORK PLANNING TABLE (matches physical form) =====
@@ -3433,19 +3561,33 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     H.push('var EX_BY_LIC=' + exJson + ';');
     H.push('var planRows=[];');
     H.push('try{');
-    // Auto-generate one row per license type found in results. Session-level
-    // quotas (requested/approved) seed the first row's qtyReq/qtyAppr so the
-    // examiner doesn't have to retype them — they were already captured at
-    // session creation.
-    var seededReq = currentRequestedCount > 0 ? String(currentRequestedCount) : '';
-    var seededAppr = currentApprovedCount > 0 ? String(currentApprovedCount) : '';
-    if (licenseOrder.length > 0) {
-      for (var li2 = 0; li2 < licenseOrder.length; li2++) {
-        var autoAudio = execByLicense[licenseOrder[li2]] ? execByLicense[licenseOrder[li2]].audio : 0;
-        var seedReq = li2 === 0 ? seededReq : '';
-        var seedAppr = li2 === 0 ? seededAppr : '';
-        H.push('planRows.push({site:"' + jsEsc(site) + '",license:"' + jsEsc(String(licenseOrder[li2])) + '",qtyReq:"' + seedReq + '",qtyAppr:"' + seedAppr + '",notes:"",qtyAudio:"' + (autoAudio > 0 ? autoAudio : '') + '",time:""});');
-      }
+    // Plan-table seeding strategy:
+    // 1. Quotas captured at session creation are the source of truth for
+    //    license + מבוקש + מאושר — every quota row becomes a plan row.
+    // 2. If a license appears in completedResults but not in quotas (rare —
+    //    happens if the examiner ran something off-quota), tack it on at the
+    //    end with empty qty fields so the בוצע column still reflects reality.
+    // 3. Fallback: no quotas, no results → one blank row so the examiner can
+    //    still fill the table by hand.
+    var planSeedLicenses = {};
+    var hasAnySeed = false;
+    for (var qi = 0; qi < currentQuotas.length; qi++) {
+      var qrow = currentQuotas[qi];
+      var qLic = String(qrow.license || '');
+      if (!qLic) continue;
+      var qAudio = execByLicense[qLic] ? execByLicense[qLic].audio : 0;
+      H.push('planRows.push({site:"' + jsEsc(site) + '",license:"' + jsEsc(qLic) + '",qtyReq:"' + (qrow.requested || '') + '",qtyAppr:"' + (qrow.approved || '') + '",notes:"",qtyAudio:"' + (qAudio > 0 ? qAudio : '') + '",time:""});');
+      planSeedLicenses[qLic] = true;
+      hasAnySeed = true;
+    }
+    for (var li2 = 0; li2 < licenseOrder.length; li2++) {
+      var lk = String(licenseOrder[li2]);
+      if (planSeedLicenses[lk]) continue; // already added from quotas
+      var autoAudio = execByLicense[licenseOrder[li2]] ? execByLicense[licenseOrder[li2]].audio : 0;
+      H.push('planRows.push({site:"' + jsEsc(site) + '",license:"' + jsEsc(lk) + '",qtyReq:"",qtyAppr:"",notes:"",qtyAudio:"' + (autoAudio > 0 ? autoAudio : '') + '",time:""});');
+      hasAnySeed = true;
+    }
+    if (hasAnySeed) {
       H.push('renderPlan();');
     } else {
       H.push('addPlanRow();');

@@ -791,8 +791,7 @@ function handleListSessions(p) {
         created: data[i][8] || '',
         validUntil: data[i][9] || '',
         active: data[i][10] === true || String(data[i][10]).toUpperCase() === 'TRUE',
-        requestedCount: Number(data[i][11]) || 0,
-        approvedCount: Number(data[i][12]) || 0,
+        quotas: decodeSessionQuotas(data[i][11], data[i][12], data[i][5]),
         managerPhone: sitesMap[siteName] ? sitesMap[siteName].managerPhone : ''
       });
     }
@@ -1033,8 +1032,7 @@ function handleListAllSessions(p) {
       created: data[i][8] || '',
       validUntil: data[i][9] || '',
       active: true,
-      requestedCount: Number(data[i][11]) || 0,
-      approvedCount: Number(data[i][12]) || 0,
+      quotas: decodeSessionQuotas(data[i][11], data[i][12], data[i][5]),
       managerPhone: sitesMap[siteName] ? sitesMap[siteName].managerPhone : ''
     });
   }
@@ -1057,18 +1055,14 @@ function handleCreateSession(p) {
     if (normalizeId(exData[ei][1]) === normalizeId(p.examinerId)) { exRow = ei + 1; examinerName = exData[ei][0]; break; }
   }
 
-  // Columns L,M: requested/approved examinee counts. Required by examiner UI;
-  // surfaced in the examiner report header (דו"ח בוחן).
-  var requestedCount = parseInt(p.requestedCount, 10);
-  var approvedCount = parseInt(p.approvedCount, 10);
-  if (!isFinite(requestedCount) || requestedCount < 1) {
-    return jsonResponse({ status: 'error', message: 'יש להזין כמות נבחנים מבוקשת' });
-  }
-  if (!isFinite(approvedCount) || approvedCount < 0) {
-    return jsonResponse({ status: 'error', message: 'יש להזין כמות נבחנים מאושרת' });
-  }
-  if (approvedCount > requestedCount) {
-    return jsonResponse({ status: 'error', message: 'כמות מאושרת לא יכולה להיות גדולה מהמבוקשת' });
+  // Column L: per-license quotas, stored as JSON. Array of rows like:
+  //   [{license:'B', requested:20, approved:18}, {license:'C1', requested:5, approved:5}]
+  // Mirrors the plan table in the examiner report — one quota row per license.
+  // Column M is reserved (was approvedCount in the previous single-pair design;
+  // kept blank now to leave room for future extension without renumbering).
+  var quotas = parseAndValidateQuotas(p.quotas);
+  if (quotas.error) {
+    return jsonResponse({ status: 'error', message: quotas.error });
   }
 
   sheet.appendRow([
@@ -1083,11 +1077,91 @@ function handleCreateSession(p) {
     now.toISOString(),
     validUntil.toISOString(),
     true,
-    requestedCount,
-    approvedCount
+    JSON.stringify(quotas.rows),
+    ''
   ]);
 
   return jsonResponse({ status: 'ok', sessionCode: code, validUntil: validUntil.toISOString(), examinerName: examinerName });
+}
+
+// Validates the JSON quotas payload sent from the examiner UI. Returns either
+// { rows: [...] } on success or { error: 'msg' }. The same checks are mirrored
+// in examiner.html createSessionBtn — kept in sync so a forged client still
+// fails server-side.
+var QUOTA_VALID_LICENSES = { B:1, '1':1, C1:1, C:1, D:1 };
+function parseAndValidateQuotas(raw) {
+  if (!raw) return { error: 'יש להזין כמויות נבחנים לפי דרגה' };
+  var parsed;
+  try { parsed = JSON.parse(raw); } catch(e) { return { error: 'מבנה כמויות לא תקין' }; }
+  if (!Array.isArray(parsed) || parsed.length === 0) {
+    return { error: 'יש להזין לפחות שורת כמויות אחת' };
+  }
+  var seen = {};
+  var clean = [];
+  for (var i = 0; i < parsed.length; i++) {
+    var r = parsed[i] || {};
+    var lic = String(r.license || '').trim();
+    var req = parseInt(r.requested, 10);
+    var appr = parseInt(r.approved, 10);
+    if (!QUOTA_VALID_LICENSES[lic]) {
+      return { error: 'דרגה לא חוקית בשורה ' + (i + 1) };
+    }
+    if (seen[lic]) {
+      return { error: 'דרגה "' + lic + '" מופיעה יותר מפעם אחת' };
+    }
+    seen[lic] = true;
+    if (!isFinite(req) || req < 1) {
+      return { error: 'כמות מבוקשת חייבת להיות לפחות 1 (דרגה ' + lic + ')' };
+    }
+    if (!isFinite(appr) || appr < 0) {
+      return { error: 'כמות מאושרת חסרה (דרגה ' + lic + ')' };
+    }
+    if (appr > req) {
+      return { error: 'כמות מאושרת גדולה מהמבוקשת (דרגה ' + lic + ')' };
+    }
+    clean.push({ license: lic, requested: req, approved: appr });
+  }
+  return { rows: clean };
+}
+
+// Decode column L into an array of quota rows. Handles three historical shapes:
+//   1. Empty cell           → []
+//   2. Plain number         → [{license: <session.license>, requested: <num>, approved: <colM>}]
+//      (early prototype that stored requested/approved as separate columns L,M)
+//   3. JSON array string    → parsed array
+// Used by every session reader so backward-compat is centralised.
+function decodeSessionQuotas(colL, colM, sessionLicense) {
+  if (colL === '' || colL == null) return [];
+  var s = String(colL).trim();
+  if (s.charAt(0) === '[') {
+    try {
+      var arr = JSON.parse(s);
+      if (Array.isArray(arr)) {
+        var out = [];
+        for (var i = 0; i < arr.length; i++) {
+          var r = arr[i] || {};
+          out.push({
+            license: String(r.license || ''),
+            requested: Number(r.requested) || 0,
+            approved: Number(r.approved) || 0
+          });
+        }
+        return out;
+      }
+    } catch(e) {}
+    return [];
+  }
+  // Legacy single-pair format: column L = requested, column M = approved
+  var legacyReq = parseInt(s, 10);
+  var legacyAppr = parseInt(colM, 10);
+  if (isFinite(legacyReq) && legacyReq > 0) {
+    return [{
+      license: String(sessionLicense || 'B'),
+      requested: legacyReq,
+      approved: isFinite(legacyAppr) ? legacyAppr : 0
+    }];
+  }
+  return [];
 }
 
 function handleUpdateSession(p) {
@@ -1194,8 +1268,7 @@ function handleGetSessionInfo(p) {
           audioMode: data[i][7],
           examinerName: data[i][2],
           validUntil: data[i][9],
-          requestedCount: Number(data[i][11]) || 0,
-          approvedCount: Number(data[i][12]) || 0
+          quotas: decodeSessionQuotas(data[i][11], data[i][12], data[i][5])
         }
       });
     }
