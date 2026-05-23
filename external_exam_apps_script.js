@@ -326,6 +326,13 @@ function normalizeId(val) {
   return s;
 }
 
+// "מפקד קד״ץ" gets typed in many forms: with Hebrew gershayim ״, ASCII " or ',
+// no separator at all ("מפקד קדץ"), with extra spaces. Match all of them so a
+// sheet entry typed casually still resolves to the role.
+function isKdtzRole(role) {
+  return /^\s*מפקד\s+קד[\s׳״'"]*ץ\s*$/.test(String(role || ''));
+}
+
 function nowISO() {
   return new Date().toISOString();
 }
@@ -350,7 +357,7 @@ function doGet(e) {
     // Block sensitive state-mutating actions from GET — must come via POST.
     // Prevents URL-based forging (URLs leak to logs/history; trivially craftable).
     // Clients already use POST for these (apiPost / sendBeacon with JSON body).
-    var postOnlyActions = ['submitResult','submitFailOnClose','submitWrongAnswers','uploadResultHtml','registerExamQuestions','saveStudentProgress','commanderCorrectResult'];
+    var postOnlyActions = ['submitResult','submitFailOnClose','submitWrongAnswers','uploadResultHtml','registerExamQuestions','saveStudentProgress','commanderCorrectResult','submitManualResult'];
     if (postOnlyActions.indexOf(action) !== -1) {
       return jsonResponse({ status: 'error', message: 'פעולה זו דורשת POST' });
     }
@@ -642,6 +649,8 @@ function doPost(e) {
       return handleSaveStudentProgress(data);
     } else if (action === 'commanderCorrectResult') {
       return handleCommanderCorrectResult(data);
+    } else if (action === 'submitManualResult') {
+      return handleSubmitManualResult(data);
     } else {
       return jsonResponse({ status: 'error', message: 'Unknown POST action: ' + action });
     }
@@ -782,6 +791,8 @@ function handleListSessions(p) {
         created: data[i][8] || '',
         validUntil: data[i][9] || '',
         active: data[i][10] === true || String(data[i][10]).toUpperCase() === 'TRUE',
+        requestedCount: Number(data[i][11]) || 0,
+        approvedCount: Number(data[i][12]) || 0,
         managerPhone: sitesMap[siteName] ? sitesMap[siteName].managerPhone : ''
       });
     }
@@ -803,8 +814,11 @@ function handleCenterManagerReport(p) {
     return jsonResponse({ status: 'error', message: 'טוקן לא תקין', tokenExpired: true });
   }
   var role = getExaminerRole(p.examinerId);
-  if (role !== 'מפקד מרכז') {
-    return jsonResponse({ status: 'error', message: 'פעולה זו זמינה רק למפקד מרכז' });
+  // 'מפקד קד״ץ' shares the same dashboard as 'מפקד מרכז' — both are
+  // multi-site read-only commander roles, gated only on the site list in
+  // column K. Add new commander roles here to give them the same view.
+  if (role !== 'מפקד מרכז' && !isKdtzRole(role)) {
+    return jsonResponse({ status: 'error', message: 'פעולה זו זמינה רק למפקד' });
   }
   var managedSites = getExaminerManagedSites(p.examinerId);
   if (!managedSites.length) {
@@ -1019,6 +1033,8 @@ function handleListAllSessions(p) {
       created: data[i][8] || '',
       validUntil: data[i][9] || '',
       active: true,
+      requestedCount: Number(data[i][11]) || 0,
+      approvedCount: Number(data[i][12]) || 0,
       managerPhone: sitesMap[siteName] ? sitesMap[siteName].managerPhone : ''
     });
   }
@@ -1041,6 +1057,20 @@ function handleCreateSession(p) {
     if (normalizeId(exData[ei][1]) === normalizeId(p.examinerId)) { exRow = ei + 1; examinerName = exData[ei][0]; break; }
   }
 
+  // Columns L,M: requested/approved examinee counts. Required by examiner UI;
+  // surfaced in the examiner report header (דו"ח בוחן).
+  var requestedCount = parseInt(p.requestedCount, 10);
+  var approvedCount = parseInt(p.approvedCount, 10);
+  if (!isFinite(requestedCount) || requestedCount < 1) {
+    return jsonResponse({ status: 'error', message: 'יש להזין כמות נבחנים מבוקשת' });
+  }
+  if (!isFinite(approvedCount) || approvedCount < 0) {
+    return jsonResponse({ status: 'error', message: 'יש להזין כמות נבחנים מאושרת' });
+  }
+  if (approvedCount > requestedCount) {
+    return jsonResponse({ status: 'error', message: 'כמות מאושרת לא יכולה להיות גדולה מהמבוקשת' });
+  }
+
   sheet.appendRow([
     code,
     p.examinerId,
@@ -1052,7 +1082,9 @@ function handleCreateSession(p) {
     p.audioMode || 'off',
     now.toISOString(),
     validUntil.toISOString(),
-    true
+    true,
+    requestedCount,
+    approvedCount
   ]);
 
   return jsonResponse({ status: 'ok', sessionCode: code, validUntil: validUntil.toISOString(), examinerName: examinerName });
@@ -1084,10 +1116,56 @@ function handleCloseSession(p) {
   for (var i = 1; i < data.length; i++) {
     if (String(data[i][0]).trim() === searchCode && normalizeId(data[i][1]) === normalizeId(p.examinerId)) {
       sheet.getRange(i + 1, 11).setValue(false);
-      return jsonResponse({ status: 'ok' });
+      var cleanup = cleanupStuckDisqualified(searchCode);
+      return jsonResponse({ status: 'ok', cleanup: cleanup });
     }
   }
   return jsonResponse({ status: 'error', message: 'סשן לא נמצא' });
+}
+
+// Triggered from handleCloseSession. Sweeps pending rows in this session whose
+// status got stuck on 'disqualified' without a real result, and moves them to a
+// terminal status so the session closes clean.
+//   no result row    → 'cancelled' (DQ fired but nothing was ever recorded)
+//   latest is 'בוטל' → 'completed' (a result existed but was overturned)
+// Rows whose latest result is 'פסול'/'עבר'/'נכשל' are left as 'disqualified' —
+// those are real outcomes awaiting examiner confirm/overturn.
+function cleanupStuckDisqualified(sessionCode) {
+  var pendSheet = getSheet('ממתינים');
+  var pendData = pendSheet.getDataRange().getValues();
+  var stuck = [];
+  for (var i = 1; i < pendData.length; i++) {
+    if (String(pendData[i][0]) === String(sessionCode) &&
+        String(pendData[i][5] || '').trim() === 'disqualified') {
+      stuck.push({ rowIdx: i, idKey: normalizeId(pendData[i][1]) });
+    }
+  }
+  if (stuck.length === 0) return { cancelled: 0, completed: 0, skipped: 0 };
+
+  var resSheet = getSheet('תוצאות');
+  var resData = resSheet.getDataRange().getValues();
+  var latestByExaminee = {};
+  for (var r = 1; r < resData.length; r++) {
+    if (String(resData[r][13]) !== String(sessionCode)) continue;
+    // resData is in append order; later row wins as "latest"
+    latestByExaminee[normalizeId(resData[r][1])] = String(resData[r][7] || '').trim();
+  }
+
+  var cancelled = 0, completed = 0, skipped = 0;
+  for (var k = 0; k < stuck.length; k++) {
+    var latest = latestByExaminee[stuck[k].idKey];
+    if (!latest) {
+      pendSheet.getRange(stuck[k].rowIdx + 1, 6).setValue('cancelled');
+      cancelled++;
+    } else if (latest === 'בוטל') {
+      pendSheet.getRange(stuck[k].rowIdx + 1, 6).setValue('completed');
+      completed++;
+    } else {
+      skipped++;
+    }
+  }
+  if (cancelled || completed) SpreadsheetApp.flush();
+  return { cancelled: cancelled, completed: completed, skipped: skipped };
 }
 
 function handleGetSessionInfo(p) {
@@ -1115,7 +1193,9 @@ function handleGetSessionInfo(p) {
           language: data[i][6],
           audioMode: data[i][7],
           examinerName: data[i][2],
-          validUntil: data[i][9]
+          validUntil: data[i][9],
+          requestedCount: Number(data[i][11]) || 0,
+          approvedCount: Number(data[i][12]) || 0
         }
       });
     }
@@ -1771,11 +1851,16 @@ function handleOverturnDQ(p) {
     }
   }
 
-  // Case 1: latest result is פסול → normal overturn flow
+  // Case 1: latest result is פסול → normal overturn flow.
+  // Pending revert covers BOTH 'disqualified' (auto-DQ, not yet confirmed) and
+  // 'dq_confirmed' (examiner already clicked ✔ אשר). Without the dq_confirmed
+  // branch, the examiner who pressed "אשר" by accident could overturn the
+  // result row but the examinee stays locked out — they'd need a fresh
+  // registration, which is what created duplicate rows at base 14.
   if (resultStatus === 'פסול') {
     sheet.getRange(resultRowIdx + 1, 8).setValue('בוטל');
     sheet.getRange(resultRowIdx + 1, 18).setValue(false);
-    if (pendRowIdx !== -1 && pendStatusNow === 'disqualified') {
+    if (pendRowIdx !== -1 && (pendStatusNow === 'disqualified' || pendStatusNow === 'dq_confirmed')) {
       pendSheet.getRange(pendRowIdx + 1, 6).setValue('in_exam');
     }
     SpreadsheetApp.flush();
@@ -1864,6 +1949,110 @@ function handleCorrectToPass(p) {
 }
 
 // Commander-only result correction. Allows changing score and pass/fail/DQ
+// Manual result entry for transition period — examiner enters a paper-based
+// exam outcome that bypassed the digital system. Appends a row to תוצאות with
+// the same shape submitResult uses; marks column W as 'ידני' so reports can
+// distinguish it from system-scored results. Requires examiner-token +
+// session ownership (same auth as overturnDQ/correctToPass).
+//
+// Required: sessionCode, idNumber, examinerId, token, fullName, score, total.
+// Optional: phone, license, population, audioMode, time.
+function handleSubmitManualResult(p) {
+  if (!verifyToken(p.examinerId, p.token)) {
+    return jsonResponse({ status: 'error', message: 'טוקן בוחן לא תקין', tokenExpired: true });
+  }
+  if (!verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+    return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
+  }
+  // Required field validation. ID/name keep manual entries debuggable; score
+  // pair lets the spreadsheet compute the same "כך/סה״כ" string the digital
+  // flow writes, so existing reports parse it without special-casing.
+  var fullName = String(p.fullName || '').trim();
+  var idNumber = String(p.idNumber || '').trim();
+  var scoreNum = parseInt(p.score, 10);
+  var totalNum = parseInt(p.total, 10) || 30;
+  if (!fullName) return jsonResponse({ status: 'error', message: 'חובה למלא שם מלא' });
+  if (!idNumber) return jsonResponse({ status: 'error', message: 'חובה למלא ת.ז.' });
+  if (isNaN(scoreNum) || scoreNum < 0 || scoreNum > totalNum) {
+    return jsonResponse({ status: 'error', message: 'ציון לא תקין (חייב להיות בין 0 ל-' + totalNum + ')' });
+  }
+
+  // Pull session context so manual rows match the rest of the session's rows
+  // (same site/classroom/language) without the examiner re-typing them.
+  var site = '', classroom = '', sessLicense = '', sessLanguage = 'he', examinerName = '';
+  var sesSheet = getSheet('סשנים');
+  var sesData = sesSheet.getDataRange().getValues();
+  for (var s = 1; s < sesData.length; s++) {
+    if (String(sesData[s][0]).trim() === String(p.sessionCode).trim()) {
+      examinerName = sesData[s][2] || '';
+      site = sesData[s][3] || '';
+      classroom = sesData[s][4] || '';
+      sessLicense = sesData[s][5] || '';
+      sessLanguage = sesData[s][6] || 'he';
+      break;
+    }
+  }
+  var license = String(p.license || sessLicense || 'B');
+  var language = String(p.language || sessLanguage || 'he');
+
+  // Percent + pass/fail mirror submitResult's behavior: 86% threshold (26/30).
+  var percent = Math.round((scoreNum / totalNum) * 100);
+  var passThreshold = Math.ceil(totalNum * 0.86);
+  var passText = scoreNum >= passThreshold ? 'עבר' : 'נכשל';
+
+  // WhatsApp link is convenient even for manual rows — examiner often wants to
+  // send the same confirmation message they'd send for a digital exam.
+  var waLink = '';
+  if (p.phone) {
+    var phoneFmt = formatPhoneForWA(p.phone);
+    var waMsg = '*🚗 אישור תוצאת מבחן תאוריה חיצוני*\n\n' +
+      'שם: ' + fullName + '\n' +
+      'ת.ז.: ' + idNumber + '\n' +
+      'דרגה: ' + license + '\n' +
+      (p.population ? 'אוכלוסיה: ' + p.population + '\n' : '') +
+      'תאריך: ' + todayStr() + '\n' +
+      'ציון: ' + scoreNum + '/' + totalNum + ' (' + percent + '%)\n' +
+      'תוצאה: *' + passText + '*\n';
+    if (phoneFmt) waLink = 'https://wa.me/' + phoneFmt + '?text=' + encodeURIComponent(waMsg);
+  }
+
+  var attemptNum = countAttempts(idNumber, license) + 1;
+  var sheet = getSheet('תוצאות');
+  sheet.appendRow([
+    todayStr(),
+    idNumber,
+    fullName,
+    p.phone || '',
+    license,
+    scoreNum + '/' + totalNum,
+    percent + '%',
+    passText,
+    p.time || '',
+    examinerName,
+    site,
+    classroom,
+    language,
+    String(p.sessionCode),
+    attemptNum,
+    '',                                 // P (15) wrongDetails — N/A for manual
+    false,                              // Q (16) corrected
+    false,                              // R (17) disqualified
+    waLink,
+    p.population || '',
+    false,                              // U (20) suspicious
+    p.audioMode || 'off',
+    'ידני',                             // W (22) verified flag — marks paper-based entry
+    '',                                 // X (23) suspicious text
+    '',                                 // Y (24) dqEventId
+    '',                                 // Z (25) תוקן ע"י
+    '',                                 // AA (26) סיבת תיקון
+    '',                                 // AB (27) תאריך תיקון
+    ''                                  // AC (28) מסלול שפות
+  ]);
+  SpreadsheetApp.flush();
+  return jsonResponse({ status: 'ok', waLink: waLink, attempt: attemptNum });
+}
+
 // status on any result row, with a mandatory reason recorded for audit.
 // Caller must have a valid examiner token AND role 'מפקד' in the בוחנים sheet.
 // Required params: sessionCode, idNumber, newScore (e.g. "28"), newTotal (e.g. "30"),
@@ -2126,12 +2315,36 @@ function handleSubmitResult(data) {
         }
       }
       if (questionMap) {
+        // Shuffle indexes refer to original answer positions in whatever
+        // language the questions were registered in. Translators reorder
+        // answers, so the original "correct index" can differ between
+        // languages (e.g. he Q128 → idx 1, ar Q128 → idx 2). When the
+        // examinee switched language mid-exam, score each answer against
+        // the correct index for THE LANGUAGE THEY SAW IT IN, not the one
+        // captured at registration.
+        function correctIdxForLang(mapEntry, lang) {
+          if (!mapEntry || !lang) return null;
+          if (typeof lookupCorrectIndex !== 'function') return null;
+          if (!mapEntry.qId || !Array.isArray(mapEntry.shuffleOrder)) return null;
+          var orig = lookupCorrectIndex(Number(mapEntry.qId), String(lang).toLowerCase());
+          if (orig === null || orig === undefined) return null;
+          var pos = mapEntry.shuffleOrder.indexOf(Number(orig));
+          return pos >= 0 ? pos : null;
+        }
+        function effectiveCorrectIdx(mapEntry, langAtAnswer) {
+          var lang = langAtAnswer ? String(langAtAnswer).toLowerCase() : '';
+          if (lang && lang !== registeredLang) {
+            var alt = correctIdxForLang(mapEntry, lang);
+            if (alt !== null) return alt;
+          }
+          return Number(mapEntry.correctShuffledIdx);
+        }
         var correctCount = 0;
         var totalQ = questionMap.length;
         for (var ai = 0; ai < data.answers.length && ai < totalQ; ai++) {
           if (data.answers[ai] !== null && data.answers[ai] !== undefined && questionMap[ai]) {
             var selected = Number(data.answers[ai].selected);
-            var correctIdx = Number(questionMap[ai].correctShuffledIdx);
+            var correctIdx = effectiveCorrectIdx(questionMap[ai], data.answers[ai].langAtAnswer);
             if (selected === correctIdx) correctCount++;
           }
         }
@@ -2181,7 +2394,11 @@ function handleSubmitResult(data) {
             var ans2 = data.answers[wi];
             if (!mapEntry) continue;
             var selected2 = ans2 ? Number(ans2.selected) : -1;
-            var correctIdx2 = Number(mapEntry.correctShuffledIdx);
+            // Use the per-answer language's correctIdx — same logic as the
+            // scoring loop above, so wrong-answer reconstruction matches the
+            // pass/fail tally instead of contradicting it after a mid-exam
+            // language switch.
+            var correctIdx2 = effectiveCorrectIdx(mapEntry, ans2 && ans2.langAtAnswer);
             if (selected2 === correctIdx2) continue; // got it right
             // Pick the language the examinee was viewing when they answered this Q.
             // Falls back to the exam's primary language when missing (old clients).
@@ -2324,6 +2541,24 @@ function handleSubmitResult(data) {
       : data.languageHistory.join(' → ');
   } else {
     langPath = data.language || 'he';
+  }
+
+  // Supersede any prior פסול row for THIS session+id. Scenario: examinee was
+  // auto-DQ'd, the overturn flow didn't finish (examiner clicked אשר, or hit
+  // a stale "תוצאה לא נמצאה" path), then the examinee was re-allowed in and
+  // finished the exam. Without this cleanup the sheet ends up with both a
+  // פסול row AND a עבר/נכשל row — which is what happened at base 14 today.
+  // We mark the old row as בוטל (audit trail preserved) and log the reason.
+  var existingRows = sheet.getDataRange().getValues();
+  for (var ex = existingRows.length - 1; ex >= 1; ex--) {
+    if (String(existingRows[ex][13]) === String(data.sessionCode) &&
+        normalizeId(existingRows[ex][1]) === normalizeId(data.idNumber) &&
+        String(existingRows[ex][7]).trim() === 'פסול') {
+      sheet.getRange(ex + 1, 8).setValue('בוטל');           // H = pass/fail
+      sheet.getRange(ex + 1, 18).setValue(false);            // R = disqualified flag
+      sheet.getRange(ex + 1, 27).setValue('בוטל אוטומטית — נבחן ניגש למבחן מחדש'); // AA = reason
+      sheet.getRange(ex + 1, 28).setValue(todayStr());       // AB = correction date
+    }
   }
 
   sheet.appendRow([
@@ -2875,8 +3110,14 @@ function handleGetExamQuestions(p) {
           var aq = altData[ai];
           if (aq && idSet[aq.id]) {
             var entry = { t: aq.text, a: aq.answers };
-            if (includeCiInTranslations && typeof aq.ci === 'number') {
-              entry.ci = aq.ci;
+            // Source JSONs don't carry `ci` — look it up per-language from the
+            // answer key so a mid-exam language switch can rewire the correct
+            // index to whatever order the translator put answers in.
+            if (includeCiInTranslations && typeof lookupCorrectIndex === 'function') {
+              var altCorrect = lookupCorrectIndex(Number(aq.id), altLang);
+              if (altCorrect !== null && altCorrect !== undefined) {
+                entry.ci = altCorrect ^ (aq.id % 256);
+              }
             }
             altMap[aq.id] = entry;
           }
@@ -3568,14 +3809,25 @@ function handleTeacherCommanderDashboard(p) {
       break;
     }
   }
-  if (role !== 'מפקד' && role !== 'מפקד מקומי' && role !== 'מפקד ראשי') {
+  if (role !== 'מפקד' && role !== 'מפקד מקומי' && role !== 'מפקד ראשי' && !isKdtzRole(role)) {
     return jsonResponse({ status: 'error', message: 'אין הרשאת מפקד' });
   }
 
-  // Determine if local or global commander
+  // Determine commander scope:
+  //   isGlobal    — sees every site (no site filter)
+  //   isLocal     — single site (column 9 holds the one site name)
+  //   isMultiSite — fixed list of sites (column 9 holds a comma-separated list)
   // Legacy: role === 'מפקד' treated as 'מפקד ראשי'
   var isGlobal = (role === 'מפקד ראשי' || role === 'מפקד');
   var isLocal = (role === 'מפקד מקומי');
+  var isMultiSite = isKdtzRole(role);
+  var managedSites = [];
+  if (isMultiSite) {
+    managedSites = String(userSite || '').split(',').map(function(s) { return s.trim(); }).filter(function(s) { return s; });
+    if (!managedSites.length) {
+      return jsonResponse({ status: 'error', message: 'לא הוקצו אתרים — מלא רשימה מופרדת בפסיקים בעמודת האתר במורים' });
+    }
+  }
 
   // Parse date range
   var dateFrom = parseDateParam(p.dateFrom);
@@ -3621,8 +3873,9 @@ function handleTeacherCommanderDashboard(p) {
     var cInfo = classMap[classCode] || { teacherName: 'לא ידוע', className: classCode, license: '', site: '' };
     var classSite = cInfo.site || '';
 
-    // Site filtering for local commander
+    // Site filtering for local + multi-site commanders
     if (isLocal && userSite && classSite !== userSite) continue;
+    if (isMultiSite && managedSites.indexOf(classSite) === -1) continue;
 
     var teacherName = cInfo.teacherName || 'לא ידוע';
     var className = cInfo.className || classCode;
@@ -3658,8 +3911,10 @@ function handleTeacherCommanderDashboard(p) {
     addToGroup(byLicense, license, isPassed, isFailed, pctVal, studentId);
     addToGroup(byMode, mode, isPassed, isFailed, pctVal, studentId);
 
-    // bySite aggregation (for global commander)
-    if (isGlobal && classSite) {
+    // bySite aggregation — global and multi-site commanders both want
+    // a per-site breakdown. Local commander has only one site, so the
+    // tab is hidden client-side; no aggregation needed.
+    if ((isGlobal || isMultiSite) && classSite) {
       addToGroup(bySite, classSite, isPassed, isFailed, pctVal, studentId);
       addToSubGroup(bySite, classSite, 'byTeacher', teacherName, isPassed, isFailed, pctVal, studentId);
       addToSubGroup(bySite, classSite, 'byClass', className + ' (' + classCode + ')', isPassed, isFailed, pctVal, studentId);
@@ -3739,8 +3994,8 @@ function handleTeacherCommanderDashboard(p) {
     commanderSite: userSite
   };
 
-  // Add bySite only for global commander
-  if (isGlobal) {
+  // bySite breakdown for any cross-site commander (global or multi-site).
+  if (isGlobal || isMultiSite) {
     result.bySite = computeGroupWithSub(bySite);
   }
 
@@ -3758,6 +4013,7 @@ function handleTeacherCommanderDashboard(p) {
     var acCode = String(classData[ac][0]).trim();
     var acSite = String(classData[ac][7] || '');
     if (isLocal && userSite && acSite !== userSite) continue;
+    if (isMultiSite && managedSites.indexOf(acSite) === -1) continue;
     activeClasses.push({
       code: acCode,
       name: String(classData[ac][1] || ''),

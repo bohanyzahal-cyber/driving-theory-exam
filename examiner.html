@@ -364,6 +364,14 @@
           <option value="on">פועל</option>
         </select>
       </label>
+      <label>
+        <span>כמות נבחנים מבוקשת</span>
+        <input type="number" id="requestedCountSetup" min="1" max="200" inputmode="numeric" placeholder="לדוגמה: 20" />
+      </label>
+      <label>
+        <span>כמות נבחנים מאושרת</span>
+        <input type="number" id="approvedCountSetup" min="0" max="200" inputmode="numeric" placeholder="לדוגמה: 18" />
+      </label>
     </div>
     <div class="form-error" id="setupError"></div>
     <button id="createSessionBtn" style="display:block; width:100%; padding:14px; font-size:17px; margin-top:12px;">פתח בחינה</button>
@@ -463,6 +471,7 @@
         <button class="wa-btn" style="padding:8px 16px; font-size:14px;" onclick="sendBulkToManager()">שלח סיכום למנהל אתר</button>
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#1a73e8;" onclick="sendToAllExaminees()">📱 שלח WhatsApp לכל הנבחנים</button>
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#1a5276;" onclick="generateExaminerReport()">&#x1f4cb; דו"ח בוחן</button>
+        <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#6d28d9;" onclick="shareExaminerReport()">&#x1f4e4; שתף דו"ח בוחן</button>
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#0e4a6e;" onclick="generateSiteManagerReport()">&#x1f4ca; דו"ח מנהל אתר</button>
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#7c3aed;" onclick="shareSiteManagerReport()">&#x1f4e4; שתף דו"ח למנהל</button>
         <a href="find_image.html" target="_blank" class="wa-btn" style="padding:8px 16px; font-size:14px; background:#16a34a; text-decoration:none; display:inline-flex; align-items:center;" title="חיפוש תמונה לשאלה — להראות לנבחן שהתמונה אצלו לא עולה">&#x1f5bc;&#xfe0f; חפש תמונה</a>
@@ -827,6 +836,8 @@
   var currentLicense = '';
   var currentLanguage = '';
   var currentAudioMode = '';
+  var currentRequestedCount = 0;
+  var currentApprovedCount = 0;
   var sitesData = [];
   var dashboardInterval = null;
   var countdownInterval = null;
@@ -861,7 +872,9 @@
         currentClassroom: currentClassroom,
         currentLicense: currentLicense,
         currentLanguage: currentLanguage,
-        currentAudioMode: currentAudioMode
+        currentAudioMode: currentAudioMode,
+        currentRequestedCount: currentRequestedCount,
+        currentApprovedCount: currentApprovedCount
       }));
     } catch(e) {}
   }
@@ -882,6 +895,8 @@
       currentLicense = state.currentLicense || '';
       currentLanguage = state.currentLanguage || '';
       currentAudioMode = state.currentAudioMode || '';
+      currentRequestedCount = Number(state.currentRequestedCount) || 0;
+      currentApprovedCount = Number(state.currentApprovedCount) || 0;
       return true;
     } catch(e) { return false; }
   }
@@ -1165,6 +1180,8 @@
     currentLanguage = sess.language || 'he';
     currentAudioMode = sess.audioMode || 'off';
     currentSiteManagerPhone = sess.managerPhone || '';
+    currentRequestedCount = Number(sess.requestedCount) || 0;
+    currentApprovedCount = Number(sess.approvedCount) || 0;
     sessionValidUntil = sess.validUntil ? new Date(sess.validUntil) : null;
 
     saveState();
@@ -1244,11 +1261,25 @@
     var license = document.getElementById('licenseSetup').value;
     var language = document.getElementById('languageSetup').value;
     var audioMode = document.getElementById('audioModeSetup').value;
+    var requestedCountRaw = document.getElementById('requestedCountSetup').value;
+    var approvedCountRaw = document.getElementById('approvedCountSetup').value;
     var errEl = document.getElementById('setupError');
     errEl.style.display = 'none';
 
     if (!site) { errEl.textContent = 'בחר אתר'; errEl.style.display = 'block'; return; }
     if (!classroom) { errEl.textContent = 'בחר כיתה'; errEl.style.display = 'block'; return; }
+
+    var requestedCount = parseInt(requestedCountRaw, 10);
+    var approvedCount = parseInt(approvedCountRaw, 10);
+    if (!isFinite(requestedCount) || requestedCount < 1) {
+      errEl.textContent = 'הזן כמות נבחנים מבוקשת (לפחות 1)'; errEl.style.display = 'block'; return;
+    }
+    if (!isFinite(approvedCount) || approvedCount < 0) {
+      errEl.textContent = 'הזן כמות נבחנים מאושרת'; errEl.style.display = 'block'; return;
+    }
+    if (approvedCount > requestedCount) {
+      errEl.textContent = 'כמות מאושרת לא יכולה להיות גדולה מהמבוקשת'; errEl.style.display = 'block'; return;
+    }
 
     var btn = document.getElementById('createSessionBtn');
     btn.disabled = true; btn.textContent = 'יוצר סשן...';
@@ -1257,7 +1288,8 @@
       action: 'createSession',
       examinerId: examinerData.id,
       site: site, classroom: classroom,
-      license: license, language: language, audioMode: audioMode
+      license: license, language: language, audioMode: audioMode,
+      requestedCount: requestedCount, approvedCount: approvedCount
     }).then(function(data) {
       btn.disabled = false; btn.textContent = 'פתח בחינה';
       if (data.status === 'ok') {
@@ -1268,6 +1300,8 @@
         currentLicense = license;
         currentLanguage = language;
         currentAudioMode = audioMode;
+        currentRequestedCount = requestedCount;
+        currentApprovedCount = approvedCount;
 
         // Find manager phone
         for (var i = 0; i < sitesData.length; i++) {
@@ -3082,8 +3116,11 @@
   }
 
   // ========== Examiner Report (דו"ח בוחן) ==========
-  window.generateExaminerReport = function() {
+  // returnHtml=true → returns the popup HTML as a string (for share/upload)
+  // without opening a window. Falsy → original behaviour (window.open popup).
+  window.generateExaminerReport = function(returnHtml) {
     if (!completedResults || completedResults.length === 0) {
+      if (returnHtml === true) return null;
       alert('אין תוצאות להצגה בדו"ח'); return;
     }
     try {
@@ -3299,6 +3336,14 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     H.push('<div class="info-item"><label>\u05D1\u05D5\u05D7\u05DF</label><div class="val">' + escHtml(examiner) + '</div></div>');
     H.push('<div class="info-item"><label>\u05D3\u05E8\u05D2\u05D4</label><div class="val">' + escHtml(license) + '</div></div>');
     if (examinerNum) H.push('<div class="info-item"><label>\u05DE\u05E1\u05F3 \u05D1\u05D5\u05D7\u05DF</label><div class="val">' + escHtml(examinerNum) + '</div></div>');
+    // Quotas captured at session creation. Surfaced here so the report matches
+    // the physical form (\u05DB\u05DE\u05D5\u05EA \u05DE\u05D1\u05D5\u05E7\u05E9\u05EA / \u05DE\u05D0\u05D5\u05E9\u05E8\u05EA) without manual entry.
+    if (currentRequestedCount > 0) {
+      H.push('<div class="info-item"><label>\u05DB\u05DE\u05D5\u05EA \u05E0\u05D1\u05D7\u05E0\u05D9\u05DD \u05DE\u05D1\u05D5\u05E7\u05E9\u05EA</label><div class="val">' + currentRequestedCount + '</div></div>');
+    }
+    if (currentApprovedCount > 0 || currentRequestedCount > 0) {
+      H.push('<div class="info-item"><label>\u05DB\u05DE\u05D5\u05EA \u05E0\u05D1\u05D7\u05E0\u05D9\u05DD \u05DE\u05D0\u05D5\u05E9\u05E8\u05EA</label><div class="val">' + currentApprovedCount + '</div></div>');
+    }
     H.push('</div></div>');
 
     // ===== WORK PLANNING TABLE (matches physical form) =====
@@ -3388,11 +3433,18 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     H.push('var EX_BY_LIC=' + exJson + ';');
     H.push('var planRows=[];');
     H.push('try{');
-    // Auto-generate one row per license type found in results
+    // Auto-generate one row per license type found in results. Session-level
+    // quotas (requested/approved) seed the first row's qtyReq/qtyAppr so the
+    // examiner doesn't have to retype them — they were already captured at
+    // session creation.
+    var seededReq = currentRequestedCount > 0 ? String(currentRequestedCount) : '';
+    var seededAppr = currentApprovedCount > 0 ? String(currentApprovedCount) : '';
     if (licenseOrder.length > 0) {
       for (var li2 = 0; li2 < licenseOrder.length; li2++) {
         var autoAudio = execByLicense[licenseOrder[li2]] ? execByLicense[licenseOrder[li2]].audio : 0;
-        H.push('planRows.push({site:"' + jsEsc(site) + '",license:"' + jsEsc(String(licenseOrder[li2])) + '",qtyReq:"",qtyAppr:"",notes:"",qtyAudio:"' + (autoAudio > 0 ? autoAudio : '') + '",time:""});');
+        var seedReq = li2 === 0 ? seededReq : '';
+        var seedAppr = li2 === 0 ? seededAppr : '';
+        H.push('planRows.push({site:"' + jsEsc(site) + '",license:"' + jsEsc(String(licenseOrder[li2])) + '",qtyReq:"' + seedReq + '",qtyAppr:"' + seedAppr + '",notes:"",qtyAudio:"' + (autoAudio > 0 ? autoAudio : '') + '",time:""});');
       }
       H.push('renderPlan();');
     } else {
@@ -3476,10 +3528,13 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
 
     H.push('<\/script></body></html>');
 
+    var htmlOutput = H.join('');
+    if (returnHtml === true) return htmlOutput;
     var w = window.open('', '_blank');
-    if (w) { w.document.write(H.join('')); w.document.close(); }
+    if (w) { w.document.write(htmlOutput); w.document.close(); }
     else { alert('חסום popup. אפשר חלון popup לאתר זה בהגדרות הדפדפן.'); }
     } catch(reportErr) {
+      if (returnHtml === true) { console.error('[REPORT]', reportErr); return null; }
       alert('שגיאה ביצירת דו"ח: ' + reportErr.message);
       console.error('[REPORT]', reportErr);
     }
@@ -3781,6 +3836,64 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       console.error('[SITE_MANAGER_REPORT]', e);
     }
   };
+
+  // Share examiner report: builds the same HTML as generateExaminerReport(),
+  // uploads to the result-cache via the signed-token flow, then shows the
+  // link with a generic WhatsApp share + copy button. No fixed recipient —
+  // the examiner picks the contact in WhatsApp.
+  window.shareExaminerReport = function() {
+    if (!completedResults || completedResults.length === 0) {
+      alert('אין תוצאות לשיתוף'); return;
+    }
+    try {
+      var html = window.generateExaminerReport(true);
+      if (!html) { alert('שגיאה ביצירת דו"ח'); return; }
+
+      var dlg = document.getElementById('shareDialog');
+      document.getElementById('shareDialogTitle').textContent = 'שיתוף דו"ח בוחן';
+      document.getElementById('shareDialogContent').innerHTML = '<div style="font-size:14px;color:#64748b;padding:20px 0;">⏳ מעלה...</div>';
+      dlg.style.display = 'flex';
+
+      uploadResultHtml(html)
+      .then(function(data) {
+        if (data.status === 'ok' && data.link) {
+          showExaminerShareLinks(data.link);
+        } else {
+          document.getElementById('shareDialogContent').innerHTML =
+            '<div style="color:#ef4444;">שגיאה: ' + escHtml(data.message || 'Unknown error') + '</div>';
+        }
+      })
+      .catch(function(err) {
+        document.getElementById('shareDialogContent').innerHTML =
+          '<div style="color:#ef4444;">שגיאת תקשורת: ' + escHtml(err.message || '') + '</div>';
+      });
+    } catch(e) {
+      alert('שגיאה: ' + e.message);
+      console.error('[SHARE_EXAMINER_REPORT]', e);
+    }
+  };
+
+  function showExaminerShareLinks(link) {
+    var today = new Date();
+    var dateStr = today.getDate() + '/' + (today.getMonth() + 1) + '/' + today.getFullYear();
+
+    var msgText = '*📋 דו"ח בוחן יומי*\n' +
+      'אתר: ' + (currentSite || '') + '\n' +
+      'בוחן: ' + (examinerData.name || '') + '\n' +
+      'תאריך: ' + dateStr + '\n\n' +
+      '📎 צפה בדו"ח המלא:\n' + link;
+
+    var waUrl = 'https://wa.me/?text=' + encodeURIComponent(msgText);
+    var linkEsc = link.replace(/'/g, "\\'");
+
+    var content = '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px;margin:12px 0;word-break:break-all;font-size:13px;direction:ltr;text-align:left;">' + escHtml(link) + '</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:12px;">' +
+      '<a href="' + waUrl + '" target="_blank" style="flex:1;min-width:120px;padding:10px 12px;border-radius:10px;font-size:14px;font-weight:700;text-decoration:none;text-align:center;color:white;background:#25D366;">📱 שתף בוואטסאפ</a>' +
+      '<button onclick="copyShareLink(this,\'' + linkEsc + '\')" style="flex:1;min-width:120px;padding:10px 12px;border-radius:10px;font-size:14px;font-weight:700;text-align:center;color:white;background:#64748b;border:none;cursor:pointer;">📋 העתק קישור</button>' +
+      '</div>';
+
+    document.getElementById('shareDialogContent').innerHTML = content;
+  }
 
   window.shareSiteManagerReport = function() {
     if (!completedResults || completedResults.length === 0) {
