@@ -4217,15 +4217,22 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
   };
 
   // ========== Close Session ==========
+  // Gate the close on "did you send the report?" — closing without a sent
+  // report means the data lives only in this browser and gets lost when the
+  // examiner logs out. "ביטול" returns to the dashboard so they can hit
+  // "שתף דו"ח בוחן" before retrying.
   window.confirmCloseSession = function() {
-    if (confirm('האם לסגור את הסשן? נבחנים חדשים לא יוכלו להיכנס.')) {
-      apiGet({ action: 'closeSession', sessionCode: sessionCode, examinerId: examinerData.id }).then(function() {
-        stopDashboardPolling();
-        clearState();
-        alert('הסשן נסגר.');
-        showScreen('screenSetup');
-      });
-    }
+    var msg = 'לפני סגירת הסשן:\n\n' +
+              'האם שלחת את דו"ח הבוחן?\n\n' +
+              '"אישור" — סגור את הסשן (נבחנים חדשים לא יוכלו להיכנס)\n' +
+              '"ביטול" — חזור לדף הבחינה ושתף את הדו"ח';
+    if (!confirm(msg)) return;
+    apiGet({ action: 'closeSession', sessionCode: sessionCode, examinerId: examinerData.id }).then(function() {
+      stopDashboardPolling();
+      clearState();
+      alert('הסשן נסגר.');
+      showScreen('screenSetup');
+    });
   };
 
   // ========== Countdown ==========
