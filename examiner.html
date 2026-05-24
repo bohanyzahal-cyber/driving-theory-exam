@@ -442,6 +442,13 @@
       <div class="section-header">
         <h3>ממתינים לאישור <span class="badge-count zero" id="pendingBadge">0</span></h3>
       </div>
+      <div id="pendingSearchBar" style="display:none; padding:0 0 12px 0;">
+        <div style="position:relative; display:flex; align-items:center;">
+          <input id="pendingSearch" type="search" autocomplete="off" placeholder="חיפוש לפי שם או ת.ז...." style="width:100%; padding:9px 36px 9px 12px; border:1px solid #cbd5e1; border-radius:8px; font-size:15px; font-family:inherit; direction:rtl;" />
+          <button id="pendingSearchClear" type="button" title="נקה" style="position:absolute; left:6px; top:50%; transform:translateY(-50%); background:transparent; border:none; cursor:pointer; font-size:18px; color:#94a3b8; padding:4px 8px; display:none;">&times;</button>
+        </div>
+        <div id="pendingSearchCount" style="display:none; font-size:13px; color:#64748b; margin-top:6px;"></div>
+      </div>
       <ul class="person-list" id="pendingList">
         <li class="muted" style="text-align:center; padding:20px;">אין נבחנים ממתינים</li>
       </ul>
@@ -854,6 +861,12 @@
   var currentQuotas = [];
   // Working copy used while filling the setup form (before session is created).
   var setupQuotas = [];
+  // Becomes true once the examiner uploads the report via shareExaminerReport.
+  // confirmCloseSession refuses to close until this is true — guarantees the
+  // report is persisted to the shareable cache before session data is gone.
+  // Persisted in saveState so a page refresh after sharing doesn't lock the
+  // examiner out of closing.
+  var reportSharedThisSession = false;
   var sitesData = [];
   var dashboardInterval = null;
   var countdownInterval = null;
@@ -889,7 +902,8 @@
         currentLicense: currentLicense,
         currentLanguage: currentLanguage,
         currentAudioMode: currentAudioMode,
-        currentQuotas: currentQuotas
+        currentQuotas: currentQuotas,
+        reportSharedThisSession: reportSharedThisSession
       }));
     } catch(e) {}
   }
@@ -911,6 +925,7 @@
       currentLanguage = state.currentLanguage || '';
       currentAudioMode = state.currentAudioMode || '';
       currentQuotas = Array.isArray(state.currentQuotas) ? state.currentQuotas : [];
+      reportSharedThisSession = !!state.reportSharedThisSession;
       return true;
     } catch(e) { return false; }
   }
@@ -1199,6 +1214,11 @@
     currentAudioMode = sess.audioMode || 'off';
     currentSiteManagerPhone = sess.managerPhone || '';
     currentQuotas = Array.isArray(sess.quotas) ? sess.quotas : [];
+    // Resuming a session from the server (vs. local refresh) — we have no way
+    // to know whether the previous browser already shared the report. Force
+    // the examiner to share again before they can close, to guarantee fresh
+    // data lands in the cache.
+    reportSharedThisSession = false;
     sessionValidUntil = sess.validUntil ? new Date(sess.validUntil) : null;
 
     saveState();
@@ -1438,6 +1458,8 @@
         currentLanguage = language;
         currentAudioMode = audioMode;
         currentQuotas = quotas;
+        // Fresh session — examiner hasn't shared a report yet for this one
+        reportSharedThisSession = false;
 
         // Find manager phone
         for (var i = 0; i < sitesData.length; i++) {
@@ -1501,7 +1523,10 @@
       document.getElementById('offlineBanner').classList.remove('show');
       if (data.status === 'ok') {
         console.log('[DASHBOARD] pending=' + (data.pending||[]).length + ' active=' + (data.active||[]).length + ' completed=' + (data.completed||[]).length);
-        updatePendingList(data.pending || []);
+        // Cache pending so the search-input handler can re-render between polls
+        // without waiting for the next 5-second tick.
+        window.__lastPending = data.pending || [];
+        updatePendingList(window.__lastPending);
         updateActiveList(data.active || []);
         updateCompletedList(data.completed || []);
       } else {
@@ -1515,13 +1540,22 @@
   }
 
   // ========== Pending list ==========
+  // Filter state lives outside updatePendingList so polling re-renders preserve it
+  // (mirrors resultsSearchTerm). Search matches against name and full idNumber.
+  var pendingSearchTerm = '';
+
   function updatePendingList(pending) {
     var list = document.getElementById('pendingList');
     var badge = document.getElementById('pendingBadge');
+    var searchBar = document.getElementById('pendingSearchBar');
+    // Badge always shows the FULL count, independent of search filter, so the
+    // examiner can see at a glance how many people are actually waiting.
     badge.textContent = pending.length;
     badge.className = 'badge-count' + (pending.length === 0 ? ' zero' : '');
 
-    // Check for new pending (play sound)
+    // Check for new pending (play sound) — run on the unfiltered list so the
+    // examiner gets a chime when a new person arrives even if they're hidden
+    // by the current filter.
     for (var p = 0; p < pending.length; p++) {
       if (!prevPendingIds[pending[p].idNumber]) playNotif();
     }
@@ -1530,10 +1564,23 @@
 
     if (pending.length === 0) {
       list.innerHTML = '<li class="muted" style="text-align:center; padding:20px;">אין נבחנים ממתינים</li>';
+      if (searchBar) searchBar.style.display = 'none';
       return;
     }
+    if (searchBar) searchBar.style.display = 'block';
+
+    var q = (pendingSearchTerm || '').trim().toLowerCase();
+    var visibleCount = 0;
     list.innerHTML = '';
     for (var i = 0; i < pending.length; i++) {
+      // Filter: name (case-insensitive substring) OR full ID number substring.
+      // Same matcher as results — typing 4 digits off a paper form just works.
+      if (q) {
+        var nameLc = String(pending[i].name || '').toLowerCase();
+        var idLc = String(pending[i].idNumber || '').toLowerCase();
+        if (nameLc.indexOf(q) === -1 && idLc.indexOf(q) === -1) continue;
+      }
+      visibleCount++;
       (function(item) {
         var li = document.createElement('li');
         li.className = 'person-item';
@@ -1699,7 +1746,48 @@
         list.appendChild(li);
       })(pending[i]);
     }
+
+    // No matches under the current filter (but the underlying list isn't empty)
+    if (q && visibleCount === 0) {
+      list.innerHTML = '<li class="muted" style="text-align:center; padding:20px;">אין נבחנים תואמים לחיפוש</li>';
+    }
+    // "מציג X מתוך Y" indicator
+    var countEl = document.getElementById('pendingSearchCount');
+    if (countEl) {
+      if (q) {
+        countEl.textContent = 'מציג ' + visibleCount + ' מתוך ' + pending.length;
+        countEl.style.display = 'block';
+      } else {
+        countEl.style.display = 'none';
+      }
+    }
   }
+
+  // Wire up the pending search box. Same shape as the results search wire-up —
+  // re-rendering only touches #pendingList so the input keeps focus across polls.
+  (function() {
+    var searchInput = document.getElementById('pendingSearch');
+    var clearBtn = document.getElementById('pendingSearchClear');
+    if (!searchInput || !clearBtn) return;
+    function reRenderPending() {
+      // Pull the last-known pending snapshot back through updatePendingList.
+      // We piggyback on the dashboard polling cache via window.__lastPending,
+      // which pollDashboard keeps fresh. No data left → no-op.
+      if (window.__lastPending) updatePendingList(window.__lastPending);
+    }
+    searchInput.addEventListener('input', function() {
+      pendingSearchTerm = searchInput.value;
+      clearBtn.style.display = pendingSearchTerm ? 'block' : 'none';
+      reRenderPending();
+    });
+    clearBtn.addEventListener('click', function() {
+      searchInput.value = '';
+      pendingSearchTerm = '';
+      clearBtn.style.display = 'none';
+      reRenderPending();
+      searchInput.focus();
+    });
+  })();
 
   // ========== Active list ==========
   function updateActiveList(active) {
@@ -4015,6 +4103,13 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     }
   };
 
+  // Fixed destination for the examiner report — bypasses WhatsApp's contact
+  // picker. Decided per ops policy on 2026-05 (after exam-day debrief):
+  // every examiner sends to the same central recipient. If this needs to
+  // change later (per-site? per-license? per-examiner?), make this a config
+  // value coming from the examiner record on the sheet.
+  var EXAMINER_REPORT_WA_TARGET = '0529282016';
+
   function showExaminerShareLinks(link) {
     var today = new Date();
     var dateStr = today.getDate() + '/' + (today.getMonth() + 1) + '/' + today.getFullYear();
@@ -4025,16 +4120,22 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       'תאריך: ' + dateStr + '\n\n' +
       '📎 צפה בדו"ח המלא:\n' + link;
 
-    var waUrl = 'https://wa.me/?text=' + encodeURIComponent(msgText);
+    var waPhone = formatPhone(EXAMINER_REPORT_WA_TARGET);
+    var waUrl = 'https://wa.me/' + waPhone + '?text=' + encodeURIComponent(msgText);
     var linkEsc = link.replace(/'/g, "\\'");
 
     var content = '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px;margin:12px 0;word-break:break-all;font-size:13px;direction:ltr;text-align:left;">' + escHtml(link) + '</div>' +
+      '<div style="background:#eff6ff;border:1px solid #93c5fd;border-radius:8px;padding:8px 12px;margin:8px 0;font-size:13px;color:#1e40af;">📤 הקישור יישלח ל-' + EXAMINER_REPORT_WA_TARGET + '</div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:12px;">' +
       '<a href="' + waUrl + '" target="_blank" style="flex:1;min-width:120px;padding:10px 12px;border-radius:10px;font-size:14px;font-weight:700;text-decoration:none;text-align:center;color:white;background:#25D366;">📱 שתף בוואטסאפ</a>' +
       '<button onclick="copyShareLink(this,\'' + linkEsc + '\')" style="flex:1;min-width:120px;padding:10px 12px;border-radius:10px;font-size:14px;font-weight:700;text-align:center;color:white;background:#64748b;border:none;cursor:pointer;">📋 העתק קישור</button>' +
       '</div>';
 
     document.getElementById('shareDialogContent').innerHTML = content;
+    // Track that the report has been generated + the share dialog shown.
+    // confirmCloseSession checks this flag before allowing close.
+    reportSharedThisSession = true;
+    saveState();
   }
 
   window.shareSiteManagerReport = function() {
@@ -4217,16 +4318,17 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
   };
 
   // ========== Close Session ==========
-  // Gate the close on "did you send the report?" — closing without a sent
-  // report means the data lives only in this browser and gets lost when the
-  // examiner logs out. "ביטול" returns to the dashboard so they can hit
-  // "שתף דו"ח בוחן" before retrying.
+  // Hard gate on the close: the report MUST be shared first. We can't trust
+  // a self-report ("did you send?") — that gave a wrong answer once and the
+  // data was lost. Now reportSharedThisSession is set by the actual successful
+  // upload path in showExaminerShareLinks. No share = no close.
   window.confirmCloseSession = function() {
-    var msg = 'לפני סגירת הסשן:\n\n' +
-              'האם שלחת את דו"ח הבוחן?\n\n' +
-              '"אישור" — סגור את הסשן (נבחנים חדשים לא יוכלו להיכנס)\n' +
-              '"ביטול" — חזור לדף הבחינה ושתף את הדו"ח';
-    if (!confirm(msg)) return;
+    if (!reportSharedThisSession) {
+      alert('לא ניתן לסגור את הסשן לפני שיתוף דו"ח הבוחן.\n\n' +
+            'לחץ על "📤 שתף דו"ח בוחן" כדי להעלות את הדו"ח, ואז נסה לסגור שוב.');
+      return;
+    }
+    if (!confirm('לסגור את הסשן? נבחנים חדשים לא יוכלו להיכנס.')) return;
     apiGet({ action: 'closeSession', sessionCode: sessionCode, examinerId: examinerData.id }).then(function() {
       stopDashboardPolling();
       clearState();
