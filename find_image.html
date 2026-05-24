@@ -222,6 +222,25 @@
   <p>הקלד כמה מילים מהשאלה שהנבחן מראה לך</p>
 </header>
 
+<!-- Auth-required blocker. Shown when localStorage credentials are missing
+     (i.e. user landed here directly without logging in via examiner.html).
+     Replaces the previous "small error in results area" UX that confused users. -->
+<div id="authBlocker" style="display:none; max-width:520px; margin:48px auto; padding:32px 28px; background:#fff; border:1px solid #cbd5e1; border-radius:14px; box-shadow:0 4px 16px rgba(0,0,0,0.08); text-align:center;">
+  <div style="font-size:52px; margin-bottom:14px;">🔐</div>
+  <h2 style="font-size:20px; color:#1e293b; margin:0 0 12px;">דרושה התחברות</h2>
+  <p style="font-size:14px; color:#475569; line-height:1.6; margin:0 0 10px;">
+    כדי לחפש תמונות לשאלות צריך להתחבר קודם דרך לוח הבוחן.
+  </p>
+  <p style="font-size:13px; color:#64748b; line-height:1.6; margin:0 0 22px;">
+    ⚠️ ודאי שסימנת את <strong>"זכור אותי"</strong> בכניסה — אחרת תצטרך להתחבר שוב בכל פעם.
+  </p>
+  <a href="examiner.html" style="display:inline-block; background:#1e40af; color:#fff; padding:12px 28px; border-radius:10px; font-size:15px; font-weight:700; text-decoration:none;">🔓 כניסה ללוח הבוחן</a>
+  <p style="font-size:12px; color:#94a3b8; line-height:1.6; margin:16px 0 0;">
+    אחרי התחברות — חזור לעמוד הזה,<br>
+    או לחץ "🖼 חפש תמונה" בלוח הבוחן.
+  </p>
+</div>
+
 <main>
   <div class="search-box">
     <label for="searchInput">חיפוש לפי טקסט השאלה:</label>
@@ -432,6 +451,17 @@
 
   // Initialize UI immediately (no client-side wait — server handles questions)
   (function initUI() {
+    // Hard gate: no examiner credentials = swap the search UI for an auth
+    // blocker with a clickable login button. Search would have failed at the
+    // server anyway, and the previous "small inline error" was easy to miss.
+    if (!examinerCreds || !examinerCreds.id || !examinerCreds.token) {
+      var blocker = document.getElementById('authBlocker');
+      if (blocker) blocker.style.display = 'block';
+      var mainEl = document.querySelector('main');
+      if (mainEl) mainEl.style.display = 'none';
+      return;
+    }
+
     var loadingEl = document.getElementById('loading');
     if (loadingEl) loadingEl.style.display = 'none';
     var emptyEl = document.getElementById('empty');
@@ -441,7 +471,7 @@
     var countBadge = document.getElementById('countBadge');
     if (countBadge) countBadge.textContent = '0 תוצאות';
     var dbStatus = document.getElementById('dbStatus');
-    if (dbStatus) dbStatus.textContent = examinerCreds ? 'חיפוש דרך השרת' : 'לא מחובר — היכנס דרך examiner.html';
+    if (dbStatus) dbStatus.textContent = 'חיפוש דרך השרת';
   })();
 
   var debounceTimer = null;
