@@ -92,8 +92,10 @@ body{font-family:'Segoe UI','Heebo',Tahoma,sans-serif;background:#f1f5f9;color:#
           <ol>
             <li>לחץ "🆕 פתח בחינה" (היה "פתח סשן")</li>
             <li>בחר אתר, כיתה, דרגה, שפה, הקראה</li>
+            <li>מלא <strong>טבלת כמויות לפי דרגה</strong> (חדש!) — דרגה / מבוקשת / מאושרת.<br>כפתור <strong>"+ הוסף שורה"</strong> אם יש כמה דרגות באותו סשן</li>
             <li>הצג קוד 8 תווים / QR לנבחנים</li>
           </ol>
+          <p style="font-size:11px;margin-top:5px;color:#64748b">💡 הכמויות עוברות אוטומטית לטבלת "סידור עבודה" בדו"ח בוחן — לא צריך למלא ביד</p>
         </div>
       </div>
     </div>
@@ -192,7 +194,7 @@ body{font-family:'Segoe UI','Heebo',Tahoma,sans-serif;background:#f1f5f9;color:#
 
     <div class="section">
       <div class="section-title">4️⃣ תוצאות + חיפוש</div>
-      <div class="alert">🔍 שדה חיפוש מעל הטבלה — חפש לפי שם / ת.ז. בזמן אמת. שורד את הרענון.</div>
+      <div class="alert">🔍 שדה חיפוש בשני המקומות — <strong>תוצאות</strong> וגם <strong>ממתינים</strong> (חדש!). חפש לפי שם / ת.ז. בזמן אמת. שורד את הרענון.</div>
       <div class="box" style="background:#fff">
         <div class="grid-3">
           <div><span class="btn btn-pdf">📄 PDF</span><p style="font-size:11px;margin-top:3px">תעודת משוב להדפסה</p></div>
@@ -247,14 +249,32 @@ body{font-family:'Segoe UI','Heebo',Tahoma,sans-serif;background:#f1f5f9;color:#
       <div class="grid">
         <div class="box">
           <h3>📋 דו"ח בוחן</h3>
-          <p style="font-size:11px">סיכום אישי שלך — נבחנים, אחוזים, פילוח דרגות</p>
+          <p style="font-size:11px">סיכום אישי שלך — נבחנים, אחוזים, פילוח דרגות. הצג / הדפס PDF.</p>
+        </div>
+        <div class="box" style="background:#faf5ff;border:1px solid #c084fc">
+          <h3 style="color:#6d28d9">📤 שתף דו"ח בוחן <span style="font-size:10px;background:#ede9fe;color:#6d28d9;padding:1px 6px;border-radius:6px">חדש</span></h3>
+          <p style="font-size:11px">מעלה את הדו"ח לקישור ושולח <strong>ישירות ל-052-928-2016</strong>.<br>הקישור פעיל 6 שעות.</p>
         </div>
         <div class="box">
           <h3>📊 דו"ח מנהל אתר</h3>
-          <p style="font-size:11px">סטטיסטיקות מקצועיות + מפת חום נושאים</p>
+          <p style="font-size:11px">סטטיסטיקות + מפת חום נושאים. גם זה משותף בקליק (📤 שתף דו"ח למנהל).</p>
         </div>
       </div>
-      <p style="font-size:11px;color:#64748b;margin-top:5px">💡 שתי אפשרויות: צפייה ב-PDF או שליחה ב-WhatsApp ישר למנהל</p>
+
+      <div style="background:#fee2e2;border:2px solid #dc2626;border-radius:8px;padding:10px 12px;margin-top:10px">
+        <h3 style="color:#b91c1c;font-size:13px;font-weight:800;margin-bottom:4px">🚫 חובה — לפני סגירת הסשן</h3>
+        <p style="font-size:12px;color:#7f1d1d;line-height:1.5">המערכת <strong>לא תאפשר</strong> לסגור סשן עד שתלחץ <strong>"📤 שתף דו"ח בוחן"</strong> והקישור יעלה. אם תנסה לסגור לפני — תקבל הודעה ולא תוכל להמשיך.</p>
+      </div>
+
+      <div style="background:#dcfce7;border:1px solid #16a34a;border-radius:8px;padding:10px 12px;margin-top:8px">
+        <h3 style="color:#15803d;font-size:13px;font-weight:800;margin-bottom:4px">✅ זרימה נכונה לסיום יום</h3>
+        <ol style="font-size:12px;color:#14532d;padding-right:18px;line-height:1.55">
+          <li>סיימת את כל הנבחנים → לחץ <strong>"📤 שתף דו"ח בוחן"</strong></li>
+          <li>המתן לקישור → לחץ <strong>"📱 שתף בוואטסאפ"</strong> (נפתח עם המספר מוכן)</li>
+          <li>הוואטסאפ נשלח אוטומטית ל-<strong>052-928-2016</strong></li>
+          <li><strong>רק עכשיו</strong> — לחץ "סגור בחינה"</li>
+        </ol>
+      </div>
     </div>
 
     <div class="section">
@@ -297,8 +317,8 @@ body{font-family:'Segoe UI','Heebo',Tahoma,sans-serif;background:#f1f5f9;color:#
             <li>הסבר קצר לנבחן: "אל תצא מהמסך"</li>
             <li>במחשב — לוודא מסך מלא</li>
             <li>תגיב על אזהרת "ניסיון שני היום!" — לא לאשר באופן אוטומטי</li>
-            <li>בסוף יום — לחץ "סגור בחינה"</li>
-            <li>שלח דו"ח למנהל אתר</li>
+            <li>בסוף יום: <strong>תחילה</strong> 📤 שתף דו"ח בוחן, <strong>אחר כך</strong> "סגור בחינה"</li>
+            <li>שלח דו"ח מנהל אתר (📤 שתף דו"ח למנהל)</li>
           </ul>
         </div>
         <div class="dont">
@@ -309,6 +329,7 @@ body{font-family:'Segoe UI','Heebo',Tahoma,sans-serif;background:#f1f5f9;color:#
             <li>לא למחוק רשומות בלי לבדוק</li>
             <li>לא לשתף קוד בחינה בקבוצות גדולות</li>
             <li>לא להשאיר בחינה פתוחה</li>
+            <li><strong>לא לנסות לסגור לפני שיתוף דו"ח</strong> — המערכת חוסמת</li>
           </ul>
         </div>
       </div>
