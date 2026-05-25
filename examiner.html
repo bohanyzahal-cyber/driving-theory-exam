@@ -4318,17 +4318,23 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
   };
 
   // ========== Close Session ==========
-  // Hard gate on the close: the report MUST be shared first. We can't trust
-  // a self-report ("did you send?") — that gave a wrong answer once and the
-  // data was lost. Now reportSharedThisSession is set by the actual successful
-  // upload path in showExaminerShareLinks. No share = no close.
+  // Hard gate on the close: the report MUST be shared first IF there are
+  // results to report. Empty session (no exams happened that day) bypasses
+  // the gate — sharing an empty report is pointless and the examiner was
+  // stuck before this exception existed (reported 2026-05-25).
+  // reportSharedThisSession is set by the actual successful upload path in
+  // showExaminerShareLinks; can't be self-reported.
   window.confirmCloseSession = function() {
-    if (!reportSharedThisSession) {
+    var hasResults = completedResults && completedResults.length > 0;
+    if (hasResults && !reportSharedThisSession) {
       alert('לא ניתן לסגור את הסשן לפני שיתוף דו"ח הבוחן.\n\n' +
             'לחץ על "📤 שתף דו"ח בוחן" כדי להעלות את הדו"ח, ואז נסה לסגור שוב.');
       return;
     }
-    if (!confirm('לסגור את הסשן? נבחנים חדשים לא יוכלו להיכנס.')) return;
+    var confirmMsg = hasResults
+      ? 'לסגור את הסשן? נבחנים חדשים לא יוכלו להיכנס.'
+      : 'אין תוצאות בסשן זה.\n\nלסגור ללא שליחת דו"ח?';
+    if (!confirm(confirmMsg)) return;
     apiGet({ action: 'closeSession', sessionCode: sessionCode, examinerId: examinerData.id }).then(function() {
       stopDashboardPolling();
       clearState();
