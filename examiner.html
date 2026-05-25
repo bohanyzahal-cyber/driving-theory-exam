@@ -925,7 +925,15 @@
       currentLanguage = state.currentLanguage || '';
       currentAudioMode = state.currentAudioMode || '';
       currentQuotas = Array.isArray(state.currentQuotas) ? state.currentQuotas : [];
-      reportSharedThisSession = !!state.reportSharedThisSession;
+      // Legacy state from before reportSharedThisSession existed has no such
+      // key — saveState was wired up after the field was added. If we read
+      // undefined here, treat as "shared" so legacy sessions don't get
+      // permanently locked (examiner can't close, can't reset). Only a
+      // genuine boolean `false` (set explicitly by createSession success or
+      // resumeSession) keeps the gate active.
+      reportSharedThisSession = (typeof state.reportSharedThisSession === 'boolean')
+        ? state.reportSharedThisSession
+        : true;
       return true;
     } catch(e) { return false; }
   }
