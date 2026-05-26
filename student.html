@@ -880,17 +880,19 @@ function switchLanguage(newLang){
     var t=_pCache[newLang];var missingAny=false;
     for(var i=0;i<examQuestions.length;i++){
       var tr=t[examQuestions[i].id];
-      if(tr){
+      if(tr&&typeof tr.ci==='number'){
         examQuestions[i].text=tr.t;
         examQuestions[i].answers=tr.a;
-        // Update ci too so the correct-answer evaluation reflects this
-        // language's answer order (translators sometimes reorder answers).
-        // Without this, "wrong" feedback may show the original-language's
-        // correct answer mapped onto the new language's answer array.
-        if(typeof tr.ci==='number')examQuestions[i].ci=tr.ci;
+        // Translator may have reordered answers per language, so ci must move
+        // with text/answers — otherwise the scorer keeps the previous
+        // language's correct index and marks real-correct picks as wrong.
+        examQuestions[i].ci=tr.ci;
       }
       else{missingAny=true;}
     }
+    // If any translation entry is missing OR lacks ci (older server deploy,
+    // guest auth before the server fix, etc.) fall through to the server
+    // re-fetch path — it always returns a fresh per-language ci.
     if(!missingAny){_finishSwitch();return;}
   }
   // Fallback: re-fetch the same question IDs in the new language from server.
