@@ -520,9 +520,49 @@
   var LICENSE_LABELS = { 'B': 'B (פרטי)', '1': '1 (טרקטור)', 'C1': 'C1 (משא קל)', 'C': 'C/E (משא כבד)', 'D': 'D (ציבורי)' };
   var LANG_LABELS = { 'he': 'עברית', 'ru': 'רוסית', 'en': 'אנגלית', 'ar': 'ערבית', 'fr': 'צרפתית', 'es': 'ספרדית', 'am': 'אמהרית' };
 
+  // Device class detection — phone vs tablet vs desktop.
+  //
+  // The original isMobileDevice() conflated "anything not desktop" into one
+  // bucket, which misclassified large iPads (especially iPad Pro and any iPad
+  // in landscape) as desktop because:
+  //   - iPadOS 13+ reports navigator.userAgent as "Macintosh", not "iPad"
+  //   - The window.innerWidth < 1024 fallback failed for landscape iPads
+  //
+  // Misclassified iPads got the strict desktop anti-cheat rules: fullscreen
+  // enforcement (which often fails on Safari iOS → 15s DQ timer), the tight
+  // 0.90 split-screen ratio, 0 tab-switch warnings, and 2s blur grace. Most
+  // landscape iPad users were effectively locked out of the exam.
+  //
+  // The new split exposes isPhone/isTablet/isDesktop. The existing
+  // isMobileDevice() is kept as a backward-compat alias (= phone OR tablet)
+  // because phones and tablets share the same lenient timings — neither
+  // should require fullscreen, both should get the looser 0.65 split-screen
+  // ratio, etc.
+  function getDeviceClass() {
+    try {
+      var ua = navigator.userAgent || '';
+      // Phone: explicit phone identifiers, or Android with "Mobile" token
+      // (phones include "Mobile", tablets typically do not).
+      if (/iPhone|iPod/i.test(ua)) return 'phone';
+      if (/Android/i.test(ua) && /Mobile/i.test(ua)) return 'phone';
+      // Tablet: iPads (old UA pre-iOS 13, new UA via Mac + multi-touch),
+      // Android without "Mobile" token, Windows touch tablets.
+      if (/iPad/i.test(ua)) return 'tablet';
+      if (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) return 'tablet';
+      if (/Android/i.test(ua)) return 'tablet';
+      if (/Tablet/i.test(ua)) return 'tablet';
+      // Generic touch device with small window — likely tablet or convertible.
+      if (navigator.maxTouchPoints > 1 && window.innerWidth < 1024) return 'tablet';
+    } catch (e) {}
+    return 'desktop';
+  }
+  function isPhone()   { return getDeviceClass() === 'phone'; }
+  function isTablet()  { return getDeviceClass() === 'tablet'; }
+  function isDesktop() { return getDeviceClass() === 'desktop'; }
   function isMobileDevice() {
-    return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
-           (navigator.maxTouchPoints > 1 && window.innerWidth < 1024);
+    // Backward-compat: every call site that gates on "mobile" wants the
+    // lenient settings, which apply equally to phones and tablets.
+    return getDeviceClass() !== 'desktop';
   }
 
   // ========== UI Translations ==========
@@ -1070,6 +1110,148 @@
     }).catch(function() {});
   }
 
+  // ========== Resilient status-update helper (Bug #4 fix) ==========
+  // markExamStarted updates the examinee's row in "ממתינים" from status
+  // "מאושר" to "במבחן" so the examiner sees who's actually testing. Fire-and-
+  // forget GET used to drop the update silently on any network blip — leaving
+  // examinees stuck as "ממתין" on the examiner's screen even after they took
+  // the exam. Now retried up to 3 times with backoff. Non-blocking: never
+  // delays the exam itself, but eventually reports the right status.
+  // Does NOT participate in anti-cheat — purely operational status reporting.
+  function markExamStartedWithRetry(retries) {
+    if (typeof retries !== 'number') retries = 3;
+    var attempt = 4 - retries;
+    apiGet({
+      action: 'markExamStarted',
+      sessionCode: sessionCode,
+      idNumber: examineeData.idNumber
+    }).then(function(resp) {
+      if (resp && resp.status === 'ok') {
+        console.log('[STATUS] markExamStarted ok (attempt ' + attempt + ')');
+      } else {
+        console.warn('[STATUS] markExamStarted server reject (attempt ' + attempt + '):', resp);
+        if (retries > 1) setTimeout(function() { markExamStartedWithRetry(retries - 1); }, 2000 * attempt);
+      }
+    }).catch(function(err) {
+      console.warn('[STATUS] markExamStarted network error (attempt ' + attempt + '):', err);
+      if (retries > 1) setTimeout(function() { markExamStartedWithRetry(retries - 1); }, 2000 * attempt);
+    });
+  }
+
+  // ========== In-page finish-exam confirmation modal (Bug #5 fix) ==========
+  // Native confirm() proved unreliable on iOS browsers — it can trigger
+  // window.blur (firing split-screen DQ-grace timer), can be auto-dismissed
+  // under heavy event load, and is suppressed by some browsers when
+  // beforeunload is bound. Real examinees clicked "סיים מבחן" and saw
+  // nothing happen, forcing them to wait for the 60-minute timer to expire.
+  //
+  // The in-page modal lives in the same document — no native dialog, no
+  // browser blur, no auto-dismiss. Anti-cheat (tab-switch, split-screen,
+  // fullscreen) continues running while the modal is open: the modal is
+  // just DOM, not a separate window.
+  //
+  // Returns via callback(true) on confirm, callback(false) on cancel.
+  // Includes double-click protection on the confirm button.
+  function showFinishConfirmModal(unanswered, callback) {
+    // Remove any stale modal (defensive — shouldn't happen)
+    var stale = document.getElementById('finishConfirmModal');
+    if (stale && stale.parentNode) stale.parentNode.removeChild(stale);
+
+    var overlay = document.createElement('div');
+    overlay.id = 'finishConfirmModal';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(15,23,42,0.88);display:flex;align-items:center;justify-content:center;padding:20px;';
+
+    var box = document.createElement('div');
+    box.style.cssText = 'background:#fff;border-radius:16px;padding:24px 28px;max-width:420px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,0.5);';
+
+    var icon = document.createElement('div');
+    icon.style.cssText = 'text-align:center;font-size:48px;margin-bottom:8px;';
+    icon.textContent = unanswered > 0 ? '⚠️' : '🏁';
+    box.appendChild(icon);
+
+    var title = document.createElement('div');
+    title.style.cssText = 'text-align:center;font-size:20px;font-weight:800;color:#0f172a;margin-bottom:10px;';
+    title.textContent = 'האם לסיים את המבחן?';
+    box.appendChild(title);
+
+    if (unanswered > 0) {
+      var warn = document.createElement('div');
+      warn.style.cssText = 'text-align:center;font-size:14px;color:#dc2626;margin-bottom:8px;font-weight:700;line-height:1.5;';
+      warn.textContent = 'יש ' + unanswered + ' שאלות ללא תשובה. הן ייחשבו כשגויות.';
+      box.appendChild(warn);
+    }
+    var note = document.createElement('div');
+    note.style.cssText = 'text-align:center;font-size:13px;color:#64748b;margin-bottom:18px;';
+    note.textContent = 'לא יהיה ניתן לחזור למבחן אחרי הסיום.';
+    box.appendChild(note);
+
+    var btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:10px;';
+
+    var cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.style.cssText = 'flex:1;background:#e2e8f0;color:#0f172a;border:none;border-radius:10px;padding:14px 8px;font-size:16px;font-weight:700;cursor:pointer;';
+    cancelBtn.textContent = 'חזרה למבחן';
+    cancelBtn.addEventListener('click', function() {
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      callback(false);
+    });
+    btnRow.appendChild(cancelBtn);
+
+    var okBtn = document.createElement('button');
+    okBtn.type = 'button';
+    okBtn.style.cssText = 'flex:1.3;background:linear-gradient(135deg,#16a34a,#15803d);color:#fff;border:none;border-radius:10px;padding:14px 8px;font-size:16px;font-weight:800;cursor:pointer;';
+    okBtn.textContent = 'כן, סיים מבחן';
+    var okClicked = false;
+    okBtn.addEventListener('click', function() {
+      if (okClicked) return; // double-click protection
+      okClicked = true;
+      okBtn.disabled = true;
+      okBtn.textContent = 'מסיים…';
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      callback(true);
+    });
+    btnRow.appendChild(okBtn);
+
+    box.appendChild(btnRow);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+  }
+
+  // ========== iOS Safari detection (Bug #6 — UX warning) ==========
+  // Real examinees ignored the verbal "don't use Safari" instruction. Some
+  // registered in Safari then switched browsers and lost their session
+  // (localStorage is per-browser). Show a prominent warning on the code
+  // screen BEFORE they enter the code, so the choice is informed.
+  // Does NOT block — false positives would lock out legitimate users.
+  function isIOSSafari() {
+    try {
+      var ua = navigator.userAgent || '';
+      var isIOS = /iPad|iPhone|iPod/.test(ua) ||
+                  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      if (!isIOS) return false;
+      // Other iOS browsers identify themselves: CriOS=Chrome, FxiOS=Firefox,
+      // EdgiOS=Edge, YaBrowser=Yandex, UCBrowser=UC, OPiOS=Opera, GSA=Google App
+      var notSafariBrowsers = /CriOS|FxiOS|EdgiOS|YaBrowser|UCBrowser|OPiOS|GSA/;
+      return /Safari/.test(ua) && !notSafariBrowsers.test(ua);
+    } catch (e) { return false; }
+  }
+
+  function showSafariWarningIfNeeded() {
+    if (!isIOSSafari()) return;
+    var codeScreen = document.getElementById('screenCode');
+    if (!codeScreen || document.getElementById('safariWarning')) return;
+    var banner = document.createElement('div');
+    banner.id = 'safariWarning';
+    banner.style.cssText = 'background:#fef2f2;border:2px solid #dc2626;border-radius:12px;padding:14px 16px;margin-bottom:16px;font-size:14px;line-height:1.5;color:#7f1d1d;';
+    banner.innerHTML =
+      '<div style="font-weight:800;font-size:15px;margin-bottom:6px;">⚠️ זיהינו: אתה משתמש ב-Safari</div>' +
+      '<div style="margin-bottom:8px;">דפדפן Safari גורם לקריסות במסך "סיום מבחן". מומלץ להשתמש ב-Chrome או Firefox.</div>' +
+      '<div style="font-weight:700;color:#dc2626;">חשוב: אם אתה עובר לדפדפן אחר אחרי שהזנת קוד — ההרשמה שלך תאבד. החלף דפדפן לפני שאתה מכניס את הקוד.</div>';
+    // Insert at the top of the card, before the existing h2
+    codeScreen.insertBefore(banner, codeScreen.firstChild);
+  }
+
   // ========== Screen 1: Session Code ==========
   var codeInput = document.getElementById('sessionCodeInput');
   var codeError = document.getElementById('codeError');
@@ -1463,8 +1645,10 @@
       return;
     }
 
-    // Notify server that exam started
-    apiGet({ action: 'markExamStarted', sessionCode: sessionCode, idNumber: examineeData.idNumber });
+    // Notify server that exam started — retry on failure (status sync was
+    // dropping silently on network blips, leaving examinees stuck as "ממתין"
+    // on the examiner's screen even after they took the exam).
+    markExamStartedWithRetry(3);
 
     // Use examinee's chosen license/language (may differ from session defaults)
     var license = String(examineeData.license || sessionData.license || 'B');
@@ -3317,12 +3501,26 @@
     finishBtn.style.cssText = 'display:block; width:100%; padding:16px; font-size:18px; font-weight:800; background:linear-gradient(135deg,#16a34a,#15803d); border-radius:12px; color:white; border:none; cursor:pointer; margin-top:16px;';
     finishBtn.textContent = '\u05E1\u05D9\u05D9\u05DD \u05DE\u05D1\u05D7\u05DF';
     finishBtn.addEventListener('click', function() {
-      if (unanswered > 0) {
-        if (!confirm('\u05D9\u05E9 ' + unanswered + ' \u05E9\u05D0\u05DC\u05D5\u05EA \u05DC\u05DC\u05D0 \u05EA\u05E9\u05D5\u05D1\u05D4. \u05D4\u05DF \u05D9\u05D9\u05D7\u05E9\u05D1\u05D5 \u05DB\u05E9\u05D2\u05D5\u05D9\u05D5\u05EA.\n\u05D4\u05D0\u05DD \u05DC\u05E1\u05D9\u05D9\u05DD?')) return;
-      } else {
-        if (!confirm('\u05D4\u05D0\u05DD \u05DC\u05E1\u05D9\u05D9\u05DD \u05D0\u05EA \u05D4\u05DE\u05D1\u05D7\u05DF?')) return;
-      }
-      renderExamDone();
+      if (finishBtn.disabled) return; // double-click guard while modal is open
+      finishBtn.disabled = true;
+      showFinishConfirmModal(unanswered, function(confirmed) {
+        if (!confirmed) {
+          finishBtn.disabled = false;
+          return;
+        }
+        // Safety net: if any cleanup step in renderExamDone throws (devtools
+        // trap, fullscreen teardown on a quirky browser, etc.) we still want
+        // the examinee to reach the done screen and the submit retry chain
+        // to run. Without this, the old confirm() bug pattern recurs as a
+        // "click does nothing" symptom.
+        try {
+          renderExamDone();
+        } catch (ex) {
+          try { console.error('[FINISH] renderExamDone threw \u2014 forcing done screen:', ex); } catch(_) {}
+          try { examInProgress = false; examSubmitted = true; } catch(_) {}
+          try { showScreen('screenDone'); } catch(_) {}
+        }
+      });
     });
     card.appendChild(finishBtn);
 
@@ -3724,6 +3922,12 @@
         setTimeout(function() { codeSubmitBtn.click(); }, 300);
       }
     } catch(e) { /* URLSearchParams not supported — ignore */ }
+  }
+
+  // Show Safari/iOS warning on the code screen (only when user actually lands
+  // on it — not if a saved session restored them deeper into the flow).
+  if (!hasRestoredSession) {
+    try { showSafariWarningIfNeeded(); } catch (e) { /* defensive */ }
   }
 
 })();
