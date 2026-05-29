@@ -2378,9 +2378,21 @@
   // ========== Split-screen / PiP detection ==========
   var splitScreenInitW = 0;
   var splitScreenInitH = 0;
+  // Zoom baselines (used to distinguish browser zoom from real window resize).
+  // Browser zoom changes devicePixelRatio (desktop) or visualViewport.scale
+  // (mobile pinch). Without tracking these, the existing innerWidth check
+  // treats zoom-in as a window shrink and DQs the examinee — real complaint
+  // from exam day: examinees with poor eyesight zoomed in to see images and
+  // got DQ'd immediately. Per the operator's call: zoom-in is OK
+  // (accessibility), zoom-out is NOT (could make room for off-page content).
+  var splitScreenInitDPR = 1;
+  var splitScreenInitVVScale = 1;
   var splitScreenBlurTimer = null;
   // Phone: 65% (allows for browser address bar show/hide). Desktop: 90% (strict — any meaningful resize = DQ)
   var SPLIT_RESIZE_RATIO = isMobileDevice() ? 0.65 : 0.90;
+  // Zoom tolerance — anything below 0.95 / above 1.05 counts as a real zoom.
+  // Tighter than that = jitter (Windows DPI rounding, browser internals).
+  var ZOOM_DETECT_TOLERANCE = 0.05;
 
   var splitScreenBound = false;
   function setupSplitScreenDetection() {
@@ -2394,15 +2406,76 @@
       splitScreenInitW = screen.availWidth || screen.width || window.innerWidth;
       splitScreenInitH = screen.availHeight || screen.height || window.innerHeight;
     }
+    // Capture initial zoom state — anything that deviates from this later
+    // means the user actively zoomed (not a real window resize).
+    splitScreenInitDPR = window.devicePixelRatio || 1;
+    splitScreenInitVVScale = (window.visualViewport && window.visualViewport.scale) || 1;
     if (!splitScreenBound) {
       splitScreenBound = true;
       window.addEventListener('resize', onSplitResize);
       window.addEventListener('blur', onWindowBlur);
       window.addEventListener('focus', onWindowFocus);
+      // Listen to visualViewport on mobile so pinch-zoom-out (which doesn't
+      // fire window.resize on iOS) still gets caught as a "shrunk content"
+      // attempt — per the operator's call, zooming out is not allowed.
+      if (window.visualViewport && typeof window.visualViewport.addEventListener === 'function') {
+        try { window.visualViewport.addEventListener('resize', onVisualViewportResize); } catch (e) {}
+      }
       // On desktop, also do an immediate check — DQ if window is already smaller than threshold at exam start
       if (!isMobileDevice()) {
         setTimeout(checkSplitScreenNow, 800); // 800ms after fullscreen kicks in
       }
+    }
+  }
+
+  // Returns a string code describing the type of viewport change between
+  // initial and current measurements:
+  //   'zoom-in'   — devicePixelRatio or visualViewport.scale rose significantly
+  //   'zoom-out'  — devicePixelRatio or visualViewport.scale dropped significantly
+  //   ''          — neither; treat as a real window resize (existing logic)
+  // Used by both the debounced resize handler and the one-shot check so they
+  // agree on what counts as zoom.
+  function detectZoomChange() {
+    var curDPR = window.devicePixelRatio || 1;
+    var curVVScale = (window.visualViewport && window.visualViewport.scale) || 1;
+    var dprRatio = splitScreenInitDPR > 0 ? curDPR / splitScreenInitDPR : 1;
+    var vvRatio = splitScreenInitVVScale > 0 ? curVVScale / splitScreenInitVVScale : 1;
+    if (dprRatio > 1 + ZOOM_DETECT_TOLERANCE || vvRatio > 1 + ZOOM_DETECT_TOLERANCE) return 'zoom-in';
+    if (dprRatio < 1 - ZOOM_DETECT_TOLERANCE || vvRatio < 1 - ZOOM_DETECT_TOLERANCE) return 'zoom-out';
+    return '';
+  }
+
+  // Rebaseline the viewport snapshot to the current measurements. Called when
+  // zoom-in is accepted, so subsequent split-screen detection runs against
+  // the new "natural" viewport instead of the pre-zoom one.
+  function rebaselineViewport() {
+    splitScreenInitW = window.innerWidth;
+    splitScreenInitH = window.innerHeight;
+    splitScreenInitDPR = window.devicePixelRatio || 1;
+    splitScreenInitVVScale = (window.visualViewport && window.visualViewport.scale) || 1;
+  }
+
+  // Fire the DQ flow on zoom-out. Used by both resize and visualViewport.resize.
+  function dqForZoomOut() {
+    if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
+    tabSwitchDQConfirmed = true;
+    newDQEventId();
+    try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+    sendDQToServer();
+    showDQScreen();
+  }
+
+  // visualViewport.resize fires on mobile pinch zoom (which does NOT fire
+  // window.resize). Allow pinch-zoom-in silently, DQ on pinch-zoom-out.
+  function onVisualViewportResize() {
+    if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
+    var zoom = detectZoomChange();
+    if (zoom === 'zoom-in') {
+      // Accept the new zoom level as the baseline — re-pinching back to
+      // normal won't be treated as zoom-out later.
+      rebaselineViewport();
+    } else if (zoom === 'zoom-out') {
+      dqForZoomOut();
     }
   }
 
@@ -2413,6 +2486,11 @@
     // On desktop, defer to fullscreen enforcement when not in fullscreen
     // (the fullscreen resume prompt may be active, with its own 15s grace)
     if (!isMobileDevice() && !isFullscreenActive()) return;
+    // If the user already zoomed before this check fires, decide based on
+    // direction — don't conflate zoom with split-screen.
+    var zoom = detectZoomChange();
+    if (zoom === 'zoom-in') { rebaselineViewport(); return; }
+    if (zoom === 'zoom-out') { dqForZoomOut(); return; }
     var curW = window.innerWidth;
     var curH = window.innerHeight;
     var wRatio = curW / splitScreenInitW;
@@ -2430,6 +2508,9 @@
     window.removeEventListener('resize', onSplitResize);
     window.removeEventListener('blur', onWindowBlur);
     window.removeEventListener('focus', onWindowFocus);
+    if (window.visualViewport && typeof window.visualViewport.removeEventListener === 'function') {
+      try { window.visualViewport.removeEventListener('resize', onVisualViewportResize); } catch (e) {}
+    }
     if (splitScreenBlurTimer) { clearTimeout(splitScreenBlurTimer); splitScreenBlurTimer = null; }
   }
 
@@ -2444,6 +2525,18 @@
       if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
       // On desktop, defer to fullscreen enforcement when not in fullscreen
       if (!isMobileDevice() && !isFullscreenActive()) return;
+
+      // ===== Zoom detection (must come BEFORE the resize/jitter checks) =====
+      // Browser zoom on desktop (Ctrl+= / Ctrl+-) AND mobile pinch zoom both
+      // change innerWidth in some browsers. Without distinguishing zoom from
+      // window resize, the legacy code DQ'd examinees who zoomed in to read
+      // a question image. Per operator's call:
+      //   - zoom-in is allowed (accessibility)
+      //   - zoom-out is treated like trying to make room for off-page content → DQ
+      var zoom = detectZoomChange();
+      if (zoom === 'zoom-in') { rebaselineViewport(); return; }
+      if (zoom === 'zoom-out') { dqForZoomOut(); return; }
+
       var curW = window.innerWidth;
       var curH = window.innerHeight;
       var wRatio = curW / splitScreenInitW;
