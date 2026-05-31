@@ -2896,13 +2896,66 @@ function warmupQuestionCaches() {
     var t0 = Date.now();
     try {
       var data = loadQuestionsForLanguageServer(LANGS[i]);
-      summary.push(LANGS[i] + ': ' + (data ? data.length : 0) + ' questions cached in ' + (Date.now() - t0) + 'ms');
+      var n = data ? data.length : 0;
+      // Flag suspicious results loudly so they're easy to spot in the log.
+      // loadQuestionsForLanguageServer already refuses to cache empty results,
+      // but the warmup is the right place to notice that the Drive file
+      // itself went bad (was edited mid-day, partial upload, etc.).
+      var flag = (n === 0) ? '  ⚠️ EMPTY — check Drive source file' : '';
+      summary.push(LANGS[i] + ': ' + n + ' questions in ' + (Date.now() - t0) + 'ms' + flag);
     } catch (e) {
       summary.push(LANGS[i] + ': ERROR - ' + (e && e.message ? e.message : e));
     }
   }
   Logger.log('warmupQuestionCaches complete:\n' + summary.join('\n'));
   return summary;
+}
+
+// ========== Emergency cache reset ==========
+// Run this manually from the Apps Script editor when you see "0 questions"
+// (or similar nonsense from a poisoned cache). Clears every cached language
+// chunk, then re-warms straight from Drive. Returns a human-readable report.
+//
+// Real-world trigger: during one exam day, the Hebrew chunks were cached as
+// empty after a race condition between two parallel loads. Every subsequent
+// examinee got "0 questions" in Hebrew until the cache TTL expired. This
+// function fixes that in 5 seconds without waiting for TTL.
+//
+// Apps Script editor → select function: emergencyClearAndRefreshCache → Run.
+// Then check Logger output (View → Logs or "Execution log" panel).
+function emergencyClearAndRefreshCache() {
+  var cache = CacheService.getScriptCache();
+  var langs = ['he', 'ru', 'en', 'ar', 'fr', 'es', 'am'];
+  var report = ['=== Step 1: clearing cached chunks ==='];
+  langs.forEach(function(lang) {
+    var metaKey = 'qdata_' + lang + '_meta';
+    var meta = cache.get(metaKey);
+    if (meta) {
+      var n = parseInt(meta, 10) || 0;
+      var keys = [metaKey];
+      for (var i = 0; i < n; i++) keys.push('qdata_' + lang + '_part_' + i);
+      cache.removeAll(keys);
+      report.push(lang + ': removed ' + keys.length + ' keys');
+    } else {
+      report.push(lang + ': no cache to clear');
+    }
+  });
+  report.push('');
+  report.push('=== Step 2: refreshing from Drive ===');
+  langs.forEach(function(lang) {
+    var t0 = Date.now();
+    try {
+      var data = loadQuestionsForLanguageServer(lang);
+      var n = data ? data.length : 0;
+      var flag = (n === 0) ? '  ⚠️ STILL EMPTY — check Drive file questions_' + lang + '.json' : '';
+      report.push(lang + ': ' + n + ' questions (' + (Date.now() - t0) + 'ms)' + flag);
+    } catch (e) {
+      report.push(lang + ': ERROR - ' + (e && e.message ? e.message : e));
+    }
+  });
+  var out = report.join('\n');
+  Logger.log(out);
+  return out;
 }
 
 // ========== Server-side question delivery ==========
@@ -2994,7 +3047,16 @@ function loadQuestionsForLanguageServer(lang) {
       json += c;
     }
     if (allPresent) {
-      try { return JSON.parse(json); } catch (e) { /* fall through to Drive */ }
+      try {
+        var cached = JSON.parse(json);
+        // Cache-poisoning guard: empty array means a previous write captured a
+        // partial/empty file (real exam-day incident: Hebrew was cached as []
+        // after a race with the warmup trigger). Treat empty as a miss and
+        // re-read from Drive so we recover automatically instead of serving
+        // "0 questions" until the next 4-hour warmup.
+        if (Array.isArray(cached) && cached.length > 0) return cached;
+        Logger.log('[CACHE] empty cached result for ' + safeLang + ' — ignoring and re-reading from Drive');
+      } catch (e) { /* fall through to Drive */ }
     }
   }
 
@@ -3014,17 +3076,31 @@ function loadQuestionsForLanguageServer(lang) {
 
   var jsonStr = file.getBlob().getDataAsString('UTF-8');
 
-  // Write back to cache in chunks (CacheService cap: 100 KB per key)
-  var CHUNK_SIZE = 90000;
-  var totalChunks = Math.ceil(jsonStr.length / CHUNK_SIZE);
-  var putMap = {};
-  for (var pi = 0; pi < totalChunks; pi++) {
-    putMap['qdata_' + safeLang + '_part_' + pi] = jsonStr.substr(pi * CHUNK_SIZE, CHUNK_SIZE);
-  }
-  putMap[metaKey] = String(totalChunks);
-  try { cache.putAll(putMap, 21600); } catch (e) { /* cache full or unavailable — proceed without */ }
+  // Parse FIRST, then decide whether to cache. We never cache an empty result
+  // — that's how Hebrew got stuck at 0 questions for hours after a race.
+  // If the Drive file itself is genuinely empty (or only contains "[]"),
+  // returning the empty array is the honest answer for this call, but
+  // poisoning the cache with it would punish every subsequent caller.
+  var parsed;
+  try { parsed = JSON.parse(jsonStr); }
+  catch (e) { throw new Error('Failed to parse ' + fileName + ' from Drive: ' + e.message); }
 
-  return JSON.parse(jsonStr);
+  if (Array.isArray(parsed) && parsed.length > 0) {
+    // Write back to cache in chunks (CacheService cap: 100 KB per key)
+    var CHUNK_SIZE = 90000;
+    var totalChunks = Math.ceil(jsonStr.length / CHUNK_SIZE);
+    var putMap = {};
+    for (var pi = 0; pi < totalChunks; pi++) {
+      putMap['qdata_' + safeLang + '_part_' + pi] = jsonStr.substr(pi * CHUNK_SIZE, CHUNK_SIZE);
+    }
+    putMap[metaKey] = String(totalChunks);
+    try { cache.putAll(putMap, 21600); } catch (e) { /* cache full or unavailable — proceed without */ }
+  } else {
+    // Don't poison the cache. Log so we can spot a corrupted source file.
+    Logger.log('[DRIVE] ' + fileName + ' parsed to empty/non-array — NOT caching. Check the source file.');
+  }
+
+  return parsed;
 }
 
 // Pick 30 questions per the license blueprint, return them WITHOUT the

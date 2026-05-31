@@ -3946,10 +3946,41 @@
         showScreen('screenExam');
       }
     } else if (saved.screen === 'screenInstructions' && examineeData.idNumber) {
-      // Was waiting for approval or in instructions — go back to waiting
-      showScreen('screenInstructions');
-      applyUITranslations();
-      startApprovalPolling();
+      // Was waiting for approval. BEFORE restoring, verify the saved state is
+      // still valid — could be stale from earlier in the day:
+      //   1. Examinee registered
+      //   2. Examiner rejected (intentionally or by accident)
+      //   3. Examinee never re-registered; their tab stayed open
+      //   4. Hours later they come back to the same browser
+      // Without this check, restoring to the waiting screen and polling will
+      // immediately return the stale 'rejected' status and the user is stuck
+      // on "הבוחן דחה את הכניסה" with no way to recover except clearing
+      // browser storage. Real exam-day incident.
+      apiGet({
+        action: 'checkApproval',
+        sessionCode: sessionCode,
+        idNumber: examineeData.idNumber
+      }).then(function(resp) {
+        var st = (resp && resp.approval) || '';
+        if (st === 'waiting' || st === 'approved' || st === 'in_exam') {
+          showScreen('screenInstructions');
+          applyUITranslations();
+          startApprovalPolling();
+        } else {
+          // Stale state — clear localStorage and start fresh on code screen.
+          // The examinee will have to re-enter the session code, which is the
+          // correct behavior: they should register again rather than carry
+          // forward a dead row.
+          try { clearExamineeState(); } catch (_) {}
+          showScreen('screenCode');
+        }
+      }).catch(function() {
+        // Network blip on the verify call — let them into the waiting screen
+        // and the regular polling will catch a real terminal status anyway.
+        showScreen('screenInstructions');
+        applyUITranslations();
+        startApprovalPolling();
+      });
     } else if (saved.screen === 'screenIdForm') {
       showScreen('screenIdForm');
     }
