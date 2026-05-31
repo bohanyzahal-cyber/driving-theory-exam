@@ -1360,7 +1360,21 @@ function handleCheckApproval(p) {
       var approval = String(data[i][5] || 'waiting').trim();
       // Skip terminal statuses from previous exams — keep looking for active row
       // Note: dq_confirmed is NOT skipped — examinee needs to receive this status
-      if (approval === 'completed' || approval === 'disqualified' || approval === 'cancelled') continue;
+      //
+      // 'rejected' is intentionally on the skip list. Real exam-day incident:
+      // two examinees shared an ID number (family), first was rejected at
+      // 17:47, second cancelled at 18:05. A third visitor with stale
+      // localStorage polled later — the loop skipped the newest cancelled row
+      // and returned the older 'rejected' status, showing "הבוחן דחה" on a
+      // screen that nobody actually rejected. Skipping rejected here forces
+      // the response to "no registration found" when all rows are terminal,
+      // which the client interprets as "your saved state is stale, start over".
+      //
+      // Trade-off: when an examiner rejects a CURRENT registration, the
+      // examinee no longer sees an in-app rejection notice — they see "no
+      // registration" and reset to the code screen. Acceptable because the
+      // examiner is physically next to them and can explain verbally.
+      if (approval === 'completed' || approval === 'disqualified' || approval === 'cancelled' || approval === 'rejected') continue;
       // Token check: when a token is stored for this row, reject mismatches.
       // Legacy rows (no stored token) and the very first poll (client may not
       // have echoed the token yet) are accepted so we don't break in-flight
