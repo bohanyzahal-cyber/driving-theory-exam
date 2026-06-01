@@ -502,6 +502,7 @@
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#6d28d9;" onclick="shareExaminerReport()">&#x1f4e4; שתף דו"ח בוחן</button>
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#0e4a6e;" onclick="generateSiteManagerReport()">&#x1f4ca; דו"ח מנהל אתר</button>
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#7c3aed;" onclick="shareSiteManagerReport()">&#x1f4e4; שתף דו"ח למנהל</button>
+        <button class="wa-btn" id="siteCombinedBtn" style="padding:8px 16px; font-size:14px; background:#0f766e; display:none;" onclick="generateSiteCombinedReport()" title="דו&quot;ח אחד שמרכז את כל הסשנים שנפתחו באתר היום">&#x1f4ca; דו"ח משותף לאתר</button>
         <a href="find_image.html" target="_blank" class="wa-btn" style="padding:8px 16px; font-size:14px; background:#16a34a; text-decoration:none; display:inline-flex; align-items:center;" title="חיפוש תמונה לשאלה — להראות לנבחן שהתמונה אצלו לא עולה">&#x1f5bc;&#xfe0f; חפש תמונה</a>
       </div>
     </div>
@@ -2274,6 +2275,216 @@
     document.getElementById('statRate').textContent = total > 0 ? Math.round((passCount / total) * 100) + '%' : '0%';
     document.getElementById('statsBar').style.display = 'flex';
     document.getElementById('bulkActions').style.display = 'flex';
+    // Probe whether other sessions exist at this site/day. If the response
+    // includes more than just our own session, surface the combined-report
+    // button. Cheap to call — runs once per dashboard render after we have
+    // results to show, and gracefully no-ops if unauthorized.
+    checkSiteCombinedAvailability();
+  }
+
+  // Lightweight check that decides whether to show the combined-site button.
+  // Calls the server with the current session code; if the response holds
+  // multiple sessions, exposes the button with the count. Any error (token,
+  // not-authorized, missing session) keeps the button hidden.
+  function checkSiteCombinedAvailability() {
+    var btn = document.getElementById('siteCombinedBtn');
+    if (!btn) return;
+    if (!sessionCode || !examinerData || !examinerData.id) { btn.style.display = 'none'; return; }
+    apiGet({
+      action: 'siteCombinedReport',
+      examinerId: examinerData.id,
+      token: examinerToken,
+      sessionCode: sessionCode
+    }).then(function(data) {
+      if (!data || data.status !== 'ok' || !Array.isArray(data.sessions) || data.sessions.length <= 1) {
+        btn.style.display = 'none';
+        return;
+      }
+      // Cache the payload — generateSiteCombinedReport reuses it to avoid
+      // a second round-trip when the user clicks.
+      window._siteCombinedCache = data;
+      var others = data.sessions.length - 1;
+      btn.innerHTML = '📊 דו"ח משותף לאתר (' + data.sessions.length + ' סשנים, +' + others + ')';
+      btn.style.display = '';
+    }).catch(function() { btn.style.display = 'none'; });
+  }
+
+  // Build and open the combined-site report in a new window. Uses the cached
+  // payload from checkSiteCombinedAvailability if available; otherwise
+  // re-fetches. The report is rendered as a standalone HTML page so the
+  // examiner can print, save as PDF, or share via the OS share sheet.
+  window.generateSiteCombinedReport = function() {
+    function render(data) {
+      var html = buildSiteCombinedReportHtml(data);
+      var w = window.open('', '_blank');
+      if (!w) {
+        alert('לא הצלחתי לפתוח חלון. אפשר חלונות קופצים ונסה שוב.');
+        return;
+      }
+      w.document.open();
+      w.document.write(html);
+      w.document.close();
+    }
+    if (window._siteCombinedCache) { render(window._siteCombinedCache); return; }
+    apiGet({
+      action: 'siteCombinedReport',
+      examinerId: examinerData.id,
+      token: examinerToken,
+      sessionCode: sessionCode
+    }).then(function(data) {
+      if (!data || data.status !== 'ok') {
+        alert(data && data.message ? data.message : 'שגיאה בטעינת דו"ח משותף');
+        return;
+      }
+      window._siteCombinedCache = data;
+      render(data);
+    }).catch(function() { alert('שגיאת תקשורת'); });
+  };
+
+  // Builds the HTML for the combined report. Structure mirrors the single-
+  // session report (header, KPIs, sessions table, examinees table) so the
+  // chief examiner sees a familiar layout. Per-session rows surface the
+  // בוחן + בוחן אחראי pair, then a global examinee table lists everyone with
+  // a "סשן" column for traceability.
+  function buildSiteCombinedReportHtml(data) {
+    var sessions = data.sessions || [];
+    var results = data.results || [];
+    var dayDate = new Date(data.dayStart);
+    var dateStr = (dayDate.getDate()) + '/' + (dayDate.getMonth() + 1) + '/' + dayDate.getFullYear();
+
+    // Aggregate stats across all sessions
+    var passed = 0, failed = 0, dq = 0;
+    var stayTimes = [];
+    for (var i = 0; i < results.length; i++) {
+      var r = results[i];
+      if (r.passed === 'בוטל') continue;
+      var isDQ = r.disqualified || r.passed === 'פסול';
+      if (isDQ) dq++;
+      else if (r.passed === 'עבר') passed++;
+      else failed++;
+    }
+    var total = passed + failed + dq;
+    var rate = total > 0 ? Math.round((passed / total) * 100) : 0;
+
+    // Group results by session for per-session counts in the sessions table
+    var resultsBySession = {};
+    for (var ri = 0; ri < results.length; ri++) {
+      var sc = results[ri].sessionCode;
+      if (!resultsBySession[sc]) resultsBySession[sc] = { total: 0, passed: 0, failed: 0, dq: 0 };
+      var rr = results[ri];
+      if (rr.passed === 'בוטל') continue;
+      resultsBySession[sc].total++;
+      var rIsDQ = rr.disqualified || rr.passed === 'פסול';
+      if (rIsDQ) resultsBySession[sc].dq++;
+      else if (rr.passed === 'עבר') resultsBySession[sc].passed++;
+      else resultsBySession[sc].failed++;
+    }
+
+    var H = [];
+    H.push('<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"/>');
+    H.push('<meta name="viewport" content="width=device-width,initial-scale=1"/>');
+    H.push('<title>דו"ח משותף — ' + escHtml(data.site) + ' — ' + escHtml(dateStr) + '</title>');
+    H.push('<style>*{box-sizing:border-box;margin:0;padding:0}');
+    H.push('body{font-family:"Segoe UI",Tahoma,Arial,sans-serif;background:#f0f2f5;color:#333;direction:rtl;padding:20px}');
+    H.push('.container{max-width:1000px;margin:0 auto;background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.08);overflow:hidden}');
+    H.push('.header-bar{background:linear-gradient(135deg,#0f766e,#14b8a6);color:#fff;padding:20px 30px;text-align:center}');
+    H.push('.header-bar h1{font-size:22px;margin-bottom:4px}.header-bar p{font-size:13px;opacity:.9}');
+    H.push('.section{padding:20px 30px;border-bottom:1px solid #eee}');
+    H.push('.section-title{font-size:16px;font-weight:bold;color:#0f766e;margin-bottom:15px;padding-bottom:8px;border-bottom:2px solid #14b8a6}');
+    H.push('.kpi-row{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:12px}');
+    H.push('.kpi{text-align:center;padding:14px 10px;border-radius:12px;border:1px solid #e2e8f0}');
+    H.push('.kpi .num{font-size:28px;font-weight:900;line-height:1.1}.kpi .lbl{font-size:11px;color:#64748b;margin-top:2px}');
+    H.push('.kpi.blue{background:#eaf2f8}.kpi.blue .num{color:#2980b9}');
+    H.push('.kpi.green{background:#eafaf1}.kpi.green .num{color:#27ae60}');
+    H.push('.kpi.red{background:#fdedec}.kpi.red .num{color:#c0392b}');
+    H.push('.kpi.orange{background:#fef3c7}.kpi.orange .num{color:#d97706}');
+    H.push('.kpi.teal{background:#ccfbf1}.kpi.teal .num{color:#0f766e}');
+    H.push('table{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}');
+    H.push('thead th{background:#0f766e;color:#fff;padding:8px;font-weight:600;white-space:nowrap;font-size:11px;border:1px solid #0d5b56}');
+    H.push('tbody td{padding:8px;text-align:center;border:1px solid #eee}');
+    H.push('tbody tr:nth-child(even){background:#fafbfc}');
+    H.push('.badge{display:inline-block;padding:2px 10px;border-radius:20px;font-weight:700;font-size:11px}');
+    H.push('.badge.pass{background:#dcfce7;color:#166534}.badge.fail{background:#fef2f2;color:#991b1b}.badge.dq{background:#fef3c7;color:#92400e}');
+    H.push('@page{size:A4;margin:8mm 10mm}');
+    H.push('@media print{body{background:#fff;padding:0}.container{box-shadow:none;max-width:100%}thead th,.kpi{-webkit-print-color-adjust:exact;print-color-adjust:exact}}');
+    H.push('</style></head><body><div class="container">');
+
+    H.push('<div class="header-bar"><h1>📊 דו"ח משותף לאתר</h1>');
+    H.push('<p>' + escHtml(data.site) + ' &nbsp;|&nbsp; ' + escHtml(dateStr) + ' &nbsp;|&nbsp; ' + sessions.length + ' סשנים</p></div>');
+
+    // KPIs
+    H.push('<div class="section">');
+    H.push('<div class="kpi-row">');
+    H.push('<div class="kpi blue"><div class="num">' + total + '</div><div class="lbl">סה"כ נבחנים</div></div>');
+    H.push('<div class="kpi green"><div class="num">' + passed + '</div><div class="lbl">עברו</div></div>');
+    H.push('<div class="kpi red"><div class="num">' + failed + '</div><div class="lbl">נכשלו</div></div>');
+    H.push('<div class="kpi orange"><div class="num">' + dq + '</div><div class="lbl">פסולים</div></div>');
+    H.push('<div class="kpi teal"><div class="num">' + rate + '%</div><div class="lbl">אחוז הצלחה</div></div>');
+    H.push('</div></div>');
+
+    // Sessions table
+    H.push('<div class="section">');
+    H.push('<div class="section-title">סשנים שהשתתפו</div>');
+    H.push('<table><thead><tr>');
+    H.push('<th>קוד סשן</th><th>בוחן</th><th>בוחן אחראי</th><th>כיתה</th><th>דרגה</th><th>שפה</th>');
+    H.push('<th>סה"כ</th><th>עברו</th><th>נכשלו</th><th>פסולים</th><th>% הצלחה</th>');
+    H.push('</tr></thead><tbody>');
+    for (var s = 0; s < sessions.length; s++) {
+      var sess = sessions[s];
+      var st = resultsBySession[sess.code] || { total: 0, passed: 0, failed: 0, dq: 0 };
+      var sRate = st.total > 0 ? Math.round((st.passed / st.total) * 100) + '%' : '—';
+      H.push('<tr>');
+      H.push('<td style="font-family:monospace;font-weight:700;">' + escHtml(sess.code) + '</td>');
+      H.push('<td style="font-weight:600;">' + escHtml(sess.examinerName) + '</td>');
+      H.push('<td>' + escHtml(sess.responsibleExaminer || '—') + '</td>');
+      H.push('<td>' + escHtml(sess.classroom) + '</td>');
+      H.push('<td>' + escHtml(sess.license) + '</td>');
+      H.push('<td>' + escHtml(sess.language) + '</td>');
+      H.push('<td>' + st.total + '</td>');
+      H.push('<td>' + st.passed + '</td>');
+      H.push('<td>' + st.failed + '</td>');
+      H.push('<td>' + st.dq + '</td>');
+      H.push('<td><strong>' + sRate + '</strong></td>');
+      H.push('</tr>');
+    }
+    H.push('</tbody></table></div>');
+
+    // Examinees table (all results across all sessions)
+    if (results.length > 0) {
+      H.push('<div class="section">');
+      H.push('<div class="section-title">רשימת נבחנים מלאה</div>');
+      H.push('<table><thead><tr>');
+      H.push('<th>#</th><th>שם</th><th>ת.ז.</th><th>דרגה</th><th>שפה</th>');
+      H.push('<th>ציון</th><th>%</th><th>תוצאה</th><th>זמן</th><th>בוחן</th><th>סשן</th>');
+      H.push('</tr></thead><tbody>');
+      for (var er = 0; er < results.length; er++) {
+        var rrr = results[er];
+        if (rrr.passed === 'בוטל') continue;
+        var rrIsDQ = rrr.disqualified || rrr.passed === 'פסול';
+        var badgeClass = rrIsDQ ? 'dq' : (rrr.passed === 'עבר' ? 'pass' : 'fail');
+        var badgeText = rrIsDQ ? 'פסול' : (rrr.passed || '—');
+        H.push('<tr>');
+        H.push('<td>' + (er + 1) + '</td>');
+        H.push('<td style="font-weight:600;text-align:right;">' + escHtml(rrr.name) + '</td>');
+        H.push('<td>' + escHtml(rrr.idNumber) + '</td>');
+        H.push('<td>' + escHtml(rrr.license) + '</td>');
+        H.push('<td>' + escHtml(rrr.language) + '</td>');
+        H.push('<td>' + escHtml(String(rrr.score || '')) + '</td>');
+        H.push('<td>' + escHtml(String(rrr.percent || '')) + '</td>');
+        H.push('<td><span class="badge ' + badgeClass + '">' + escHtml(badgeText) + '</span></td>');
+        H.push('<td>' + escHtml(rrr.time) + '</td>');
+        H.push('<td>' + escHtml(rrr.examiner) + '</td>');
+        H.push('<td style="font-family:monospace;font-size:11px;">' + escHtml(rrr.sessionCode) + '</td>');
+        H.push('</tr>');
+      }
+      H.push('</tbody></table></div>');
+    }
+
+    H.push('<div class="section" style="text-align:center;padding:14px 30px;background:#f8fafc;font-size:11px;color:#64748b;">');
+    H.push('הופק: ' + new Date().toLocaleString('he-IL') + ' &nbsp;|&nbsp; דו"ח משותף לאתר ' + escHtml(data.site));
+    H.push('</div></div></body></html>');
+
+    return H.join('');
   }
 
   // Wire up the results search box. Re-rendering only touches resultsArea, so
