@@ -586,9 +586,10 @@
         <div class="cmd-kpi cmd-kpi-fail"><div class="cmd-kpi-val" id="cmdFailed">0</div><div class="cmd-kpi-lbl">נכשלו</div></div>
         <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdDQ">0</div><div class="cmd-kpi-lbl">פסולים</div></div>
         <div class="cmd-kpi cmd-kpi-rate"><div class="cmd-kpi-val" id="cmdPassRate">0%</div><div class="cmd-kpi-lbl">אחוז הצלחה</div></div>
-        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdAvg">0%</div><div class="cmd-kpi-lbl">ציון ממוצע</div></div>
-        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdMedian">0%</div><div class="cmd-kpi-lbl">חציון</div></div>
+        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdStayAvg">--:--</div><div class="cmd-kpi-lbl">זמן ממוצע</div></div>
+        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdStayMedian">--:--</div><div class="cmd-kpi-lbl">חציון זמן</div></div>
       </div>
+      <div id="cmdStayBar" style="margin-top:12px;"></div>
       <div id="cmdOverallPie" style="margin-top:10px;"></div>
     </div>
 
@@ -4957,6 +4958,46 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     return html;
   }
 
+  // Format seconds → "MM:SS" for stay-time display. Empty/zero shows as "--:--"
+  // so KPI cards don't claim 0 when there's just no data.
+  function fmtStaySec(sec) {
+    var n = Number(sec);
+    if (!n || n <= 0 || isNaN(n)) return '--:--';
+    var mm = Math.floor(n / 60);
+    var ss = n % 60;
+    return (mm < 10 ? '0' : '') + mm + ':' + (ss < 10 ? '0' : '') + ss;
+  }
+
+  // Render a horizontal stacked bar showing fast / normal / slow share. Skipped
+  // when stayCount is 0 (no time data in the period — sample sessions before
+  // the column was populated, or all DQ-on-close rows that never finished).
+  function buildStayBucketBar(row) {
+    var n = (row && row.stayCount) || 0;
+    if (n === 0) return '';
+    var f = row.stayFast || 0;
+    var nm = row.stayNormal || 0;
+    var sl = row.staySlow || 0;
+    var pf = Math.round(f / n * 100);
+    var pn = Math.round(nm / n * 100);
+    var ps = Math.max(0, 100 - pf - pn);
+    var h = '<div style="display:flex;align-items:center;gap:10px;font-size:12px;color:#475569;">';
+    h += '<span style="white-space:nowrap;font-weight:600;color:#334155;">פילוח זמן:</span>';
+    h += '<div style="flex:1;height:18px;display:flex;border-radius:9px;overflow:hidden;border:1px solid #cbd5e1;">';
+    if (pf > 0) h += '<div title="מהיר (<20 דק&apos;): ' + f + '" style="width:' + pf + '%;background:#22c55e;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:11px;">' + (pf >= 8 ? pf + '%' : '') + '</div>';
+    if (pn > 0) h += '<div title="תקין (20–35 דק&apos;): ' + nm + '" style="width:' + pn + '%;background:#3b82f6;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:11px;">' + (pn >= 8 ? pn + '%' : '') + '</div>';
+    if (ps > 0) h += '<div title="איטי (>35 דק&apos;): ' + sl + '" style="width:' + ps + '%;background:#f59e0b;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:11px;">' + (ps >= 8 ? ps + '%' : '') + '</div>';
+    h += '</div>';
+    h += '<span style="white-space:nowrap;font-size:11px;color:#64748b;">' + n + ' רשומות</span>';
+    h += '</div>';
+    h += '<div style="display:flex;gap:14px;font-size:11px;color:#64748b;margin-top:4px;flex-wrap:wrap;">';
+    h += '<span><span style="display:inline-block;width:10px;height:10px;background:#22c55e;border-radius:2px;margin-left:4px;"></span>מהיר (פחות מ-20 דק׳)</span>';
+    h += '<span><span style="display:inline-block;width:10px;height:10px;background:#3b82f6;border-radius:2px;margin-left:4px;"></span>תקין (20–35 דק׳)</span>';
+    h += '<span><span style="display:inline-block;width:10px;height:10px;background:#f59e0b;border-radius:2px;margin-left:4px;"></span>איטי (מעל 35 דק׳)</span>';
+    h += '<span style="color:#94a3b8;">| טווח רוב הנבחנים: ' + fmtStaySec(row.stayP10) + '–' + fmtStaySec(row.stayP90) + '</span>';
+    h += '</div>';
+    return h;
+  }
+
   function renderCommanderKPIs(o) {
     if (!o) return;
     document.getElementById('cmdTotal').textContent = o.total;
@@ -4964,8 +5005,10 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     document.getElementById('cmdFailed').textContent = o.failed;
     document.getElementById('cmdDQ').textContent = o.disqualified;
     document.getElementById('cmdPassRate').textContent = o.passRate + '%';
-    document.getElementById('cmdAvg').textContent = o.avgScore + '%';
-    document.getElementById('cmdMedian').textContent = o.medianScore + '%';
+    document.getElementById('cmdStayAvg').textContent = fmtStaySec(o.stayAvg);
+    document.getElementById('cmdStayMedian').textContent = fmtStaySec(o.stayMedian);
+    var barEl = document.getElementById('cmdStayBar');
+    if (barEl) barEl.innerHTML = buildStayBucketBar(o);
     var pieEl = document.getElementById('cmdOverallPie');
     if (pieEl) pieEl.innerHTML = buildPieChart(o.passed, o.failed, o.disqualified, 100);
   }
@@ -4981,7 +5024,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     if (!subData || Object.keys(subData).length === 0) return '<p style="color:#94a3b8;font-size:12px;">אין נתונים</p>';
     var sKeys = Object.keys(subData);
     var h = '<table class="cmd-sub-table"><thead><tr>';
-    h += '<th>' + label + '</th><th>סה"כ</th><th>עברו</th><th>נכשלו</th><th>פסולים</th><th>% הצלחה</th><th>ממוצע</th><th>חציון</th>';
+    h += '<th>' + label + '</th><th>סה"כ</th><th>עברו</th><th>נכשלו</th><th>פסולים</th><th>% הצלחה</th><th>זמן ממוצע</th><th>חציון זמן</th>';
     h += '</tr></thead><tbody>';
     for (var j = 0; j < sKeys.length; j++) {
       var sk = sKeys[j];
@@ -4994,8 +5037,8 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       h += '<td class="bad">' + sr.failed + '</td>';
       h += '<td>' + sr.disqualified + '</td>';
       h += '<td class="' + rc + '">' + sr.passRate + '%</td>';
-      h += '<td>' + sr.avgScore + '%</td>';
-      h += '<td>' + sr.medianScore + '%</td>';
+      h += '<td>' + fmtStaySec(sr.stayAvg) + '</td>';
+      h += '<td>' + fmtStaySec(sr.stayMedian) + '</td>';
       h += '</tr>';
     }
     h += '</tbody></table>';
@@ -5033,7 +5076,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     var tabChar = tab.charAt(2);
     var html = '<table class="cmd-table"><thead><tr>';
     html += '<th>' + (tabLabels[tab] || '') + '</th>';
-    html += '<th>סה"כ</th><th>עברו</th><th>נכשלו</th><th>פסולים</th><th>% הצלחה</th><th>ממוצע</th><th>חציון</th>';
+    html += '<th>סה"כ</th><th>עברו</th><th>נכשלו</th><th>פסולים</th><th>% הצלחה</th><th>זמן ממוצע</th><th>חציון זמן</th>';
     html += '</tr></thead><tbody>';
 
     for (var i = 0; i < keys.length; i++) {
@@ -5053,8 +5096,8 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       html += '<td class="bad">' + row.failed + '</td>';
       html += '<td>' + row.disqualified + '</td>';
       html += '<td class="' + rateClass + '">' + row.passRate + '%</td>';
-      html += '<td>' + row.avgScore + '%</td>';
-      html += '<td>' + row.medianScore + '%</td>';
+      html += '<td>' + fmtStaySec(row.stayAvg) + '</td>';
+      html += '<td>' + fmtStaySec(row.stayMedian) + '</td>';
       html += '</tr>';
 
       if (hasSub) {
@@ -5173,9 +5216,13 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     H.push('<div class="kpi kpi-fail"><div class="kpi-val">' + o.failed + '</div><div class="kpi-lbl">נכשלו</div></div>');
     H.push('<div class="kpi"><div class="kpi-val">' + o.disqualified + '</div><div class="kpi-lbl">פסולים</div></div>');
     H.push('<div class="kpi kpi-rate"><div class="kpi-val">' + o.passRate + '%</div><div class="kpi-lbl">אחוז הצלחה</div></div>');
-    H.push('<div class="kpi"><div class="kpi-val">' + o.avgScore + '%</div><div class="kpi-lbl">ממוצע</div></div>');
-    H.push('<div class="kpi"><div class="kpi-val">' + o.medianScore + '%</div><div class="kpi-lbl">חציון</div></div>');
+    H.push('<div class="kpi"><div class="kpi-val">' + fmtStaySec(o.stayAvg) + '</div><div class="kpi-lbl">זמן ממוצע</div></div>');
+    H.push('<div class="kpi"><div class="kpi-val">' + fmtStaySec(o.stayMedian) + '</div><div class="kpi-lbl">חציון זמן</div></div>');
     H.push('</div>');
+    // Stay-time bucket bar (small, just under KPIs)
+    if (o.stayCount > 0) {
+      H.push('<div style="margin:8px 0 14px;">' + buildStayBucketBar(o) + '</div>');
+    }
 
     // Breakdown tables
     var tabs = [
@@ -5225,7 +5272,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       H.push('<h2>' + tabs[t].label + '</h2>');
       H.push('<table><thead><tr>');
       H.push('<th>' + tabs[t].label.replace('פירוט לפי ', '') + '</th>');
-      H.push('<th>סה"כ</th><th>עברו</th><th>נכשלו</th><th>פסולים</th><th>% הצלחה</th><th>ממוצע</th><th>חציון</th>');
+      H.push('<th>סה"כ</th><th>עברו</th><th>נכשלו</th><th>פסולים</th><th>% הצלחה</th><th>זמן ממוצע</th><th>חציון זמן</th>');
       H.push('</tr></thead><tbody>');
       var subDim = rptSubDims[tabs[t].key];
       for (var i = 0; i < keys.length; i++) {
@@ -5238,8 +5285,8 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
         H.push('<td class="bad">' + row.failed + '</td>');
         H.push('<td>' + row.disqualified + '</td>');
         H.push('<td class="' + rc + '">' + row.passRate + '%</td>');
-        H.push('<td>' + row.avgScore + '%</td>');
-        H.push('<td>' + row.medianScore + '%</td>');
+        H.push('<td>' + fmtStaySec(row.stayAvg) + '</td>');
+        H.push('<td>' + fmtStaySec(row.stayMedian) + '</td>');
         H.push('</tr>');
 
         // Sub-breakdown row
@@ -5250,7 +5297,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
           H.push(rptPie(row.passed, row.failed, row.disqualified, 50));
           H.push('<table class="sub-tbl"><thead><tr>');
           H.push('<th>' + subDim.label + '</th>');
-          H.push('<th>סה"כ</th><th>עברו</th><th>נכשלו</th><th>פסולים</th><th>% הצלחה</th><th>ממוצע</th><th>חציון</th>');
+          H.push('<th>סה"כ</th><th>עברו</th><th>נכשלו</th><th>פסולים</th><th>% הצלחה</th><th>זמן ממוצע</th><th>חציון זמן</th>');
           H.push('</tr></thead><tbody>');
           for (var s = 0; s < sKeys.length; s++) {
             var sr = subData[sKeys[s]];
@@ -5262,8 +5309,8 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
             H.push('<td class="bad">' + sr.failed + '</td>');
             H.push('<td>' + sr.disqualified + '</td>');
             H.push('<td class="' + src2 + '">' + sr.passRate + '%</td>');
-            H.push('<td>' + sr.avgScore + '%</td>');
-            H.push('<td>' + sr.medianScore + '%</td>');
+            H.push('<td>' + fmtStaySec(sr.stayAvg) + '</td>');
+            H.push('<td>' + fmtStaySec(sr.stayMedian) + '</td>');
             H.push('</tr>');
           }
           H.push('</tbody></table>');

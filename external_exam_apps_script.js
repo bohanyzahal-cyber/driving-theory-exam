@@ -3725,8 +3725,35 @@ function handleCommanderDashboard(p) {
   var resSheet = getSheet('תוצאות');
   var resData = resSheet.getDataRange().getValues();
 
-  // Aggregate
-  var overall = { total: 0, passed: 0, failed: 0, disqualified: 0, scores: [] };
+  // Parse "MM:SS" time strings (from the 'זמן' column) into seconds. Examinee
+  // clients write the elapsed time as a fixed-width MM:SS string at submit;
+  // anything else (blank, malformed, hh:mm:ss) is ignored so a bad row can't
+  // poison the aggregate stay-time stats.
+  function parseStayTimeToSeconds(str) {
+    if (!str) return 0;
+    var s = String(str).trim();
+    var m = s.match(/^(\d{1,3}):(\d{2})$/);
+    if (!m) return 0;
+    var mins = parseInt(m[1], 10);
+    var secs = parseInt(m[2], 10);
+    if (isNaN(mins) || isNaN(secs) || secs >= 60) return 0;
+    var total = mins * 60 + secs;
+    // Sanity ceiling — exam is 40 min base, up to 60 min with 1.5× extension.
+    // Anything over 90 min is almost certainly garbage; drop it.
+    if (total > 5400) return 0;
+    return total;
+  }
+
+  // Bucket thresholds for stay-time histograms (seconds).
+  //   fast    < 20 min — efficient
+  //   normal  20–35 min — typical exam pace
+  //   slow    > 35 min — close to the 40-min ceiling
+  var STAY_FAST_MAX = 20 * 60;
+  var STAY_NORMAL_MAX = 35 * 60;
+
+  // Aggregate. stayTimes tracks duration-in-seconds per result so we can
+  // compute avg / median / p10 / p90 / 3-bucket histogram per group.
+  var overall = { total: 0, passed: 0, failed: 0, disqualified: 0, stayTimes: [] };
   var byExaminer = {};
   var bySite = {};
   var byLicense = {};
@@ -3745,72 +3772,105 @@ function handleCommanderDashboard(p) {
     var isDQ = resData[r][17] === true || String(resData[r][17]).toUpperCase() === 'TRUE' || passedStr === 'פסול';
     var isPassed = !isDQ && (passedStr === 'עבר');
 
-    var pctVal = 0;
-    var pctStr = String(resData[r][6] || '');
-    if (pctStr.indexOf('%') !== -1) {
-      pctVal = parseFloat(pctStr.replace('%', '')) || 0;
-    } else {
-      var pctNum = Number(resData[r][6]);
-      if (!isNaN(pctNum)) {
-        pctVal = pctNum <= 1 ? pctNum * 100 : pctNum;
-      }
-    }
+    // Stay-time: approval → submit. We use the exam's elapsed-time column 8
+    // ('זמן', MM:SS) as the proxy — examinee clicks "Start Exam" within a
+    // few seconds of approval, and submit happens at the time we record.
+    // Adding a separate approval-timestamp column would tighten this but
+    // requires a schema change; current proxy is within ~30 seconds.
+    var timeSec = parseStayTimeToSeconds(resData[r][8]);
 
     overall.total++;
     if (isDQ) overall.disqualified++;
     else if (isPassed) overall.passed++;
     else overall.failed++;
-    overall.scores.push(pctVal);
+    if (timeSec > 0) overall.stayTimes.push(timeSec);
 
     var eName = examinerName || 'לא צוין';
     var sName = siteName || 'לא צוין';
     var lName = license || 'לא צוין';
     var pName = population || 'לא צוין';
 
-    addToGroup(byExaminer, eName, isPassed, isDQ, pctVal);
-    addToGroup(bySite, sName, isPassed, isDQ, pctVal);
-    addToGroup(byLicense, lName, isPassed, isDQ, pctVal);
-    addToGroup(byPopulation, pName, isPassed, isDQ, pctVal);
+    addToGroup(byExaminer, eName, isPassed, isDQ, timeSec);
+    addToGroup(bySite, sName, isPassed, isDQ, timeSec);
+    addToGroup(byLicense, lName, isPassed, isDQ, timeSec);
+    addToGroup(byPopulation, pName, isPassed, isDQ, timeSec);
 
     // Cross-tabulation sub-groups
-    addToSubGroup(byExaminer, eName, 'byLicense', lName, isPassed, isDQ, pctVal);
-    addToSubGroup(byExaminer, eName, 'bySite', sName, isPassed, isDQ, pctVal);
-    addToSubGroup(bySite, sName, 'byLicense', lName, isPassed, isDQ, pctVal);
-    addToSubGroup(bySite, sName, 'byExaminer', eName, isPassed, isDQ, pctVal);
-    addToSubGroup(byLicense, lName, 'bySite', sName, isPassed, isDQ, pctVal);
-    addToSubGroup(byLicense, lName, 'byExaminer', eName, isPassed, isDQ, pctVal);
-    addToSubGroup(byPopulation, pName, 'byLicense', lName, isPassed, isDQ, pctVal);
-    addToSubGroup(byPopulation, pName, 'bySite', sName, isPassed, isDQ, pctVal);
+    addToSubGroup(byExaminer, eName, 'byLicense', lName, isPassed, isDQ, timeSec);
+    addToSubGroup(byExaminer, eName, 'bySite', sName, isPassed, isDQ, timeSec);
+    addToSubGroup(bySite, sName, 'byLicense', lName, isPassed, isDQ, timeSec);
+    addToSubGroup(bySite, sName, 'byExaminer', eName, isPassed, isDQ, timeSec);
+    addToSubGroup(byLicense, lName, 'bySite', sName, isPassed, isDQ, timeSec);
+    addToSubGroup(byLicense, lName, 'byExaminer', eName, isPassed, isDQ, timeSec);
+    addToSubGroup(byPopulation, pName, 'byLicense', lName, isPassed, isDQ, timeSec);
+    addToSubGroup(byPopulation, pName, 'bySite', sName, isPassed, isDQ, timeSec);
   }
 
-  function addToGroup(map, key, isPassed, isDQ, pctVal) {
-    if (!map[key]) map[key] = { total: 0, passed: 0, failed: 0, disqualified: 0, scores: [] };
+  function addToGroup(map, key, isPassed, isDQ, timeSec) {
+    if (!map[key]) map[key] = { total: 0, passed: 0, failed: 0, disqualified: 0, stayTimes: [] };
     map[key].total++;
     if (isDQ) map[key].disqualified++;
     else if (isPassed) map[key].passed++;
     else map[key].failed++;
-    map[key].scores.push(pctVal);
+    if (timeSec > 0) map[key].stayTimes.push(timeSec);
   }
 
-  function addToSubGroup(map, primaryKey, subDim, subKey, isPassed, isDQ, pctVal) {
+  function addToSubGroup(map, primaryKey, subDim, subKey, isPassed, isDQ, timeSec) {
     if (!map[primaryKey]) return;
     if (!map[primaryKey]._sub) map[primaryKey]._sub = {};
     if (!map[primaryKey]._sub[subDim]) map[primaryKey]._sub[subDim] = {};
-    addToGroup(map[primaryKey]._sub[subDim], subKey, isPassed, isDQ, pctVal);
+    addToGroup(map[primaryKey]._sub[subDim], subKey, isPassed, isDQ, timeSec);
+  }
+
+  // Percentile helper. arr is assumed already sorted ascending.
+  function percentileSorted(sortedArr, p) {
+    if (!sortedArr || sortedArr.length === 0) return 0;
+    if (sortedArr.length === 1) return sortedArr[0];
+    var rank = (p / 100) * (sortedArr.length - 1);
+    var lo = Math.floor(rank);
+    var hi = Math.ceil(rank);
+    if (lo === hi) return sortedArr[lo];
+    var w = rank - lo;
+    return Math.round(sortedArr[lo] * (1 - w) + sortedArr[hi] * w);
   }
 
   function computeStats(obj) {
-    var avg = 0, median = 0;
-    if (obj.scores.length > 0) {
+    var stayAvg = 0, stayMedian = 0, stayP10 = 0, stayP90 = 0;
+    var stayFast = 0, stayNormal = 0, staySlow = 0;
+    var stayTimes = obj.stayTimes || [];
+    if (stayTimes.length > 0) {
       var sum = 0;
-      for (var s = 0; s < obj.scores.length; s++) sum += obj.scores[s];
-      avg = Math.round(sum / obj.scores.length);
-      var sorted = obj.scores.slice().sort(function(a, b) { return a - b; });
-      var mid = Math.floor(sorted.length / 2);
-      median = sorted.length % 2 !== 0 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+      for (var s = 0; s < stayTimes.length; s++) {
+        sum += stayTimes[s];
+        if (stayTimes[s] < STAY_FAST_MAX) stayFast++;
+        else if (stayTimes[s] <= STAY_NORMAL_MAX) stayNormal++;
+        else staySlow++;
+      }
+      stayAvg = Math.round(sum / stayTimes.length);
+      var sorted = stayTimes.slice().sort(function(a, b) { return a - b; });
+      stayMedian = percentileSorted(sorted, 50);
+      stayP10 = percentileSorted(sorted, 10);
+      stayP90 = percentileSorted(sorted, 90);
     }
     var passRate = obj.total > 0 ? Math.round((obj.passed / obj.total) * 100) : 0;
-    return { total: obj.total, passed: obj.passed, failed: obj.failed, disqualified: obj.disqualified, passRate: passRate, avgScore: avg, medianScore: median };
+    var dqRate = obj.total > 0 ? Math.round((obj.disqualified / obj.total) * 100) : 0;
+    return {
+      total: obj.total,
+      passed: obj.passed,
+      failed: obj.failed,
+      disqualified: obj.disqualified,
+      passRate: passRate,
+      dqRate: dqRate,
+      // Stay-time metrics (all in seconds; client formats as MM:SS)
+      stayAvg: stayAvg,
+      stayMedian: stayMedian,
+      stayP10: stayP10,
+      stayP90: stayP90,
+      stayFast: stayFast,
+      stayNormal: stayNormal,
+      staySlow: staySlow,
+      stayCount: stayTimes.length
+    };
   }
 
   function computeGroupWithSub(map) {
