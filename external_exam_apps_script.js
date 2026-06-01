@@ -3911,6 +3911,14 @@ function handleCommanderDashboard(p) {
   var resSheet = getSheet('תוצאות');
   var resData = resSheet.getDataRange().getValues();
 
+  // Read practice results too — we'll join real-exam outcomes against the
+  // practice history of the same name+license to surface a "did practice
+  // before exam predict success?" metric. The student app stores its own
+  // "מזהה תלמיד" (not the national ID), so we match only on full name +
+  // license. Note that this is best-effort: identical names will collapse.
+  var practiceSheet = getSheet('תוצאות תרגול');
+  var practiceData = practiceSheet.getDataRange().getValues();
+
   // Parse a stay-time string from the 'זמן' column into seconds. The examinee
   // client writes Hebrew-formatted strings like "32 דק' 14 שנ'" (see
   // getElapsedTimeStr in examinee.html). Older rows or other clients may use
@@ -3987,6 +3995,58 @@ function handleCommanderDashboard(p) {
     return y + '-' + (m < 10 ? '0' + m : m) + '-' + (day < 10 ? '0' + day : day);
   }
 
+  // ===== Practice impact index =====
+  // Builds a lookup: normalized-name + '|' + license → list of practice rows
+  // (sorted by date desc). For each real exam row, we'll find the latest
+  // practice within 30 days BEFORE the exam date and bucket the impact.
+  function normalizeFullName(s) {
+    if (!s) return '';
+    var t = String(s).trim();
+    if (!t) return '';
+    // Strip common punctuation and collapse internal whitespace
+    t = t.replace(/[׳״'".\-]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+    // Token-sort so "ויטלי גיטלמן" and "גיטלמן ויטלי" hash to the same key
+    var tokens = t.split(' ').filter(function(x) { return x; });
+    tokens.sort();
+    return tokens.join(' ');
+  }
+  function parsePercentValue(v) {
+    if (typeof v === 'number') return v <= 1 ? v * 100 : v;
+    var s = String(v || '').replace('%', '').trim();
+    if (!s) return -1;
+    var n = parseFloat(s);
+    if (isNaN(n)) return -1;
+    return n <= 1 ? n * 100 : n;
+  }
+  var practiceIndex = {};
+  for (var pi = 1; pi < practiceData.length; pi++) {
+    var pName = normalizeFullName(practiceData[pi][2]);
+    if (!pName) continue;
+    var pLic = String(practiceData[pi][5] || '').trim();
+    var pDate = practiceData[pi][0];
+    if (pDate && !(pDate instanceof Date)) pDate = new Date(pDate);
+    if (!pDate || isNaN(pDate.getTime())) continue;
+    var pPct = parsePercentValue(practiceData[pi][8]);
+    var pKey = pName + '|' + pLic;
+    if (!practiceIndex[pKey]) practiceIndex[pKey] = [];
+    practiceIndex[pKey].push({ date: pDate, percent: pPct });
+  }
+  // Sort each list newest-first for fast "latest before X" linear scan
+  for (var pk in practiceIndex) {
+    practiceIndex[pk].sort(function(a, b) { return b.date - a.date; });
+  }
+
+  // Practice-impact accumulators. 4 buckets — 'none' (no practice in window),
+  // 'low' (<70%), 'mid' (70-85.99%), 'high' (≥86%, the pass threshold).
+  var practiceImpact = {
+    none: { total: 0, passed: 0 },
+    low:  { total: 0, passed: 0 },
+    mid:  { total: 0, passed: 0 },
+    high: { total: 0, passed: 0 },
+    withAny: { total: 0, passed: 0 }, // sum of low+mid+high — pre-computed for the simple card
+    unparseable: 0 // practice found but % couldn't be parsed; counted under withAny but not bucketed
+  };
+
   for (var r = 1; r < resData.length; r++) {
     var rowDate = parseSheetDate(resData[r][0]);
     if (!rowDate || rowDate < dateFrom || rowDate > dateTo) continue;
@@ -4013,6 +4073,49 @@ function handleCommanderDashboard(p) {
     // failures actually come back vs walk away.
     var attemptNum = Number(resData[r][14]) || 1;
     var isReattempt = attemptNum > 1;
+
+    // Practice impact — look up most recent practice for this examinee
+    // (matched by name+license) within 30 days before the exam date.
+    // DQ rows are excluded because they don't reflect knowledge level.
+    if (!isDQ) {
+      var examineeName = normalizeFullName(resData[r][2]);
+      var realLic = String(resData[r][4] || '').trim();
+      var realDate = resData[r][0];
+      if (realDate && !(realDate instanceof Date)) realDate = new Date(realDate);
+      if (examineeName && realDate && !isNaN(realDate.getTime())) {
+        var thirtyBefore = new Date(realDate);
+        thirtyBefore.setDate(thirtyBefore.getDate() - 30);
+        var lookupList = practiceIndex[examineeName + '|' + realLic] || [];
+        var matchedPractice = null;
+        for (var ml = 0; ml < lookupList.length; ml++) {
+          var item = lookupList[ml];
+          if (item.date <= realDate && item.date >= thirtyBefore) {
+            matchedPractice = item;
+            break;
+          }
+        }
+        if (!matchedPractice) {
+          practiceImpact.none.total++;
+          if (isPassed) practiceImpact.none.passed++;
+        } else {
+          practiceImpact.withAny.total++;
+          if (isPassed) practiceImpact.withAny.passed++;
+          var pct = matchedPractice.percent;
+          if (pct < 0) {
+            practiceImpact.unparseable++;
+          } else if (pct < 70) {
+            practiceImpact.low.total++;
+            if (isPassed) practiceImpact.low.passed++;
+          } else if (pct < 86) {
+            practiceImpact.mid.total++;
+            if (isPassed) practiceImpact.mid.passed++;
+          } else {
+            practiceImpact.high.total++;
+            if (isPassed) practiceImpact.high.passed++;
+          }
+        }
+      }
+    }
 
     // Language (col 12) — drives the byLanguage breakdown. Default to Hebrew
     // since that's the source language and missing values pre-date the column.
@@ -4212,6 +4315,25 @@ function handleCommanderDashboard(p) {
     topWrong.push({ question: wrongKeys[wk], count: wrongQuestionCounts[wrongKeys[wk]] });
   }
 
+  // Practice impact — finalize pass rates for each bucket. Pass rate is
+  // computed only on the non-DQ sample (DQs were excluded above).
+  function finalizePI(bucket) {
+    return {
+      total: bucket.total,
+      passed: bucket.passed,
+      passRate: bucket.total > 0 ? Math.round((bucket.passed / bucket.total) * 100) : 0
+    };
+  }
+  var practiceImpactOut = {
+    none:        finalizePI(practiceImpact.none),
+    withAny:     finalizePI(practiceImpact.withAny),
+    low:         finalizePI(practiceImpact.low),
+    mid:         finalizePI(practiceImpact.mid),
+    high:        finalizePI(practiceImpact.high),
+    unparseable: practiceImpact.unparseable,
+    lookbackDays: 30
+  };
+
   var result = {
     overall: overallStats,
     byExaminer: computeGroupWithSub(byExaminer),
@@ -4222,7 +4344,8 @@ function handleCommanderDashboard(p) {
     byAttempt: computeGroupWithSub(byAttempt),
     timeline: timeline,
     heatmap: heatmap,
-    topWrong: topWrong
+    topWrong: topWrong,
+    practiceImpact: practiceImpactOut
   };
 
   return jsonResponse({ status: 'ok', data: result });

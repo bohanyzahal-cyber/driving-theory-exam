@@ -619,6 +619,15 @@
       <div id="cmdTopWrong"></div>
     </div>
 
+    <div class="card" id="cmdPracticeImpactCard" style="display:none;">
+      <h3 style="margin:0 0 10px;font-size:15px;color:#334155;">🔬 השפעת תרגול על מבחן</h3>
+      <p style="margin:0 0 12px;font-size:11px;color:#94a3b8;line-height:1.4;">
+        בודק מי תרגל בדף תלמיד 30 ימים לפני המבחן (התאמה לפי שם מלא + דרגה).
+        DQ-ים לא נספרים.
+      </p>
+      <div id="cmdPracticeImpact"></div>
+    </div>
+
     <div class="card" id="cmdBreakdowns" style="display:none;">
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
         <button class="cmd-tab-btn active" data-tab="byExaminer" onclick="cmdSelectTab(this)">לפי בוחן</button>
@@ -5213,6 +5222,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     document.getElementById('cmdTimelineCard').style.display = 'none';
     document.getElementById('cmdHeatmapCard').style.display = 'none';
     document.getElementById('cmdTopWrongCard').style.display = 'none';
+    document.getElementById('cmdPracticeImpactCard').style.display = 'none';
     document.getElementById('cmdBreakdowns').style.display = 'none';
     document.getElementById('cmdComparison').style.display = 'none';
     document.getElementById('cmdActions').style.display = 'none';
@@ -5232,6 +5242,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
         renderTimeline(cmdData.timeline);
         renderHeatmap(cmdData.heatmap);
         renderTopWrong(cmdData.topWrong);
+        renderPracticeImpact(cmdData.practiceImpact);
         renderBreakdownTable(cmdData, cmdCurrentTab);
         renderExaminerComparison(cmdData.byExaminer);
         document.getElementById('cmdKPIs').style.display = '';
@@ -5239,6 +5250,15 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
         document.getElementById('cmdHeatmapCard').style.display = '';
         if (cmdData.topWrong && cmdData.topWrong.length > 0) {
           document.getElementById('cmdTopWrongCard').style.display = '';
+        }
+        // Show practice-impact card only when there's matchable data — empty
+        // periods would just render an unhelpful "no data" placeholder.
+        var piTotal = cmdData.practiceImpact && (
+          (cmdData.practiceImpact.withAny ? cmdData.practiceImpact.withAny.total : 0) +
+          (cmdData.practiceImpact.none ? cmdData.practiceImpact.none.total : 0)
+        );
+        if (piTotal > 0) {
+          document.getElementById('cmdPracticeImpactCard').style.display = '';
         }
         document.getElementById('cmdBreakdowns').style.display = '';
         document.getElementById('cmdComparison').style.display = '';
@@ -5381,6 +5401,77 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     svg += xLabels + yTicks;
     svg += '</svg>';
     host.innerHTML = svg + '<div style="text-align:center;font-size:11px;color:#64748b;margin-top:4px;">' + timeline.length + ' ימים · ' + totalCount + ' מבחנים · שיא ' + timeline[peakIdx].count + ' ב-' + timeline[peakIdx].date + '</div>';
+  }
+
+  // Practice → exam impact: two-panel view.
+  //   Top panel: with-practice vs without-practice pass rates side by side,
+  //   color-coded with a Δ pill showing the lift.
+  //   Bottom panel: bucket table — last practice score (<70 / 70-86 / 86+)
+  //   broken down by real-exam pass rate. Lets you tell soldiers
+  //   "get to 86% in practice and your odds are X%".
+  // Skipped silently when there's no matchable data at all.
+  function renderPracticeImpact(pi) {
+    var host = document.getElementById('cmdPracticeImpact');
+    if (!host) return;
+    if (!pi) { host.innerHTML = ''; return; }
+    var wA = pi.withAny || { total: 0, passed: 0, passRate: 0 };
+    var no = pi.none || { total: 0, passed: 0, passRate: 0 };
+    var totalMatched = wA.total + no.total;
+    if (totalMatched === 0) {
+      host.innerHTML = '<p style="color:#94a3b8;">אין נתונים תואמים — או שלא היה תרגול בתקופה, או שאף שם לא נמצא במאגר התרגול.</p>';
+      return;
+    }
+    var delta = wA.passRate - no.passRate;
+    var deltaColor = delta > 0 ? '#16a34a' : (delta < 0 ? '#dc2626' : '#64748b');
+    var deltaSign = delta > 0 ? '+' : '';
+
+    var html = '';
+    // Top panel: side-by-side
+    html += '<div style="display:grid;grid-template-columns:1fr auto 1fr;gap:14px;align-items:center;margin-bottom:18px;">';
+    html += '<div style="text-align:center;padding:14px;background:#dcfce7;border:1px solid #86efac;border-radius:12px;">';
+    html += '<div style="font-size:11px;color:#166534;font-weight:600;margin-bottom:4px;">תרגלו לפני המבחן</div>';
+    html += '<div style="font-size:28px;font-weight:900;color:#15803d;line-height:1;">' + wA.passRate + '%</div>';
+    html += '<div style="font-size:12px;color:#15803d;margin-top:4px;">עברו (' + wA.passed + ' / ' + wA.total + ')</div>';
+    html += '</div>';
+    html += '<div style="text-align:center;padding:0 10px;"><div style="font-size:11px;color:#64748b;margin-bottom:2px;">הפרש</div>';
+    html += '<div style="font-size:22px;font-weight:900;color:' + deltaColor + ';">' + deltaSign + delta + '%</div></div>';
+    html += '<div style="text-align:center;padding:14px;background:#fef2f2;border:1px solid #fca5a5;border-radius:12px;">';
+    html += '<div style="font-size:11px;color:#991b1b;font-weight:600;margin-bottom:4px;">לא תרגלו בכלל</div>';
+    html += '<div style="font-size:28px;font-weight:900;color:#dc2626;line-height:1;">' + no.passRate + '%</div>';
+    html += '<div style="font-size:12px;color:#991b1b;margin-top:4px;">עברו (' + no.passed + ' / ' + no.total + ')</div>';
+    html += '</div>';
+    html += '</div>';
+
+    // Bottom panel: bucket table
+    html += '<h4 style="margin:0 0 8px;font-size:13px;color:#334155;">פילוח לפי ציון תרגול אחרון</h4>';
+    html += '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+    html += '<thead><tr style="background:#f1f5f9;">';
+    html += '<th style="padding:8px;text-align:right;font-size:11px;color:#64748b;">קבוצה</th>';
+    html += '<th style="padding:8px;text-align:center;font-size:11px;color:#64748b;">סה"כ במבחן</th>';
+    html += '<th style="padding:8px;text-align:center;font-size:11px;color:#64748b;">עברו</th>';
+    html += '<th style="padding:8px;text-align:center;font-size:11px;color:#64748b;">% הצלחה</th>';
+    html += '</tr></thead><tbody>';
+    var buckets = [
+      { key: 'none', label: 'בלי תרגול', color: '#dc2626' },
+      { key: 'low',  label: 'ציון תרגול < 70%', color: '#f59e0b' },
+      { key: 'mid',  label: 'ציון תרגול 70-85%', color: '#3b82f6' },
+      { key: 'high', label: 'ציון תרגול ≥ 86%', color: '#16a34a' }
+    ];
+    for (var bi = 0; bi < buckets.length; bi++) {
+      var b = buckets[bi];
+      var bd = pi[b.key] || { total: 0, passed: 0, passRate: 0 };
+      html += '<tr style="border-bottom:1px solid #e2e8f0;">';
+      html += '<td style="padding:8px;color:' + b.color + ';font-weight:700;">' + b.label + '</td>';
+      html += '<td style="padding:8px;text-align:center;">' + bd.total + '</td>';
+      html += '<td style="padding:8px;text-align:center;">' + bd.passed + '</td>';
+      html += '<td style="padding:8px;text-align:center;font-weight:700;color:' + b.color + ';">' + (bd.total > 0 ? bd.passRate + '%' : '—') + '</td>';
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+    if (pi.unparseable > 0) {
+      html += '<p style="margin:8px 0 0;font-size:11px;color:#94a3b8;">' + pi.unparseable + ' רשומות תרגול ללא ציון תקין (נספרו ב"תרגלו" אבל לא בפילוח).</p>';
+    }
+    host.innerHTML = html;
   }
 
   // Top-N most-missed questions. Ranked list with a small bar showing
