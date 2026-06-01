@@ -3762,6 +3762,9 @@ function handleCommanderDashboard(p) {
                               // (one language failing more than others is a content/HEB-RTL signal).
   var byDay = {};            // 'YYYY-MM-DD' → count. Drives the throughput line chart.
   var byHour = {};           // 'dow-hour' (0–6 dow, 0–23 hour) → count. Heatmap data.
+  var wrongQuestionCounts = {}; // question text → fail count. Aggregated from
+                                 // column 15 (פירוט שגויות) to surface the
+                                 // top-N most-missed questions for content review.
 
   // Language label normalizer — short codes get human names for the UI.
   var LANG_LABELS_SERVER = {
@@ -3819,6 +3822,32 @@ function handleCommanderDashboard(p) {
     byDay[dayKey] = (byDay[dayKey] || 0) + 1;
     var hourKey = rowDate.getDay() + '-' + rowDate.getHours();
     byHour[hourKey] = (byHour[hourKey] || 0) + 1;
+
+    // Wrong-question aggregation. Column 15 (פירוט שגויות) is a multi-line
+    // string with one block per missed question:
+    //   "שאלה: <text>\nתשובת הנבחן: <ans>\nתשובה נכונה: <correct>\n\n"
+    // We split on blank lines and extract the "שאלה:" line as the natural
+    // key. Question text is a stable identifier across rows because the same
+    // text is rendered for every examinee who got that question wrong.
+    var wrongDetails = String(resData[r][15] || '');
+    if (wrongDetails) {
+      var blocks = wrongDetails.split(/\n\s*\n/);
+      for (var wb = 0; wb < blocks.length; wb++) {
+        var lines = blocks[wb].split('\n');
+        for (var wl = 0; wl < lines.length; wl++) {
+          var line = lines[wl];
+          // Match both "שאלה:" prefix variants (with/without space-prefix)
+          if (line.indexOf('שאלה:') === 0 || line.indexOf('שאלה: ') === 0) {
+            var qText = line.replace(/^שאלה:\s*/, '').trim();
+            // Truncate ultra-long question text for the count key — questions
+            // rendered with extra whitespace shouldn't be double-counted.
+            if (qText.length > 200) qText = qText.substring(0, 200);
+            if (qText) wrongQuestionCounts[qText] = (wrongQuestionCounts[qText] || 0) + 1;
+            break;
+          }
+        }
+      }
+    }
 
     var eName = examinerName || 'לא צוין';
     var sName = siteName || 'לא צוין';
@@ -3958,6 +3987,15 @@ function handleCommanderDashboard(p) {
     ? Math.round((overall.reattempts / overall.total) * 100)
     : 0;
 
+  // Top-N most-missed questions, sorted by count descending. Capped at 10 —
+  // beyond that the list gets noisy and stops driving decisions.
+  var topWrong = [];
+  var wrongKeys = Object.keys(wrongQuestionCounts);
+  wrongKeys.sort(function(a, b) { return wrongQuestionCounts[b] - wrongQuestionCounts[a]; });
+  for (var wk = 0; wk < Math.min(wrongKeys.length, 10); wk++) {
+    topWrong.push({ question: wrongKeys[wk], count: wrongQuestionCounts[wrongKeys[wk]] });
+  }
+
   var result = {
     overall: overallStats,
     byExaminer: computeGroupWithSub(byExaminer),
@@ -3966,7 +4004,8 @@ function handleCommanderDashboard(p) {
     byPopulation: computeGroupWithSub(byPopulation),
     byLanguage: computeGroupWithSub(byLanguage),
     timeline: timeline,
-    heatmap: heatmap
+    heatmap: heatmap,
+    topWrong: topWrong
   };
 
   return jsonResponse({ status: 'ok', data: result });

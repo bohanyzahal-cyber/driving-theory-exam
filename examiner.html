@@ -604,6 +604,11 @@
       <div id="cmdHeatmap" style="width:100%;overflow-x:auto;"></div>
     </div>
 
+    <div class="card" id="cmdTopWrongCard" style="display:none;">
+      <h3 style="margin:0 0 10px;font-size:15px;color:#334155;">10 השאלות שנכשלים בהן הכי הרבה</h3>
+      <div id="cmdTopWrong"></div>
+    </div>
+
     <div class="card" id="cmdBreakdowns" style="display:none;">
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
         <button class="cmd-tab-btn active" data-tab="byExaminer" onclick="cmdSelectTab(this)">לפי בוחן</button>
@@ -4917,6 +4922,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     document.getElementById('cmdKPIs').style.display = 'none';
     document.getElementById('cmdTimelineCard').style.display = 'none';
     document.getElementById('cmdHeatmapCard').style.display = 'none';
+    document.getElementById('cmdTopWrongCard').style.display = 'none';
     document.getElementById('cmdBreakdowns').style.display = 'none';
     document.getElementById('cmdComparison').style.display = 'none';
     document.getElementById('cmdActions').style.display = 'none';
@@ -4935,11 +4941,15 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
         renderCommanderKPIs(cmdData.overall);
         renderTimeline(cmdData.timeline);
         renderHeatmap(cmdData.heatmap);
+        renderTopWrong(cmdData.topWrong);
         renderBreakdownTable(cmdData, cmdCurrentTab);
         renderExaminerComparison(cmdData.byExaminer);
         document.getElementById('cmdKPIs').style.display = '';
         document.getElementById('cmdTimelineCard').style.display = '';
         document.getElementById('cmdHeatmapCard').style.display = '';
+        if (cmdData.topWrong && cmdData.topWrong.length > 0) {
+          document.getElementById('cmdTopWrongCard').style.display = '';
+        }
         document.getElementById('cmdBreakdowns').style.display = '';
         document.getElementById('cmdComparison').style.display = '';
         document.getElementById('cmdActions').style.display = '';
@@ -5081,6 +5091,41 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     svg += xLabels + yTicks;
     svg += '</svg>';
     host.innerHTML = svg + '<div style="text-align:center;font-size:11px;color:#64748b;margin-top:4px;">' + timeline.length + ' ימים · ' + totalCount + ' מבחנים · שיא ' + timeline[peakIdx].count + ' ב-' + timeline[peakIdx].date + '</div>';
+  }
+
+  // Top-N most-missed questions. Ranked list with a small bar showing
+  // relative-fail-count to make the long tail visible. Each row shows the
+  // question text and the fail count; clicking the question expands the
+  // full text (mobile rows are clipped at 2 lines by default).
+  function renderTopWrong(topWrong) {
+    var host = document.getElementById('cmdTopWrong');
+    if (!host) return;
+    if (!topWrong || topWrong.length === 0) {
+      host.innerHTML = '<p style="color:#94a3b8;">אין נתוני שאלות שגויות לטווח שנבחר</p>';
+      return;
+    }
+    var maxCount = topWrong[0].count;
+    var html = '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+    html += '<thead><tr style="background:#f1f5f9;">';
+    html += '<th style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;width:32px;">#</th>';
+    html += '<th style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;">שאלה</th>';
+    html += '<th style="padding:6px 8px;text-align:left;font-size:11px;color:#64748b;width:120px;">נכשלים</th>';
+    html += '</tr></thead><tbody>';
+    for (var i = 0; i < topWrong.length; i++) {
+      var w = Math.round((topWrong[i].count / maxCount) * 100);
+      html += '<tr style="border-bottom:1px solid #e2e8f0;">';
+      html += '<td style="padding:6px 8px;color:#94a3b8;font-weight:600;vertical-align:top;">' + (i + 1) + '</td>';
+      html += '<td style="padding:6px 8px;line-height:1.4;color:#334155;">' + escapeHtml(topWrong[i].question) + '</td>';
+      html += '<td style="padding:6px 8px;vertical-align:middle;">';
+      html += '<div style="display:flex;align-items:center;gap:6px;">';
+      html += '<div style="flex:1;height:10px;background:#f1f5f9;border-radius:5px;overflow:hidden;"><div style="width:' + w + '%;height:100%;background:#ef4444;"></div></div>';
+      html += '<span style="font-weight:700;color:#ef4444;min-width:30px;text-align:left;">' + topWrong[i].count + '</span>';
+      html += '</div>';
+      html += '</td>';
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+    host.innerHTML = html;
   }
 
   // Day-of-week × hour heatmap. Color intensity is normalized to the period's
@@ -5398,6 +5443,21 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
         H.push('<strong>שעת שיא:</strong> ' + dowLabels[peakDow] + ' ' + (peakHr < 10 ? '0' + peakHr : peakHr) + ':00 (' + peakCount + ' מבחנים)');
         H.push('</div>');
       }
+    }
+
+    // Top-N wrong questions (printable table). Useful in the PDF for content
+    // committee reviewers — same data as the screen card but compact.
+    if (cmdData.topWrong && cmdData.topWrong.length > 0) {
+      H.push('<h2>10 השאלות שנכשלים בהן הכי הרבה</h2>');
+      H.push('<table style="font-size:11px;"><thead><tr>');
+      H.push('<th style="width:30px;">#</th><th>שאלה</th><th style="width:70px;">נכשלים</th>');
+      H.push('</tr></thead><tbody>');
+      for (var twi = 0; twi < cmdData.topWrong.length; twi++) {
+        var tw = cmdData.topWrong[twi];
+        H.push('<tr><td>' + (twi + 1) + '</td><td>' + escapeHtml(tw.question) + '</td>');
+        H.push('<td style="color:#dc2626;font-weight:700;">' + tw.count + '</td></tr>');
+      }
+      H.push('</tbody></table>');
     }
 
     // Breakdown tables
