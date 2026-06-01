@@ -3809,8 +3809,10 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     var license = currentLicense || '';
 
     // === Compute stats ===
+    // Commander explicitly removed avg/median score from every dashboard
+    // \u2014 they don't reflect anything useful for a binary pass/fail exam.
+    // We keep pass/fail/DQ counts and the pass rate, that's it.
     var passCount = 0, failCount = 0, dqCount = 0;
-    var scores = [];
     for (var i = 0; i < completedResults.length; i++) {
       var r = completedResults[i];
       var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === '\u05E4\u05E1\u05D5\u05DC';
@@ -3818,16 +3820,9 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       if (isDQ) dqCount++;
       else if (isPassed) passCount++;
       else failCount++;
-      if (!isDQ) {
-        var pctVal = typeof r.percent === 'number' ? Math.round(r.percent * 100) : parseInt(r.percent) || 0;
-        scores.push(pctVal);
-      }
     }
     var total = passCount + failCount + dqCount;
     var rate = total > 0 ? Math.round((passCount / total) * 100) : 0;
-    var avgScore = scores.length > 0 ? Math.round(scores.reduce(function(a, b) { return a + b; }, 0) / scores.length) : 0;
-    scores.sort(function(a, b) { return a - b; });
-    var medianScore = scores.length > 0 ? scores[Math.floor(scores.length / 2)] : 0;
 
     // === Category analysis ===
     var dominantLicense = license || 'B';
@@ -3933,11 +3928,11 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     H.push('<div class="kpi red"><div class="num">' + failCount + '</div><div class="lbl">\u05E0\u05DB\u05E9\u05DC\u05D5 \u274C</div></div>');
     H.push('<div class="kpi orange"><div class="num">' + dqCount + '</div><div class="lbl">\u05E4\u05E1\u05D5\u05DC\u05D9\u05DD \u26D4</div></div>');
     H.push('</div>');
-    // Score stats
+    // Pass rate only \u2014 score avg/median removed per commander's directive
+    // ("doesn't reflect anything"). Pass rate is the one summary number that
+    // actually moves with cohort quality.
     H.push('<div style="text-align:center;font-size:13px;color:#64748b;margin-top:6px;">');
     H.push('\u05D0\u05D7\u05D5\u05D6 \u05D4\u05E6\u05DC\u05D7\u05D4: <strong style="font-size:18px;color:' + (rate >= 50 ? '#16a34a' : '#dc2626') + ';">' + rate + '%</strong>');
-    H.push(' &nbsp;|&nbsp; \u05DE\u05DE\u05D5\u05E6\u05E2: <strong style="font-size:18px;color:' + (avgScore >= 50 ? '#2563eb' : '#dc2626') + ';">' + avgScore + '%</strong>');
-    H.push(' &nbsp;|&nbsp; \u05D7\u05E6\u05D9\u05D5\u05DF: <strong style="font-size:18px;color:' + (medianScore >= 50 ? '#2563eb' : '#dc2626') + ';">' + medianScore + '%</strong>');
     H.push('</div></div>');
 
     // Pie chart
@@ -4650,19 +4645,8 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     var toLbl = ccmFmtDate(range.to);
     var results = d.results || [];
 
-    // Compute score stats (avg, median) and category aggregate across all sites.
-    var scores = [];
-    for (var i = 0; i < results.length; i++) {
-      var r = results[i];
-      var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === 'פסול';
-      if (!isDQ) {
-        var pctVal = parseInt(String(r.percent || '').replace('%','')) || 0;
-        scores.push(pctVal);
-      }
-    }
-    var avgScore = scores.length ? Math.round(scores.reduce(function(a,b){return a+b;},0) / scores.length) : 0;
-    scores.sort(function(a,b){return a-b;});
-    var medianScore = scores.length ? scores[Math.floor(scores.length / 2)] : 0;
+    // Score avg/median removed per commander's directive — pass rate is the
+    // only summary number that meaningfully moves with cohort quality.
 
     // Aggregate wrong-by-category (cross-site, cross-license — use union of buckets)
     var catTotals = {}, catWrong = {}, hasCatData = false;
@@ -4744,8 +4728,6 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     H.push('</div>');
     H.push('<div style="text-align:center;font-size:13px;color:#64748b;margin-top:6px;">');
     H.push('אחוז הצלחה: <strong style="font-size:18px;color:' + (ov.passRate >= 50 ? '#16a34a' : '#dc2626') + ';">' + ov.passRate + '%</strong>');
-    H.push(' &nbsp;|&nbsp; ממוצע: <strong style="font-size:18px;color:' + (avgScore >= 50 ? '#2563eb' : '#dc2626') + ';">' + avgScore + '%</strong>');
-    H.push(' &nbsp;|&nbsp; חציון: <strong style="font-size:18px;color:' + (medianScore >= 50 ? '#2563eb' : '#dc2626') + ';">' + medianScore + '%</strong>');
     H.push('</div></div>');
 
     // Pie chart

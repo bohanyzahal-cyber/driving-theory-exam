@@ -3725,23 +3725,43 @@ function handleCommanderDashboard(p) {
   var resSheet = getSheet('תוצאות');
   var resData = resSheet.getDataRange().getValues();
 
-  // Parse "MM:SS" time strings (from the 'זמן' column) into seconds. Examinee
-  // clients write the elapsed time as a fixed-width MM:SS string at submit;
-  // anything else (blank, malformed, hh:mm:ss) is ignored so a bad row can't
-  // poison the aggregate stay-time stats.
+  // Parse a stay-time string from the 'זמן' column into seconds. The examinee
+  // client writes Hebrew-formatted strings like "32 דק' 14 שנ'" (see
+  // getElapsedTimeStr in examinee.html). Older rows or other clients may use
+  // "MM:SS"; we handle both shapes so the dashboard works across the whole
+  // historical dataset.
+  //
+  // Anything we can't parse returns 0 and the row is dropped from the stay-
+  // time aggregate — better to under-count than to poison the median with
+  // garbage values (negative durations, hh:mm:ss strings that look like
+  // minutes when truncated, etc.).
   function parseStayTimeToSeconds(str) {
     if (!str) return 0;
     var s = String(str).trim();
-    var m = s.match(/^(\d{1,3}):(\d{2})$/);
-    if (!m) return 0;
-    var mins = parseInt(m[1], 10);
-    var secs = parseInt(m[2], 10);
-    if (isNaN(mins) || isNaN(secs) || secs >= 60) return 0;
-    var total = mins * 60 + secs;
-    // Sanity ceiling — exam is 40 min base, up to 60 min with 1.5× extension.
-    // Anything over 90 min is almost certainly garbage; drop it.
-    if (total > 5400) return 0;
-    return total;
+    if (!s) return 0;
+    // Format A — Hebrew: "32 דק' 14 שנ'", optionally with geresh ׳ or U+2019.
+    // The regex tolerates extra whitespace and either quote-mark variant.
+    var hebMatch = s.match(/(\d+)\s*דק['׳’]?\s*(\d+)\s*שנ['׳’]?/);
+    if (hebMatch) {
+      var hmins = parseInt(hebMatch[1], 10);
+      var hsecs = parseInt(hebMatch[2], 10);
+      if (!isNaN(hmins) && !isNaN(hsecs) && hsecs < 60) {
+        var ht = hmins * 60 + hsecs;
+        if (ht > 0 && ht <= 5400) return ht;
+      }
+      return 0;
+    }
+    // Format B — "MM:SS" colon-separated (legacy and other clients).
+    var colonMatch = s.match(/^(\d{1,3}):(\d{2})$/);
+    if (colonMatch) {
+      var cmins = parseInt(colonMatch[1], 10);
+      var csecs = parseInt(colonMatch[2], 10);
+      if (isNaN(cmins) || isNaN(csecs) || csecs >= 60) return 0;
+      var ctotal = cmins * 60 + csecs;
+      if (ctotal > 5400) return 0;
+      return ctotal;
+    }
+    return 0;
   }
 
   // Bucket thresholds for stay-time histograms (seconds).
