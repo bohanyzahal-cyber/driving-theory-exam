@@ -616,6 +616,7 @@
         <button class="cmd-tab-btn" data-tab="byLicense" onclick="cmdSelectTab(this)">לפי דרגה</button>
         <button class="cmd-tab-btn" data-tab="byPopulation" onclick="cmdSelectTab(this)">לפי אוכלוסיה</button>
         <button class="cmd-tab-btn" data-tab="byLanguage" onclick="cmdSelectTab(this)">לפי שפה</button>
+        <button class="cmd-tab-btn" data-tab="byAttempt" onclick="cmdSelectTab(this)">לפי ניסיון</button>
       </div>
       <div id="cmdBreakdownContent" style="overflow-x:auto;"></div>
     </div>
@@ -5161,7 +5162,8 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     bySite:       [{ key: 'byLicense', label: 'לפי דרגה' }, { key: 'byExaminer', label: 'לפי בוחן' }],
     byLicense:    [{ key: 'bySite', label: 'לפי אתר' }, { key: 'byExaminer', label: 'לפי בוחן' }],
     byPopulation: [{ key: 'byLicense', label: 'לפי דרגה' }, { key: 'bySite', label: 'לפי אתר' }],
-    byLanguage:   [{ key: 'byLicense', label: 'לפי דרגה' }, { key: 'bySite', label: 'לפי אתר' }]
+    byLanguage:   [{ key: 'byLicense', label: 'לפי דרגה' }, { key: 'bySite', label: 'לפי אתר' }],
+    byAttempt:    [{ key: 'byLicense', label: 'לפי דרגה' }, { key: 'bySite', label: 'לפי אתר' }]
   };
 
   function buildSubTable(subData, label) {
@@ -5215,7 +5217,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     var keys = Object.keys(section);
     if (keys.length === 0) { document.getElementById('cmdBreakdownContent').innerHTML = '<p style="color:#94a3b8;">אין נתונים</p>'; return; }
 
-    var tabLabels = { byExaminer: 'בוחן', bySite: 'אתר', byLicense: 'דרגה', byPopulation: 'אוכלוסיה', byLanguage: 'שפה' };
+    var tabLabels = { byExaminer: 'בוחן', bySite: 'אתר', byLicense: 'דרגה', byPopulation: 'אוכלוסיה', byLanguage: 'שפה', byAttempt: 'ניסיון' };
     var dims = SUB_DIMS[tab] || [];
     var tabChar = tab.charAt(2);
     var html = '<table class="cmd-table"><thead><tr>';
@@ -5448,7 +5450,8 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       { key: 'bySite', label: 'פירוט לפי אתר' },
       { key: 'byLicense', label: 'פירוט לפי דרגה' },
       { key: 'byPopulation', label: 'פירוט לפי אוכלוסיה' },
-      { key: 'byLanguage', label: 'פירוט לפי שפה' }
+      { key: 'byLanguage', label: 'פירוט לפי שפה' },
+      { key: 'byAttempt', label: 'פירוט לפי ניסיון' }
     ];
     // -- Pie chart helper for report --
     function rptPie(passed, failed, dq, sz) {
@@ -5481,7 +5484,8 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       bySite:       { key: 'byLicense', label: 'דרגה' },
       byLicense:    { key: 'bySite',    label: 'אתר' },
       byPopulation: { key: 'byLicense', label: 'דרגה' },
-      byLanguage:   { key: 'byLicense', label: 'דרגה' }
+      byLanguage:   { key: 'byLicense', label: 'דרגה' },
+      byAttempt:    { key: 'byLicense', label: 'דרגה' }
     };
 
     for (var t = 0; t < tabs.length; t++) {

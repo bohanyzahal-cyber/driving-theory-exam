@@ -3780,6 +3780,9 @@ function handleCommanderDashboard(p) {
   var byPopulation = {};
   var byLanguage = {};       // 'he' / 'ru' / ... → stats. Catches translation issues
                               // (one language failing more than others is a content/HEB-RTL signal).
+  var byAttempt = {};        // 'ניסיון 1' / 'ניסיון 2' / 'ניסיון 3+' → stats.
+                              // Shows whether re-attempts have higher/lower
+                              // pass rate (does the second try go better?).
   var byDay = {};            // 'YYYY-MM-DD' → count. Drives the throughput line chart.
   var byHour = {};           // 'dow-hour' (0–6 dow, 0–23 hour) → count. Heatmap data.
   var wrongQuestionCounts = {}; // question text → fail count. Aggregated from
@@ -3874,11 +3877,18 @@ function handleCommanderDashboard(p) {
     var lName = license || 'לא צוין';
     var pName = population || 'לא צוין';
 
+    // Attempt-bucket label: 1, 2, 3+ (anything ≥ 3 collapses to a single
+    // bucket — the long tail is too small to be useful on its own).
+    var attemptLabel = attemptNum <= 1 ? 'ניסיון 1'
+                       : attemptNum === 2 ? 'ניסיון 2'
+                       : 'ניסיון 3+';
+
     addToGroup(byExaminer, eName, isPassed, isDQ, timeSec);
     addToGroup(bySite, sName, isPassed, isDQ, timeSec);
     addToGroup(byLicense, lName, isPassed, isDQ, timeSec);
     addToGroup(byPopulation, pName, isPassed, isDQ, timeSec);
     addToGroup(byLanguage, langName, isPassed, isDQ, timeSec);
+    addToGroup(byAttempt, attemptLabel, isPassed, isDQ, timeSec);
 
     // Cross-tabulation sub-groups
     addToSubGroup(byExaminer, eName, 'byLicense', lName, isPassed, isDQ, timeSec);
@@ -4023,6 +4033,7 @@ function handleCommanderDashboard(p) {
     byLicense: computeGroupWithSub(byLicense),
     byPopulation: computeGroupWithSub(byPopulation),
     byLanguage: computeGroupWithSub(byLanguage),
+    byAttempt: computeGroupWithSub(byAttempt),
     timeline: timeline,
     heatmap: heatmap,
     topWrong: topWrong
