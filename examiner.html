@@ -364,6 +364,14 @@
           <option value="on">פועל</option>
         </select>
       </label>
+      <label>
+        <span>בוחן אחראי</span>
+        <select id="responsibleExaminerSelect">
+          <option value="">— ללא / אני האחראי —</option>
+          <option value="__other__">אחר (הקלד שם)</option>
+        </select>
+        <input type="text" id="responsibleExaminerCustom" placeholder="שם בוחן אחראי..." style="display:none; margin-top:6px;" />
+      </label>
     </div>
 
     <!-- Quotas table: one row per license type, like the plan table in the examiner report. -->
@@ -430,6 +438,7 @@
       <div class="item"><span class="lbl">דרגה:</span> <span class="val" id="barLicense"></span></div>
       <div class="item"><span class="lbl">שפה:</span> <span class="val" id="barLanguage"></span></div>
       <div class="item"><span class="lbl">שמע:</span> <span class="val" id="barAudio"></span></div>
+      <div class="item" id="barResponsibleWrap" style="display:none;"><span class="lbl">בוחן אחראי:</span> <span class="val" id="barResponsible"></span></div>
       <div class="item"><span class="lbl">תוקף:</span> <span class="countdown" id="barCountdown">--:--:--</span></div>
       <div style="margin-right:auto;"></div>
       <button style="font-size:13px; padding:6px 12px; background:#64748b;" onclick="openSettingsModal()">שנה הגדרות</button>
@@ -874,6 +883,10 @@
   var currentLicense = '';
   var currentLanguage = '';
   var currentAudioMode = '';
+  // Senior/responsible examiner on the work order (פקודת עבודה). Empty when
+  // the session opener is solo or the responsible person. Surfaces on the
+  // dashboard header, in the PDF report, and in the WhatsApp share link.
+  var currentResponsibleExaminer = '';
   // Per-license quotas captured at session creation. Each row:
   // {license: 'B'|'1'|'C1'|'C'|'D', requested: number, approved: number}.
   // Surfaced in the examiner report (seeds the "סידור עבודה" plan table).
@@ -922,6 +935,7 @@
         currentLanguage: currentLanguage,
         currentAudioMode: currentAudioMode,
         currentQuotas: currentQuotas,
+        currentResponsibleExaminer: currentResponsibleExaminer,
         reportSharedThisSession: reportSharedThisSession
       }));
     } catch(e) {}
@@ -944,6 +958,7 @@
       currentLanguage = state.currentLanguage || '';
       currentAudioMode = state.currentAudioMode || '';
       currentQuotas = Array.isArray(state.currentQuotas) ? state.currentQuotas : [];
+      currentResponsibleExaminer = state.currentResponsibleExaminer || '';
       // Legacy state from before reportSharedThisSession existed has no such
       // key — saveState was wired up after the field was added. If we read
       // undefined here, treat as "shared" so legacy sessions don't get
@@ -1073,6 +1088,7 @@
           document.getElementById('setupExaminerName').textContent = 'שלום, ' + examinerData.name;
           showScreen('screenSetup');
           fetchSites();
+          fetchActiveExaminers();
           fetchPreviousSessions();
         }
         // Commander-only: reveal the "open another examiner's session" panel on the setup screen
@@ -1241,6 +1257,7 @@
     currentAudioMode = sess.audioMode || 'off';
     currentSiteManagerPhone = sess.managerPhone || '';
     currentQuotas = Array.isArray(sess.quotas) ? sess.quotas : [];
+    currentResponsibleExaminer = sess.responsibleExaminer || '';
     // Resuming a session from the server (vs. local refresh) — we have no way
     // to know whether the previous browser already shared the report. Force
     // the examiner to share again before they can close, to guarantee fresh
@@ -1277,6 +1294,44 @@
     });
   }
 
+  // ========== Fetch Active Examiners (for responsible-examiner dropdown) ==========
+  // Loaded alongside sites on the setup screen. The dropdown lets the session
+  // opener point at the senior examiner on the work order (פקודת עבודה) —
+  // important when two examiners share a site and only one opens the session.
+  // "אחר" remains as a fallback for ad-hoc names not in the active list.
+  function fetchActiveExaminers() {
+    apiGet({ action: 'listActiveExaminers' }).then(function(data) {
+      if (!data || data.status !== 'ok' || !Array.isArray(data.examiners)) return;
+      var sel = document.getElementById('responsibleExaminerSelect');
+      if (!sel) return;
+      var currentlySelected = sel.value;
+      sel.innerHTML = '';
+      var noneOpt = document.createElement('option');
+      noneOpt.value = '';
+      noneOpt.textContent = '— ללא / אני האחראי —';
+      sel.appendChild(noneOpt);
+      for (var i = 0; i < data.examiners.length; i++) {
+        var name = data.examiners[i];
+        // Skip the logged-in examiner's own name — picking himself adds no info.
+        if (examinerData && name === examinerData.name) continue;
+        var opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      }
+      var otherOpt = document.createElement('option');
+      otherOpt.value = '__other__';
+      otherOpt.textContent = 'אחר (הקלד שם)';
+      sel.appendChild(otherOpt);
+      // Restore prior selection if it still exists in the new options
+      if (currentlySelected) {
+        for (var j = 0; j < sel.options.length; j++) {
+          if (sel.options[j].value === currentlySelected) { sel.value = currentlySelected; break; }
+        }
+      }
+    }).catch(function() { /* dropdown stays with the placeholder + "אחר" */ });
+  }
+
   document.getElementById('siteSelect').addEventListener('change', function() {
     var sel = this;
     var cSel = document.getElementById('classroomSelect');
@@ -1311,6 +1366,20 @@
       }
     }
     currentSiteManagerPhone = site ? site.managerPhone : '';
+  });
+
+  // Responsible-examiner dropdown: toggle the custom text field when "אחר"
+  // is chosen. Same pattern as the site/classroom "אחר" fallback above.
+  document.getElementById('responsibleExaminerSelect').addEventListener('change', function() {
+    var customInput = document.getElementById('responsibleExaminerCustom');
+    if (this.value === '__other__') {
+      customInput.style.display = 'block';
+      customInput.value = '';
+      customInput.focus();
+    } else {
+      customInput.style.display = 'none';
+      customInput.value = '';
+    }
   });
 
   // ========== Quotas table (per-license requested/approved) ==========
@@ -1465,6 +1534,14 @@
       errEl.textContent = 'הוסף לפחות שורת כמויות אחת'; errEl.style.display = 'block'; return;
     }
 
+    // Responsible-examiner field — empty means "I'm the responsible one or
+    // no separate responsible is named". "אחר" pulls from the free-text box.
+    var respSel = document.getElementById('responsibleExaminerSelect');
+    var respVal = respSel ? respSel.value : '';
+    if (respVal === '__other__') {
+      respVal = document.getElementById('responsibleExaminerCustom').value.trim();
+    }
+
     var btn = document.getElementById('createSessionBtn');
     btn.disabled = true; btn.textContent = 'יוצר סשן...';
 
@@ -1473,7 +1550,8 @@
       examinerId: examinerData.id,
       site: site, classroom: classroom,
       license: license, language: language, audioMode: audioMode,
-      quotas: JSON.stringify(quotas)
+      quotas: JSON.stringify(quotas),
+      responsibleExaminer: respVal
     }).then(function(data) {
       btn.disabled = false; btn.textContent = 'פתח בחינה';
       if (data.status === 'ok') {
@@ -1485,6 +1563,7 @@
         currentLanguage = language;
         currentAudioMode = audioMode;
         currentQuotas = quotas;
+        currentResponsibleExaminer = respVal;
         // Fresh session — examiner hasn't shared a report yet for this one
         reportSharedThisSession = false;
 
@@ -1517,6 +1596,17 @@
     document.getElementById('barLicense').textContent = LICENSE_LABELS[currentLicense] || currentLicense;
     document.getElementById('barLanguage').textContent = LANG_LABELS[currentLanguage] || currentLanguage;
     document.getElementById('barAudio').textContent = currentAudioMode === 'on' ? 'פועל' : 'כבוי';
+    // Responsible-examiner pill — show only when set (otherwise the bar gets
+    // a noisy empty field). Equality check avoids showing it when the
+    // responsible examiner is the same person who opened the session.
+    var respWrap = document.getElementById('barResponsibleWrap');
+    var respEl = document.getElementById('barResponsible');
+    if (currentResponsibleExaminer && currentResponsibleExaminer !== examinerData.name) {
+      respEl.textContent = currentResponsibleExaminer;
+      respWrap.style.display = '';
+    } else {
+      respWrap.style.display = 'none';
+    }
     document.getElementById('topbarInfo').textContent = examinerData.name + ' | ' + currentSite + ' | כיתה ' + currentClassroom;
 
     // Init modal values
@@ -3587,6 +3677,12 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     H.push('<div class="info-item"><label>\u05D1\u05D5\u05D7\u05DF</label><div class="val">' + escHtml(examiner) + '</div></div>');
     H.push('<div class="info-item"><label>\u05D3\u05E8\u05D2\u05D4</label><div class="val">' + escHtml(license) + '</div></div>');
     if (examinerNum) H.push('<div class="info-item"><label>\u05DE\u05E1\u05F3 \u05D1\u05D5\u05D7\u05DF</label><div class="val">' + escHtml(examinerNum) + '</div></div>');
+    // Responsible-examiner field \u2014 surfaces the chain of responsibility for
+    // the Rav-Bochen review. Shown only when distinct from the session
+    // opener (otherwise it's noise).
+    if (currentResponsibleExaminer && currentResponsibleExaminer !== examiner) {
+      H.push('<div class="info-item"><label>\u05D1\u05D5\u05D7\u05DF \u05D0\u05D7\u05E8\u05D0\u05D9</label><div class="val">' + escHtml(currentResponsibleExaminer) + '</div></div>');
+    }
     H.push('</div></div>');
 
     // ===== WORK PLANNING TABLE (matches physical form) =====
@@ -5709,6 +5805,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
                 document.getElementById('setupExaminerName').textContent = 'שלום, ' + examinerData.name;
                 showScreen('screenSetup');
                 fetchSites();
+          fetchActiveExaminers();
                 fetchPreviousSessions();
               }
             } else {

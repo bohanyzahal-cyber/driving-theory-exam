@@ -11,7 +11,7 @@
 var SHEET_HEADERS = {
   'בוחנים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'מס בוחן', 'תפקיד', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד', 'אתרים מנוהלים'],
   'אתרים': ['שם אתר', 'מזהה', 'טלפון מנהל', 'כיתות'],
-  'סשנים': ['קוד', 'בוחן ת.ז.', 'שם בוחן', 'אתר', 'כיתה', 'דרגה', 'שפה', 'מצב שמע', 'זמן יצירה', 'תקף עד', 'פעיל'],
+  'סשנים': ['קוד', 'בוחן ת.ז.', 'שם בוחן', 'אתר', 'כיתה', 'דרגה', 'שפה', 'מצב שמע', 'זמן יצירה', 'תקף עד', 'פעיל', 'כמויות JSON', 'מאושרים JSON', 'בוחן אחראי'],
   'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה', 'דרגה', 'שמע', 'הארכת זמן', 'התחלת מבחן', 'טוקן נבחן', 'ספירת DQ', 'מסך נוסף'],
   'תוצאות': ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר', 'כיתה', 'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ', 'אוכלוסיה', 'תוקן?', 'שמע', 'מאומת', 'חשוד', 'dqEventId', 'תוקן ע"י', 'סיבת תיקון', 'תאריך תיקון', 'מסלול שפות'],
   'מורים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד'],
@@ -415,6 +415,9 @@ function doGet(e) {
       case 'createSession':
         return handleCreateSession(p);
 
+      case 'listActiveExaminers':
+        return handleListActiveExaminers(p);
+
       case 'updateSession':
         return handleUpdateSession(p);
 
@@ -792,6 +795,8 @@ function handleListSessions(p) {
         validUntil: data[i][9] || '',
         active: data[i][10] === true || String(data[i][10]).toUpperCase() === 'TRUE',
         quotas: decodeSessionQuotas(data[i][11], data[i][12], data[i][5]),
+        // Defensive read — see handleGetSessionInfo comment.
+        responsibleExaminer: String((data[i].length > 13 ? data[i][13] : '') || ''),
         managerPhone: sitesMap[siteName] ? sitesMap[siteName].managerPhone : ''
       });
     }
@@ -1065,6 +1070,14 @@ function handleCreateSession(p) {
     return jsonResponse({ status: 'error', message: quotas.error });
   }
 
+  // Column N (13): בוחן אחראי — name of the senior/responsible examiner when
+  // multiple examiners work the same site/day per the פקודת עבודה. When the
+  // session is opened by a solo examiner this can equal the examiner himself,
+  // or be left blank if he's the responsible. The Rav-Bochen / commander
+  // reports surface this field so the chain of responsibility matches the
+  // physical staffing on the ground.
+  var responsibleExaminer = String(p.responsibleExaminer || '').trim();
+
   sheet.appendRow([
     code,
     p.examinerId,
@@ -1078,10 +1091,36 @@ function handleCreateSession(p) {
     validUntil.toISOString(),
     true,
     JSON.stringify(quotas.rows),
-    ''
+    '',
+    responsibleExaminer
   ]);
 
-  return jsonResponse({ status: 'ok', sessionCode: code, validUntil: validUntil.toISOString(), examinerName: examinerName });
+  return jsonResponse({
+    status: 'ok',
+    sessionCode: code,
+    validUntil: validUntil.toISOString(),
+    examinerName: examinerName,
+    responsibleExaminer: responsibleExaminer
+  });
+}
+
+// Returns a sorted list of active examiners' names, used by the session-create
+// dropdown to pick the בוחן אחראי. Only sends `name` — IDs/roles/tokens
+// don't belong on the client. Active = column D in 'בוחנים' is exactly 'כן'
+// (the same truthiness check used elsewhere).
+function handleListActiveExaminers(p) {
+  var sheet = getSheet('בוחנים');
+  var data = sheet.getDataRange().getValues();
+  var names = [];
+  for (var i = 1; i < data.length; i++) {
+    var active = data[i][3];
+    var isActive = (active === true) || (active === 'כן') || (String(active).toUpperCase() === 'TRUE');
+    if (!isActive) continue;
+    var name = String(data[i][0] || '').trim();
+    if (name) names.push(name);
+  }
+  names.sort(function(a, b) { return a.localeCompare(b, 'he'); });
+  return jsonResponse({ status: 'ok', examiners: names });
 }
 
 // Validates the JSON quotas payload sent from the examiner UI. Returns either
@@ -1268,7 +1307,11 @@ function handleGetSessionInfo(p) {
           audioMode: data[i][7],
           examinerName: data[i][2],
           validUntil: data[i][9],
-          quotas: decodeSessionQuotas(data[i][11], data[i][12], data[i][5])
+          quotas: decodeSessionQuotas(data[i][11], data[i][12], data[i][5]),
+          // Column N (13) may be missing on rows created before this feature
+          // shipped — defensive read returns '' for those, treating them as
+          // sessions without a designated responsible examiner.
+          responsibleExaminer: String((data[i].length > 13 ? data[i][13] : '') || '')
         }
       });
     }
