@@ -588,9 +588,20 @@
         <div class="cmd-kpi cmd-kpi-rate"><div class="cmd-kpi-val" id="cmdPassRate">0%</div><div class="cmd-kpi-lbl">אחוז הצלחה</div></div>
         <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdStayAvg">--:--</div><div class="cmd-kpi-lbl">זמן ממוצע</div></div>
         <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdStayMedian">--:--</div><div class="cmd-kpi-lbl">חציון זמן</div></div>
+        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdReattemptRate">0%</div><div class="cmd-kpi-lbl">ניסיון חוזר</div></div>
       </div>
       <div id="cmdStayBar" style="margin-top:12px;"></div>
       <div id="cmdOverallPie" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="card" id="cmdTimelineCard" style="display:none;">
+      <h3 style="margin:0 0 10px;font-size:15px;color:#334155;">תפוקה לפי יום</h3>
+      <div id="cmdTimeline" style="width:100%;overflow-x:auto;"></div>
+    </div>
+
+    <div class="card" id="cmdHeatmapCard" style="display:none;">
+      <h3 style="margin:0 0 10px;font-size:15px;color:#334155;">פעילות לפי יום בשבוע × שעה</h3>
+      <div id="cmdHeatmap" style="width:100%;overflow-x:auto;"></div>
     </div>
 
     <div class="card" id="cmdBreakdowns" style="display:none;">
@@ -599,6 +610,7 @@
         <button class="cmd-tab-btn" data-tab="bySite" onclick="cmdSelectTab(this)">לפי אתר</button>
         <button class="cmd-tab-btn" data-tab="byLicense" onclick="cmdSelectTab(this)">לפי דרגה</button>
         <button class="cmd-tab-btn" data-tab="byPopulation" onclick="cmdSelectTab(this)">לפי אוכלוסיה</button>
+        <button class="cmd-tab-btn" data-tab="byLanguage" onclick="cmdSelectTab(this)">לפי שפה</button>
       </div>
       <div id="cmdBreakdownContent" style="overflow-x:auto;"></div>
     </div>
@@ -4903,6 +4915,8 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     document.getElementById('cmdLoading').textContent = 'טוען נתונים...';
     document.getElementById('cmdLoading').style.color = '#64748b';
     document.getElementById('cmdKPIs').style.display = 'none';
+    document.getElementById('cmdTimelineCard').style.display = 'none';
+    document.getElementById('cmdHeatmapCard').style.display = 'none';
     document.getElementById('cmdBreakdowns').style.display = 'none';
     document.getElementById('cmdComparison').style.display = 'none';
     document.getElementById('cmdActions').style.display = 'none';
@@ -4919,9 +4933,13 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       if (resp.status === 'ok') {
         cmdData = resp.data;
         renderCommanderKPIs(cmdData.overall);
+        renderTimeline(cmdData.timeline);
+        renderHeatmap(cmdData.heatmap);
         renderBreakdownTable(cmdData, cmdCurrentTab);
         renderExaminerComparison(cmdData.byExaminer);
         document.getElementById('cmdKPIs').style.display = '';
+        document.getElementById('cmdTimelineCard').style.display = '';
+        document.getElementById('cmdHeatmapCard').style.display = '';
         document.getElementById('cmdBreakdowns').style.display = '';
         document.getElementById('cmdComparison').style.display = '';
         document.getElementById('cmdActions').style.display = '';
@@ -5007,17 +5025,116 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     document.getElementById('cmdPassRate').textContent = o.passRate + '%';
     document.getElementById('cmdStayAvg').textContent = fmtStaySec(o.stayAvg);
     document.getElementById('cmdStayMedian').textContent = fmtStaySec(o.stayMedian);
+    var reEl = document.getElementById('cmdReattemptRate');
+    if (reEl) reEl.textContent = (o.reattemptRate || 0) + '% (' + (o.reattempts || 0) + ')';
     var barEl = document.getElementById('cmdStayBar');
     if (barEl) barEl.innerHTML = buildStayBucketBar(o);
     var pieEl = document.getElementById('cmdOverallPie');
     if (pieEl) pieEl.innerHTML = buildPieChart(o.passed, o.failed, o.disqualified, 100);
   }
 
+  // Throughput line chart — SVG polyline over [N] daily counts. Designed to
+  // be readable at a glance; X-axis labels only on first/last/peak days to
+  // keep the chart legible on phones. Returns empty if no data.
+  function renderTimeline(timeline) {
+    var host = document.getElementById('cmdTimeline');
+    if (!host) return;
+    if (!timeline || timeline.length === 0) { host.innerHTML = '<p style="color:#94a3b8;">אין נתונים לטווח שנבחר</p>'; return; }
+    var w = Math.max(timeline.length * 18, 320);
+    var h = 160;
+    var pad = { t: 14, r: 14, b: 28, l: 36 };
+    var iw = w - pad.l - pad.r;
+    var ih = h - pad.t - pad.b;
+    var maxCount = 0, totalCount = 0;
+    for (var i = 0; i < timeline.length; i++) {
+      if (timeline[i].count > maxCount) maxCount = timeline[i].count;
+      totalCount += timeline[i].count;
+    }
+    var yMax = Math.max(maxCount, 1);
+    var xStep = iw / Math.max(timeline.length - 1, 1);
+    var pts = [];
+    var dotEls = [];
+    var peakIdx = 0;
+    for (var i = 0; i < timeline.length; i++) {
+      var x = pad.l + i * xStep;
+      var y = pad.t + (1 - timeline[i].count / yMax) * ih;
+      pts.push(x.toFixed(1) + ',' + y.toFixed(1));
+      dotEls.push('<circle cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" r="3" fill="#1a73e8"><title>' + timeline[i].date + ': ' + timeline[i].count + '</title></circle>');
+      if (timeline[i].count > timeline[peakIdx].count) peakIdx = i;
+    }
+    // Y-axis ticks (0 and yMax)
+    var yTicks = '<text x="' + (pad.l - 6) + '" y="' + (pad.t + ih + 4) + '" font-size="10" fill="#64748b" text-anchor="end">0</text>';
+    yTicks += '<text x="' + (pad.l - 6) + '" y="' + (pad.t + 4) + '" font-size="10" fill="#64748b" text-anchor="end">' + yMax + '</text>';
+    // X-axis labels: first, peak, last
+    function xLabel(i) {
+      var d = timeline[i].date.substring(5); // MM-DD
+      var x = pad.l + i * xStep;
+      return '<text x="' + x.toFixed(1) + '" y="' + (pad.t + ih + 18) + '" font-size="10" fill="#64748b" text-anchor="middle">' + d + '</text>';
+    }
+    var xLabels = xLabel(0);
+    if (peakIdx !== 0 && peakIdx !== timeline.length - 1) xLabels += xLabel(peakIdx);
+    if (timeline.length > 1) xLabels += xLabel(timeline.length - 1);
+    var svg = '<svg width="' + w + '" height="' + h + '" xmlns="http://www.w3.org/2000/svg" style="background:#f8fafc;border-radius:8px;">';
+    svg += '<line x1="' + pad.l + '" y1="' + (pad.t + ih) + '" x2="' + (pad.l + iw) + '" y2="' + (pad.t + ih) + '" stroke="#cbd5e1" stroke-width="1"/>';
+    svg += '<polyline points="' + pts.join(' ') + '" fill="none" stroke="#1a73e8" stroke-width="2"/>';
+    svg += dotEls.join('');
+    svg += xLabels + yTicks;
+    svg += '</svg>';
+    host.innerHTML = svg + '<div style="text-align:center;font-size:11px;color:#64748b;margin-top:4px;">' + timeline.length + ' ימים · ' + totalCount + ' מבחנים · שיא ' + timeline[peakIdx].count + ' ב-' + timeline[peakIdx].date + '</div>';
+  }
+
+  // Day-of-week × hour heatmap. Color intensity is normalized to the period's
+  // max bucket so a 5-exam day reads as "hot" if 5 is the peak. Cell tooltip
+  // shows the absolute count.
+  var HEATMAP_DOW_LABELS = ['א', 'ב', 'ג', 'ד', 'ה', 'ו', 'ש'];
+  function renderHeatmap(heatmap) {
+    var host = document.getElementById('cmdHeatmap');
+    if (!host) return;
+    if (!heatmap || heatmap.length !== 7) { host.innerHTML = '<p style="color:#94a3b8;">אין נתונים</p>'; return; }
+    // Find max for normalization. Ignore zeros.
+    var max = 0;
+    for (var d = 0; d < 7; d++) for (var h = 0; h < 24; h++) if (heatmap[d][h] > max) max = heatmap[d][h];
+    if (max === 0) { host.innerHTML = '<p style="color:#94a3b8;">אין פעילות בתקופה</p>'; return; }
+    var html = '<table style="border-collapse:separate;border-spacing:2px;font-size:10px;direction:rtl;margin:0 auto;">';
+    // Header row: hours
+    html += '<thead><tr><th style="padding:2px 4px;color:#94a3b8;font-weight:normal;"></th>';
+    for (var hr = 0; hr < 24; hr++) {
+      // Only show every 3rd hour label to fit on phone
+      var lbl = (hr % 3 === 0) ? (hr < 10 ? '0' + hr : hr) : '';
+      html += '<th style="padding:0;color:#94a3b8;font-weight:normal;width:16px;">' + lbl + '</th>';
+    }
+    html += '</tr></thead><tbody>';
+    for (var d = 0; d < 7; d++) {
+      html += '<tr><th style="padding:2px 6px;color:#64748b;font-weight:600;text-align:left;">' + HEATMAP_DOW_LABELS[d] + '</th>';
+      for (var hr = 0; hr < 24; hr++) {
+        var v = heatmap[d][hr];
+        var intensity = max > 0 ? v / max : 0;
+        var bg;
+        if (v === 0) bg = '#f1f5f9';
+        else {
+          // green→amber→red scale by intensity
+          var hue = 200 - Math.round(intensity * 160); // 200=blue/teal to 40=amber
+          var sat = 70 + Math.round(intensity * 20);
+          var lit = 65 - Math.round(intensity * 25);
+          bg = 'hsl(' + hue + ',' + sat + '%,' + lit + '%)';
+        }
+        var txt = v > 0 && intensity > 0.15 ? v : '';
+        var color = intensity > 0.55 ? '#fff' : '#0f172a';
+        html += '<td title="' + HEATMAP_DOW_LABELS[d] + ' ' + (hr < 10 ? '0' + hr : hr) + ':00 — ' + v + ' מבחנים" style="background:' + bg + ';color:' + color + ';padding:0;width:16px;height:16px;text-align:center;font-weight:600;border-radius:2px;">' + txt + '</td>';
+      }
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+    html += '<div style="text-align:center;font-size:11px;color:#64748b;margin-top:6px;">צבע כהה יותר = יותר מבחנים. שיא בתקופה: ' + max + ' מבחנים בשעה.</div>';
+    host.innerHTML = html;
+  }
+
   var SUB_DIMS = {
     byExaminer:   [{ key: 'byLicense', label: 'לפי דרגה' }, { key: 'bySite', label: 'לפי אתר' }],
     bySite:       [{ key: 'byLicense', label: 'לפי דרגה' }, { key: 'byExaminer', label: 'לפי בוחן' }],
     byLicense:    [{ key: 'bySite', label: 'לפי אתר' }, { key: 'byExaminer', label: 'לפי בוחן' }],
-    byPopulation: [{ key: 'byLicense', label: 'לפי דרגה' }, { key: 'bySite', label: 'לפי אתר' }]
+    byPopulation: [{ key: 'byLicense', label: 'לפי דרגה' }, { key: 'bySite', label: 'לפי אתר' }],
+    byLanguage:   [{ key: 'byLicense', label: 'לפי דרגה' }, { key: 'bySite', label: 'לפי אתר' }]
   };
 
   function buildSubTable(subData, label) {
@@ -5071,7 +5188,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     var keys = Object.keys(section);
     if (keys.length === 0) { document.getElementById('cmdBreakdownContent').innerHTML = '<p style="color:#94a3b8;">אין נתונים</p>'; return; }
 
-    var tabLabels = { byExaminer: 'בוחן', bySite: 'אתר', byLicense: 'דרגה', byPopulation: 'אוכלוסיה' };
+    var tabLabels = { byExaminer: 'בוחן', bySite: 'אתר', byLicense: 'דרגה', byPopulation: 'אוכלוסיה', byLanguage: 'שפה' };
     var dims = SUB_DIMS[tab] || [];
     var tabChar = tab.charAt(2);
     var html = '<table class="cmd-table"><thead><tr>';
@@ -5135,17 +5252,47 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     // Sort by passRate descending
     keys.sort(function(a, b) { return byExaminer[b].passRate - byExaminer[a].passRate; });
     var maxTotal = 0;
+    var rates = [];
     for (var i = 0; i < keys.length; i++) {
       if (byExaminer[keys[i]].total > maxTotal) maxTotal = byExaminer[keys[i]].total;
+      // Only count examiners with a meaningful sample for the median baseline.
+      // 3 exams is the floor — below that the rate is noise.
+      if (byExaminer[keys[i]].total >= 3) rates.push(byExaminer[keys[i]].passRate);
     }
+    // Median of pass rates → reference for outlier detection. Flag examiners
+    // who are >15 percentage points away in either direction. Red = unusually
+    // low (struggling examinees / strict examiner), blue = unusually high
+    // (lenient examiner / strong cohort). Both are signals worth investigating.
+    var medianRate = 0;
+    if (rates.length > 0) {
+      var sortedRates = rates.slice().sort(function(a, b) { return a - b; });
+      var mid = Math.floor(sortedRates.length / 2);
+      medianRate = sortedRates.length % 2 !== 0
+        ? sortedRates[mid]
+        : Math.round((sortedRates[mid - 1] + sortedRates[mid]) / 2);
+    }
+    var OUTLIER_THRESHOLD = 15;
 
     var html = '';
+    if (medianRate > 0 && keys.length >= 2) {
+      html += '<div style="font-size:12px;color:#64748b;margin-bottom:8px;">חציון אחוז הצלחה: <strong>' + medianRate + '%</strong> · ' +
+              '<span style="color:#dc2626;">אדום</span>=נמוך מהחציון בלפחות ' + OUTLIER_THRESHOLD + '% · ' +
+              '<span style="color:#1a73e8;">כחול</span>=גבוה בלפחות ' + OUTLIER_THRESHOLD + '%</div>';
+    }
     for (var i = 0; i < keys.length; i++) {
       var k = keys[i];
       var row = byExaminer[k];
       var pct = maxTotal > 0 ? Math.round((row.total / maxTotal) * 100) : 0;
-      html += '<div class="cmd-bar-row">';
-      html += '<div class="cmd-bar-label">' + escapeHtml(k) + '</div>';
+      var outlierClass = '';
+      var diff = row.passRate - medianRate;
+      var hasEnough = row.total >= 3 && medianRate > 0;
+      if (hasEnough && diff <= -OUTLIER_THRESHOLD) outlierClass = 'background:#fee2e2;border:1px solid #fca5a5;';
+      else if (hasEnough && diff >= OUTLIER_THRESHOLD) outlierClass = 'background:#dbeafe;border:1px solid #93c5fd;';
+      var marker = '';
+      if (hasEnough && diff <= -OUTLIER_THRESHOLD) marker = ' <span style="color:#dc2626;font-weight:700;">▼ ' + Math.abs(diff) + '%</span>';
+      else if (hasEnough && diff >= OUTLIER_THRESHOLD) marker = ' <span style="color:#1a73e8;font-weight:700;">▲ +' + diff + '%</span>';
+      html += '<div class="cmd-bar-row" style="' + outlierClass + 'padding:6px 10px;border-radius:6px;margin-bottom:4px;">';
+      html += '<div class="cmd-bar-label">' + escapeHtml(k) + marker + '</div>';
       html += '<div class="cmd-bar-container"><div class="cmd-bar-fill" style="width:' + pct + '%;"></div></div>';
       html += '<div class="cmd-bar-val">' + row.total + ' | ' + row.passRate + '%</div>';
       html += '</div>';
@@ -5218,10 +5365,39 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     H.push('<div class="kpi kpi-rate"><div class="kpi-val">' + o.passRate + '%</div><div class="kpi-lbl">אחוז הצלחה</div></div>');
     H.push('<div class="kpi"><div class="kpi-val">' + fmtStaySec(o.stayAvg) + '</div><div class="kpi-lbl">זמן ממוצע</div></div>');
     H.push('<div class="kpi"><div class="kpi-val">' + fmtStaySec(o.stayMedian) + '</div><div class="kpi-lbl">חציון זמן</div></div>');
+    H.push('<div class="kpi"><div class="kpi-val">' + (o.reattemptRate || 0) + '%</div><div class="kpi-lbl">ניסיון חוזר</div></div>');
     H.push('</div>');
     // Stay-time bucket bar (small, just under KPIs)
     if (o.stayCount > 0) {
       H.push('<div style="margin:8px 0 14px;">' + buildStayBucketBar(o) + '</div>');
+    }
+    // Throughput summary — peak day, totals, busy hour. Text-only for PDF
+    // (the interactive line chart doesn't print well; this section conveys
+    // the same insight in a printable form).
+    if (cmdData.timeline && cmdData.timeline.length > 0) {
+      var tl = cmdData.timeline;
+      var peakIdx = 0;
+      for (var ti = 1; ti < tl.length; ti++) if (tl[ti].count > tl[peakIdx].count) peakIdx = ti;
+      var tlTotal = 0;
+      for (var ti = 0; ti < tl.length; ti++) tlTotal += tl[ti].count;
+      var avgPerDay = tl.length > 0 ? (tlTotal / tl.length).toFixed(1) : '0';
+      H.push('<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:8px 12px;margin:8px 0 14px;font-size:12px;color:#334155;">');
+      H.push('<strong>תפוקה:</strong> ' + tl.length + ' ימים · סה"כ ' + tlTotal + ' מבחנים · ממוצע יומי ' + avgPerDay + ' · ');
+      H.push('שיא ' + tl[peakIdx].count + ' מבחנים ב-' + tl[peakIdx].date);
+      H.push('</div>');
+    }
+    // Heatmap peak hour summary (text-only, same logic as the screen heatmap)
+    if (cmdData.heatmap && cmdData.heatmap.length === 7) {
+      var peakDow = 0, peakHr = 0, peakCount = 0;
+      var dowLabels = ['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'];
+      for (var d = 0; d < 7; d++) for (var hr = 0; hr < 24; hr++) {
+        if (cmdData.heatmap[d][hr] > peakCount) { peakCount = cmdData.heatmap[d][hr]; peakDow = d; peakHr = hr; }
+      }
+      if (peakCount > 0) {
+        H.push('<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:8px 12px;margin-bottom:14px;font-size:12px;color:#334155;">');
+        H.push('<strong>שעת שיא:</strong> ' + dowLabels[peakDow] + ' ' + (peakHr < 10 ? '0' + peakHr : peakHr) + ':00 (' + peakCount + ' מבחנים)');
+        H.push('</div>');
+      }
     }
 
     // Breakdown tables
@@ -5229,7 +5405,8 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       { key: 'byExaminer', label: 'פירוט לפי בוחן' },
       { key: 'bySite', label: 'פירוט לפי אתר' },
       { key: 'byLicense', label: 'פירוט לפי דרגה' },
-      { key: 'byPopulation', label: 'פירוט לפי אוכלוסיה' }
+      { key: 'byPopulation', label: 'פירוט לפי אוכלוסיה' },
+      { key: 'byLanguage', label: 'פירוט לפי שפה' }
     ];
     // -- Pie chart helper for report --
     function rptPie(passed, failed, dq, sz) {
@@ -5261,7 +5438,8 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       byExaminer:   { key: 'byLicense', label: 'דרגה' },
       bySite:       { key: 'byLicense', label: 'דרגה' },
       byLicense:    { key: 'bySite',    label: 'אתר' },
-      byPopulation: { key: 'byLicense', label: 'דרגה' }
+      byPopulation: { key: 'byLicense', label: 'דרגה' },
+      byLanguage:   { key: 'byLicense', label: 'דרגה' }
     };
 
     for (var t = 0; t < tabs.length; t++) {

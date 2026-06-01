@@ -3753,11 +3753,27 @@ function handleCommanderDashboard(p) {
 
   // Aggregate. stayTimes tracks duration-in-seconds per result so we can
   // compute avg / median / p10 / p90 / 3-bucket histogram per group.
-  var overall = { total: 0, passed: 0, failed: 0, disqualified: 0, stayTimes: [] };
+  var overall = { total: 0, passed: 0, failed: 0, disqualified: 0, stayTimes: [], reattempts: 0 };
   var byExaminer = {};
   var bySite = {};
   var byLicense = {};
   var byPopulation = {};
+  var byLanguage = {};       // 'he' / 'ru' / ... → stats. Catches translation issues
+                              // (one language failing more than others is a content/HEB-RTL signal).
+  var byDay = {};            // 'YYYY-MM-DD' → count. Drives the throughput line chart.
+  var byHour = {};           // 'dow-hour' (0–6 dow, 0–23 hour) → count. Heatmap data.
+
+  // Language label normalizer — short codes get human names for the UI.
+  var LANG_LABELS_SERVER = {
+    'he': 'עברית', 'ru': 'רוסית', 'en': 'אנגלית',
+    'ar': 'ערבית', 'fr': 'צרפתית', 'es': 'ספרדית', 'am': 'אמהרית'
+  };
+  function isoDateStr(d) {
+    var y = d.getFullYear();
+    var m = d.getMonth() + 1;
+    var day = d.getDate();
+    return y + '-' + (m < 10 ? '0' + m : m) + '-' + (day < 10 ? '0' + day : day);
+  }
 
   for (var r = 1; r < resData.length; r++) {
     var rowDate = parseSheetDate(resData[r][0]);
@@ -3779,11 +3795,30 @@ function handleCommanderDashboard(p) {
     // requires a schema change; current proxy is within ~30 seconds.
     var timeSec = parseStayTimeToSeconds(resData[r][8]);
 
+    // Re-attempt detection: column 14 (ניסיון) holds the attempt number for
+    // this exam (1, 2, 3...). Anything > 1 is the same examinee taking it
+    // again after a previous fail/DQ — useful signal for tracking how many
+    // failures actually come back vs walk away.
+    var attemptNum = Number(resData[r][14]) || 1;
+    var isReattempt = attemptNum > 1;
+
+    // Language (col 12) — drives the byLanguage breakdown. Default to Hebrew
+    // since that's the source language and missing values pre-date the column.
+    var langCode = String(resData[r][12] || 'he').toLowerCase().trim();
+    var langName = LANG_LABELS_SERVER[langCode] || langCode;
+
     overall.total++;
     if (isDQ) overall.disqualified++;
     else if (isPassed) overall.passed++;
     else overall.failed++;
     if (timeSec > 0) overall.stayTimes.push(timeSec);
+    if (isReattempt) overall.reattempts++;
+
+    // Time-series — one increment per row, no sub-groups (keeps payload small)
+    var dayKey = isoDateStr(rowDate);
+    byDay[dayKey] = (byDay[dayKey] || 0) + 1;
+    var hourKey = rowDate.getDay() + '-' + rowDate.getHours();
+    byHour[hourKey] = (byHour[hourKey] || 0) + 1;
 
     var eName = examinerName || 'לא צוין';
     var sName = siteName || 'לא צוין';
@@ -3794,6 +3829,7 @@ function handleCommanderDashboard(p) {
     addToGroup(bySite, sName, isPassed, isDQ, timeSec);
     addToGroup(byLicense, lName, isPassed, isDQ, timeSec);
     addToGroup(byPopulation, pName, isPassed, isDQ, timeSec);
+    addToGroup(byLanguage, langName, isPassed, isDQ, timeSec);
 
     // Cross-tabulation sub-groups
     addToSubGroup(byExaminer, eName, 'byLicense', lName, isPassed, isDQ, timeSec);
@@ -3890,12 +3926,47 @@ function handleCommanderDashboard(p) {
     return out;
   }
 
+  // Throughput timeline: fill in zero-count days between dateFrom and dateTo
+  // so the client gets a contiguous series instead of a sparse one (cleaner
+  // chart, no false-impression gaps).
+  var timeline = [];
+  var cursor = new Date(dateFrom);
+  cursor.setHours(0, 0, 0, 0);
+  var endDay = new Date(dateTo);
+  endDay.setHours(0, 0, 0, 0);
+  var safetyLimit = 0;
+  while (cursor <= endDay && safetyLimit < 400) {
+    var k = isoDateStr(cursor);
+    timeline.push({ date: k, count: byDay[k] || 0 });
+    cursor.setDate(cursor.getDate() + 1);
+    safetyLimit++;
+  }
+
+  // Heatmap: flatten to a 7×24 array of counts (0 = Sunday in JS date.getDay())
+  var heatmap = [];
+  for (var dow = 0; dow < 7; dow++) {
+    var hourRow = [];
+    for (var hr = 0; hr < 24; hr++) hourRow.push(byHour[dow + '-' + hr] || 0);
+    heatmap.push(hourRow);
+  }
+
+  // Re-attempt summary — overall.reattempts already counted in the loop;
+  // turn it into a rate so the client can show both raw count and %.
+  var overallStats = computeStats(overall);
+  overallStats.reattempts = overall.reattempts;
+  overallStats.reattemptRate = overall.total > 0
+    ? Math.round((overall.reattempts / overall.total) * 100)
+    : 0;
+
   var result = {
-    overall: computeStats(overall),
+    overall: overallStats,
     byExaminer: computeGroupWithSub(byExaminer),
     bySite: computeGroupWithSub(bySite),
     byLicense: computeGroupWithSub(byLicense),
-    byPopulation: computeGroupWithSub(byPopulation)
+    byPopulation: computeGroupWithSub(byPopulation),
+    byLanguage: computeGroupWithSub(byLanguage),
+    timeline: timeline,
+    heatmap: heatmap
   };
 
   return jsonResponse({ status: 'ok', data: result });
