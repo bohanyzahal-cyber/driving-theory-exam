@@ -4175,16 +4175,25 @@ function handleCommanderDashboard(p) {
             if (qText.length > 200) qText = qText.substring(0, 200);
           } else if (line.indexOf('תשובה נכונה:') === 0) {
             qCorrect = line.replace(/^תשובה נכונה:\s*/, '').trim();
-            // Strip "A - " / "ב - " / "В - " label prefix; keep only the answer text
-            var labelStripMatch = qCorrect.match(/^[A-Za-dא-לА-Г]\s*[-–]\s*(.+)$/);
-            if (labelStripMatch) qCorrect = labelStripMatch[1].trim();
+            // Historical data has many "undefined - undefined" entries from the
+            // legacy per-language ci bug (memory: project_per_language_ci_bug).
+            // Treat those as if no correct answer was captured — they
+            // aggregate by text alone, just like the pre-split behavior.
+            if (qCorrect.indexOf('undefined') !== -1 || qCorrect === '-' || qCorrect === '') {
+              qCorrect = '';
+            } else {
+              // Strip "A - " / "ב - " / "В - " label prefix; keep only the answer text
+              var labelStripMatch = qCorrect.match(/^[A-Za-dא-לА-Г]\s*[-–]\s*(.+)$/);
+              if (labelStripMatch) qCorrect = labelStripMatch[1].trim();
+            }
           }
         }
         // Aggregation key is text + correct answer. This separates many distinct
         // sign questions that share the generic "מה פירוש התמרור?" prompt —
-        // before this change they all collapsed to one row with a misleading
-        // huge count. Now each specific sign appears as its own entry, and we
-        // can look up its image later by matching both fields.
+        // when correctAnswer is available. When it's missing (legacy data),
+        // qCorrect is '' and they aggregate by text alone, matching the
+        // pre-split behavior so the dashboard still surfaces "high failure
+        // text" rows for historical periods.
         if (qText) {
           var compositeKey = qText + '|||' + qCorrect;
           wrongQuestionCounts[compositeKey] = (wrongQuestionCounts[compositeKey] || 0) + 1;
@@ -4387,14 +4396,28 @@ function handleCommanderDashboard(p) {
         for (var twi = 0; twi < topWrong.length; twi++) {
           if (topWrong[twi].imageUrl) continue;
           var candidates = qByText[topWrong[twi].question] || [];
-          for (var ci = 0; ci < candidates.length; ci++) {
-            var cand = candidates[ci];
-            if (!Array.isArray(cand.answers)) continue;
-            if (cand.answers.indexOf(topWrong[twi].correctAnswer) !== -1) {
-              if (cand.imageUrl) topWrong[twi].imageUrl = cand.imageUrl;
-              if (cand.id) topWrong[twi].questionId = cand.id;
-              break;
+          if (candidates.length === 0) continue;
+          // Path A: correct answer known — match it precisely against the
+          // candidate's answers array. Best signal of which specific question
+          // this aggregation refers to.
+          if (topWrong[twi].correctAnswer) {
+            for (var ci = 0; ci < candidates.length; ci++) {
+              var cand = candidates[ci];
+              if (!Array.isArray(cand.answers)) continue;
+              if (cand.answers.indexOf(topWrong[twi].correctAnswer) !== -1) {
+                if (cand.imageUrl) topWrong[twi].imageUrl = cand.imageUrl;
+                if (cand.id) topWrong[twi].questionId = cand.id;
+                break;
+              }
             }
+          }
+          // Path B: no correct answer (legacy bogus data). If only ONE
+          // candidate exists in this language for this exact text, it's
+          // unambiguous — attach its image. Multi-candidate text "מה
+          // פירוש התמרור?" gets no image because we'd be guessing.
+          if (!topWrong[twi].imageUrl && candidates.length === 1) {
+            if (candidates[0].imageUrl) topWrong[twi].imageUrl = candidates[0].imageUrl;
+            if (candidates[0].id) topWrong[twi].questionId = candidates[0].id;
           }
         }
       }

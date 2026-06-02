@@ -5523,10 +5523,12 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
         html += '<span style="font-size:10px;color:#cbd5e1;">—</span>';
       }
       html += '</td>';
-      // Question + correct answer cell
+      // Question + correct answer cell. Skip undefined/empty correct answers
+      // (legacy ci-bug data) — showing "undefined" would be worse than nothing.
       html += '<td style="padding:6px 8px;line-height:1.4;color:#334155;">';
       html += '<div style="font-weight:500;">' + escapeHtml(item.question) + '</div>';
-      if (item.correctAnswer) {
+      var validAnswer = item.correctAnswer && String(item.correctAnswer).indexOf('undefined') === -1;
+      if (validAnswer) {
         html += '<div style="margin-top:4px;font-size:11px;color:#16a34a;"><strong>✓ נכון:</strong> ' + escapeHtml(item.correctAnswer) + '</div>';
       }
       if (item.questionId) {
@@ -5885,7 +5887,8 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
         }
         H.push('</td>');
         H.push('<td><div>' + escapeHtml(tw.question) + '</div>');
-        if (tw.correctAnswer) {
+        var twValidAnswer = tw.correctAnswer && String(tw.correctAnswer).indexOf('undefined') === -1;
+        if (twValidAnswer) {
           H.push('<div style="color:#16a34a;font-size:10px;margin-top:2px;"><strong>נכון:</strong> ' + escapeHtml(tw.correctAnswer) + '</div>');
         }
         H.push('</td>');
