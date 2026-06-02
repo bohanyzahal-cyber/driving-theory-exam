@@ -3654,6 +3654,7 @@
         var uqCorrectIdx = getQCorrectIndex(uq);
         var translatedCorrect = uqAnswers[uqCorrectIdx];
         wrongData.push({
+          questionId: uq && uq.id ? uq.id : '',
           question: getQText(uq),
           yourAnswer: '\u05DC\u05D0 \u05E0\u05E2\u05E0\u05EA\u05D4',
           correctAnswer: so ? (wrongLabels[so.correctIdx] + ' - ' + translatedCorrect) : translatedCorrect,
@@ -3662,6 +3663,7 @@
       } else if (!userAnswers[w].isCorrect) {
         var a = userAnswers[w];
         wrongData.push({
+          questionId: a.question && a.question.id ? a.question.id : '',
           question: getQText(a.question),
           yourAnswer: wrongLabels[a.chosenIndex] + ' - ' + a.shuffledAnswers[a.chosenIndex],
           correctAnswer: wrongLabels[a.shuffledCorrectIndex] + ' - ' + a.shuffledAnswers[a.shuffledCorrectIndex],

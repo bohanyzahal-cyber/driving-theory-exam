@@ -2785,6 +2785,11 @@ function handleSubmitResult(data) {
   if (data.wrongAnswers && data.wrongAnswers.length > 0) {
     for (var i = 0; i < data.wrongAnswers.length; i++) {
       var w = data.wrongAnswers[i];
+      // Question ID prefix lets the commander dashboard aggregate by the exact
+      // question (not just generic text "מה פירוש התמרור?" that collapses 50+
+      // distinct sign questions into one row). Backward-compatible — readers
+      // tolerate the line being missing for legacy rows.
+      if (w.questionId) wrongDetails += 'מזהה שאלה: ' + w.questionId + '\n';
       wrongDetails += 'שאלה: ' + w.question + '\n';
       wrongDetails += 'תשובת הנבחן: ' + w.yourAnswer + '\n';
       wrongDetails += 'תשובה נכונה: ' + w.correctAnswer + '\n';
@@ -2981,6 +2986,8 @@ function handleSubmitWrongAnswersBulk(data) {
       if (data.wrongAnswers && data.wrongAnswers.length > 0) {
         for (var w = 0; w < data.wrongAnswers.length; w++) {
           var item = data.wrongAnswers[w];
+          // Question ID prefix — see comment in handleSubmitWrongAnswers above.
+          if (item.questionId) wrongDetails += 'מזהה שאלה: ' + item.questionId + '\n';
           wrongDetails += 'שאלה: ' + item.question + '\n';
           wrongDetails += 'תשובת הנבחן: ' + item.yourAnswer + '\n';
           wrongDetails += 'תשובה נכונה: ' + item.correctAnswer + '\n';
@@ -4167,37 +4174,44 @@ function handleCommanderDashboard(p) {
       var blocks = wrongDetails.split(/\n\s*\n/);
       for (var wb = 0; wb < blocks.length; wb++) {
         var lines = blocks[wb].split('\n');
-        var qText = '', qCorrect = '';
+        var qText = '', qCorrect = '', qId = '';
         for (var wl = 0; wl < lines.length; wl++) {
           var line = lines[wl];
-          if (line.indexOf('שאלה:') === 0) {
+          if (line.indexOf('מזהה שאלה:') === 0) {
+            qId = line.replace(/^מזהה שאלה:\s*/, '').trim();
+          } else if (line.indexOf('שאלה:') === 0) {
             qText = line.replace(/^שאלה:\s*/, '').trim();
             if (qText.length > 200) qText = qText.substring(0, 200);
           } else if (line.indexOf('תשובה נכונה:') === 0) {
             qCorrect = line.replace(/^תשובה נכונה:\s*/, '').trim();
             // Historical data has many "undefined - undefined" entries from the
             // legacy per-language ci bug (memory: project_per_language_ci_bug).
-            // Treat those as if no correct answer was captured — they
-            // aggregate by text alone, just like the pre-split behavior.
+            // Treat those as if no correct answer was captured.
             if (qCorrect.indexOf('undefined') !== -1 || qCorrect === '-' || qCorrect === '') {
               qCorrect = '';
             } else {
-              // Strip "A - " / "ב - " / "В - " label prefix; keep only the answer text
               var labelStripMatch = qCorrect.match(/^[A-Za-dא-לА-Г]\s*[-–]\s*(.+)$/);
               if (labelStripMatch) qCorrect = labelStripMatch[1].trim();
             }
           }
         }
-        // Aggregation key is text + correct answer. This separates many distinct
-        // sign questions that share the generic "מה פירוש התמרור?" prompt —
-        // when correctAnswer is available. When it's missing (legacy data),
-        // qCorrect is '' and they aggregate by text alone, matching the
-        // pre-split behavior so the dashboard still surfaces "high failure
-        // text" rows for historical periods.
-        if (qText) {
-          var compositeKey = qText + '|||' + qCorrect;
-          wrongQuestionCounts[compositeKey] = (wrongQuestionCounts[compositeKey] || 0) + 1;
+        // Preferred aggregation key: question ID (added 2026-06-02). Uniquely
+        // identifies the question across all license/language variants — no
+        // false collisions, no "מה פירוש התמרור?" lumping.
+        // Fallback for legacy rows without ID: (text + correctAnswer), or
+        // text alone if correctAnswer is also missing/garbage.
+        var key;
+        if (qId) {
+          key = 'id:' + qId;
+        } else if (qText) {
+          key = 't:' + qText + '|||' + qCorrect;
+        } else {
+          continue;
         }
+        if (!wrongQuestionCounts[key]) {
+          wrongQuestionCounts[key] = { count: 0, text: qText, correctAnswer: qCorrect, questionId: qId };
+        }
+        wrongQuestionCounts[key].count++;
       }
     }
 
@@ -4348,16 +4362,21 @@ function handleCommanderDashboard(p) {
 
   // Top-N most-missed questions, sorted by count descending. Capped at 10 —
   // beyond that the list gets noisy and stops driving decisions.
-  // Keys are composite "text|||correctAnswer" — split before exposing.
+  // Values are objects {count, text, correctAnswer, questionId}; questionId
+  // takes precedence (post-2026-06-02 data), text+correctAnswer is the
+  // fallback for legacy rows.
   var topWrong = [];
   var wrongKeys = Object.keys(wrongQuestionCounts);
-  wrongKeys.sort(function(a, b) { return wrongQuestionCounts[b] - wrongQuestionCounts[a]; });
+  wrongKeys.sort(function(a, b) {
+    return wrongQuestionCounts[b].count - wrongQuestionCounts[a].count;
+  });
   for (var wk = 0; wk < Math.min(wrongKeys.length, 10); wk++) {
-    var parts = wrongKeys[wk].split('|||');
+    var entry = wrongQuestionCounts[wrongKeys[wk]];
     topWrong.push({
-      question: parts[0] || '',
-      correctAnswer: parts[1] || '',
-      count: wrongQuestionCounts[wrongKeys[wk]]
+      question: entry.text || '',
+      correctAnswer: entry.correctAnswer || '',
+      questionId: entry.questionId || '',
+      count: entry.count
     });
   }
 
@@ -4385,39 +4404,47 @@ function handleCommanderDashboard(p) {
         try { langQs = loadQuestionsForLanguageServer(SUPPORTED_LANGS_FOR_IMG[lgi]); }
         catch (eLoad) { continue; }
         if (!Array.isArray(langQs) || langQs.length === 0) continue;
-        // Index by text for fast lookup
-        var qByText = {};
+        // Index by ID (fast path) and by text (fallback path)
+        var qById = {}, qByText = {};
         for (var qIdx = 0; qIdx < langQs.length; qIdx++) {
           var qRec = langQs[qIdx];
-          if (!qRec || !qRec.text) continue;
-          if (!qByText[qRec.text]) qByText[qRec.text] = [];
-          qByText[qRec.text].push(qRec);
+          if (!qRec) continue;
+          if (qRec.id) qById[String(qRec.id)] = qRec;
+          if (qRec.text) {
+            if (!qByText[qRec.text]) qByText[qRec.text] = [];
+            qByText[qRec.text].push(qRec);
+          }
         }
         for (var twi = 0; twi < topWrong.length; twi++) {
           if (topWrong[twi].imageUrl) continue;
+          // Path 0: question ID known (new data) — direct lookup, no
+          // ambiguity. Best of all paths.
+          if (topWrong[twi].questionId) {
+            var idMatch = qById[String(topWrong[twi].questionId)];
+            if (idMatch && idMatch.imageUrl) {
+              topWrong[twi].imageUrl = idMatch.imageUrl;
+              continue;
+            }
+          }
           var candidates = qByText[topWrong[twi].question] || [];
           if (candidates.length === 0) continue;
           // Path A: correct answer known — match it precisely against the
-          // candidate's answers array. Best signal of which specific question
-          // this aggregation refers to.
+          // candidate's answers array.
           if (topWrong[twi].correctAnswer) {
             for (var ci = 0; ci < candidates.length; ci++) {
               var cand = candidates[ci];
               if (!Array.isArray(cand.answers)) continue;
               if (cand.answers.indexOf(topWrong[twi].correctAnswer) !== -1) {
                 if (cand.imageUrl) topWrong[twi].imageUrl = cand.imageUrl;
-                if (cand.id) topWrong[twi].questionId = cand.id;
+                if (cand.id && !topWrong[twi].questionId) topWrong[twi].questionId = cand.id;
                 break;
               }
             }
           }
-          // Path B: no correct answer (legacy bogus data). If only ONE
-          // candidate exists in this language for this exact text, it's
-          // unambiguous — attach its image. Multi-candidate text "מה
-          // פירוש התמרור?" gets no image because we'd be guessing.
+          // Path B: only one candidate for this exact text — unambiguous.
           if (!topWrong[twi].imageUrl && candidates.length === 1) {
             if (candidates[0].imageUrl) topWrong[twi].imageUrl = candidates[0].imageUrl;
-            if (candidates[0].id) topWrong[twi].questionId = candidates[0].id;
+            if (candidates[0].id && !topWrong[twi].questionId) topWrong[twi].questionId = candidates[0].id;
           }
         }
       }
