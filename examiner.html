@@ -620,9 +620,10 @@
     </div>
 
     <div class="card" id="cmdPracticeImpactCard" style="display:none;">
-      <h3 style="margin:0 0 10px;font-size:15px;color:#334155;">🔬 השפעת תרגול על מבחן</h3>
+      <h3 style="margin:0 0 10px;font-size:15px;color:#334155;">🔬 השפעת תרגול במערכת על מבחן</h3>
       <p style="margin:0 0 12px;font-size:11px;color:#94a3b8;line-height:1.4;">
-        בודק מי תרגל בדף תלמיד 30 ימים לפני המבחן (התאמה לפי שם מלא + דרגה).
+        בודק מי תרגל ב-<code style="background:#f1f5f9;padding:1px 4px;border-radius:3px;">student.html</code> ב-30 ימים לפני המבחן.
+        התאמה לפי שם מלא + דרגה (לא ת.ז.) — לכן יכולות להיות אי-התאמות בכתיב.
         DQ-ים לא נספרים.
       </p>
       <div id="cmdPracticeImpact"></div>
@@ -5426,21 +5427,32 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     var deltaSign = delta > 0 ? '+' : '';
 
     var html = '';
-    // Top panel: side-by-side
+    // Top panel: side-by-side. Labels intentionally say "תרגלו במערכת" /
+    // "אין רישום תרגול במערכת" rather than "תרגלו" / "לא תרגלו" — the
+    // matching depends on identical name spelling, so a student who
+    // practiced under "אבי" but tested as "אברהם" lands in the
+    // no-record bucket even though they DID practice. Being honest about
+    // the limitation matters when the commander draws conclusions.
     html += '<div style="display:grid;grid-template-columns:1fr auto 1fr;gap:14px;align-items:center;margin-bottom:18px;">';
     html += '<div style="text-align:center;padding:14px;background:#dcfce7;border:1px solid #86efac;border-radius:12px;">';
-    html += '<div style="font-size:11px;color:#166534;font-weight:600;margin-bottom:4px;">תרגלו לפני המבחן</div>';
+    html += '<div style="font-size:11px;color:#166534;font-weight:600;margin-bottom:4px;">תרגלו במערכת</div>';
     html += '<div style="font-size:28px;font-weight:900;color:#15803d;line-height:1;">' + wA.passRate + '%</div>';
     html += '<div style="font-size:12px;color:#15803d;margin-top:4px;">עברו (' + wA.passed + ' / ' + wA.total + ')</div>';
     html += '</div>';
     html += '<div style="text-align:center;padding:0 10px;"><div style="font-size:11px;color:#64748b;margin-bottom:2px;">הפרש</div>';
     html += '<div style="font-size:22px;font-weight:900;color:' + deltaColor + ';">' + deltaSign + delta + '%</div></div>';
     html += '<div style="text-align:center;padding:14px;background:#fef2f2;border:1px solid #fca5a5;border-radius:12px;">';
-    html += '<div style="font-size:11px;color:#991b1b;font-weight:600;margin-bottom:4px;">לא תרגלו בכלל</div>';
+    html += '<div style="font-size:11px;color:#991b1b;font-weight:600;margin-bottom:4px;">אין רישום במערכת</div>';
     html += '<div style="font-size:28px;font-weight:900;color:#dc2626;line-height:1;">' + no.passRate + '%</div>';
     html += '<div style="font-size:12px;color:#991b1b;margin-top:4px;">עברו (' + no.passed + ' / ' + no.total + ')</div>';
     html += '</div>';
     html += '</div>';
+    // Honest disclaimer about the matching limitation — name-only join
+    // can't separate "didn't practice" from "practiced under a different
+    // spelling". Surface this once below the headline numbers.
+    html += '<p style="margin:-6px 0 14px;font-size:11px;color:#94a3b8;text-align:center;line-height:1.4;">';
+    html += '"אין רישום" כולל גם תלמידים שתרגלו אבל הקלידו שם בכתיב שונה מהמבחן, או תרגלו עם ספר/אפליקציה אחרת.';
+    html += '</p>';
 
     // Bottom panel: bucket table
     html += '<h4 style="margin:0 0 8px;font-size:13px;color:#334155;">פילוח לפי ציון תרגול אחרון</h4>';
@@ -5452,7 +5464,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     html += '<th style="padding:8px;text-align:center;font-size:11px;color:#64748b;">% הצלחה</th>';
     html += '</tr></thead><tbody>';
     var buckets = [
-      { key: 'none', label: 'בלי תרגול', color: '#dc2626' },
+      { key: 'none', label: 'אין רישום במערכת', color: '#dc2626' },
       { key: 'low',  label: 'ציון תרגול < 70%', color: '#f59e0b' },
       { key: 'mid',  label: 'ציון תרגול 70-85%', color: '#3b82f6' },
       { key: 'high', label: 'ציון תרגול ≥ 86%', color: '#16a34a' }
