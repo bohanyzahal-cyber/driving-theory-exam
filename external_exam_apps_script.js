@@ -1251,16 +1251,37 @@ function handleSiteCombinedReport(p) {
 // dropdown to pick the בוחן אחראי. Only sends `name` — IDs/roles/tokens
 // don't belong on the client. Active = column D in 'בוחנים' is exactly 'כן'
 // (the same truthiness check used elsewhere).
+//
+// RESPONSIBLE_EXAMINER_HIDE_LIST: names to omit from this dropdown even when
+// they're marked active in the sheet. Use when an examiner is still active in
+// the system (can log in, see their dashboard) but shouldn't be selectable as
+// a "responsible examiner" on the work order. Comparison is normalized
+// (trim + lowercase + collapsed whitespace) so casing/spacing variants match.
+var RESPONSIBLE_EXAMINER_HIDE_LIST = [
+  'תומר לוי',
+  'אביאור שמעוני',
+  'דוד בטיטו'
+];
+function _normalizeNameForHideList(s) {
+  return String(s || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
 function handleListActiveExaminers(p) {
   var sheet = getSheet('בוחנים');
   var data = sheet.getDataRange().getValues();
+  var hideSet = {};
+  for (var hi = 0; hi < RESPONSIBLE_EXAMINER_HIDE_LIST.length; hi++) {
+    hideSet[_normalizeNameForHideList(RESPONSIBLE_EXAMINER_HIDE_LIST[hi])] = true;
+  }
   var names = [];
   for (var i = 1; i < data.length; i++) {
     var active = data[i][3];
     var isActive = (active === true) || (active === 'כן') || (String(active).toUpperCase() === 'TRUE');
     if (!isActive) continue;
     var name = String(data[i][0] || '').trim();
-    if (name) names.push(name);
+    if (!name) continue;
+    if (hideSet[_normalizeNameForHideList(name)]) continue;
+    names.push(name);
   }
   names.sort(function(a, b) { return a.localeCompare(b, 'he'); });
   return jsonResponse({ status: 'ok', examiners: names });
