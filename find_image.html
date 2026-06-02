@@ -506,6 +506,21 @@
   document.addEventListener('keydown', function(e) {
     if (e.key === 'Escape') document.getElementById('fullOverlay').classList.remove('active');
   });
+
+  // Auto-fill from URL parameter ?q=... — lets the commander dashboard
+  // deep-link from the top-10 wrong-questions table directly into a search.
+  try {
+    var params = new URLSearchParams(window.location.search);
+    var qVal = params.get('q');
+    if (qVal) {
+      var inp = document.getElementById('searchInput');
+      if (inp) {
+        inp.value = qVal;
+        // Trigger the same debounced search the input event uses
+        setTimeout(function() { runSearch(qVal); }, 100);
+      }
+    }
+  } catch (e) { /* URLSearchParams missing — fine, falls back to manual entry */ }
 })();
 </script>
 </body>

@@ -5525,8 +5525,15 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       html += '</td>';
       // Question + correct answer cell. Skip undefined/empty correct answers
       // (legacy ci-bug data) — showing "undefined" would be worse than nothing.
+      // Add a deep link to find_image.html?q=... — lets the commander click
+      // into any row (especially sign questions like "מה פירוש התמרור?"
+      // that aggregate dozens of distinct questions) and browse all matches
+      // with images. Best workaround for the limitation that we can't pick
+      // one image when correctAnswer is missing.
       html += '<td style="padding:6px 8px;line-height:1.4;color:#334155;">';
-      html += '<div style="font-weight:500;">' + escapeHtml(item.question) + '</div>';
+      html += '<div style="font-weight:500;">' + escapeHtml(item.question);
+      html += ' <a href="find_image.html?q=' + encodeURIComponent(item.question) + '" target="_blank" rel="noopener" title="חפש את השאלה ב-find_image" style="font-size:11px;color:#3b82f6;text-decoration:none;margin-right:6px;">🔍 חפש</a>';
+      html += '</div>';
       var validAnswer = item.correctAnswer && String(item.correctAnswer).indexOf('undefined') === -1;
       if (validAnswer) {
         html += '<div style="margin-top:4px;font-size:11px;color:#16a34a;"><strong>✓ נכון:</strong> ' + escapeHtml(item.correctAnswer) + '</div>';
