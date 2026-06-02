@@ -4167,17 +4167,27 @@ function handleCommanderDashboard(p) {
       var blocks = wrongDetails.split(/\n\s*\n/);
       for (var wb = 0; wb < blocks.length; wb++) {
         var lines = blocks[wb].split('\n');
+        var qText = '', qCorrect = '';
         for (var wl = 0; wl < lines.length; wl++) {
           var line = lines[wl];
-          // Match both "שאלה:" prefix variants (with/without space-prefix)
-          if (line.indexOf('שאלה:') === 0 || line.indexOf('שאלה: ') === 0) {
-            var qText = line.replace(/^שאלה:\s*/, '').trim();
-            // Truncate ultra-long question text for the count key — questions
-            // rendered with extra whitespace shouldn't be double-counted.
+          if (line.indexOf('שאלה:') === 0) {
+            qText = line.replace(/^שאלה:\s*/, '').trim();
             if (qText.length > 200) qText = qText.substring(0, 200);
-            if (qText) wrongQuestionCounts[qText] = (wrongQuestionCounts[qText] || 0) + 1;
-            break;
+          } else if (line.indexOf('תשובה נכונה:') === 0) {
+            qCorrect = line.replace(/^תשובה נכונה:\s*/, '').trim();
+            // Strip "A - " / "ב - " / "В - " label prefix; keep only the answer text
+            var labelStripMatch = qCorrect.match(/^[A-Za-dא-לА-Г]\s*[-–]\s*(.+)$/);
+            if (labelStripMatch) qCorrect = labelStripMatch[1].trim();
           }
+        }
+        // Aggregation key is text + correct answer. This separates many distinct
+        // sign questions that share the generic "מה פירוש התמרור?" prompt —
+        // before this change they all collapsed to one row with a misleading
+        // huge count. Now each specific sign appears as its own entry, and we
+        // can look up its image later by matching both fields.
+        if (qText) {
+          var compositeKey = qText + '|||' + qCorrect;
+          wrongQuestionCounts[compositeKey] = (wrongQuestionCounts[compositeKey] || 0) + 1;
         }
       }
     }
@@ -4329,12 +4339,67 @@ function handleCommanderDashboard(p) {
 
   // Top-N most-missed questions, sorted by count descending. Capped at 10 —
   // beyond that the list gets noisy and stops driving decisions.
+  // Keys are composite "text|||correctAnswer" — split before exposing.
   var topWrong = [];
   var wrongKeys = Object.keys(wrongQuestionCounts);
   wrongKeys.sort(function(a, b) { return wrongQuestionCounts[b] - wrongQuestionCounts[a]; });
   for (var wk = 0; wk < Math.min(wrongKeys.length, 10); wk++) {
-    topWrong.push({ question: wrongKeys[wk], count: wrongQuestionCounts[wrongKeys[wk]] });
+    var parts = wrongKeys[wk].split('|||');
+    topWrong.push({
+      question: parts[0] || '',
+      correctAnswer: parts[1] || '',
+      count: wrongQuestionCounts[wrongKeys[wk]]
+    });
   }
+
+  // Image lookup: many top-N questions are traffic-sign prompts ("מה פירוש
+  // התמרור?") that don't make sense without seeing the sign. Try to resolve
+  // each top-wrong entry to its real question record so we can include the
+  // imageUrl + id. Hebrew first (most exams); other languages as fallback
+  // for entries that didn't resolve.
+  //
+  // The match key is (text, correctAnswer-in-answers, correctIndex points to
+  // that answer). This is strict enough that even if two real questions share
+  // the same text, we only attach the image when the correct-answer text also
+  // matches the answer-key index — so we either get the right sign or no
+  // image. Better silent miss than a wrong picture.
+  try {
+    if (typeof loadQuestionsForLanguageServer === 'function') {
+      var SUPPORTED_LANGS_FOR_IMG = ['he', 'ru', 'en', 'ar', 'fr', 'es', 'am'];
+      for (var lgi = 0; lgi < SUPPORTED_LANGS_FOR_IMG.length; lgi++) {
+        var stillMissing = false;
+        for (var tw0 = 0; tw0 < topWrong.length; tw0++) {
+          if (!topWrong[tw0].imageUrl) { stillMissing = true; break; }
+        }
+        if (!stillMissing) break;
+        var langQs;
+        try { langQs = loadQuestionsForLanguageServer(SUPPORTED_LANGS_FOR_IMG[lgi]); }
+        catch (eLoad) { continue; }
+        if (!Array.isArray(langQs) || langQs.length === 0) continue;
+        // Index by text for fast lookup
+        var qByText = {};
+        for (var qIdx = 0; qIdx < langQs.length; qIdx++) {
+          var qRec = langQs[qIdx];
+          if (!qRec || !qRec.text) continue;
+          if (!qByText[qRec.text]) qByText[qRec.text] = [];
+          qByText[qRec.text].push(qRec);
+        }
+        for (var twi = 0; twi < topWrong.length; twi++) {
+          if (topWrong[twi].imageUrl) continue;
+          var candidates = qByText[topWrong[twi].question] || [];
+          for (var ci = 0; ci < candidates.length; ci++) {
+            var cand = candidates[ci];
+            if (!Array.isArray(cand.answers)) continue;
+            if (cand.answers.indexOf(topWrong[twi].correctAnswer) !== -1) {
+              if (cand.imageUrl) topWrong[twi].imageUrl = cand.imageUrl;
+              if (cand.id) topWrong[twi].questionId = cand.id;
+              break;
+            }
+          }
+        }
+      }
+    }
+  } catch (eImg) { /* image resolution best-effort; ignore failures */ }
 
   // Practice impact — finalize pass rates for each bucket. Pass rate is
   // computed only on the non-DQ sample (DQs were excluded above).
