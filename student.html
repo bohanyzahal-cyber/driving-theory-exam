@@ -434,8 +434,8 @@
   <div class="welcome-header"><div class="icon">&#x1F4DA;</div><h1>תרגול תאוריה</h1><p>תרגלו לקראת מבחן התאוריה</p></div>
   <div class="card">
     <div class="form-grid">
-      <label><span class="required">שם</span><input type="text" id="inputName" placeholder="השם שלך" required/></label>
-      <label><span>קוד כיתה</span><input type="text" id="inputClassCode" placeholder="הזן קוד כיתה (אופציונלי)" maxlength="6" style="text-transform:uppercase;"/><span id="classStatus" style="font-size:12px;margin-top:2px;display:none;"></span></label>
+      <label><span class="required">שם מלא</span><input type="text" id="inputName" placeholder="השם שלך כפי שיופיע במבחן" required/><span style="font-size:11px;color:#64748b;margin-top:2px;">הקלד בעברית, בדיוק כפי שיירשם במבחן האמיתי</span></label>
+      <label><span>קוד כיתה (אופציונלי)</span><input type="text" id="inputClassCode" placeholder="יש לי קוד כיתה" maxlength="6" style="text-transform:uppercase;"/><span id="classStatus" style="font-size:12px;margin-top:2px;display:none;"></span><span style="font-size:11px;color:#16a34a;margin-top:2px;">בלי קוד? ההישגים שלך עדיין יישמרו לסטטיסטיקה ✓</span></label>
     </div>
     <div class="form-grid">
       <label><span>דרגת רישיון</span><select id="selectLicense"><option value="B">B (פרטי)</option><option value="1">1 (טרקטור)</option><option value="C1">C1 (משא קל)</option><option value="C">C/E (משא כבד)</option><option value="D">D (ציבורי)</option></select></label>
@@ -1021,7 +1021,13 @@ if(examStartTime){var hd=Math.floor((Date.now()-examStartTime)/1000);var hm=Math
 saveToHistory(currentMode, currentCategory, correct, total, pct, passed, histElapsed);updateStreak();saveWrongQuestions();syncProgressToCloud();
 
 
-var sb=document.createElement('div');sb.className='card result-score-box';var bs=document.createElement('div');bs.className='result-big-score';bs.textContent=correct+' / '+total;sb.appendChild(bs);var pe=document.createElement('div');pe.className='result-pct';pe.textContent=pct+'%';sb.appendChild(pe);var bg=document.createElement('div');bg.className='result-badge';if(passed){bg.classList.add('pass');bg.textContent='\u05E2\u05D1\u05E8\u05EA! \u2705';}else{bg.classList.add('fail');bg.textContent='\u05E0\u05DB\u05E9\u05DC\u05EA \u2717';}sb.appendChild(bg);area.appendChild(sb);
+var sb=document.createElement('div');sb.className='card result-score-box';var bs=document.createElement('div');bs.className='result-big-score';bs.textContent=correct+' / '+total;sb.appendChild(bs);var pe=document.createElement('div');pe.className='result-pct';pe.textContent=pct+'%';sb.appendChild(pe);var bg=document.createElement('div');bg.className='result-badge';if(passed){bg.classList.add('pass');bg.textContent='\u05E2\u05D1\u05E8\u05EA! \u2705';}else{bg.classList.add('fail');bg.textContent='\u05E0\u05DB\u05E9\u05DC\u05EA \u2717';}sb.appendChild(bg);
+// Confirmation that result was sent to backend \u2014 makes it visible to the
+// student that their stats are being tracked even when they have no class
+// code. Without this, students assume "no class = no tracking" and stay
+// off-system, hurting the practice\u2192exam impact metric.
+if(currentName){var savedBanner=document.createElement('div');savedBanner.style.cssText='margin-top:8px;padding:8px 12px;background:#dcfce7;border:1px solid #86efac;border-radius:8px;font-size:12px;color:#166534;text-align:center;';savedBanner.innerHTML='\u2713 \u05D4\u05EA\u05D5\u05E6\u05D0\u05D4 \u05E0\u05E9\u05DE\u05E8\u05D4 \u05D1\u05DE\u05E2\u05E8\u05DB\u05EA'+(currentClassCode?' (\u05DB\u05D9\u05EA\u05D4: '+currentClassCode+')':' (\u05EA\u05E8\u05D2\u05D5\u05DC \u05E2\u05E6\u05DE\u05D0\u05D9)');sb.appendChild(savedBanner);}
+area.appendChild(sb);
 
 var bd=computeCategoryBreakdown();if(bd.length>0){var bc=document.createElement('div');bc.className='card cat-breakdown';var bt=document.createElement('h3');bt.textContent='\u05E4\u05D9\u05E8\u05D5\u05D8 \u05DC\u05E4\u05D9 \u05E0\u05D5\u05E9\u05D0';bc.appendChild(bt);for(var bi=0;bi<bd.length;bi++){var b=bd[bi],row=document.createElement('div');row.className='cat-bar-row';var lb=document.createElement('span');lb.className='cat-bar-label';lb.textContent=CATEGORY_LABELS[b.category]||b.category;row.appendChild(lb);var tr=document.createElement('div');tr.className='cat-bar-track';var fl=document.createElement('div');fl.className='cat-bar-fill';var cp=b.total>0?Math.round((b.correct/b.total)*100):0;fl.style.width=cp+'%';if(cp>=80)fl.classList.add('green');else if(cp>=60)fl.classList.add('yellow');else fl.classList.add('red');tr.appendChild(fl);row.appendChild(tr);var sc=document.createElement('span');sc.className='cat-bar-score';sc.textContent=b.correct+'/'+b.total;row.appendChild(sc);if(cp<80){var stb=document.createElement('button');stb.className='btn-strengthen';stb.textContent='⚡ תרגל';(function(c){stb.addEventListener('click',function(){startCategoryQuiz(c);});})(b.category);row.appendChild(stb);}bc.appendChild(row);}area.appendChild(bc);}
 
