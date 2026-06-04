@@ -4149,6 +4149,31 @@
     try { showSafariWarningIfNeeded(); } catch (e) { /* defensive */ }
   }
 
+  // ===== Auto-update: reload to the latest deployed version when idle =====
+  // The service worker is now network-first, so any reload fetches the newest
+  // examinee.html. Here we TRIGGER that reload automatically when a new version
+  // is deployed — but ONLY while idle (never mid-exam or while a submit is still
+  // pending). Deploys are detected by polling our own page's ETag/Last-Modified
+  // (HEAD bypasses the SW since it isn't a GET). Zero maintenance — no version
+  // file to bump.
+  (function() {
+    if (!window.fetch) return;
+    var baseTag = null;
+    var tagOf = function(r) { return r.headers.get('ETag') || r.headers.get('Last-Modified') || null; };
+    var probe = function(cb) {
+      fetch(location.pathname, { method: 'HEAD', cache: 'no-store' })
+        .then(function(r) { cb(tagOf(r)); }).catch(function() { cb(null); });
+    };
+    probe(function(t) { baseTag = t; });
+    setInterval(function() {
+      probe(function(t) {
+        if (!t || !baseTag || t === baseTag) return;   // unchanged / unknown
+        if (examInProgress || examSubmitted) return;    // never disrupt an exam / pending submit
+        location.reload();
+      });
+    }, 120000);  // check every 2 min
+  })();
+
 })();
 </script>
 <script>
