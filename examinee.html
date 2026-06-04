@@ -875,6 +875,7 @@
   var examStartTime = null;
   var examInProgress = false;
   var examSubmitted = false;
+  var examStartConfirmed = false;  // true once the server confirmed markExamStarted (→ in_exam)
   var approvalInterval = null;
 
   // TTS state
@@ -1130,6 +1131,7 @@
       idNumber: examineeData.idNumber
     }).then(function(resp) {
       if (resp && resp.status === 'ok') {
+        examStartConfirmed = true;
         console.log('[STATUS] markExamStarted ok (attempt ' + attempt + ')');
       } else {
         console.warn('[STATUS] markExamStarted server reject (attempt ' + attempt + '):', resp);
@@ -1140,6 +1142,17 @@
       if (retries > 1) setTimeout(function() { markExamStartedWithRetry(retries - 1); }, 2000 * attempt);
     });
   }
+
+  // iOS fix: if the exam is running but the server never confirmed markExamStarted
+  // (the call failed or was suspended while the page was backgrounded — common on
+  // iOS), re-fire it when the page returns to the foreground. Otherwise the
+  // examinee stays stuck as 'approved' = "ממתינים" on the examiner's screen for
+  // the whole exam. Gated by examStartConfirmed so it never spams once confirmed.
+  document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState === 'visible' && examInProgress && !examStartConfirmed) {
+      markExamStartedWithRetry(3);
+    }
+  });
 
   // ========== In-page finish-exam confirmation modal (Bug #5 fix) ==========
   // Native confirm() proved unreliable on iOS browsers — it can trigger
@@ -1650,7 +1663,9 @@
 
     // Notify server that exam started — retry on failure (status sync was
     // dropping silently on network blips, leaving examinees stuck as "ממתין"
-    // on the examiner's screen even after they took the exam).
+    // on the examiner's screen even after they took the exam). The
+    // visibilitychange handler re-fires this until the server confirms.
+    examStartConfirmed = false;
     markExamStartedWithRetry(3);
 
     // Use examinee's chosen license/language (may differ from session defaults)
