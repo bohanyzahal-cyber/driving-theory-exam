@@ -969,11 +969,14 @@
     stopDQOverturnPolling();
     // Clear state
     clearExamineeState();
-    // Clear pending result for CURRENT examinee only (in-flight retries for others may still need it)
+    // Do NOT silently drop an unsent result when resetting the device for the
+    // next examinee — that is one way completed exams "vanished". If a pending
+    // result is still here, fire a last-ditch resend; submitWithRetry removes it
+    // from localStorage only once the server CONFIRMS it. Keyed by id, so a
+    // leftover entry never interferes with the next examinee.
     if (examineeData.idNumber) {
       try {
-        localStorage.removeItem('pendingResult_' + examineeData.idNumber);
-        localStorage.removeItem('pendingWrongAnswers_' + examineeData.idNumber);
+        flushPendingResult(examineeData.idNumber);
         localStorage.removeItem('examEnded_' + sessionCode + '_' + examineeData.idNumber);
         localStorage.removeItem('examSuspended_' + sessionCode + '_' + examineeData.idNumber);
       } catch(e) {}
@@ -1725,16 +1728,58 @@
         correctShuffledIdx: sqShuffledCorrect
       });
     }
-    // Register exam questions with server (fire-and-forget). The server already
-    // knows which IDs it issued via the issued_qs_ cache key, so this is mostly
-    // bookkeeping + the shuffle permutation for scoring.
-    apiPostNoWait({
+    // Register exam questions with the server — CONFIRMED write. Was previously
+    // fire-and-forget (apiPostNoWait/no-cors), which failed SILENTLY under server
+    // load: no מבחנים row, no answer key, and the exam proceeded anyway — leaving
+    // examinees "tested but never recorded" (e.g. נבאללה 03/06, examinee פינטו).
+    // We now BLOCK the start until the server confirms it stored the key, with a
+    // retry button on failure. Examinee never enters an exam that isn't recorded.
+    var doRegister = function() {
+      showLoadingOverlay('רושם את המבחן בשרת…');
+      registerExamQuestionsConfirmed(regQuestions, language, 4, function _onRegistered() {
+        hideLoadingOverlay();
+        _beginExam(license, language);
+      }, function _onRegisterFailed() {
+        hideLoadingOverlay();
+        var ea = document.getElementById('examArea');
+        if (ea) {
+          ea.innerHTML =
+            '<div class="info-banner warn" style="font-size:15px;text-align:center;">' +
+            '<strong>⚠️ לא הצלחנו לרשום את המבחן בשרת.</strong><br>' +
+            'אל תתחיל — קרא לבוחן (ייתכן בעיית רשת/עומס).<br><br>' +
+            '<button id="retryRegisterBtn" style="padding:10px 22px;font-size:15px;font-weight:800;background:#1a73e8;color:#fff;border:none;border-radius:10px;cursor:pointer;">נסה שוב</button>' +
+            '</div>';
+          var rb = document.getElementById('retryRegisterBtn');
+          if (rb) rb.addEventListener('click', doRegister);
+        }
+      });
+    };
+    doRegister();
+  }
+
+  // Confirmed registerExamQuestions: uses apiPost (READS the server response,
+  // unlike the old no-cors path) and retries with backoff until status:ok.
+  // onOk fires only on a confirmed persisted write; onFail after retries run out.
+  function registerExamQuestionsConfirmed(regQuestions, language, retries, onOk, onFail) {
+    apiPost({
       action: 'registerExamQuestions',
       sessionCode: sessionCode,
       idNumber: examineeData.idNumber,
       language: language,
       questions: regQuestions
+    }).then(function(resp) {
+      if (resp && resp.status === 'ok') { onOk(); }
+      else if (retries > 1) { setTimeout(function() { registerExamQuestionsConfirmed(regQuestions, language, retries - 1, onOk, onFail); }, 1500); }
+      else { onFail(resp); }
+    }).catch(function(err) {
+      if (retries > 1) { setTimeout(function() { registerExamQuestionsConfirmed(regQuestions, language, retries - 1, onOk, onFail); }, 1500); }
+      else { onFail(err); }
     });
+  }
+
+  // Second half of exam start — runs ONLY after the server confirmed the question
+  // registration. Sets the timer, anti-cheat listeners, and renders the first Q.
+  function _beginExam(license, language) {
     timeRemaining = examTimeMinutes * 60;
     examStartTime = Date.now();
     examInProgress = true;
@@ -3753,54 +3798,97 @@
     });
   }
 
+  // LOUD, visible failure banner on the done screen. Previously the failure
+  // message went into a display:none debug div — so a result that never reached
+  // the server still looked "submitted". Now the examinee/examiner cannot miss it.
+  function showSubmitFailureBanner(payload, wrongData) {
+    var doneScreen = document.getElementById('screenDone');
+    if (!doneScreen) return;
+    var b = document.getElementById('submitFailBanner');
+    if (!b) {
+      b = document.createElement('div');
+      b.id = 'submitFailBanner';
+      b.style.cssText = 'margin:16px auto;max-width:520px;padding:16px;background:#fef2f2;border:2px solid #dc2626;border-radius:12px;color:#991b1b;font-size:15px;text-align:center;font-weight:700;';
+      doneScreen.insertBefore(b, doneScreen.firstChild);
+    }
+    b.innerHTML =
+      '⚠️ התוצאה עדיין לא נשלחה לשרת.<br>' +
+      '<span style="font-weight:400;">אל תסגור את הדף — קרא לבוחן. המערכת ממשיכה לנסות אוטומטית.</span><br>' +
+      '<button id="submitRetryNowBtn" style="margin-top:10px;padding:10px 22px;font-size:15px;font-weight:800;background:#dc2626;color:#fff;border:none;border-radius:10px;cursor:pointer;">נסה לשלוח עכשיו</button>';
+    var rn = document.getElementById('submitRetryNowBtn');
+    if (rn) rn.addEventListener('click', function() {
+      b.innerHTML = '⏳ שולח…';
+      submitWithRetry(payload, 3, wrongData);
+    });
+  }
+  function clearSubmitFailureBanner() {
+    var b = document.getElementById('submitFailBanner');
+    if (b && b.parentNode) b.parentNode.removeChild(b);
+  }
+
   function submitWithRetry(payload, retries, wrongData) {
     var attemptNum = 4 - retries;
-    console.log('[SUBMIT] Sending result via POST, attempt ' + attemptNum + '/3');
+    console.log('[SUBMIT] Sending result via POST, attempt ' + attemptNum);
     apiPost(payload).then(function(data) {
       console.log('[SUBMIT] Response:', JSON.stringify(data));
-      var debugEl = document.getElementById('submitDebug');
-      if (!debugEl) {
-        debugEl = document.createElement('div');
-        debugEl.id = 'submitDebug';
-        debugEl.style.cssText = 'display:none;';
-        var doneScreen = document.getElementById('screenDone');
-        if (doneScreen) doneScreen.appendChild(debugEl);
-      }
-      if (data.status === 'ok') {
-        debugEl.innerHTML = '<span style="color:green;">&#x2705; Result submitted successfully</span>' +
-          '<br>Session: ' + payload.sessionCode + ' | ID: ' + payload.idNumber + ' | Score: ' + payload.score + '/' + payload.total;
-        // Clear pending from localStorage — successfully sent
+      if (data && data.status === 'ok') {
+        clearSubmitFailureBanner();
+        // Clear pending from localStorage — confirmed persisted on the server.
         try {
           localStorage.removeItem('pendingResult_' + payload.idNumber);
           localStorage.removeItem('pendingWrongAnswers_' + payload.idNumber);
         } catch(e3) {}
-        // Now send wrong answers AFTER result row exists on server
-        if (wrongData && wrongData.length > 0) {
-          sendWrongAnswers(wrongData, payload.idNumber);
-        }
+        // Send wrong answers AFTER the result row exists on the server.
+        if (wrongData && wrongData.length > 0) sendWrongAnswers(wrongData, payload.idNumber);
       } else {
-        debugEl.innerHTML = '<span style="color:red;">&#x274C; Server error: ' + (data.message || 'unknown') + '</span>';
-        if (retries > 1) {
-          setTimeout(function() { submitWithRetry(payload, retries - 1, wrongData); }, 3000);
-        }
+        _submitFailedNext(payload, retries, wrongData);
       }
     }).catch(function(err) {
       console.log('[SUBMIT] Network error:', err);
-      var debugEl = document.getElementById('submitDebug');
-      if (!debugEl) {
-        debugEl = document.createElement('div');
-        debugEl.id = 'submitDebug';
-        debugEl.style.cssText = 'display:none;';
-        var doneScreen = document.getElementById('screenDone');
-        if (doneScreen) doneScreen.appendChild(debugEl);
-      }
-      debugEl.innerHTML = '<span style="color:red;">&#x274C; Network error (attempt ' + attemptNum + '/3): ' + err + '</span>';
-      if (retries > 1) {
-        setTimeout(function() { submitWithRetry(payload, retries - 1, wrongData); }, 3000);
-      } else {
-        debugEl.innerHTML += '<br>התוצאה שמורה. רענן את הדף כדי לנסות שוב.';
-      }
+      _submitFailedNext(payload, retries, wrongData);
     });
+  }
+
+  // Fast retries first (3s); once exhausted, surface the LOUD banner and keep
+  // retrying slowly (15s) until the server accepts it. The result is also kept in
+  // localStorage (renderExamDone) so a reload/auto-resend can recover it too.
+  function _submitFailedNext(payload, retries, wrongData) {
+    if (retries > 1) {
+      setTimeout(function() { submitWithRetry(payload, retries - 1, wrongData); }, 3000);
+    } else {
+      showSubmitFailureBanner(payload, wrongData);
+      setTimeout(function() { submitWithRetry(payload, 1, wrongData); }, 15000);
+    }
+  }
+
+  // Resend a single pending (unsent) result for an id, if one is stored locally.
+  // submitWithRetry clears localStorage only on CONFIRMED server success, so this
+  // is safe to call repeatedly. Used by the reset guard and on-load recovery.
+  function flushPendingResult(idNumber) {
+    if (!idNumber) return;
+    try {
+      var raw = localStorage.getItem('pendingResult_' + idNumber);
+      if (!raw) return;
+      var payload = JSON.parse(raw);
+      var wd = null;
+      try { wd = JSON.parse(localStorage.getItem('pendingWrongAnswers_' + idNumber) || 'null'); } catch(e) {}
+      console.log('[RECOVER] Resending pending result for ' + idNumber);
+      submitWithRetry(payload, 3, wd);
+    } catch(e) {}
+  }
+
+  // Scan localStorage for ANY unsent result (any examinee) and resend it. Called
+  // on page load so a result that failed to send (network blip, reload, device
+  // reused) is recovered instead of lost. Idempotent with server-side dedup.
+  function resendAllPendingResults() {
+    try {
+      var ids = [];
+      for (var i = 0; i < localStorage.length; i++) {
+        var k = localStorage.key(i);
+        if (k && k.indexOf('pendingResult_') === 0) ids.push(k.substring('pendingResult_'.length));
+      }
+      for (var j = 0; j < ids.length; j++) flushPendingResult(ids[j]);
+    } catch(e) {}
   }
 
   // ========== Auto-restore on page load ==========
@@ -3817,6 +3905,11 @@
     examineeToken = saved.examineeToken || '';
     // Ensure license is string (Google Sheets may return number for "1")
     if (sessionData.license) sessionData.license = String(sessionData.license);
+
+    // Recovery: if this examinee finished but their result never reached the
+    // server (network blip / reload / device reused), resend it now that the
+    // token is restored. No-op if nothing is pending or if they're mid-exam.
+    flushPendingResult(examineeData.idNumber);
 
     document.getElementById('topbarSub').textContent = sessionData.site + ' | ' + (LICENSE_LABELS[sessionData.license] || sessionData.license);
 
