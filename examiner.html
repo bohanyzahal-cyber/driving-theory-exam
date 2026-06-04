@@ -2390,6 +2390,26 @@
       else resultsBySession[sc].failed++;
     }
 
+    // Build a plain-text summary for the WhatsApp / native-share buttons. Kept
+    // as text (not HTML) so it pastes cleanly into any messaging app.
+    var summaryLines = [];
+    summaryLines.push('📊 דו"ח משותף לאתר ' + data.site);
+    summaryLines.push('📅 ' + dateStr + '  |  ' + sessions.length + ' סשנים');
+    summaryLines.push('');
+    summaryLines.push('סה"כ נבחנים: ' + total);
+    summaryLines.push('✅ עברו: ' + passed);
+    summaryLines.push('❌ נכשלו: ' + failed);
+    summaryLines.push('⚠️ פסולים: ' + dq);
+    summaryLines.push('📈 אחוז הצלחה: ' + rate + '%');
+    summaryLines.push('');
+    summaryLines.push('פירוט לפי סשן:');
+    for (var sl = 0; sl < sessions.length; sl++) {
+      var slSt = resultsBySession[sessions[sl].code] || { total: 0, passed: 0 };
+      summaryLines.push('• ' + sessions[sl].examinerName + ' (' + sessions[sl].code + '): ' +
+        slSt.passed + '/' + slSt.total + ' עברו');
+    }
+    var summaryText = summaryLines.join('\n');
+
     var H = [];
     H.push('<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"/>');
     H.push('<meta name="viewport" content="width=device-width,initial-scale=1"/>');
@@ -2415,9 +2435,21 @@
     H.push('tbody tr:nth-child(even){background:#fafbfc}');
     H.push('.badge{display:inline-block;padding:2px 10px;border-radius:20px;font-weight:700;font-size:11px}');
     H.push('.badge.pass{background:#dcfce7;color:#166534}.badge.fail{background:#fef2f2;color:#991b1b}.badge.dq{background:#fef3c7;color:#92400e}');
+    H.push('.toolbar{max-width:1000px;margin:0 auto 16px;display:flex;gap:10px;flex-wrap:wrap;justify-content:center}');
+    H.push('.toolbar button{flex:1 1 180px;max-width:260px;cursor:pointer;border:none;border-radius:10px;padding:13px 16px;font-size:15px;font-weight:700;color:#fff;display:inline-flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 2px 8px rgba(0,0,0,.12)}');
+    H.push('.toolbar button:active{transform:translateY(1px)}');
+    H.push('.btn-print{background:linear-gradient(135deg,#0f766e,#14b8a6)}');
+    H.push('.btn-wa{background:linear-gradient(135deg,#16a34a,#22c55e)}');
+    H.push('.btn-share{background:linear-gradient(135deg,#475569,#64748b)}');
     H.push('@page{size:A4;margin:8mm 10mm}');
-    H.push('@media print{body{background:#fff;padding:0}.container{box-shadow:none;max-width:100%}thead th,.kpi{-webkit-print-color-adjust:exact;print-color-adjust:exact}}');
-    H.push('</style></head><body><div class="container">');
+    H.push('@media print{body{background:#fff;padding:0}.container{box-shadow:none;max-width:100%}.no-print{display:none!important}thead th,.kpi{-webkit-print-color-adjust:exact;print-color-adjust:exact}}');
+    H.push('</style></head><body>');
+    H.push('<div class="toolbar no-print">');
+    H.push('<button class="btn-print" onclick="__printReport()">🖨️ הדפס / שמור PDF</button>');
+    H.push('<button class="btn-wa" onclick="__shareWhatsApp()">💬 שלח בוואטסאפ</button>');
+    H.push('<button class="btn-share" id="__shareBtn" onclick="__shareNative()" style="display:none">📤 שתף</button>');
+    H.push('</div>');
+    H.push('<div class="container">');
 
     H.push('<div class="header-bar"><h1>📊 דו"ח משותף לאתר</h1>');
     H.push('<p>' + escHtml(data.site) + ' &nbsp;|&nbsp; ' + escHtml(dateStr) + ' &nbsp;|&nbsp; ' + sessions.length + ' סשנים</p></div>');
@@ -2492,7 +2524,22 @@
 
     H.push('<div class="section" style="text-align:center;padding:14px 30px;background:#f8fafc;font-size:11px;color:#64748b;">');
     H.push('הופק: ' + new Date().toLocaleString('he-IL') + ' &nbsp;|&nbsp; דו"ח משותף לאתר ' + escHtml(data.site));
-    H.push('</div></div></body></html>');
+    H.push('</div></div>');
+
+    // Self-contained action script for the new window. Defined globally so the
+    // toolbar onclick handlers resolve. The native-share button reveals itself
+    // only where navigator.share exists (mobile / tablet); WhatsApp + print work
+    // everywhere. The closing script tag is split to avoid terminating this
+    // parent <script> when the source is parsed.
+    H.push('<script>');
+    H.push('var __summary=' + JSON.stringify(summaryText) + ';');
+    H.push('function __printReport(){window.print();}');
+    H.push('function __shareWhatsApp(){window.open("https://wa.me/?text="+encodeURIComponent(__summary),"_blank");}');
+    H.push('function __copyFallback(){if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(__summary).then(function(){alert("הדו\\"ח הועתק. אפשר להדביק בכל אפליקציה.");},function(){window.prompt("העתק את הדו\\"ח:",__summary);});}else{window.prompt("העתק את הדו\\"ח:",__summary);}}');
+    H.push('function __shareNative(){if(navigator.share){navigator.share({title:"דו\\"ח משותף לאתר",text:__summary}).catch(function(){});}else{__copyFallback();}}');
+    H.push('if(navigator.share){var __b=document.getElementById("__shareBtn");if(__b)__b.style.display="";}');
+    H.push('<\/script>');
+    H.push('</body></html>');
 
     return H.join('');
   }
@@ -6314,6 +6361,37 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw-examiner.js').catch(function() {});
   }
+
+  // ===== Auto-update: detect a new deployed version and refresh =====
+  // sw-examiner.js is network-first, so a reload always fetches the latest HTML.
+  // The dashboard stays open for hours, so we detect new deploys (HEAD-poll our
+  // own ETag/Last-Modified — HEAD bypasses the SW) and show a banner + auto-reload
+  // after a grace period, so the examiner always runs the current version without
+  // manually refreshing. Zero maintenance — no version file to bump.
+  (function() {
+    if (!window.fetch) return;
+    var baseTag = null, notified = false;
+    var tagOf = function(r) { return r.headers.get('ETag') || r.headers.get('Last-Modified') || null; };
+    var probe = function(cb) {
+      fetch(location.pathname, { method: 'HEAD', cache: 'no-store' })
+        .then(function(r) { cb(tagOf(r)); }).catch(function() { cb(null); });
+    };
+    probe(function(t) { baseTag = t; });
+    setInterval(function() {
+      if (notified) return;
+      probe(function(t) {
+        if (!t || !baseTag || t === baseTag) return;
+        notified = true;
+        var b = document.createElement('div');
+        b.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;background:#1a73e8;color:#fff;padding:12px 16px;text-align:center;font-size:15px;font-weight:700;box-shadow:0 -2px 10px rgba(0,0,0,.2);';
+        b.innerHTML = '🔄 גרסה חדשה זמינה — מתעדכן אוטומטית… <button id="swUpdNow" style="margin-right:10px;padding:6px 16px;font-weight:800;background:#fff;color:#1a73e8;border:none;border-radius:8px;cursor:pointer;">רענן עכשיו</button>';
+        document.body.appendChild(b);
+        var btn = document.getElementById('swUpdNow');
+        if (btn) btn.addEventListener('click', function() { location.reload(); });
+        setTimeout(function() { location.reload(); }, 60000);  // grace period to finish an action
+      });
+    }, 120000);  // check every 2 min
+  })();
 
   var deferredInstallPrompt = null;
   window.addEventListener('beforeinstallprompt', function(e) {
