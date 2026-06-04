@@ -2447,6 +2447,12 @@
   // (accessibility), zoom-out is NOT (could make room for off-page content).
   var splitScreenInitDPR = 1;
   var splitScreenInitVVScale = 1;
+  // Immutable ORIGINAL zoom baseline — captured once at exam start, NEVER
+  // rebaselined. Zoom-OUT is judged against this, so returning from an accepted
+  // zoom-in back to normal is not mistaken for a zoom-out (the bug that DQ'd
+  // examinees who enlarged a question image and then pinched back).
+  var splitScreenOrigDPR = 1;
+  var splitScreenOrigVVScale = 1;
   var splitScreenBlurTimer = null;
   // Phone: 65% (allows for browser address bar show/hide). Desktop: 90% (strict — any meaningful resize = DQ)
   var SPLIT_RESIZE_RATIO = isMobileDevice() ? 0.65 : 0.90;
@@ -2470,6 +2476,9 @@
     // means the user actively zoomed (not a real window resize).
     splitScreenInitDPR = window.devicePixelRatio || 1;
     splitScreenInitVVScale = (window.visualViewport && window.visualViewport.scale) || 1;
+    // Capture the immutable original (normal) zoom level once per exam start.
+    splitScreenOrigDPR = splitScreenInitDPR;
+    splitScreenOrigVVScale = splitScreenInitVVScale;
     if (!splitScreenBound) {
       splitScreenBound = true;
       window.addEventListener('resize', onSplitResize);
@@ -2498,10 +2507,19 @@
   function detectZoomChange() {
     var curDPR = window.devicePixelRatio || 1;
     var curVVScale = (window.visualViewport && window.visualViewport.scale) || 1;
-    var dprRatio = splitScreenInitDPR > 0 ? curDPR / splitScreenInitDPR : 1;
-    var vvRatio = splitScreenInitVVScale > 0 ? curVVScale / splitScreenInitVVScale : 1;
-    if (dprRatio > 1 + ZOOM_DETECT_TOLERANCE || vvRatio > 1 + ZOOM_DETECT_TOLERANCE) return 'zoom-in';
-    if (dprRatio < 1 - ZOOM_DETECT_TOLERANCE || vvRatio < 1 - ZOOM_DETECT_TOLERANCE) return 'zoom-out';
+    // zoom-IN — judged against the current (rebaselineable) baseline, so a fresh
+    // zoom-in re-anchors the split-screen W/H reference.
+    var dprIn = splitScreenInitDPR > 0 ? curDPR / splitScreenInitDPR : 1;
+    var vvIn  = splitScreenInitVVScale > 0 ? curVVScale / splitScreenInitVVScale : 1;
+    if (dprIn > 1 + ZOOM_DETECT_TOLERANCE || vvIn > 1 + ZOOM_DETECT_TOLERANCE) return 'zoom-in';
+    // zoom-OUT — judged against the IMMUTABLE ORIGINAL baseline. Returning from
+    // an accepted zoom-in back to (or near) normal is NOT a zoom-out; only
+    // dropping BELOW the original normal scale is. Fixes the recurring DQ:
+    // examinee enlarges a question image (pinch-zoom-in = allowed), then pinches
+    // back to normal → previously mis-flagged as zoom-out → DQ.
+    var dprOut = splitScreenOrigDPR > 0 ? curDPR / splitScreenOrigDPR : 1;
+    var vvOut  = splitScreenOrigVVScale > 0 ? curVVScale / splitScreenOrigVVScale : 1;
+    if (dprOut < 1 - ZOOM_DETECT_TOLERANCE || vvOut < 1 - ZOOM_DETECT_TOLERANCE) return 'zoom-out';
     return '';
   }
 
