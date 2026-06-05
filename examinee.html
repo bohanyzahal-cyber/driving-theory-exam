@@ -2670,10 +2670,16 @@
 
   function onWindowBlur() {
     if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
-    // Window lost focus — could be split-screen tap on other app
-    // Use same provisional-DQ logic as tab switch
-    if (tabSwitchWarnings >= TAB_SWITCH_MAX_WARNINGS) {
-      // Already warned — immediate final DQ
+    // Window lost focus — could be a real switch to another app (split-screen /
+    // alt-tab) OR a benign focus-steal (OS/antivirus popup, a notification, a
+    // second-monitor click, a password-manager overlay) that NEVER hides the exam.
+    // A bare blur is AMBIGUOUS, so only INSTANT-DQ when the page is ALSO actually
+    // hidden — a real switch, which onTabSwitch already covers. When the page stays
+    // VISIBLE we fall through to the grace-timer debounce below: a SUSTAINED blur
+    // (still blurred after the grace) still DQs (real app-switch), but a transient
+    // focus-steal that returns within the grace no longer fails an INNOCENT examinee.
+    if (tabSwitchWarnings >= TAB_SWITCH_MAX_WARNINGS && document.visibilityState === 'hidden') {
+      // Already warned AND the page is actually hidden — immediate final DQ
       tabSwitchDQConfirmed = true;
       provisionalDQSent = false;
       newDQEventId();
