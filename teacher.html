@@ -1304,8 +1304,9 @@ function renderHourly(hourly) {
 }
 
 // Top-N most-failed questions. Practice rows carry only the question text +
-// category (no ID/correct-answer/image), so this is text-keyed; the 🔍 link
-// jumps to find_image.html to look up the matching question(s).
+// category (no ID/correct-answer/image), so this is text-keyed. No find_image
+// 🔍 link here — teachers don't have access to that page (the examiner view
+// keeps it).
 function renderTopWrong(topWrong) {
   var host = document.getElementById('cmdTopWrong');
   if (!host) return;
@@ -1323,8 +1324,7 @@ function renderTopWrong(topWrong) {
     var w = Math.round((item.count / maxCount) * 100);
     html += '<tr style="border-bottom:1px solid #e2e8f0;">';
     html += '<td style="padding:6px 8px;color:#94a3b8;font-weight:600;vertical-align:top;">' + (i + 1) + '</td>';
-    html += '<td style="padding:6px 8px;line-height:1.4;color:#334155;font-weight:500;">' + escHtml(item.question);
-    html += ' <a href="find_image.html?q=' + encodeURIComponent(item.question) + '" target="_blank" rel="noopener" title="חפש את השאלה" style="font-size:11px;color:#7c3aed;text-decoration:none;margin-right:6px;">🔍</a></td>';
+    html += '<td style="padding:6px 8px;line-height:1.4;color:#334155;font-weight:500;">' + escHtml(item.question) + '</td>';
     html += '<td style="padding:6px 8px;font-size:11px;color:#64748b;">' + escHtml(item.category || '—') + '</td>';
     html += '<td style="padding:6px 8px;vertical-align:middle;"><div style="display:flex;align-items:center;gap:6px;">';
     html += '<div style="flex:1;height:10px;background:#f1f5f9;border-radius:5px;overflow:hidden;"><div style="width:' + w + '%;height:100%;background:#ef4444;"></div></div>';
