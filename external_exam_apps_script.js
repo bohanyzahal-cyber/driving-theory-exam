@@ -2622,7 +2622,11 @@ function handleSubmitResult(data) {
     for (var pi = pendData.length - 1; pi >= 1; pi--) {
       if (String(pendData[pi][0]) === String(data.sessionCode) && normalizeId(pendData[pi][1]) === normalizeId(data.idNumber)) {
         var pStatus = String(pendData[pi][5]).trim();
-        if (pStatus === 'in_exam' || pStatus === 'approved' || pStatus === 'completed') {
+        // 'cancelled' accepted too: if an examiner reset an examinee who was
+        // actually still mid-exam, a genuine finished submit must be RECORDED,
+        // not rejected and lost. The fabricated-fail supersede + dup-check below
+        // prevent a double-row; close-fails for 'cancelled' are suppressed.
+        if (pStatus === 'in_exam' || pStatus === 'approved' || pStatus === 'completed' || pStatus === 'cancelled') {
           isApproved = true;
         }
         break;
@@ -2805,6 +2809,42 @@ function handleSubmitResult(data) {
     } catch(te) {}
   }
 
+  // Guard: answers were present but the server never re-scored (no מבחנים row /
+  // questionMap missing → data.verified left undefined above). Do NOT silently
+  // trust the client's score — it is computed from a deliberately-stripped `ci`
+  // and can be garbage (the historical false-0/30). Flag the row unverified so
+  // the examiner reviews it instead of recording a bogus pass/fail.
+  if (data.answers && Array.isArray(data.answers) && typeof data.verified === 'undefined') {
+    data.verified = false;
+    data.scoreUnverified = true;
+  }
+
+  // ===== Supersede any SYSTEM-FABRICATED fail for this session+id =====
+  // A real finished submit must WIN over a system-written fail — the browser-
+  // close beacon (handleSubmitFailOnClose) or the dashboard timeout/disconnect
+  // row — created while the examinee was offline/backgrounded. Those are 'נכשל'
+  // rows whose note carries a machine marker. Match on session+id ONLY (NOT
+  // language/license): the fabricated row is stamped with the REGISTRATION
+  // language, but the real submit may carry a DIFFERENT final language after a
+  // mid-exam switch (Russian/Arabic/Amharic examinees), so a language-scoped
+  // match would miss it and the dup-check below would swallow the real result →
+  // a false 0/30 "vanished" exam, especially on iOS. Mark them בוטל (audit kept).
+  // Mirrors the פסול-supersede pass below; genuine real נכשל rows lack the marker.
+  var fabRows = sheet.getDataRange().getValues();
+  var fabSuperseded = false;
+  for (var fb = 1; fb < fabRows.length; fb++) {
+    if (String(fabRows[fb][13]) !== String(data.sessionCode)) continue;
+    if (normalizeId(fabRows[fb][1]) !== normalizeId(data.idNumber)) continue;
+    if (String(fabRows[fb][7]).trim() !== 'נכשל') continue;
+    var fbNote = String(fabRows[fb][15] || '');
+    if (fbNote.indexOf('סגירת דפדפן') === -1 && fbNote.indexOf('טיימאאוט') === -1) continue;
+    sheet.getRange(fb + 1, 8).setValue('בוטל');                                    // H = pass/fail
+    sheet.getRange(fb + 1, 27).setValue('בוטל אוטומטית — הנבחן השלים והגיש מבחן');  // AA = reason
+    sheet.getRange(fb + 1, 28).setValue(todayStr());                               // AB = correction date
+    fabSuperseded = true;
+  }
+  if (fabSuperseded) SpreadsheetApp.flush(); // make the בוטל visible to the dup-check read below
+
   // Duplicate protection: check if result already exists for this session+ID+license+language
   // Skip disqualified (פסול) and cancelled (בוטל) rows — those are not real results and should not block retakes
   // Also skip duplicate check entirely if examinee has an active in_exam pending row (retake after DQ)
@@ -2822,27 +2862,9 @@ function handleSubmitResult(data) {
       var existingStatus = String(existingData[d][7] || '').trim();
       if (existingStatus === 'פסול' || existingStatus === 'בוטל') continue;
       if (String(existingData[d][13]) === String(data.sessionCode) && normalizeId(existingData[d][1]) === normalizeId(data.idNumber) && String(existingData[d][4]) === String(data.license) && String(existingData[d][12]) === String(data.language || 'he')) {
-        // A real finished submit must WIN over a SYSTEM-FABRICATED fail — either
-        // the browser-close beacon (handleSubmitFailOnClose) or the dashboard
-        // timeout/disconnect row — written while the examinee was offline or
-        // backgrounded. Those are 'נכשל' rows whose note carries a machine
-        // marker. Without this, the dup-check below swallows the real result as
-        // a "duplicate" → the examinee VANISHES or shows a false 0/30 (common on
-        // iOS, where pagehide fires the close-beacon and the exam then submits
-        // normally without a reload). Supersede the fabricated row (בוטל, audit
-        // trail kept) and keep scanning so the real result appends below.
-        // A genuine real result has NO such marker → still a true duplicate.
-        var exNote = String(existingData[d][15] || '');
-        var isFabricatedFail = (existingStatus === 'נכשל') &&
-          (exNote.indexOf('סגירת דפדפן') !== -1 || exNote.indexOf('טיימאאוט') !== -1);
-        if (isFabricatedFail) {
-          sheet.getRange(d + 1, 8).setValue('בוטל');                                    // H = pass/fail
-          sheet.getRange(d + 1, 27).setValue('בוטל אוטומטית — הנבחן השלים והגיש מבחן');  // AA = reason
-          sheet.getRange(d + 1, 28).setValue(todayStr());                                // AB = correction date
-          continue; // NOT a duplicate — let the real result append below
-        }
-        // Already submitted (genuine real result) — update pending status so the
-        // examinee doesn't stay stuck in "in_exam", then stop.
+        // Genuine prior real result for this exact exam — a true duplicate.
+        // (Fabricated close/timeout fails were already superseded to בוטל above
+        // and are skipped by the status filter, so they can't masquerade here.)
         markPendingCompleted(data.sessionCode, data.idNumber);
         return jsonResponse({ status: 'ok', waLink: existingData[d][18] || '', duplicate: true });
       }
@@ -2882,6 +2904,11 @@ function handleSubmitResult(data) {
       wrongForWA += 'ענית: ' + w.yourAnswer + '\n';
       wrongForWA += '✅ נכון: ' + w.correctAnswer + '\n\n';
     }
+  }
+
+  // Surface the unverified-score guard (set above) loudly in the stored detail.
+  if (data.scoreUnverified) {
+    wrongDetails = '⚠️ ציון לא אומת בשרת (רישום מבחן חסר) — נדרש אימות ידני\n\n' + wrongDetails;
   }
 
   var passText = data.passed ? 'עבר' : 'נכשל';
@@ -3130,6 +3157,21 @@ function handleSubmitFailOnClose(data) {
   var focTokenErr = requireExamineeToken(data);
   if (focTokenErr) return focTokenErr;
   var sheet = getSheet('תוצאות');
+
+  // Do NOT record a close-fail for an examinee an examiner reset/removed
+  // (status 'cancelled') or 'rejected' — reset semantics are "won't count as a
+  // fail". A clean finish of such an examinee IS still recorded (submitResult
+  // accepts 'cancelled'); only the auto-0/30-on-close is suppressed here.
+  try {
+    var focPend = getSheet('ממתינים').getDataRange().getValues();
+    for (var fp = focPend.length - 1; fp >= 1; fp--) {
+      if (String(focPend[fp][0]) === String(data.sessionCode) && normalizeId(focPend[fp][1]) === normalizeId(data.idNumber)) {
+        var fpStatus = String(focPend[fp][5]).trim();
+        if (fpStatus === 'cancelled' || fpStatus === 'rejected') return jsonResponse({ status: 'ok', skipped: 'cancelled' });
+        break;
+      }
+    }
+  } catch (focErr) {}
 
   // Duplicate protection: check if result already exists for this session+ID+license+language
   var existingData = sheet.getDataRange().getValues();
@@ -3921,15 +3963,20 @@ function handleGetResultUploadToken(p) {
 }
 
 function unmarkPendingCompleted(sessionCode, idNumber) {
-  // Restore examinee status from 'done' back to 'in_exam' in pending sheet
+  // Restore the latest pending row from 'completed' back to 'in_exam' so a resumed
+  // exam (after a premature close-fail was reverted) can be re-submitted. BUG FIX:
+  // this previously read col index 6 (=language) and tested 'done' (a status that
+  // is NEVER written — markPendingCompleted writes 'completed'), then wrote to
+  // column 7 (=language) and scanned oldest-first — so it silently no-op'd and
+  // could corrupt the language cell. Now mirrors markPendingCompleted exactly:
+  // status = col index 5 / column 6, newest row first.
   var pendingSheet = getSheet('ממתינים');
   if (!pendingSheet) return;
   var data = pendingSheet.getDataRange().getValues();
-  for (var i = 1; i < data.length; i++) {
-    if (String(data[i][0]) === sessionCode && normalizeId(data[i][1]) === normalizeId(idNumber)) {
-      var status = String(data[i][6] || '');
-      if (status === 'done') {
-        pendingSheet.getRange(i + 1, 7).setValue('in_exam');
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0]) === String(sessionCode) && normalizeId(data[i][1]) === normalizeId(idNumber)) {
+      if (String(data[i][5] || '').trim() === 'completed') {
+        pendingSheet.getRange(i + 1, 6).setValue('in_exam');
       }
       break;
     }
