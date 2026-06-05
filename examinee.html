@@ -1661,12 +1661,12 @@
       return;
     }
 
-    // Notify server that exam started — retry on failure (status sync was
-    // dropping silently on network blips, leaving examinees stuck as "ממתין"
-    // on the examiner's screen even after they took the exam). The
-    // visibilitychange handler re-fires this until the server confirms.
+    // Mark-in_exam is now done by registerExamQuestions itself (Layer-1
+    // consolidation — one confirmed write instead of a separate markExamStarted
+    // round-trip). Reset the flag here; register's response sets it, and the
+    // visibilitychange handler re-fires markExamStarted as an iOS fallback if it
+    // stays false.
     examStartConfirmed = false;
-    markExamStartedWithRetry(3);
 
     // Use examinee's chosen license/language (may differ from session defaults)
     var license = String(examineeData.license || sessionData.license || 'B');
@@ -1783,7 +1783,14 @@
       language: language,
       questions: regQuestions
     }).then(function(resp) {
-      if (resp && resp.status === 'ok') { onOk(); }
+      if (resp && resp.status === 'ok') {
+        // Layer-1: register now also marks in_exam server-side. Trust its
+        // examStarted flag; if false (rare — the marking didn't land), leave
+        // examStartConfirmed=false so the visibilitychange fallback re-fires
+        // markExamStarted (iOS safety net preserved).
+        examStartConfirmed = (resp.examStarted === true);
+        onOk();
+      }
       else if (retries > 1) { setTimeout(function() { registerExamQuestionsConfirmed(regQuestions, language, retries - 1, onOk, onFail); }, 1500); }
       else { onFail(resp); }
     }).catch(function(err) {
@@ -3788,9 +3795,13 @@
       classroom: sessionData.classroom || '',
       population: examineeData.population || '',
       audioMode: sessionData.audioMode || 'off',
-      answers: rawAnswers
+      answers: rawAnswers,
+      // Layer-1 consolidation: send wrong-answers WITH the result, so it's one
+      // server call/write instead of a separate submitWrongAnswers POST. The
+      // server still rebuilds them itself when it can (serverWrong) and uses
+      // these only as the fallback — identical behaviour, half the executions.
+      wrongAnswers: wrongData
     };
-    // Wrong answers sent separately via POST (GET URL would be too long on mobile)
 
     // Save result to localStorage BEFORE sending — safety net for network failures
     try {
@@ -3871,8 +3882,9 @@
           localStorage.removeItem('pendingResult_' + payload.idNumber);
           localStorage.removeItem('pendingWrongAnswers_' + payload.idNumber);
         } catch(e3) {}
-        // Send wrong answers AFTER the result row exists on the server.
-        if (wrongData && wrongData.length > 0) sendWrongAnswers(wrongData, payload.idNumber);
+        // Wrong-answers are now written WITH the result (sent in the payload),
+        // so no separate submitWrongAnswers call is needed. (sendWrongAnswers
+        // kept for backward-compat / manual recovery only.)
       } else {
         _submitFailedNext(payload, retries, wrongData);
       }
