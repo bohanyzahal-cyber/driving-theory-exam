@@ -1658,6 +1658,7 @@
         updatePendingList(window.__lastPending);
         updateActiveList(data.active || []);
         updateCompletedList(data.completed || []);
+        renderLiveLoad(data.liveLoad);
       } else {
         console.log('[DASHBOARD] Error:', data.message);
       }
@@ -1666,6 +1667,28 @@
       console.log('[DASHBOARD] Network error (fails=' + failedPolls + '):', err);
       if (failedPolls >= 3) document.getElementById('offlineBanner').classList.add('show');
     });
+  }
+
+  // Live cross-site load indicator. The capacity limit is GLOBAL (one shared
+  // backend), so this shows the TOTAL in-exam + waiting across ALL sites, with a
+  // colour warning so the examiner slows approvals before the system strains.
+  // Green ≤60 · Orange 61–80 (slow approvals) · Red >80 (stop approvals).
+  function renderLiveLoad(ll) {
+    if (!ll) return;
+    var el = document.getElementById('liveLoadBadge');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'liveLoadBadge';
+      el.style.cssText = 'position:fixed;top:8px;left:8px;z-index:9998;padding:8px 12px;border-radius:10px;font-size:13px;font-weight:800;box-shadow:0 2px 8px rgba(0,0,0,.18);direction:rtl;';
+      document.body.appendChild(el);
+    }
+    var inExam = ll.inExam || 0, waiting = ll.waiting || 0, note = '';
+    var bg, fg;
+    if (inExam <= 60) { bg = '#dcfce7'; fg = '#166534'; }
+    else if (inExam <= 80) { bg = '#fef3c7'; fg = '#92400e'; note = ' · האט אישורים'; }
+    else { bg = '#fee2e2'; fg = '#991b1b'; note = ' · עצור אישורים!'; }
+    el.style.background = bg; el.style.color = fg;
+    el.innerHTML = '📊 עומס כל האתרים: <b>' + inExam + '</b> במבחן · ' + waiting + ' ממתינים' + note;
   }
 
   // ========== Pending list ==========
