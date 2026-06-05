@@ -1661,11 +1661,12 @@
       return;
     }
 
-    // Mark-in_exam is now done by registerExamQuestions itself (Layer-1
-    // consolidation — one confirmed write instead of a separate markExamStarted
-    // round-trip). Reset the flag here; register's response sets it, and the
-    // visibilitychange handler re-fires markExamStarted as an iOS fallback if it
-    // stays false.
+    // in_exam is marked two independent ways for resilience: (a) the server
+    // flips approved→in_exam during registerExamQuestions and reports
+    // examStarted; (b) if that didn't land (stale server, or the marking
+    // silently failed), the proactive markExamStartedWithRetry call in
+    // _beginExam re-fires it. The visibilitychange handler is a third net for
+    // iOS background suspension. Reset the flag; register sets it true on success.
     examStartConfirmed = false;
 
     // Use examinee's chosen license/language (may differ from session defaults)
@@ -1784,10 +1785,10 @@
       questions: regQuestions
     }).then(function(resp) {
       if (resp && resp.status === 'ok') {
-        // Layer-1: register now also marks in_exam server-side. Trust its
-        // examStarted flag; if false (rare — the marking didn't land), leave
-        // examStartConfirmed=false so the visibilitychange fallback re-fires
-        // markExamStarted (iOS safety net preserved).
+        // Register also marks in_exam server-side. Trust its examStarted flag;
+        // if false (stale server, or the marking didn't land), leave
+        // examStartConfirmed=false so _beginExam's proactive markExamStarted —
+        // and the visibilitychange fallback — re-fire it.
         examStartConfirmed = (resp.examStarted === true);
         onOk();
       }
@@ -1806,6 +1807,12 @@
     examStartTime = Date.now();
     examInProgress = true;
     examSubmitted = false;
+    // Resilient in_exam marking (restored after Layer-1 removed the proactive
+    // call). registerExamQuestions already tries to flip approved→in_exam and
+    // reports examStarted; if that did NOT confirm, fire the dedicated retrying
+    // markExamStarted now so the examinee never stays stuck as "ממתין" on the
+    // examiner's screen. Idempotent server-side — double-marking is harmless.
+    if (!examStartConfirmed) markExamStartedWithRetry(3);
     startDevToolsTrap();
 
     // Seed the language history with the initial exam language so we can
