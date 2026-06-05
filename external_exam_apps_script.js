@@ -2822,7 +2822,27 @@ function handleSubmitResult(data) {
       var existingStatus = String(existingData[d][7] || '').trim();
       if (existingStatus === 'פסול' || existingStatus === 'בוטל') continue;
       if (String(existingData[d][13]) === String(data.sessionCode) && normalizeId(existingData[d][1]) === normalizeId(data.idNumber) && String(existingData[d][4]) === String(data.license) && String(existingData[d][12]) === String(data.language || 'he')) {
-        // Already submitted — still update pending status so examinee doesn't stay stuck in "in_exam"
+        // A real finished submit must WIN over a SYSTEM-FABRICATED fail — either
+        // the browser-close beacon (handleSubmitFailOnClose) or the dashboard
+        // timeout/disconnect row — written while the examinee was offline or
+        // backgrounded. Those are 'נכשל' rows whose note carries a machine
+        // marker. Without this, the dup-check below swallows the real result as
+        // a "duplicate" → the examinee VANISHES or shows a false 0/30 (common on
+        // iOS, where pagehide fires the close-beacon and the exam then submits
+        // normally without a reload). Supersede the fabricated row (בוטל, audit
+        // trail kept) and keep scanning so the real result appends below.
+        // A genuine real result has NO such marker → still a true duplicate.
+        var exNote = String(existingData[d][15] || '');
+        var isFabricatedFail = (existingStatus === 'נכשל') &&
+          (exNote.indexOf('סגירת דפדפן') !== -1 || exNote.indexOf('טיימאאוט') !== -1);
+        if (isFabricatedFail) {
+          sheet.getRange(d + 1, 8).setValue('בוטל');                                    // H = pass/fail
+          sheet.getRange(d + 1, 27).setValue('בוטל אוטומטית — הנבחן השלים והגיש מבחן');  // AA = reason
+          sheet.getRange(d + 1, 28).setValue(todayStr());                                // AB = correction date
+          continue; // NOT a duplicate — let the real result append below
+        }
+        // Already submitted (genuine real result) — update pending status so the
+        // examinee doesn't stay stuck in "in_exam", then stop.
         markPendingCompleted(data.sessionCode, data.idNumber);
         return jsonResponse({ status: 'ok', waLink: existingData[d][18] || '', duplicate: true });
       }
