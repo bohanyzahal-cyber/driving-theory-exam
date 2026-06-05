@@ -2693,9 +2693,19 @@
         tabHiddenAt = Date.now();
         newDQEventId();
         splitScreenBlurTimer = setTimeout(function() {
-          // Still blurred after grace — NOW send DQ
+          // Still blurred after grace.
           splitScreenBlurTimer = null;
           if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
+          // Only DQ if the page ACTUALLY became hidden (a real app/tab switch). If
+          // the exam stayed VISIBLE the whole time, the examinee never left it on
+          // screen — this is a benign focus-steal (OS/antivirus popup, a system
+          // notification, a second-monitor click, a credential prompt), NOT
+          // cheating. Failing an innocent examinee for that is worse than missing
+          // it. Genuine switches are still caught by onTabSwitch (visibilitychange,
+          // hidden) and genuine side-by-side split-screen by the window-resize
+          // detector. Mirrors the instant-DQ branch above, which also requires
+          // the page to be hidden.
+          if (document.visibilityState !== 'hidden') { currentDQEventId = ''; return; }
           tabSwitchDQConfirmed = true;
           try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
           sendDQToServer();
@@ -3783,7 +3793,13 @@
           langAtAnswer: userAnswers[ra].langAtAnswer || getExamLang()
         });
       } else {
-        rawAnswers.push({ qIdx: ra, selected: -1 }); // unanswered
+        // Stamp the language the examinee was last viewing (final exam language)
+        // on UNANSWERED questions too. Without it the server falls back to the
+        // REGISTRATION-language correct index while rendering the answer TEXT in
+        // the final language → the certificate shows a mismatched "correct answer"
+        // for skipped questions after a mid-exam language switch. Score is
+        // unaffected either way (unanswered is always wrong).
+        rawAnswers.push({ qIdx: ra, selected: -1, langAtAnswer: getExamLang() }); // unanswered
       }
     }
 
@@ -3907,10 +3923,23 @@
     }
   }
 
+  // Guards the SAME pending result from being sent twice CONCURRENTLY. On page
+  // load two recovery paths (resendAllPendingResults + the auto-retry IIFE below)
+  // can both call submitWithRetry for the same id within milliseconds → two
+  // parallel submitResult POSTs that can both pass the server dup-check before
+  // either appends → a DUPLICATE result row. Allow one in-flight send per id at a
+  // time; the sequential 3s/15s retries re-acquire the slot after each settles.
+  var _submitInFlight = {};
   function submitWithRetry(payload, retries, wrongData) {
+    var _sid = payload && payload.idNumber;
+    if (_sid) {
+      if (_submitInFlight[_sid]) { console.log('[SUBMIT] send already in flight for ' + _sid + ' — skipping duplicate'); return; }
+      _submitInFlight[_sid] = true;
+    }
     var attemptNum = 4 - retries;
     console.log('[SUBMIT] Sending result via POST, attempt ' + attemptNum);
     apiPost(payload).then(function(data) {
+      if (_sid) _submitInFlight[_sid] = false;
       console.log('[SUBMIT] Response:', JSON.stringify(data));
       if (data && data.status === 'ok') {
         clearSubmitFailureBanner();
@@ -3938,6 +3967,7 @@
         _submitFailedNext(payload, retries, wrongData);
       }
     }).catch(function(err) {
+      if (_sid) _submitInFlight[_sid] = false;
       console.log('[SUBMIT] Network error:', err);
       _submitFailedNext(payload, retries, wrongData);
     });

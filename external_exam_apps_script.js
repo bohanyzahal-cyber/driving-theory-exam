@@ -1817,7 +1817,15 @@ function handleExaminerDashboard(p) {
       waLink: resData[j][18],
       population: resData[j][19] || '',
       corrected: resData[j][20] || false,
-      audioMode: resData[j][21] || 'off'
+      audioMode: resData[j][21] || 'off',
+      // Integrity flags the server already computes & stores but the dashboard
+      // never showed: verified='מאומת' when the score was re-computed against the
+      // trusted answer key; suspicious='חשוד' when the exam took <3 min. Surfacing
+      // these lets the examiner spot any result that was NOT server-verified
+      // (missing answer key, missing exam-registration, or a tampered/forged
+      // submit) instead of it looking identical to a clean pass.
+      verified: (resData[j].length > 22) ? (resData[j][22] || '') : '',
+      suspicious: (resData[j].length > 23) ? (resData[j][23] || '') : ''
     });
   }
 

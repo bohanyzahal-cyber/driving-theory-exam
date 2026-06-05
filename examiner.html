@@ -2219,6 +2219,22 @@
       var badgeText = isDQ ? 'פסול' : (isPassed ? (isCorrected ? 'עבר \u270E' : 'עבר') : 'נכשל');
       var id4 = String(r.idNumber).slice(-4);
 
+      // Integrity flags (server-computed). Only present once the server has been
+      // redeployed with the flag-bearing dashboard payload — when r.verified is
+      // undefined we show NOTHING (backward-compatible, no false alarms on the
+      // old payload). "לא אומת" = the score was NOT re-verified against the
+      // trusted answer key (missing key / missing exam-registration / tampered or
+      // forged submit) → review it, do not trust it like a normal pass. "חשוד" =
+      // exam took <3 min. DQ rows have no score to verify → skip the verified flag.
+      var verifiedKnown = (typeof r.verified !== 'undefined');
+      var flagHtml = '';
+      if (verifiedKnown && !isDQ && String(r.verified) !== 'מאומת') {
+        flagHtml += ' <span title="הציון לא אומת מול מפתח התשובות בשרת — דורש בדיקה ידנית" style="display:inline-block;background:#fef3c7;color:#92400e;border:1px solid #f59e0b;border-radius:6px;padding:0 5px;font-size:10px;font-weight:800;white-space:nowrap;">⚠ לא אומת</span>';
+      }
+      if (String(r.suspicious) === 'חשוד') {
+        flagHtml += ' <span title="המבחן נמשך פחות מ-3 דקות" style="display:inline-block;background:#fee2e2;color:#991b1b;border:1px solid #ef4444;border-radius:6px;padding:0 5px;font-size:10px;font-weight:800;white-space:nowrap;">⏱ חשוד</span>';
+      }
+
       // Score correction is currently DISABLED — pending approval to re-enable.
       // To restore: remove the next line and uncomment the block below.
       // The window.correctToPass function and the backend endpoint remain functional.
@@ -2244,7 +2260,7 @@
         '<td>....' + id4 + '</td>' +
         '<td>' + escHtml(r.population || '') + '</td>' +
         '<td>' + (r.attempt || 1) + '</td>' +
-        '<td>' + escHtml(String(r.score || '')) + '</td>' +
+        '<td>' + escHtml(String(r.score || '')) + flagHtml + '</td>' +
         '<td><span class="' + badgeClass + '">' + badgeText + '</span></td>' +
         '<td>' + escHtml(formatTime(r.time)) + '</td>' +
         '<td style="white-space:nowrap;">' +
