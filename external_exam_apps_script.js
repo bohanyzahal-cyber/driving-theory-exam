@@ -4909,16 +4909,40 @@ function handleTeacherCommanderDashboard(p) {
     return out;
   }
 
-  // Parse a practice "M:SS"/"MM:SS" duration into seconds. Practice has no
-  // time ceiling (unlike the 40-min exam), so we cap at 2h to drop garbage.
-  function parsePracticeTimeSec(str) {
-    if (!str) return 0;
-    var s = String(str).trim();
-    var m = s.match(/^(\d{1,3}):(\d{2})$/);
-    if (!m) return 0;
-    var mins = parseInt(m[1], 10), secs = parseInt(m[2], 10);
-    if (isNaN(mins) || isNaN(secs) || secs >= 60) return 0;
-    var t = mins * 60 + secs;
+  // Parse a practice duration into seconds. The student app sends "MM:SS"
+  // (e.g. "5:03" = 5 min 3 sec), but Google Sheets AUTO-CONVERTS a valid-looking
+  // "M:SS" string on write into a time-of-day value — it reads "5:03" as 05:03
+  // (HH:MM) — so getValues() returns a Date (or a day-fraction number), NOT the
+  // original string. This is why time KPIs read --:-- with the string-only
+  // parser. We recover the original MM:SS from whichever shape the cell holds:
+  //   Date  → hours hold the minutes, minutes hold the seconds.
+  //   number→ same value as a fraction-of-day.
+  //   string→ "MM:SS" left as text (e.g. ≥24 min, which Sheets can't store as a time).
+  // Cap at 2h to drop garbage (practice has no 40-min ceiling).
+  function parsePracticeTimeSec(v) {
+    if (v === null || v === undefined || v === '') return 0;
+    var mm, ss;
+    if (v instanceof Date) {
+      mm = v.getHours();      // original minutes (Sheets read them as hours)
+      ss = v.getMinutes();    // original seconds (Sheets read them as minutes)
+    } else if (typeof v === 'number') {
+      if (v > 0 && v < 1) {
+        var totalMin = Math.round(v * 1440); // clock H*60+M from the day-fraction
+        mm = Math.floor(totalMin / 60);
+        ss = totalMin % 60;
+      } else if (v >= 1 && v <= 7200) {
+        return Math.round(v); // already a plain seconds count
+      } else {
+        return 0;
+      }
+    } else {
+      var m = String(v).trim().match(/^(\d{1,3}):(\d{2})$/);
+      if (!m) return 0;
+      mm = parseInt(m[1], 10);
+      ss = parseInt(m[2], 10);
+    }
+    if (isNaN(mm) || isNaN(ss) || ss >= 60) return 0;
+    var t = mm * 60 + ss;
     return (t > 0 && t <= 7200) ? t : 0;
   }
   // Hour-of-day from the date cell. Sheets usually auto-parses "DD/MM/YYYY
