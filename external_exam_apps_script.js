@@ -1656,12 +1656,22 @@ function handleMarkExamStarted(p) {
   var sheet = getSheet('ממתינים');
   var data = sheet.getDataRange().getValues();
   for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber) && String(data[i][5]).trim() === 'approved') {
+    if (String(data[i][0]) !== String(p.sessionCode) || normalizeId(data[i][1]) !== normalizeId(p.idNumber)) continue;
+    var st = String(data[i][5]).trim();
+    if (st === 'approved') {
       sheet.getRange(i + 1, 6).setValue('in_exam');
       sheet.getRange(i + 1, 12).setValue(nowISO()); // column L = exam actual start time
       SpreadsheetApp.flush();
       return jsonResponse({ status: 'ok' });
     }
+    if (st === 'in_exam') {
+      // Idempotent: a retry whose earlier response was lost (common on iOS when
+      // the page backgrounds) should still report success so the client stops
+      // retrying — and not overwrite the original start time.
+      return jsonResponse({ status: 'ok', already: true });
+    }
+    // Other statuses (completed/cancelled/disqualified): keep scanning for an
+    // approved/in_exam row belonging to this examinee.
   }
   return jsonResponse({ status: 'error', message: 'נבחן מאושר לא נמצא' });
 }
@@ -1682,7 +1692,13 @@ function handleExaminerDashboard(p) {
   var STALE_BUFFER_MS = 20 * 60 * 1000; // 20 minutes buffer (approval wait + instructions)
   for (var ci = 1; ci < pendData.length; ci++) {
     if (String(pendData[ci][0]) !== code) continue;
-    if (String(pendData[ci][5]).trim() !== 'in_exam') continue;
+    // Reconcile stuck 'in_exam' AND 'approved' entries. 'approved' that never
+    // advanced to 'in_exam' happens when markExamStarted failed on the device
+    // (common on iOS) — leaving the examinee stuck in "ממתינים" forever, even
+    // after finishing. We clear those once a result exists for them (below).
+    var _ciStatus = String(pendData[ci][5]).trim();
+    if (_ciStatus !== 'in_exam' && _ciStatus !== 'approved') continue;
+    var _startedExam = (_ciStatus === 'in_exam');
     var ciId = pendData[ci][1];
     var examStart = pendData[ci][11] ? new Date(pendData[ci][11]) : null;
     var regTime = examStart || (pendData[ci][4] ? new Date(pendData[ci][4]) : null);
@@ -1691,6 +1707,10 @@ function handleExaminerDashboard(p) {
     if (ciExt !== 1.25 && ciExt !== 1.5) ciExt = 1;
     var maxMs = Math.round(BASE_EXAM_MS * ciExt) + STALE_BUFFER_MS;
     var isStale = regTime && (now.getTime() - regTime.getTime() > maxMs);
+    // Only someone who actually STARTED (in_exam) can time out into a fail. A
+    // stale 'approved' never started → never fabricate a 0/30 fail for it; it is
+    // only reconciled when a real result already exists.
+    var effectiveStale = isStale && _startedExam;
 
     // Count results by type for this examinee in this session
     var dqResults = 0, otherResults = 0;
@@ -1714,11 +1734,11 @@ function handleExaminerDashboard(p) {
     var totalTerminals = dqTerminals + otherTerminals;
     var hasUnmatchedResult = effectiveResults > totalTerminals;
 
-    if (hasUnmatchedResult || isStale) {
+    if (hasUnmatchedResult || effectiveStale) {
       // Fix dangling status — mark as completed
       pendSheet.getRange(ci + 1, 6).setValue('completed');
       pendData[ci][5] = 'completed'; // update local copy
-      if (isStale && !hasUnmatchedResult) {
+      if (effectiveStale && !hasUnmatchedResult) {
         // Create a timeout fail result
         var sesData2 = getSheet('סשנים').getDataRange().getValues();
         var license2 = pendData[ci][8] || '', site2 = '', classroom2 = '', examinerName2 = '', language2 = pendData[ci][6] || 'he';
@@ -2535,6 +2555,15 @@ function handleRegisterExamQuestions(data) {
     unverifiedCount++;
   }
 
+  // Guard: if the server answer key is entirely unavailable (answer_key.gs not
+  // deployed, or every selected qId missing from it), do NOT register a map full
+  // of unverifiable garbage — that is what produced silent 0/30 fails (פינטו/דיין
+  // 03/06). Return an error so the confirmed-register client blocks the exam and
+  // retries, surfacing the problem instead of mis-scoring a real examinee.
+  if (!hasAnswerKey || (data.questions.length > 0 && unverifiedCount >= data.questions.length)) {
+    return jsonResponse({ status: 'error', message: 'מפתח התשובות אינו זמין בשרת — פנה למנהל המערכת', keyUnavailable: true });
+  }
+
   // Store in מבחנים sheet (create if needed). Add a fifth column for unverified
   // count so submitResult can flag results scored from unverified data.
   var examSheet;
@@ -2551,7 +2580,27 @@ function handleRegisterExamQuestions(data) {
     lang,
     unverifiedCount
   ]);
-  return jsonResponse({ status: 'ok', verified: unverifiedCount === 0, unverifiedCount: unverifiedCount });
+
+  // Layer-1 consolidation: also mark the examinee in_exam here — the same write
+  // markExamStarted did — so the start no longer needs a separate markExamStarted
+  // round-trip. Only flips 'approved' → 'in_exam' (same guard). Because this is
+  // the CONFIRMED/blocking call, it also strengthens the iPhone "stuck in
+  // ממתינים" fix. `marked` is returned so the client knows whether to keep the
+  // visibilitychange fallback armed.
+  var marked = false;
+  try {
+    var penSheet = getSheet('ממתינים');
+    var penData = penSheet.getDataRange().getValues();
+    for (var mi = penData.length - 1; mi >= 1; mi--) {
+      if (String(penData[mi][0]) !== String(data.sessionCode) || normalizeId(penData[mi][1]) !== normalizeId(data.idNumber)) continue;
+      var mst = String(penData[mi][5]).trim();
+      if (mst === 'approved') { penSheet.getRange(mi + 1, 6).setValue('in_exam'); penSheet.getRange(mi + 1, 12).setValue(nowISO()); marked = true; break; }
+      if (mst === 'in_exam') { marked = true; break; }
+      // other status (cancelled/completed): keep scanning for an approved/in_exam row
+    }
+  } catch (msErr) { /* non-fatal — client fallback + dashboard cleanup cover it */ }
+
+  return jsonResponse({ status: 'ok', verified: unverifiedCount === 0, unverifiedCount: unverifiedCount, examStarted: marked });
 }
 
 function handleSubmitResult(data) {
@@ -2780,6 +2829,19 @@ function handleSubmitResult(data) {
     }
   }
 
+  // Belt-and-suspenders: never let the literal "undefined" reach the certificate.
+  // The client never receives `ci`, so its locally-built wrongAnswers carry
+  // "undefined - undefined" as the correct answer; the server normally rebuilds
+  // them, but if that failed (Drive/cache down) the client text is kept. Replace
+  // any "undefined" with a neutral placeholder so feedback is never garbled.
+  if (Array.isArray(data.wrongAnswers)) {
+    for (var sw = 0; sw < data.wrongAnswers.length; sw++) {
+      var swItem = data.wrongAnswers[sw];
+      if (swItem && typeof swItem.correctAnswer === 'string' && swItem.correctAnswer.indexOf('undefined') !== -1) swItem.correctAnswer = '(לא זמין כעת)';
+      if (swItem && typeof swItem.yourAnswer === 'string' && swItem.yourAnswer.indexOf('undefined') !== -1) swItem.yourAnswer = '(לא זמין)';
+    }
+  }
+
   var wrongDetails = '';
   var wrongForWA = '';
   if (data.wrongAnswers && data.wrongAnswers.length > 0) {
@@ -2857,6 +2919,22 @@ function handleSubmitResult(data) {
       sheet.getRange(ex + 1, 18).setValue(false);            // R = disqualified flag
       sheet.getRange(ex + 1, 27).setValue('בוטל אוטומטית — נבחן ניגש למבחן מחדש'); // AA = reason
       sheet.getRange(ex + 1, 28).setValue(todayStr());       // AB = correction date
+    }
+  }
+
+  // Idempotency: skip if an identical result row already exists. A retry/resend
+  // whose original response was lost (flaky network) would otherwise create a
+  // duplicate. Matches session+id+license+score+time+result, so a re-take or a
+  // post-overturn submit (different score/time/result) is still appended.
+  for (var dc = existingRows.length - 1; dc >= 1; dc--) {
+    if (String(existingRows[dc][13]) === String(data.sessionCode) &&
+        normalizeId(existingRows[dc][1]) === normalizeId(data.idNumber) &&
+        String(existingRows[dc][4]) === String(data.license) &&
+        String(existingRows[dc][5]) === (data.score + '/' + data.total) &&
+        String(existingRows[dc][7]).trim() === String(passText).trim() &&
+        String(existingRows[dc][8]) === String(data.time)) {
+      markPendingCompleted(data.sessionCode, data.idNumber);
+      return jsonResponse({ status: 'ok', duplicate: true, waLink: waLink });
     }
   }
 
@@ -3089,8 +3167,13 @@ function handleCancelFailOnClose(data) {
     if (String(rows[r][13]) === sc && normalizeId(rows[r][1]) === id) {
       var notes = String(rows[r][15] || '');
       if (notes.indexOf('\u05E1\u05D2\u05D9\u05E8\u05EA \u05D3\u05E4\u05D3\u05E4\u05DF') !== -1) {
-        // Delete this row — examinee resumed, so the fail was premature
-        sheet.deleteRow(r + 1);
+        // Examinee resumed — the fail-on-close was premature. Mark בוטל instead
+        // of DELETING: sheet.deleteRow was the ONLY path that could ever destroy a
+        // result row (latent "vanished result" vector). At most one בוטל row
+        // results, since submitFailOnClose's dup-guard blocks further close-fails.
+        sheet.getRange(r + 1, 8).setValue('בוטל');
+        sheet.getRange(r + 1, 27).setValue('בוטל אוטומטי - רענון/חזרה למבחן');
+        sheet.getRange(r + 1, 28).setValue(todayStr());
         // Also un-mark pending as completed so exam can continue
         unmarkPendingCompleted(sc, id);
       }
@@ -4667,12 +4750,20 @@ function handleTeacherCommanderDashboard(p) {
   var resSheet = getSheet('תוצאות תרגול');
   var resData = resSheet.getDataRange().getValues();
 
-  var overall = { total: 0, passed: 0, failed: 0, scores: [], students: {}, teachers: {}, classes: {}, sites: {} };
+  var overall = { total: 0, passed: 0, failed: 0, scores: [], stayTimes: [], students: {}, teachers: {}, classes: {}, sites: {} };
   var byTeacher = {};
   var byClass = {};
   var byLicense = {};
   var byMode = {};
   var bySite = {};
+
+  // Activity-by-hour (0–23) + most-failed-questions, mirroring the examiner
+  // commander view. Practice rows store the submit time inside the date cell
+  // ("DD/MM/YYYY HH:mm" — see todayStr) and the missed questions as a JSON
+  // array in col 13 (פירוט שגויות), one {qNum, category, qText} per question.
+  var hourBuckets = [];
+  for (var hb = 0; hb < 24; hb++) hourBuckets.push(0);
+  var wrongCounts = {}; // qText → { count, category }
 
   for (var r = 1; r < resData.length; r++) {
     var rowDate = parseSheetDate(resData[r][0]);
@@ -4716,6 +4807,34 @@ function handleTeacherCommanderDashboard(p) {
     overall.teachers[teacherName] = true;
     overall.classes[classCode] = true;
     if (classSite) overall.sites[classSite] = true;
+
+    // Stay-time (col 10, "M:SS"/"MM:SS") → seconds, for the avg/median time KPIs.
+    var tSec = parsePracticeTimeSec(resData[r][10]);
+    if (tSec > 0) overall.stayTimes.push(tSec);
+
+    // Activity-by-hour from the submit timestamp embedded in the date cell.
+    var hh = practiceRowHour(resData[r][0], rowDate);
+    if (hh >= 0 && hh < 24) hourBuckets[hh]++;
+
+    // Most-failed questions — the practice client sends a JSON array of
+    // {qNum, category, qText}. Aggregate by question text (no ID/correct-answer
+    // is captured in practice mode, unlike the real-exam path).
+    var wdRaw = resData[r][13];
+    if (wdRaw) {
+      var wdArr = null;
+      try { wdArr = (typeof wdRaw === 'string') ? JSON.parse(wdRaw) : wdRaw; } catch (eWD) { wdArr = null; }
+      if (Array.isArray(wdArr)) {
+        for (var wdi = 0; wdi < wdArr.length; wdi++) {
+          var wit = wdArr[wdi];
+          if (!wit) continue;
+          var qt = String(wit.qText || wit.question || '').trim();
+          if (!qt) continue;
+          if (qt.length > 200) qt = qt.substring(0, 200);
+          if (!wrongCounts[qt]) wrongCounts[qt] = { count: 0, category: String(wit.category || '') };
+          wrongCounts[qt].count++;
+        }
+      }
+    }
 
     addToGroup(byTeacher, teacherName, isPassed, isFailed, pctVal, studentId);
     addToGroup(byClass, className + ' (' + classCode + ')', isPassed, isFailed, pctVal, studentId);
@@ -4790,10 +4909,48 @@ function handleTeacherCommanderDashboard(p) {
     return out;
   }
 
+  // Parse a practice "M:SS"/"MM:SS" duration into seconds. Practice has no
+  // time ceiling (unlike the 40-min exam), so we cap at 2h to drop garbage.
+  function parsePracticeTimeSec(str) {
+    if (!str) return 0;
+    var s = String(str).trim();
+    var m = s.match(/^(\d{1,3}):(\d{2})$/);
+    if (!m) return 0;
+    var mins = parseInt(m[1], 10), secs = parseInt(m[2], 10);
+    if (isNaN(mins) || isNaN(secs) || secs >= 60) return 0;
+    var t = mins * 60 + secs;
+    return (t > 0 && t <= 7200) ? t : 0;
+  }
+  // Hour-of-day from the date cell. Sheets usually auto-parses "DD/MM/YYYY
+  // HH:mm" into a real Date (hour preserved); for string cells we regex the
+  // HH out, since parseSheetDate drops the time component.
+  function practiceRowHour(cell, parsed) {
+    if (cell instanceof Date) return cell.getHours();
+    var s = String(cell || '');
+    var m = s.match(/\d{1,2}\/\d{1,2}\/\d{4}\s+(\d{1,2}):(\d{2})/);
+    if (m) return parseInt(m[1], 10);
+    if (parsed && parsed instanceof Date) return parsed.getHours();
+    return -1;
+  }
+  function avgMedianSec(arr) {
+    if (!arr || !arr.length) return { avg: 0, median: 0 };
+    var sum = 0;
+    for (var i = 0; i < arr.length; i++) sum += arr[i];
+    var avg = Math.round(sum / arr.length);
+    var sorted = arr.slice().sort(function(a, b) { return a - b; });
+    var mid = Math.floor(sorted.length / 2);
+    var median = sorted.length % 2 !== 0 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+    return { avg: avg, median: median };
+  }
+
   var overallStats = computeStats(overall);
   overallStats.activeTeachers = Object.keys(overall.teachers).length;
   overallStats.activeClasses = Object.keys(overall.classes).length;
   overallStats.activeSites = Object.keys(overall.sites).length;
+  var ovTime = avgMedianSec(overall.stayTimes);
+  overallStats.stayAvg = ovTime.avg;
+  overallStats.stayMedian = ovTime.median;
+  overallStats.stayCount = overall.stayTimes.length;
 
   var result = {
     overall: overallStats,
@@ -4835,6 +4992,16 @@ function handleTeacherCommanderDashboard(p) {
     });
   }
   result.activeClasses = activeClasses;
+
+  // Top-10 most-failed questions (sorted by fail count) + activity-by-hour.
+  var topWrong = [];
+  var wKeys = Object.keys(wrongCounts);
+  wKeys.sort(function(a, b) { return wrongCounts[b].count - wrongCounts[a].count; });
+  for (var twk = 0; twk < Math.min(wKeys.length, 10); twk++) {
+    topWrong.push({ question: wKeys[twk], category: wrongCounts[wKeys[twk]].category, count: wrongCounts[wKeys[twk]].count });
+  }
+  result.topWrong = topWrong;
+  result.hourly = hourBuckets;
 
   return jsonResponse({ status: 'ok', data: result });
 }

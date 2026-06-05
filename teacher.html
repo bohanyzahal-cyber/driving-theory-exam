@@ -326,9 +326,20 @@
         <div class="cmd-kpi cmd-kpi-fail"><div class="cmd-kpi-val" id="cmdFailed">0</div><div class="cmd-kpi-lbl">נכשלו</div></div>
         <div class="cmd-kpi cmd-kpi-rate"><div class="cmd-kpi-val" id="cmdPassRate">0%</div><div class="cmd-kpi-lbl">אחוז הצלחה</div></div>
         <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdAvg">0%</div><div class="cmd-kpi-lbl">ציון ממוצע</div></div>
-        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdMedian">0%</div><div class="cmd-kpi-lbl">חציון</div></div>
+        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdStayAvg">--:--</div><div class="cmd-kpi-lbl">זמן ממוצע</div></div>
+        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdStayMedian">--:--</div><div class="cmd-kpi-lbl">חציון זמן</div></div>
       </div>
       <div id="cmdOverallPie" style="margin-top:10px;"></div>
+    </div>
+
+    <div class="card" id="cmdHourlyCard" style="display:none;">
+      <h3 style="margin:0 0 10px;font-size:15px;color:#334155;">⏰ שעות הפעילות במהלך היום</h3>
+      <div id="cmdHourly" style="width:100%;overflow-x:auto;"></div>
+    </div>
+
+    <div class="card" id="cmdTopWrongCard" style="display:none;">
+      <h3 style="margin:0 0 10px;font-size:15px;color:#334155;">❌ 10 השאלות שנכשלים בהן הכי הרבה</h3>
+      <div id="cmdTopWrong"></div>
     </div>
 
     <div class="card" id="cmdBreakdowns" style="display:none;">
@@ -1180,6 +1191,8 @@ window.fetchCommanderData = function(period) {
   document.getElementById('cmdLoading').textContent = '\u05D8\u05D5\u05E2\u05DF \u05E0\u05EA\u05D5\u05E0\u05D9\u05DD...';
   document.getElementById('cmdLoading').style.color = '#64748b';
   document.getElementById('cmdKPIs').style.display = 'none';
+  document.getElementById('cmdHourlyCard').style.display = 'none';
+  document.getElementById('cmdTopWrongCard').style.display = 'none';
   document.getElementById('cmdBreakdowns').style.display = 'none';
   document.getElementById('cmdActions').style.display = 'none';
 
@@ -1194,9 +1207,16 @@ window.fetchCommanderData = function(period) {
     if (resp.status === 'ok') {
       cmdData = resp.data;
       renderCommanderKPIs(cmdData.overall);
+      renderHourly(cmdData.hourly || []);
+      renderTopWrong(cmdData.topWrong || []);
       renderBreakdownTable(cmdData, cmdCurrentTab);
       renderActiveClasses(cmdData.activeClasses || []);
       document.getElementById('cmdKPIs').style.display = '';
+      // Only surface the new cards when the (possibly older) server actually
+      // returned data for them — keeps the layout clean pre-redeploy.
+      var hasHourly = cmdData.hourly && cmdData.hourly.some(function(x) { return x > 0; });
+      document.getElementById('cmdHourlyCard').style.display = hasHourly ? '' : 'none';
+      document.getElementById('cmdTopWrongCard').style.display = (cmdData.topWrong && cmdData.topWrong.length) ? '' : 'none';
       document.getElementById('cmdBreakdowns').style.display = '';
       document.getElementById('cmdActions').style.display = '';
       document.getElementById('cmdActiveClasses').style.display = '';
@@ -1230,6 +1250,17 @@ function buildPieChart(passed, failed, size) {
   return html;
 }
 
+// Format seconds → "MM:SS". Empty/zero shows as "--:--" so KPI cards don't
+// claim 0 when there's simply no time data (e.g. an old server build that
+// doesn't yet send stayAvg/stayMedian).
+function fmtStaySec(sec) {
+  var n = Number(sec);
+  if (!n || n <= 0 || isNaN(n)) return '--:--';
+  var mm = Math.floor(n / 60);
+  var ss = n % 60;
+  return (mm < 10 ? '0' : '') + mm + ':' + (ss < 10 ? '0' : '') + ss;
+}
+
 function renderCommanderKPIs(o) {
   if (!o) return;
   document.getElementById('cmdTotal').textContent = o.total;
@@ -1240,9 +1271,68 @@ function renderCommanderKPIs(o) {
   document.getElementById('cmdFailed').textContent = o.failed;
   document.getElementById('cmdPassRate').textContent = o.passRate + '%';
   document.getElementById('cmdAvg').textContent = o.avgScore + '%';
-  document.getElementById('cmdMedian').textContent = o.medianScore + '%';
+  document.getElementById('cmdStayAvg').textContent = fmtStaySec(o.stayAvg);
+  document.getElementById('cmdStayMedian').textContent = fmtStaySec(o.stayMedian);
   var pieEl = document.getElementById('cmdOverallPie');
   if (pieEl) pieEl.innerHTML = buildPieChart(o.passed, o.failed, 100);
+}
+
+// Activity-by-hour bar chart (0–23). Bar height normalized to the busiest
+// hour in the period. Drawn LTR so 00→23 reads left-to-right like a clock.
+function renderHourly(hourly) {
+  var host = document.getElementById('cmdHourly');
+  if (!host) return;
+  if (!hourly || hourly.length !== 24) { host.innerHTML = '<p style="color:#94a3b8;">אין נתונים</p>'; return; }
+  var max = 0, totalA = 0, peakHour = 0;
+  for (var i = 0; i < 24; i++) { totalA += hourly[i]; if (hourly[i] > max) { max = hourly[i]; peakHour = i; } }
+  if (totalA === 0) { host.innerHTML = '<p style="color:#94a3b8;">אין פעילות בתקופה</p>'; return; }
+  var html = '<div style="display:flex;align-items:flex-end;gap:2px;height:130px;direction:ltr;min-width:480px;">';
+  for (var h = 0; h < 24; h++) {
+    var v = hourly[h];
+    var hgt = max > 0 ? Math.round((v / max) * 110) : 0;
+    var bg = v > 0 ? 'linear-gradient(to top,#7c3aed,#a78bfa)' : '#f1f5f9';
+    var hl = (h < 10 ? '0' + h : '' + h);
+    html += '<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;">';
+    html += '<div style="font-size:9px;color:#7c3aed;font-weight:700;height:12px;">' + (v > 0 ? v : '') + '</div>';
+    html += '<div title="' + hl + ':00 — ' + v + ' תרגולים" style="width:100%;height:' + hgt + 'px;min-height:' + (v > 0 ? 3 : 0) + 'px;background:' + bg + ';border-radius:3px 3px 0 0;"></div>';
+    html += '<div style="font-size:9px;color:#94a3b8;margin-top:2px;">' + (h % 2 === 0 ? hl : '') + '</div>';
+    html += '</div>';
+  }
+  html += '</div>';
+  html += '<div style="text-align:center;font-size:11px;color:#64748b;margin-top:6px;">שעת השיא: ' + (peakHour < 10 ? '0' + peakHour : peakHour) + ':00 (' + max + ' תרגולים) &nbsp;|&nbsp; סה"כ ' + totalA + ' תרגולים בתקופה.</div>';
+  host.innerHTML = html;
+}
+
+// Top-N most-failed questions. Practice rows carry only the question text +
+// category (no ID/correct-answer/image), so this is text-keyed; the 🔍 link
+// jumps to find_image.html to look up the matching question(s).
+function renderTopWrong(topWrong) {
+  var host = document.getElementById('cmdTopWrong');
+  if (!host) return;
+  if (!topWrong || topWrong.length === 0) { host.innerHTML = '<p style="color:#94a3b8;">אין נתוני שאלות שגויות לתקופה</p>'; return; }
+  var maxCount = topWrong[0].count;
+  var html = '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+  html += '<thead><tr style="background:#f1f5f9;">';
+  html += '<th style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;width:32px;">#</th>';
+  html += '<th style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;">שאלה</th>';
+  html += '<th style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;width:90px;">נושא</th>';
+  html += '<th style="padding:6px 8px;text-align:left;font-size:11px;color:#64748b;width:120px;">נכשלים</th>';
+  html += '</tr></thead><tbody>';
+  for (var i = 0; i < topWrong.length; i++) {
+    var item = topWrong[i];
+    var w = Math.round((item.count / maxCount) * 100);
+    html += '<tr style="border-bottom:1px solid #e2e8f0;">';
+    html += '<td style="padding:6px 8px;color:#94a3b8;font-weight:600;vertical-align:top;">' + (i + 1) + '</td>';
+    html += '<td style="padding:6px 8px;line-height:1.4;color:#334155;font-weight:500;">' + escHtml(item.question);
+    html += ' <a href="find_image.html?q=' + encodeURIComponent(item.question) + '" target="_blank" rel="noopener" title="חפש את השאלה" style="font-size:11px;color:#7c3aed;text-decoration:none;margin-right:6px;">🔍</a></td>';
+    html += '<td style="padding:6px 8px;font-size:11px;color:#64748b;">' + escHtml(item.category || '—') + '</td>';
+    html += '<td style="padding:6px 8px;vertical-align:middle;"><div style="display:flex;align-items:center;gap:6px;">';
+    html += '<div style="flex:1;height:10px;background:#f1f5f9;border-radius:5px;overflow:hidden;"><div style="width:' + w + '%;height:100%;background:#ef4444;"></div></div>';
+    html += '<span style="font-weight:700;color:#ef4444;min-width:30px;text-align:left;">' + item.count + '</span>';
+    html += '</div></td></tr>';
+  }
+  html += '</tbody></table>';
+  host.innerHTML = html;
 }
 
 function renderActiveClasses(classes) {
@@ -1402,6 +1492,16 @@ window.printCommanderReport = function() {
   html += '<p>\u05EA\u05E7\u05D5\u05E4\u05D4: ' + dateLabel + '</p>';
   html += '<h3>\u05E1\u05D9\u05DB\u05D5\u05DD \u05DB\u05DC\u05DC\u05D9</h3>';
   if (kpis) html += kpis.innerHTML;
+  var twCard = document.getElementById('cmdTopWrongCard');
+  var twHost = document.getElementById('cmdTopWrong');
+  if (twCard && twCard.style.display !== 'none' && twHost) {
+    html += '<h3>10 \u05D4\u05E9\u05D0\u05DC\u05D5\u05EA \u05E9\u05E0\u05DB\u05E9\u05DC\u05D9\u05DD \u05D1\u05D4\u05DF \u05D4\u05DB\u05D9 \u05D4\u05E8\u05D1\u05D4</h3>' + twHost.innerHTML;
+  }
+  var hrCard = document.getElementById('cmdHourlyCard');
+  var hrHost = document.getElementById('cmdHourly');
+  if (hrCard && hrCard.style.display !== 'none' && hrHost) {
+    html += '<h3>\u05E9\u05E2\u05D5\u05EA \u05D4\u05E4\u05E2\u05D9\u05DC\u05D5\u05EA \u05D1\u05DE\u05D4\u05DC\u05DA \u05D4\u05D9\u05D5\u05DD</h3>' + hrHost.innerHTML;
+  }
   html += '<h3>\u05E4\u05D9\u05E8\u05D5\u05D8</h3>';
   if (breakdown) html += breakdown.innerHTML;
   html += '</body></html>';
@@ -1423,7 +1523,8 @@ window.shareCommanderReport = function() {
   text += '\u05DB\u05D9\u05EA\u05D5\u05EA \u05E4\u05E2\u05D9\u05DC\u05D5\u05EA: ' + (o.activeClasses || 0) + '\n';
   text += '\u05E2\u05D1\u05E8\u05D5: ' + o.passed + ' | \u05E0\u05DB\u05E9\u05DC\u05D5: ' + o.failed + '\n';
   text += '\u05D0\u05D7\u05D5\u05D6 \u05D4\u05E6\u05DC\u05D7\u05D4: ' + o.passRate + '%\n';
-  text += '\u05E6\u05D9\u05D5\u05DF \u05DE\u05DE\u05D5\u05E6\u05E2: ' + o.avgScore + '% | \u05D7\u05E6\u05D9\u05D5\u05DF: ' + o.medianScore + '%\n';
+  text += '\u05E6\u05D9\u05D5\u05DF \u05DE\u05DE\u05D5\u05E6\u05E2: ' + o.avgScore + '%\n';
+  text += '\u05D6\u05DE\u05DF \u05DE\u05DE\u05D5\u05E6\u05E2: ' + fmtStaySec(o.stayAvg) + ' | \u05D7\u05E6\u05D9\u05D5\u05DF \u05D6\u05DE\u05DF: ' + fmtStaySec(o.stayMedian) + '\n';
 
   if (navigator.share) {
     navigator.share({ title: '\u05D3\u05D5"\u05D7 \u05DE\u05E4\u05E7\u05D3 \u2014 \u05DE\u05E2\u05E8\u05DB\u05EA \u05EA\u05E8\u05D2\u05D5\u05DC', text: text }).catch(function() {});
