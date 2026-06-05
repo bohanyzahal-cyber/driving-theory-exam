@@ -404,6 +404,7 @@
       <p id="doneResultsText">התוצאות יימסרו לך ע"י הבוחן.</p>
       <p class="muted" id="doneLeaveText">ניתן לפנות את המקום.</p>
       <div id="doneTimeUpMsg" style="display:none;"></div>
+      <div id="submitStatusBanner" style="margin-top:14px;"></div>
       <button id="nextExamineeBtn" onclick="resetForNextExaminee()" style="margin-top:24px; display:block; width:100%; padding:14px; font-size:17px; background:#0f172a;">נבחן הבא ←</button>
     </div>
   </section>
@@ -3789,6 +3790,12 @@
     // Submit result — include raw answers for server-side score verification
     var payload = {
       action: 'submitResult',
+      // Stamp the result with THIS attempt's token at SAVE time. On a later resend
+      // (e.g. the examinee re-registered → got a NEW token), apiPost will NOT
+      // overwrite it (it only fills a MISSING token), so the stale result carries
+      // its ORIGINAL token → the server rejects it (mismatch) instead of attaching
+      // a previous attempt's score to the new registration (cross-attempt "bleed").
+      examineeToken: examineeToken,
       sessionCode: sessionCode,
       idNumber: examineeData.idNumber,
       fullName: examineeData.fullName,
@@ -3824,6 +3831,7 @@
       }
     } catch(e2) {}
 
+    showSubmitStatus('sending');
     submitWithRetry(payload, 3, wrongData);
 
     // Show done screen - NO score
@@ -3861,6 +3869,8 @@
   function showSubmitFailureBanner(payload, wrongData) {
     var doneScreen = document.getElementById('screenDone');
     if (!doneScreen) return;
+    var ssb = document.getElementById('submitStatusBanner');
+    if (ssb) ssb.innerHTML = ''; // drop the "sending…" line; the red banner replaces it
     var b = document.getElementById('submitFailBanner');
     if (!b) {
       b = document.createElement('div');
@@ -3882,6 +3892,20 @@
     var b = document.getElementById('submitFailBanner');
     if (b && b.parentNode) b.parentNode.removeChild(b);
   }
+  // Positive delivery indicator on the done screen: "sending…" → green "received".
+  // Gives the examinee/examiner certainty the result actually reached the server
+  // (the red failure banner already covers the not-sent case).
+  function showSubmitStatus(state) {
+    var el = document.getElementById('submitStatusBanner');
+    if (!el) return;
+    if (state === 'sending') {
+      el.style.cssText = 'margin-top:14px;padding:12px;border-radius:10px;background:#f1f5f9;color:#334155;font-size:14px;font-weight:600;';
+      el.innerHTML = '⏳ שולח את התוצאה לשרת…';
+    } else if (state === 'received') {
+      el.style.cssText = 'margin-top:14px;padding:12px;border-radius:10px;background:#dcfce7;color:#166534;font-size:15px;font-weight:800;border:2px solid #16a34a;';
+      el.innerHTML = '✓ התוצאה התקבלה ונשמרה בשרת';
+    }
+  }
 
   function submitWithRetry(payload, retries, wrongData) {
     var attemptNum = 4 - retries;
@@ -3890,6 +3914,7 @@
       console.log('[SUBMIT] Response:', JSON.stringify(data));
       if (data && data.status === 'ok') {
         clearSubmitFailureBanner();
+        showSubmitStatus('received');
         // Clear pending from localStorage — confirmed persisted on the server.
         try {
           localStorage.removeItem('pendingResult_' + payload.idNumber);
@@ -3898,6 +3923,17 @@
         // Wrong-answers are now written WITH the result (sent in the payload),
         // so no separate submitWrongAnswers call is needed. (sendWrongAnswers
         // kept for backward-compat / manual recovery only.)
+      } else if (data && data.examineeTokenError === 'mismatch') {
+        // This stored result belongs to a PREVIOUS attempt (the examinee
+        // re-registered → a new token). The server correctly rejects it. DROP it:
+        // do not retry forever or show the scary banner, and never let its score
+        // attach to the new attempt (cross-attempt "bleed").
+        try {
+          localStorage.removeItem('pendingResult_' + payload.idNumber);
+          localStorage.removeItem('pendingWrongAnswers_' + payload.idNumber);
+        } catch(e5) {}
+        clearSubmitFailureBanner();
+        console.log('[SUBMIT] Stale result for a superseded attempt — discarded (token mismatch).');
       } else {
         _submitFailedNext(payload, retries, wrongData);
       }
