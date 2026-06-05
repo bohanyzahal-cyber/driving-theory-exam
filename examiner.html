@@ -496,7 +496,8 @@
         <div class="stat-item"><div class="stat-val" id="statRate" style="color:#60a5fa;">0%</div><div class="stat-lbl">אחוז הצלחה</div></div>
       </div>
       <div class="bulk-actions" id="bulkActions" style="display:none;">
-        <button class="wa-btn" style="padding:8px 16px; font-size:14px;" onclick="sendBulkToManager()">שלח סיכום למנהל אתר</button>
+        <!-- מוסתר זמנית לבקשת המשתמש (מבלבל מול שאר כפתורי הדו"חות). להחזרה: הסר את display:none מהסגנון של הכפתור הבא. -->
+        <button class="wa-btn" style="padding:8px 16px; font-size:14px; display:none;" onclick="sendBulkToManager()">שלח סיכום למנהל אתר</button>
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#1a73e8;" onclick="sendToAllExaminees()">📱 שלח WhatsApp לכל הנבחנים</button>
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#1a5276;" onclick="generateExaminerReport()">&#x1f4cb; דו"ח בוחן</button>
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#6d28d9;" onclick="shareExaminerReport()">&#x1f4e4; שתף דו"ח בוחן</button>
