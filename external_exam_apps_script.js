@@ -369,7 +369,7 @@ function doGet(e) {
     // Actions that require examiner token authentication
     var examinerActions = ['getSites','listSessions','listAllSessions','createSession','updateSession','closeSession',
       'approveExaminee','rejectExaminee','examinerDashboard','resetExaminee',
-      'correctToPass','overturnDQ','forceComplete','markSent','commanderDashboard',
+      'correctToPass','overturnDQ','confirmDQ','forceComplete','markSent','commanderDashboard',
       'commanderCorrectResult','getResultUploadToken','centerManagerReport'];
     // Note: 'disqualify' is NOT in this list because it can be sent by the examinee client (no token)
     // — auth is enforced inside handleDisqualify itself (examiner token OR active pending row).
@@ -1215,6 +1215,7 @@ function handleSiteCombinedReport(p) {
   for (var r = 1; r < resData.length; r++) {
     var sCode = String(resData[r][13] || '').trim();
     if (!sessionCodesSet[sCode]) continue;
+    if (String(resData[r][7] || '').trim() === 'בוטל') continue; // skip overturned/superseded rows (consistent with the other report handlers)
     var rDate = resData[r][0] instanceof Date ? resData[r][0] : new Date(resData[r][0]);
     results.push({
       date: rDate.toISOString(),
@@ -2205,7 +2206,11 @@ function handleOverturnDQ(p) {
 }
 
 function handleConfirmDQ(p) {
-  if (p.examinerId && !verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+  // Unconditional ownership check. confirmDQ is now in examinerActions → requireToken
+  // already forced a valid examinerId. The old `if (p.examinerId && ...)` form could
+  // be bypassed by simply OMITTING examinerId, letting anyone who knows session+id
+  // finalize a victim's provisional DQ (robbing their grace-period recovery).
+  if (!verifyExaminerForSession(p.sessionCode, p.examinerId)) {
     return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
   }
   // Mark pending status as dq_confirmed so examinee polling gets a final answer
@@ -2332,6 +2337,19 @@ function handleSubmitManualResult(p) {
 
   var attemptNum = countAttempts(idNumber, license) + 1;
   var sheet = getSheet('תוצאות');
+  // Idempotency: a lost-response retry (request landed, reply dropped, examiner
+  // re-saves) must not create a second identical manual row. Skip if a non-בוטל
+  // row already exists for this session+id+license+score.
+  var manExisting = sheet.getDataRange().getValues();
+  for (var mx = manExisting.length - 1; mx >= 1; mx--) {
+    if (String(manExisting[mx][13]) === String(p.sessionCode) &&
+        normalizeId(manExisting[mx][1]) === normalizeId(idNumber) &&
+        String(manExisting[mx][4]) === String(license) &&
+        String(manExisting[mx][5]) === (scoreNum + '/' + totalNum) &&
+        String(manExisting[mx][7] || '').trim() !== 'בוטל') {
+      return jsonResponse({ status: 'ok', duplicate: true, waLink: manExisting[mx][18] || '' });
+    }
+  }
   sheet.appendRow([
     todayStr(),
     idNumber,
@@ -2433,6 +2451,11 @@ function handleCommanderCorrectResult(data) {
 }
 
 function handleMarkSent(p) {
+  // Ownership check — consistent with the other examiner mutations; prevents an
+  // authenticated examiner from flipping the "נשלח?" flag on another session's rows.
+  if (!verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+    return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
+  }
   var sheet = getSheet('תוצאות');
   var data = sheet.getDataRange().getValues();
   var ids = p.idNumbers ? p.idNumbers.split(',') : [p.idNumber];
@@ -2837,7 +2860,10 @@ function handleSubmitResult(data) {
     if (normalizeId(fabRows[fb][1]) !== normalizeId(data.idNumber)) continue;
     if (String(fabRows[fb][7]).trim() !== 'נכשל') continue;
     var fbNote = String(fabRows[fb][15] || '');
-    if (fbNote.indexOf('סגירת דפדפן') === -1 && fbNote.indexOf('טיימאאוט') === -1) continue;
+    // markers: close-beacon ('סגירת דפדפן'), dashboard timeout ('טיימאאוט'), and
+    // examiner manual-disconnect ('סיום ידני ... ניתוק/תקלה'). All three mean "did
+    // not finish properly" — a real finished submit must override them.
+    if (fbNote.indexOf('סגירת דפדפן') === -1 && fbNote.indexOf('טיימאאוט') === -1 && fbNote.indexOf('סיום ידני') === -1) continue;
     sheet.getRange(fb + 1, 8).setValue('בוטל');                                    // H = pass/fail
     sheet.getRange(fb + 1, 27).setValue('בוטל אוטומטית — הנבחן השלים והגיש מבחן');  // AA = reason
     sheet.getRange(fb + 1, 28).setValue(todayStr());                               // AB = correction date
@@ -3173,10 +3199,15 @@ function handleSubmitFailOnClose(data) {
     }
   } catch (focErr) {}
 
-  // Duplicate protection: check if result already exists for this session+ID+license+language
+  // Duplicate protection: if ANY non-בוטל result already exists for this session+id,
+  // do NOT add a close-fail. Match on session+id ONLY (not language/license): the
+  // close-beacon carries the REGISTRATION language, but a real submit may carry a
+  // different FINAL language after a mid-exam switch — a language-scoped check would
+  // miss it and append a spurious 0/30 next to the real result.
   var existingData = sheet.getDataRange().getValues();
   for (var d = 1; d < existingData.length; d++) {
-    if (String(existingData[d][13]) === String(data.sessionCode) && normalizeId(existingData[d][1]) === normalizeId(data.idNumber) && String(existingData[d][4]) === String(data.license) && String(existingData[d][12]) === String(data.language || 'he')) {
+    if (String(existingData[d][13]) === String(data.sessionCode) && normalizeId(existingData[d][1]) === normalizeId(data.idNumber)) {
+      if (String(existingData[d][7] || '').trim() === 'בוטל') continue; // a voided row is not a real result
       markPendingCompleted(data.sessionCode, data.idNumber);
       return jsonResponse({ status: 'ok', duplicate: true });
     }
@@ -5600,9 +5631,13 @@ function handleStudentJoinClass(p) {
 }
 
 function handleSubmitPracticeResult(p) {
-  var sheet = getSheet('תוצאות תרגול');
   var studentId = String(p.studentId || '').trim();
   var classCode = String(p.classCode || '').trim();
+  // Rate limit: cap public practice-result writes so the תוצאות תרגול sheet (which
+  // feeds the teacher/commander stats) can't be flooded with fabricated rows.
+  var prRlErr = requireRateLimit('submitPracticeResult', (studentId || classCode || 'anon'), 30, 60);
+  if (prRlErr) return prRlErr;
+  var sheet = getSheet('תוצאות תרגול');
   var mode = String(p.mode || 'exam');
   var license = String(p.license || 'B');
   var score = Number(p.score) || 0;
