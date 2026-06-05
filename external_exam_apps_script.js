@@ -93,12 +93,9 @@ function getOfficeWhatsAppNumber() {
 
 // ========== Token authentication ==========
 function generateToken() {
-  var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  var token = '';
-  for (var i = 0; i < 48; i++) {
-    token += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return token;
+  // CSPRNG-backed examiner token (was Math.random, which is predictable). Three
+  // UUIDs of hex → 96 hex chars, well above the prior 48-char entropy.
+  return (Utilities.getUuid() + Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
 }
 
 function verifyToken(examinerId, token) {
@@ -217,12 +214,8 @@ function requireRateLimit(action, identifier, maxRequests, windowSeconds) {
 // an attacker registered to the same session from acting on a victim's row
 // using only sessionCode + idNumber.
 function generateExamineeToken() {
-  var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-  var token = '';
-  for (var i = 0; i < 32; i++) {
-    token += chars.charAt(Math.floor(Math.random() * chars.length));
-  }
-  return token;
+  // CSPRNG-backed (was Math.random, predictable). Two UUIDs of hex → 64 hex chars.
+  return (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
 }
 
 // Returns { valid: bool, legacy: bool, reason: string }
@@ -545,22 +538,10 @@ function doGet(e) {
         return handleBohanSiteAuth(p);
 
       case 'viewResult':
-        var resultId = p.id;
-        if (!resultId) return HtmlService.createHtmlOutput('<h1 style="text-align:center;padding:40px;font-family:Arial;">Missing ID</h1>');
-        var vc = CacheService.getScriptCache();
-        var metaStr = vc.get('result_' + resultId + '_meta');
-        if (!metaStr) return HtmlService.createHtmlOutput('<h1 style="text-align:center;padding:40px;font-family:Arial;direction:rtl;">\u05D4\u05E7\u05D9\u05E9\u05D5\u05E8 \u05E4\u05D2 \u05EA\u05D5\u05E7\u05E3</h1>');
-        var numChunks = parseInt(metaStr, 10);
-        var keys = [];
-        for (var ci = 0; ci < numChunks; ci++) keys.push('result_' + resultId + '_' + ci);
-        var chunkMap = vc.getAll(keys);
-        var fullHtml = '';
-        for (var ci2 = 0; ci2 < numChunks; ci2++) {
-          var chunk = chunkMap['result_' + resultId + '_' + ci2];
-          if (!chunk) return HtmlService.createHtmlOutput('<h1 style="text-align:center;padding:40px;font-family:Arial;direction:rtl;">\u05D4\u05E7\u05D9\u05E9\u05D5\u05E8 \u05E4\u05D2 \u05EA\u05D5\u05E7\u05E3</h1>');
-          fullHtml += chunk;
-        }
-        return HtmlService.createHtmlOutput(fullHtml).setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+        // DISABLED: see handleUploadResultHtml. Result viewing moved to the
+        // authenticated Cloudflare Worker; this no longer serves cached HTML (it
+        // used ALLOWALL framing on the trusted Google origin \u2014 an XSS/phishing vector).
+        return HtmlService.createHtmlOutput('<h1 style="text-align:center;padding:40px;font-family:Arial;direction:rtl;">\u05DC\u05D0 \u05D6\u05DE\u05D9\u05DF</h1>');
 
       // ===== Teacher actions =====
       case 'teacherVerifyLogin':
@@ -2660,6 +2641,21 @@ function handleSubmitResult(data) {
     }
   }
 
+  // SECURITY (anti score-forge): if a registered exam (מבחנים row) exists for this
+  // session+id, the answers array is MANDATORY so the server re-scores from the
+  // answer key. Without this, an examinee could POST a forged score with NO answers
+  // and skip BOTH the re-score and the unverified-guard below (both answers-gated).
+  var hasRegisteredExam = false;
+  try {
+    var regChk = getSheet('מבחנים').getDataRange().getValues();
+    for (var rc = regChk.length - 1; rc >= 1; rc--) {
+      if (String(regChk[rc][0]) === String(data.sessionCode) && normalizeId(regChk[rc][1]) === normalizeId(data.idNumber)) { hasRegisteredExam = true; break; }
+    }
+  } catch (regChkErr) {}
+  if (hasRegisteredExam && (!data.answers || !Array.isArray(data.answers) || data.answers.length === 0)) {
+    return jsonResponse({ status: 'error', message: 'הגשה לא תקינה — חסרות תשובות למבחן רשום' });
+  }
+
   // Server-side score verification: if answers array is present, recalculate
   // score using the question map registered at exam start. The map's
   // correctShuffledIdx values are server-computed (from ANSWER_KEY_BY_LANG)
@@ -4017,6 +4013,12 @@ function unmarkPendingCompleted(sessionCode, idNumber) {
 // ========== שיתוף תוצאה דרך CacheService ==========
 
 function handleUploadResultHtml(data) {
+  // DISABLED: result-HTML hosting moved to the authenticated Cloudflare Worker
+  // (RESULTS_URL). This Apps Script endpoint had NO auth and served attacker HTML
+  // from the trusted Google origin (stored-XSS/phishing). The live client never
+  // calls it (it posts to the Worker), so returning early is safe and closes the hole.
+  return jsonResponse({ status: 'error', message: 'disabled — use the results worker' });
+  // eslint-disable-next-line
   if (!data.html || !data.requestId) {
     return jsonResponse({ status: 'error', message: 'Missing html or requestId' });
   }
