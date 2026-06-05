@@ -2227,8 +2227,16 @@
       // forged submit) → review it, do not trust it like a normal pass. "חשוד" =
       // exam took <3 min. DQ rows have no score to verify → skip the verified flag.
       var verifiedKnown = (typeof r.verified !== 'undefined');
+      var vstate = String(r.verified || '');
+      // A "0/X" score is a SYSTEM-fabricated fail (browser-close / timeout /
+      // disconnect), not a real graded score → nothing to verify, skip the badge.
+      var isZeroScore = /^0\//.test(String(r.score || ''));
       var flagHtml = '';
-      if (verifiedKnown && !isDQ && String(r.verified) !== 'מאומת') {
+      // Show "⚠ לא אומת" ONLY for a genuine DIGITAL exam the server did NOT re-score
+      // against the answer key (a glitch, or a tampered/forged submit). SKIP: manual
+      // paper entries ('ידני' — entered by the examiner on purpose), system fails
+      // (0/X), and DQ rows — otherwise the flag cries wolf and gets ignored.
+      if (verifiedKnown && !isDQ && !isZeroScore && vstate !== 'מאומת' && vstate !== 'ידני') {
         flagHtml += ' <span title="הציון לא אומת מול מפתח התשובות בשרת — דורש בדיקה ידנית" style="display:inline-block;background:#fef3c7;color:#92400e;border:1px solid #f59e0b;border-radius:6px;padding:0 5px;font-size:10px;font-weight:800;white-space:nowrap;">⚠ לא אומת</span>';
       }
       if (String(r.suspicious) === 'חשוד') {

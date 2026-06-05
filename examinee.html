@@ -2720,8 +2720,14 @@
     if (splitScreenBlurTimer) {
       clearTimeout(splitScreenBlurTimer); splitScreenBlurTimer = null;
       var awayMs = tabHiddenAt ? (Date.now() - tabHiddenAt) : 0;
-      if (awayMs >= TAB_SWITCH_CALL_MS) {
-        // Was away 5+ sec — send DQ now
+      if (awayMs >= TAB_SWITCH_CALL_MS && document.visibilityState === 'hidden') {
+        // Away 5+ sec AND the page actually went hidden (real app-switch / phone
+        // call) — DQ now. A long blur where the page stayed VISIBLE the whole time
+        // (benign focus-steal, or a system/permission prompt that doesn't hide the
+        // page — reachable on MOBILE where grace 10s > call 5s) is NOT cheating and
+        // must not fail an innocent examinee; it falls through to the warning path
+        // below. Genuine hidden-away switches are independently caught by
+        // onTabSwitch. Same principle as the blur grace-timer (visibility-gated).
         tabSwitchDQConfirmed = true;
         try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
         sendDQToServer();
@@ -3938,7 +3944,8 @@
     }
     var attemptNum = 4 - retries;
     console.log('[SUBMIT] Sending result via POST, attempt ' + attemptNum);
-    apiPost(payload).then(function(data) {
+    try {
+      apiPost(payload).then(function(data) {
       if (_sid) _submitInFlight[_sid] = false;
       console.log('[SUBMIT] Response:', JSON.stringify(data));
       if (data && data.status === 'ok') {
@@ -3970,7 +3977,15 @@
       if (_sid) _submitInFlight[_sid] = false;
       console.log('[SUBMIT] Network error:', err);
       _submitFailedNext(payload, retries, wrongData);
-    });
+      });
+    } catch (syncErr) {
+      // apiPost threw synchronously (near-impossible for plain exam data) — release
+      // the in-flight slot so this id is never permanently blocked, then fall through
+      // to the normal retry/backoff. Nothing was sent, so the retry can't duplicate.
+      if (_sid) _submitInFlight[_sid] = false;
+      console.log('[SUBMIT] Synchronous send error:', syncErr);
+      _submitFailedNext(payload, retries, wrongData);
+    }
   }
 
   // Fast retries first (3s); once exhausted, surface the LOUD banner and keep
