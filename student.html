@@ -1245,6 +1245,31 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw-student.js').catch(function() {});
 }
 
+// ===== Auto-update: reload to the latest deployed version when idle =====
+// sw-student.js is network-first, so any reload fetches the newest student.html.
+// We HEAD-poll our own ETag/Last-Modified (HEAD bypasses the SW) and reload
+// automatically on a new deploy — but ONLY while idle, never mid-practice
+// (screenPractice active) so a student never loses quiz progress. Zero
+// maintenance — no version file to bump.
+(function() {
+  if (!window.fetch) return;
+  var baseTag = null;
+  var tagOf = function(r) { return r.headers.get('ETag') || r.headers.get('Last-Modified') || null; };
+  var probe = function(cb) {
+    fetch(location.pathname, { method: 'HEAD', cache: 'no-store' })
+      .then(function(r) { cb(tagOf(r)); }).catch(function() { cb(null); });
+  };
+  probe(function(t) { baseTag = t; });
+  setInterval(function() {
+    probe(function(t) {
+      if (!t || !baseTag || t === baseTag) return;            // unchanged / unknown
+      var ps = document.getElementById('screenPractice');
+      if (ps && ps.classList.contains('active')) return;      // never disrupt an active practice
+      location.reload();
+    });
+  }, 120000);  // check every 2 min
+})();
+
 var deferredInstallPrompt = null;
 window.addEventListener('beforeinstallprompt', function(e) {
   e.preventDefault();
