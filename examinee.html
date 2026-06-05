@@ -3986,6 +3986,11 @@
   }
 
   // ========== Auto-restore on page load ==========
+  // Recover ANY unsent result on this device (not just the restored examinee's) —
+  // critical for the shared-tablet flow where examinee A's result can be left in
+  // localStorage when B opens the page. Each saved payload carries its own baked
+  // examineeToken, so it self-authenticates regardless of the current session.
+  try { resendAllPendingResults(); } catch(e) {}
   var hasRestoredSession = false;
   (function() {
     var saved = loadExamineeState();
