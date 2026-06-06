@@ -2884,15 +2884,16 @@
     var blocks = text.split('\n\n');
     for (var b = 0; b < blocks.length; b++) {
       var lines = blocks[b].trim().split('\n');
-      var q = '', yours = '', correct = '', category = '';
+      var q = '', yours = '', correct = '', category = '', qid = '';
       for (var l = 0; l < lines.length; l++) {
         var line = lines[l].trim();
-        if (line.indexOf('\u05E9\u05D0\u05DC\u05D4:') === 0) q = line.replace('\u05E9\u05D0\u05DC\u05D4:', '').trim();
+        if (line.indexOf('\u05DE\u05D6\u05D4\u05D4 \u05E9\u05D0\u05DC\u05D4:') === 0) qid = line.replace('\u05DE\u05D6\u05D4\u05D4 \u05E9\u05D0\u05DC\u05D4:', '').trim();
+        else if (line.indexOf('\u05E9\u05D0\u05DC\u05D4:') === 0) q = line.replace('\u05E9\u05D0\u05DC\u05D4:', '').trim();
         else if (line.indexOf('\u05EA\u05E9\u05D5\u05D1\u05EA \u05D4\u05E0\u05D1\u05D7\u05DF:') === 0) yours = line.replace('\u05EA\u05E9\u05D5\u05D1\u05EA \u05D4\u05E0\u05D1\u05D7\u05DF:', '').trim();
         else if (line.indexOf('\u05EA\u05E9\u05D5\u05D1\u05D4 \u05E0\u05DB\u05D5\u05E0\u05D4:') === 0) correct = line.replace('\u05EA\u05E9\u05D5\u05D1\u05D4 \u05E0\u05DB\u05D5\u05E0\u05D4:', '').trim();
         else if (line.indexOf('\u05E7\u05D8\u05D2\u05D5\u05E8\u05D9\u05D4:') === 0) category = line.replace('\u05E7\u05D8\u05D2\u05D5\u05E8\u05D9\u05D4:', '').trim();
       }
-      if (q) items.push({ question: q, yourAnswer: yours, correctAnswer: correct, category: category });
+      if (q) items.push({ question: q, yourAnswer: yours, correctAnswer: correct, category: category, questionId: qid });
     }
     return items;
   }
@@ -4228,6 +4229,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     }
     var structure = EXAM_STRUCTURE[dominantLicense] || EXAM_STRUCTURE['B'];
     var catTotals = {}, catWrong = {};
+    var questionFails = {}; // accumulator for the top-10 most-failed questions section
     var hasCatData = false;
     var perExamineeCats = [];
 
@@ -4254,6 +4256,14 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
           examHasCats = true; hasCatData = true;
           if (!wrongByCat[wd[wc].category]) wrongByCat[wd[wc].category] = 0;
           wrongByCat[wd[wc].category]++;
+        }
+        // Aggregate per-question failures for the top-10 section. Key by question
+        // id when present (newer rows carry "מזהה שאלה:") so distinct sign-questions
+        // that share the same prompt text don't collapse; fall back to the text.
+        if (wd[wc].question) {
+          var qKey = wd[wc].questionId ? ('#' + wd[wc].questionId) : wd[wc].question;
+          if (!questionFails[qKey]) questionFails[qKey] = { question: wd[wc].question, correctAnswer: wd[wc].correctAnswer || '', questionId: wd[wc].questionId || '', count: 0 };
+          questionFails[qKey].count++;
         }
       }
       var eCats = {};
@@ -4431,6 +4441,40 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       }
       H.push('</tbody></table></div></div>');
     }
+
+    // Top-10 most-failed questions \u2014 "\u05D4\u05DE\u05DE\u05D3 \u05E2\u05DD \u05D4-10 \u05E9\u05D0\u05DC\u05D5\u05EA", WITHOUT the find_image
+    // \uD83D\uDD0D magnifying-glass deep link (per request; that link belongs to the live
+    // commander card only). Built client-side from the parsed wrongDetails of the
+    // site's completed exams, aggregated by question id (text fallback). Same data
+    // as the commander report's printable table, minus the \uD83D\uDD0D.
+    (function() {
+      var twArr = [];
+      for (var qk in questionFails) twArr.push(questionFails[qk]);
+      twArr.sort(function(a, b) { return b.count - a.count; });
+      if (twArr.length > 0) {
+        H.push('<div class="section">');
+        H.push('<div class="section-title"><span style="font-size:20px;">\u274C</span> 10 \u05D4\u05E9\u05D0\u05DC\u05D5\u05EA \u05E9\u05E0\u05DB\u05E9\u05DC\u05D9\u05DD \u05D1\u05D4\u05DF \u05D4\u05DB\u05D9 \u05D4\u05E8\u05D1\u05D4</div>');
+        H.push('<div class="tw"><table><thead><tr>');
+        H.push('<th style="width:36px;">#</th><th>\u05E9\u05D0\u05DC\u05D4 \u05D5\u05EA\u05E9\u05D5\u05D1\u05D4 \u05E0\u05DB\u05D5\u05E0\u05D4</th><th style="width:80px;">\u05E0\u05DB\u05E9\u05DC\u05D9\u05DD</th>');
+        H.push('</tr></thead><tbody>');
+        for (var twi = 0; twi < twArr.length && twi < 10; twi++) {
+          var tw = twArr[twi];
+          H.push('<tr>');
+          H.push('<td style="font-weight:700;color:#94a3b8;">' + (twi + 1) + '</td>');
+          H.push('<td style="text-align:right;"><div style="font-weight:600;color:#334155;">' + escHtml(tw.question) + '</div>');
+          if (tw.correctAnswer && String(tw.correctAnswer).indexOf('undefined') === -1) {
+            H.push('<div style="margin-top:3px;font-size:11px;color:#16a34a;"><strong>\u2713 \u05E0\u05DB\u05D5\u05DF:</strong> ' + escHtml(tw.correctAnswer) + '</div>');
+          }
+          if (tw.questionId) {
+            H.push('<div style="margin-top:2px;font-size:10px;color:#94a3b8;">id: ' + escHtml(String(tw.questionId)) + '</div>');
+          }
+          H.push('</td>');
+          H.push('<td style="color:#dc2626;font-weight:800;font-size:15px;">' + tw.count + '</td>');
+          H.push('</tr>');
+        }
+        H.push('</tbody></table></div></div>');
+      }
+    })();
 
     // Per-examinee table
     H.push('<div class="section">');
