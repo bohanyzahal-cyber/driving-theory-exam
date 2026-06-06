@@ -2486,6 +2486,10 @@
       // Phone: baseline = current viewport (browser chrome accounted for)
       splitScreenInitW = window.innerWidth;
       splitScreenInitH = window.innerHeight;
+      // Phones can't be forced into fullscreen, and the relative baseline above is
+      // MASKED by a pre-split start — so also run an absolute size-based monitor
+      // that compares the viewport to the whole screen (startMobileSplitMonitor).
+      startMobileSplitMonitor();
     } else {
       // Desktop: baseline = physical screen size. Prevents "register with small window" cheat.
       // Window MUST occupy >= 90% of the screen at all times.
@@ -2627,6 +2631,78 @@
       try { window.visualViewport.removeEventListener('resize', onVisualViewportResize); } catch (e) {}
     }
     if (splitScreenBlurTimer) { clearTimeout(splitScreenBlurTimer); splitScreenBlurTimer = null; }
+    stopMobileSplitMonitor();
+  }
+
+  // ===== Mobile split-screen detection (absolute, size-based) =====
+  // Phones can't be forced into browser fullscreen, so a split-screen setup (exam
+  // in one pane, a browser/app in the other) is detected by the VIEWPORT taking up
+  // too little of the SCREEN. Area-based + orientation-normalized so it works in
+  // any rotation AND catches a PRE-SPLIT start (where the relative baseline is
+  // already the split size, so no resize ever fires). window.innerWidth is the
+  // LAYOUT viewport — pinch-zoom (visual viewport) does NOT change it, so a
+  // zoomed-in examinee is not mis-flagged. Threshold/grace are tunable constants.
+  var MOBILE_SPLIT_AREA_RATIO = 0.6;   // viewport must occupy >= 60% of screen area
+  var MOBILE_SPLIT_GRACE_MS = 15000;   // 15s to exit split-screen before DQ
+  var mobileSplitMonitor = null;
+  var mobileSplitSince = 0;
+  function isMobileSplitNow() {
+    var sw = screen.width || 0, sh = screen.height || 0;
+    var iw = window.innerWidth || 0, ih = window.innerHeight || 0;
+    if (sw <= 0 || sh <= 0 || iw <= 0 || ih <= 0) return false;
+    var vpArea = Math.max(iw, ih) * Math.min(iw, ih);
+    var scArea = Math.max(sw, sh) * Math.min(sw, sh);
+    if (scArea <= 0) return false;
+    return (vpArea / scArea) < MOBILE_SPLIT_AREA_RATIO;
+  }
+  function showMobileSplitPrompt() {
+    if (document.getElementById('mobileSplitPrompt')) return;
+    var box = document.createElement('div');
+    box.id = 'mobileSplitPrompt';
+    box.style.cssText = 'position:fixed;inset:0;z-index:99998;background:rgba(15,23,42,0.95);display:flex;align-items:center;justify-content:center;padding:20px;';
+    box.innerHTML = '<div style="background:#fff;border-radius:16px;padding:24px 22px;max-width:360px;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,0.5);">' +
+      '<div style="font-size:44px;margin-bottom:10px;">📱</div>' +
+      '<div style="font-size:19px;font-weight:800;color:#0f172a;margin-bottom:8px;">זוהה מסך מפוצל</div>' +
+      '<div style="font-size:14px;color:#475569;line-height:1.55;margin-bottom:8px;">המבחן חייב לרוץ במסך מלא. סגור את המסך המפוצל / היישום השני כדי להמשיך.<br><strong style="color:#dc2626;">אם לא — המבחן ייפסל אוטומטית.</strong></div>' +
+      '<div style="font-size:12px;color:#94a3b8;">ברגע שתצא ממסך מפוצל — ההודעה תיעלם לבדה</div>' +
+      '</div>';
+    document.body.appendChild(box);
+  }
+  function removeMobileSplitPrompt() {
+    var el = document.getElementById('mobileSplitPrompt');
+    if (el && el.parentNode) el.parentNode.removeChild(el);
+  }
+  function startMobileSplitMonitor() {
+    if (mobileSplitMonitor) return;
+    mobileSplitSince = 0;
+    mobileSplitMonitor = setInterval(function() {
+      if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
+      if (isMobileSplitNow()) {
+        if (!mobileSplitSince) {
+          // First detection — warn and start the grace countdown.
+          mobileSplitSince = Date.now();
+          newDQEventId();
+          showMobileSplitPrompt();
+        } else if (Date.now() - mobileSplitSince > MOBILE_SPLIT_GRACE_MS) {
+          // Still split after the grace — disqualify.
+          removeMobileSplitPrompt();
+          tabSwitchDQConfirmed = true;
+          try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+          sendDQToServer();
+          showDQScreen();
+        }
+      } else if (mobileSplitSince) {
+        // Exited split-screen within the grace — recover, no DQ.
+        mobileSplitSince = 0;
+        currentDQEventId = '';
+        removeMobileSplitPrompt();
+      }
+    }, 2000);
+  }
+  function stopMobileSplitMonitor() {
+    if (mobileSplitMonitor) { clearInterval(mobileSplitMonitor); mobileSplitMonitor = null; }
+    mobileSplitSince = 0;
+    removeMobileSplitPrompt();
   }
 
   var resizeDebounceTimer = null;
