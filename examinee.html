@@ -2544,6 +2544,8 @@
     if (!isMobileDevice()) {
       setTimeout(checkSplitScreenNow, 800); // 800ms — after fullscreen has had a chance to engage
     }
+    // Detect examiner-initiated DQ during the exam (all devices, incl. tablets).
+    startExamStatusPoll();
   }
 
   // Returns a string code describing the type of viewport change between
@@ -2652,6 +2654,7 @@
     }
     if (splitScreenBlurTimer) { clearTimeout(splitScreenBlurTimer); splitScreenBlurTimer = null; }
     stopMobileSplitMonitor();
+    stopExamStatusPoll();
   }
 
   // ===== Mobile split-screen detection (absolute, size-based) =====
@@ -2673,7 +2676,10 @@
     var vpArea = Math.max(iw, ih) * Math.min(iw, ih);
     var scArea = Math.max(sw, sh) * Math.min(sw, sh);
     if (scArea <= 0) return false;
-    return (vpArea / scArea) < MOBILE_SPLIT_AREA_RATIO;
+    // Tablets have far less browser chrome than phones (full-screen ≈ 0.9), so use
+    // a higher cutoff to also catch a 2/3 / 3/4 Split View; phones keep 0.6.
+    var ratio = isTablet() ? 0.72 : MOBILE_SPLIT_AREA_RATIO;
+    return (vpArea / scArea) < ratio;
   }
   function showMobileSplitPrompt() {
     if (document.getElementById('mobileSplitPrompt')) return;
@@ -2724,6 +2730,34 @@
     if (mobileSplitMonitor) { clearInterval(mobileSplitMonitor); mobileSplitMonitor = null; }
     mobileSplitSince = 0;
     removeMobileSplitPrompt();
+  }
+
+  // ===== Examiner-initiated DQ detection (poll during the exam) =====
+  // The exam runs locally, so an examiner who disqualifies from the dashboard was
+  // previously INVISIBLE to the examinee — they kept answering. Poll the live
+  // status every 6s; if the examiner DQ'd (disqualified / dq_confirmed), stop the
+  // exam and show the DQ screen (which also starts the overturn wait). No self-DQ
+  // is sent — the server already DQ'd them.
+  var examStatusInterval = null;
+  function startExamStatusPoll() {
+    if (examStatusInterval) return;
+    examStatusInterval = setInterval(function() {
+      if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
+      if (!sessionCode || !examineeData || !examineeData.idNumber) return;
+      apiGet({ action: 'getExamStatus', sessionCode: sessionCode, idNumber: examineeData.idNumber, examineeToken: examineeToken })
+        .then(function(data) {
+          if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
+          if (data && data.status === 'ok' && (data.examStatus === 'disqualified' || data.examStatus === 'dq_confirmed')) {
+            tabSwitchDQConfirmed = true;
+            try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+            showDQScreen();
+          }
+        })
+        .catch(function() {});
+    }, 6000);
+  }
+  function stopExamStatusPoll() {
+    if (examStatusInterval) { clearInterval(examStatusInterval); examStatusInterval = null; }
   }
 
   var resizeDebounceTimer = null;

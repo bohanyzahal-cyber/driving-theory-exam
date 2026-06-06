@@ -450,6 +450,9 @@ function doGet(e) {
       case 'reportWarning':
         return handleReportWarning(p);
 
+      case 'getExamStatus':
+        return handleGetExamStatus(p);
+
       case 'cancelDisqualify':
         return handleCancelDisqualify(p);
 
@@ -1905,6 +1908,28 @@ function handleReportWarning(p) {
     }
   } catch(e) {}
   return jsonResponse({ status: 'ok' });
+}
+
+// Raw status probe for the examinee DURING the exam. handleCheckApproval can't be
+// reused — it deliberately SKIPS 'disqualified'. This returns the live ממתינים
+// status so an examiner-initiated disqualification is reflected on the examinee's
+// device; until now the exam ran locally and the examinee never knew they were DQ'd.
+function handleGetExamStatus(p) {
+  if (!p.sessionCode || !p.idNumber) return jsonResponse({ status: 'error', message: 'חסר מזהה' });
+  var rlErr = requireRateLimit('getExamStatus', String(p.sessionCode || '') + '_' + normalizeId(p.idNumber), 60, 60);
+  if (rlErr) return rlErr;
+  var sheet = getSheet('ממתינים');
+  var data = sheet.getDataRange().getValues();
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0]).trim() === String(p.sessionCode).trim() && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
+      var storedToken = String((data[i].length > 12 ? data[i][12] : '') || '').trim();
+      if (storedToken && p.examineeToken && String(p.examineeToken).trim() !== storedToken) {
+        return jsonResponse({ status: 'error', examineeTokenError: 'mismatch' });
+      }
+      return jsonResponse({ status: 'ok', examStatus: String(data[i][5] || '').trim() });
+    }
+  }
+  return jsonResponse({ status: 'ok', examStatus: 'not_found' });
 }
 
 function handleDisqualify(p) {
