@@ -2367,11 +2367,16 @@
     var handler = function() {
       if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
       if (isFullscreenActive()) {
-        // Returned to fullscreen — cancel pending DQ
+        // Returned to (or entered) fullscreen — cancel any pending DQ, and remove
+        // the "fullscreen required" prompt if it's up (covers fullscreen engaging
+        // on its own or right after a split-triggered prompt, so it never lingers).
         if (fullscreenGraceTimer) {
           clearTimeout(fullscreenGraceTimer);
           fullscreenGraceTimer = null;
         }
+        if (fsResumeDQTimer) { clearTimeout(fsResumeDQTimer); fsResumeDQTimer = null; }
+        var _fsResumeEl = document.getElementById('fsResumePrompt');
+        if (_fsResumeEl && _fsResumeEl.parentNode) _fsResumeEl.parentNode.removeChild(_fsResumeEl);
         return;
       }
       // Exited fullscreen — start short grace timer (allows accidental Esc bumps)
@@ -2505,10 +2510,15 @@
       if (window.visualViewport && typeof window.visualViewport.addEventListener === 'function') {
         try { window.visualViewport.addEventListener('resize', onVisualViewportResize); } catch (e) {}
       }
-      // On desktop, also do an immediate check — DQ if window is already smaller than threshold at exam start
-      if (!isMobileDevice()) {
-        setTimeout(checkSplitScreenNow, 800); // 800ms after fullscreen kicks in
-      }
+    }
+    // On desktop, run a one-shot check on EVERY exam start/resume (NOT gated by
+    // splitScreenBound) — catches a window that is already split/small at start
+    // (the pre-split cheat: snapping two windows side-by-side before approval),
+    // including a resume where the listeners were already bound. A full-size
+    // (about-to-go-fullscreen) window passes; only a small/split one triggers the
+    // fullscreen prompt — see checkSplitScreenNow.
+    if (!isMobileDevice()) {
+      setTimeout(checkSplitScreenNow, 800); // 800ms — after fullscreen has had a chance to engage
     }
   }
 
@@ -2576,9 +2586,21 @@
   function checkSplitScreenNow() {
     if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
     if (splitScreenInitW === 0) return;
-    // On desktop, defer to fullscreen enforcement when not in fullscreen
-    // (the fullscreen resume prompt may be active, with its own 15s grace)
-    if (!isMobileDevice() && !isFullscreenActive()) return;
+    // On desktop, when NOT in fullscreen: a window that still fills the screen is
+    // just mid-transition (fullscreen about to engage) → let fullscreen
+    // enforcement handle it. But a window that is clearly SMALL/SPLIT while not
+    // fullscreen is the pre-split cheat — the examinee snapped two windows
+    // side-by-side BEFORE approval, so requestFullscreen never produced a full
+    // window and no resize event ever fired to trip the detector. Force the
+    // fullscreen prompt so the split CANNOT persist: the examinee must enter
+    // fullscreen (which covers the other window) or be disqualified after 15s.
+    if (!isMobileDevice() && !isFullscreenActive()) {
+      var fsScreenW = screen.availWidth || screen.width || window.innerWidth;
+      if (fsScreenW > 0 && (window.innerWidth / fsScreenW) < SPLIT_RESIZE_RATIO) {
+        showFullscreenResumePrompt();
+      }
+      return;
+    }
     // If the user already zoomed before this check fires, decide based on
     // direction — don't conflate zoom with split-screen.
     var zoom = detectZoomChange();
@@ -2616,8 +2638,16 @@
     resizeDebounceTimer = setTimeout(function() {
       resizeDebounceTimer = null;
       if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
-      // On desktop, defer to fullscreen enforcement when not in fullscreen
-      if (!isMobileDevice() && !isFullscreenActive()) return;
+      // On desktop, when NOT in fullscreen: defer to fullscreen enforcement, but
+      // if the window is clearly small/split (not merely mid-transition) force the
+      // fullscreen prompt so a side-by-side split can't persist (pre-split cheat).
+      if (!isMobileDevice() && !isFullscreenActive()) {
+        var fsScreenW2 = screen.availWidth || screen.width || window.innerWidth;
+        if (fsScreenW2 > 0 && (window.innerWidth / fsScreenW2) < SPLIT_RESIZE_RATIO) {
+          showFullscreenResumePrompt();
+        }
+        return;
+      }
 
       // ===== Zoom detection (must come BEFORE the resize/jitter checks) =====
       // Browser zoom on desktop (Ctrl+= / Ctrl+-) AND mobile pinch zoom both
