@@ -447,6 +447,9 @@ function doGet(e) {
       case 'disqualify':
         return handleDisqualify(p);
 
+      case 'reportWarning':
+        return handleReportWarning(p);
+
       case 'cancelDisqualify':
         return handleCancelDisqualify(p);
 
@@ -630,6 +633,8 @@ function doPost(e) {
       return handleUploadResultHtml(data);
     } else if (action === 'disqualify') {
       return handleDisqualify(data);
+    } else if (action === 'reportWarning') {
+      return handleReportWarning(data);
     } else if (action === 'cancelDisqualify') {
       return handleCancelDisqualify(data);
     } else if (action === 'saveStudentProgress') {
@@ -1777,8 +1782,10 @@ function handleExaminerDashboard(p) {
     var s = String(pendData[i][5] || '').trim();
     var dqCount = (pendData[i].length > 13) ? (Number(pendData[i][13]) || 0) : 0;
     var hasExtScreen = (pendData[i].length > 14) ? (String(pendData[i][14] || '').trim() === 'כן') : false;
+    var warnCount = (pendData[i].length > 15) ? (Number(pendData[i][15]) || 0) : 0;
+    var lastWarn = (pendData[i].length > 16) ? String(pendData[i][16] || '') : '';
     var idNorm = normalizeId(pendData[i][1]);
-    var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], examStartTime: pendData[i][11] || '', status: s, language: pendData[i][6] || '', population: pendData[i][7] || '', license: pendData[i][8] || '', audioMode: pendData[i][9] || 'off', timeExtension: String(pendData[i][10] || ''), dqCount: dqCount, attemptsToday: attemptsTodayById[idNorm] || 0, hasExtendedScreen: hasExtScreen };
+    var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], examStartTime: pendData[i][11] || '', status: s, language: pendData[i][6] || '', population: pendData[i][7] || '', license: pendData[i][8] || '', audioMode: pendData[i][9] || 'off', timeExtension: String(pendData[i][10] || ''), dqCount: dqCount, warnings: warnCount, lastWarning: lastWarn, attemptsToday: attemptsTodayById[idNorm] || 0, hasExtendedScreen: hasExtScreen };
     if (s === 'waiting') pending.push(item);
     else if (s === 'approved') pending.push(item);
     else if (s === 'in_exam') active.push(item);
@@ -1868,6 +1875,36 @@ function handleExaminerDashboard(p) {
   }
 
   return jsonResponse({ status: 'ok', pending: pending, active: active, completed: completed });
+}
+
+// Lightweight WARNING counter (suspicious-but-not-DQ events: tab/app-switch
+// warning, split-screen detected). The examinee client reports each warning so the
+// examiner dashboard can surface repeated suspicious behavior even when it never
+// reached a full disqualification. Examinee-token gated + rate-limited; best-effort
+// — a failed report never affects the exam. Stored in ממתינים col 16 (idx15) =
+// count, col 17 (idx16) = last reason.
+function handleReportWarning(p) {
+  if (!p.sessionCode || !p.idNumber) return jsonResponse({ status: 'error', message: 'חסר מזהה' });
+  var rlErr = requireRateLimit('reportWarning', String(p.sessionCode || '') + '_' + normalizeId(p.idNumber), 30, 60);
+  if (rlErr) return rlErr;
+  var tokenCheck = verifyExamineeToken(p.sessionCode, p.idNumber, p.examineeToken);
+  if (!tokenCheck.valid) return jsonResponse({ status: 'error', message: 'טוקן נבחן לא תקין', examineeTokenError: tokenCheck.reason });
+  try {
+    var sheet = getSheet('ממתינים');
+    var data = sheet.getDataRange().getValues();
+    for (var i = data.length - 1; i >= 1; i--) {
+      if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
+        var st = String(data[i][5] || '').trim();
+        if (st === 'in_exam' || st === 'approved') {
+          var prev = (data[i].length > 15) ? (Number(data[i][15]) || 0) : 0;
+          sheet.getRange(i + 1, 16).setValue(prev + 1);                                   // col 16 (idx15) = warnings count
+          if (p.reason) sheet.getRange(i + 1, 17).setValue(String(p.reason).slice(0, 40)); // col 17 (idx16) = last reason
+        }
+        break;
+      }
+    }
+  } catch(e) {}
+  return jsonResponse({ status: 'ok' });
 }
 
 function handleDisqualify(p) {

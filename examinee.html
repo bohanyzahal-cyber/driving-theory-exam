@@ -1115,6 +1115,23 @@
     }).catch(function() {});
   }
 
+  // Report a non-DQ anti-cheat WARNING to the server (fire-and-forget) so the
+  // examiner dashboard can show suspicious-but-not-disqualified behavior — until
+  // now warnings were examinee-side only and invisible to the examiner. Best-
+  // effort: never blocks or affects the exam if it fails.
+  function reportWarningToServer(reason) {
+    try {
+      if (!sessionCode || !examineeData || !examineeData.idNumber) return;
+      apiPostNoWait({
+        action: 'reportWarning',
+        sessionCode: sessionCode,
+        idNumber: examineeData.idNumber,
+        examineeToken: examineeToken,
+        reason: reason || ''
+      });
+    } catch(e) {}
+  }
+
   // ========== Resilient status-update helper (Bug #4 fix) ==========
   // markExamStarted updates the examinee's row in "ממתינים" from status
   // "מאושר" to "במבחן" so the examiner sees who's actually testing. Fire-and-
@@ -2288,6 +2305,9 @@
   }
 
   function showTabSwitchWarning() {
+    // Report to the server so the EXAMINER sees this suspicious event too (not just
+    // the examinee) — even though it didn't reach a disqualification.
+    reportWarningToServer('מעבר מסך/אפליקציה');
     // Remove previous warning if exists
     var existing = document.getElementById('tabSwitchWarning');
     if (existing) existing.parentNode.removeChild(existing);
@@ -2679,9 +2699,10 @@
       if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
       if (isMobileSplitNow()) {
         if (!mobileSplitSince) {
-          // First detection — warn and start the grace countdown.
+          // First detection — flag the examiner, show the prompt, start the grace.
           mobileSplitSince = Date.now();
           newDQEventId();
+          reportWarningToServer('מסך מפוצל');
           showMobileSplitPrompt();
         } else if (Date.now() - mobileSplitSince > MOBILE_SPLIT_GRACE_MS) {
           // Still split after the grace — disqualify.

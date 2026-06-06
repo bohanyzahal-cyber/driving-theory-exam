@@ -2022,8 +2022,16 @@
           // Multiple DQ events, currently pending — show extra severity
           dqCountBadge = ' <span style="background:#7f1d1d;color:#fff;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:700;">⚠ ניסיון ' + item.dqCount + '</span>';
         }
+        // Warning badge: suspicious events that did NOT (yet) reach a disqualification
+        // (tab/app switch, split-screen). Until now these were invisible to the
+        // examiner — now repeated suspicious behavior is surfaced. Hover = last reason.
+        var warnBadge = '';
+        if (item.warnings && item.warnings > 0) {
+          var warnTitle = item.lastWarning ? (' title="' + escHtml('אחרון: ' + item.lastWarning) + '"') : '';
+          warnBadge = ' <span' + warnTitle + ' style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:700;">⚠ ' + item.warnings + ' אזהרות</span>';
+        }
         li.innerHTML =
-          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + dqCountBadge + timeBadge + langBadge + popBadge + licBadge + audioBadge + extScreenBadgeActive + '</div>' +
+          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + dqCountBadge + warnBadge + timeBadge + langBadge + popBadge + licBadge + audioBadge + extScreenBadgeActive + '</div>' +
           '<div class="person-meta">ת.ז. ....' + id4 + (elapsed ? ' | <span style="' + elapsedStyle + '">זמן: ' + elapsed + '</span>' : '') + overtimeWarning + '</div>' +
           dqBanner + '</div>' +
           '<div class="person-actions"></div>';
