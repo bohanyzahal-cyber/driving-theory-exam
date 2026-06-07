@@ -1904,6 +1904,12 @@
   });
 
   document.getElementById('startExamBtn').addEventListener('click', function() {
+    // DESKTOP: enter fullscreen NOW — synchronously on THIS click gesture — so the
+    // exam always opens in fullscreen even if the page wasn't fullscreen before.
+    // Requesting it later (inside _beginExam, after the async registration) loses
+    // the user-gesture and silently fails → the page stayed windowed. Phones don't
+    // use browser fullscreen (they have screen-level lockdown + the split monitor).
+    if (!isMobileDevice()) { try { requestFullscreen(); } catch(e) {} }
     if (!translationLoaded) {
       // Translation file still loading — wait for it
       var btn = document.getElementById('startExamBtn');
@@ -2379,7 +2385,7 @@
   // ========== Fullscreen enforcement (desktop only) ==========
   var fullscreenBound = false;
   var fullscreenGraceTimer = null;
-  var FULLSCREEN_GRACE_MS = 3000; // 3 seconds to re-enter fullscreen before DQ
+  var FULLSCREEN_GRACE_MS = 500; // DESKTOP: near-instant — exiting/shrinking out of fullscreen = DQ within ~0.5s, no warning (per policy: desktop is strict, unlike the lenient phone). The brief re-check only absorbs a momentary programmatic fullscreen flicker; a real exit still fails fast. (Fullscreen enforcement is desktop-only.)
 
   function isFullscreenActive() {
     return !!(document.fullscreenElement || document.webkitFullscreenElement ||
