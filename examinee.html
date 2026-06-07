@@ -379,6 +379,7 @@
           <div><span class="label">אתר:</span><br><span class="value" id="infoSite"></span></div>
         </div>
       </div>
+      <p id="consentNotice" style="margin:0 0 12px; padding:12px 16px; background:#f1f5f9; border:1px solid #cbd5e1; border-radius:12px; font-size:13px; line-height:1.6; color:#334155;">במסירת פרטיי וסימון תיבה זו, אני נותן/ת את הסכמתי לעיבוד ושמירת המידע לצורכי זיהוי, הפקת תוצאות המבחן ומעקב במסגרת הפיילוט. ידוע לי כי המידע ישמש למטרה זו בלבד.</p>
       <label id="silentModeCheck" style="display:flex; align-items:center; gap:10px; justify-content:center; margin-bottom:14px; padding:12px 16px; background:#fef3c7; border:2px solid #f59e0b; border-radius:12px; cursor:pointer; font-size:14px; font-weight:600; color:#92400e;">
         <input type="checkbox" id="airplaneCheckbox" autocomplete="off" style="width:20px; height:20px; accent-color:#f59e0b; cursor:pointer;">
         <span>&#x1F515; השתקתי את הטלפון</span>
@@ -831,6 +832,23 @@
     // Silent checkbox text (device-adaptive)
     var silentSpan = document.querySelector('#silentModeCheck > span');
     if (silentSpan) silentSpan.textContent = getUIString(isMobileDevice() ? 'silentCheck' : 'silentCheckPC');
+
+    // Pilot consent notice (shown just above the checkbox). The 'he' wording is the
+    // owner-approved legal text; the other languages are translations so consent is
+    // informed in the examinee's language (have the legal review confirm them).
+    var consentEl = document.getElementById('consentNotice');
+    if (consentEl) {
+      var consentTexts = {
+        'he': 'במסירת פרטיי וסימון תיבה זו, אני נותן/ת את הסכמתי לעיבוד ושמירת המידע לצורכי זיהוי, הפקת תוצאות המבחן ומעקב במסגרת הפיילוט. ידוע לי כי המידע ישמש למטרה זו בלבד.',
+        'ru': 'Предоставляя свои данные и отмечая этот флажок, я даю согласие на обработку и хранение информации в целях идентификации, формирования результатов экзамена и мониторинга в рамках пилота. Мне известно, что информация будет использоваться только для этой цели.',
+        'en': 'By submitting my details and checking this box, I consent to the processing and storage of my information for identification, producing the exam results, and monitoring within the pilot. I understand the information will be used for this purpose only.',
+        'ar': 'بتقديم بياناتي وتحديد هذه الخانة، أوافق على معالجة وتخزين المعلومات لأغراض التعريف وإصدار نتائج الامتحان والمتابعة ضمن المشروع التجريبي. أعلم أن المعلومات ستُستخدم لهذا الغرض فقط.',
+        'fr': "En transmettant mes informations et en cochant cette case, je consens au traitement et à la conservation de mes données à des fins d'identification, de production des résultats de l'examen et de suivi dans le cadre du projet pilote. Je comprends que les informations seront utilisées uniquement à cette fin.",
+        'es': 'Al enviar mis datos y marcar esta casilla, doy mi consentimiento para el procesamiento y almacenamiento de la información con fines de identificación, generación de los resultados del examen y seguimiento dentro del piloto. Entiendo que la información se utilizará únicamente para este fin.',
+        'am': 'መረጃዬን በማስገባት እና ይህን ሳጥን በማመልከት፣ መረጃው ለመለያ፣ የፈተና ውጤት ለማውጣት እና በሙከራ መርሐ ግብሩ ውስጥ ለክትትል እንዲሰራና እንዲቀመጥ ፈቃዴን እሰጣለሁ። መረጃው ለዚህ ዓላማ ብቻ ጥቅም ላይ እንደሚውል ተረድቻለሁ።'
+      };
+      consentEl.textContent = consentTexts[lang] || consentTexts['he'];
+    }
 
     // Start button
     var startBtn = document.getElementById('startExamBtn');
