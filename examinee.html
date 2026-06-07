@@ -2172,6 +2172,9 @@
 
     // Mark DQ screen as active so the back button stays blocked while examiner decides
     dqScreenActive = true;
+    // Clear the stale "אושרת! חזור למבחן" tab title — the examinee is now
+    // disqualified, so a glance at the tab must not still say "approved".
+    document.title = '⛔ המבחן נפסל';
     // Re-arm popstate listener and stack history entries to make Back / swipe-back a no-op.
     try {
       window.removeEventListener('popstate', onBackButton);
@@ -2259,6 +2262,8 @@
   function showFinalDQScreen() {
     // Remove suspended exam data — DQ is confirmed, no resume possible
     try { localStorage.removeItem('examSuspended_' + sessionCode + '_' + examineeData.idNumber); } catch(e) {}
+    // Examiner confirmed the DQ — tab title must reflect the final state.
+    document.title = '❌ נפסלת — המבחן נפסל';
     var waitMsg = document.getElementById('dqWaitingMsg');
     if (waitMsg) {
       waitMsg.style.background = '#fee2e2';
@@ -2311,6 +2316,8 @@
 
     examInProgress = true;
     examSubmitted = false;
+    // DQ overturned — exam is resuming, so drop the "נפסל" tab title.
+    document.title = origTitle || 'מבחן עיוני — מערכת בחינות צה"ל';
 
     // Reset DQ flags — fresh chances
     tabSwitchDQConfirmed = false;
