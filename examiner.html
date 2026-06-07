@@ -2443,39 +2443,77 @@
     }
     var summaryText = summaryLines.join('\n');
 
+    // Distinct examiners / responsible examiners + population stats, for the
+    // examiner-report-style layout (info-grid, summary, signature).
+    var examinerSet = {}, responsibleSet = {}, popStats = {};
+    for (var di = 0; di < sessions.length; di++) {
+      if (sessions[di].examinerName) examinerSet[sessions[di].examinerName] = true;
+      if (sessions[di].responsibleExaminer) responsibleSet[sessions[di].responsibleExaminer] = true;
+    }
+    for (var pj = 0; pj < results.length; pj++) {
+      if (results[pj].passed === 'בוטל') continue;
+      var pp = results[pj].population || '';
+      if (!pp) continue;
+      if (!popStats[pp]) popStats[pp] = { total: 0, passed: 0, failed: 0 };
+      popStats[pp].total++;
+      var pIsDQ = results[pj].disqualified || results[pj].passed === 'פסול';
+      if (!pIsDQ && results[pj].passed === 'עבר') popStats[pp].passed++;
+      else popStats[pp].failed++;
+    }
+    var examinerNames = Object.keys(examinerSet);
+    var responsibleNames = Object.keys(responsibleSet);
+    var signName = responsibleNames.length === 1 ? responsibleNames[0]
+                 : (examinerNames.length === 1 ? examinerNames[0] : '');
+    function splitNm(full) {
+      var parts = String(full || '').trim().split(/\s+/);
+      if (parts.length <= 1) return { fam: parts[0] || '', first: '' };
+      return { fam: parts[parts.length - 1], first: parts.slice(0, parts.length - 1).join(' ') };
+    }
+
     var H = [];
     H.push('<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"/>');
     H.push('<meta name="viewport" content="width=device-width,initial-scale=1"/>');
     H.push('<title>דו"ח משותף — ' + escHtml(data.site) + ' — ' + escHtml(dateStr) + '</title>');
-    H.push('<style>*{box-sizing:border-box;margin:0;padding:0}');
+    H.push('<style>');
+    H.push('*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}');
     H.push('body{font-family:"Segoe UI",Tahoma,Arial,sans-serif;background:#f0f2f5;color:#333;direction:rtl;padding:20px}');
-    H.push('.container{max-width:1000px;margin:0 auto;background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.08);overflow:hidden}');
-    H.push('.header-bar{background:linear-gradient(135deg,#0f766e,#14b8a6);color:#fff;padding:20px 30px;text-align:center}');
-    H.push('.header-bar h1{font-size:22px;margin-bottom:4px}.header-bar p{font-size:13px;opacity:.9}');
-    H.push('.section{padding:20px 30px;border-bottom:1px solid #eee}');
-    H.push('.section-title{font-size:16px;font-weight:bold;color:#0f766e;margin-bottom:15px;padding-bottom:8px;border-bottom:2px solid #14b8a6}');
-    H.push('.kpi-row{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:12px}');
-    H.push('.kpi{text-align:center;padding:14px 10px;border-radius:12px;border:1px solid #e2e8f0}');
-    H.push('.kpi .num{font-size:28px;font-weight:900;line-height:1.1}.kpi .lbl{font-size:11px;color:#64748b;margin-top:2px}');
-    H.push('.kpi.blue{background:#eaf2f8}.kpi.blue .num{color:#2980b9}');
-    H.push('.kpi.green{background:#eafaf1}.kpi.green .num{color:#27ae60}');
-    H.push('.kpi.red{background:#fdedec}.kpi.red .num{color:#c0392b}');
-    H.push('.kpi.orange{background:#fef3c7}.kpi.orange .num{color:#d97706}');
-    H.push('.kpi.teal{background:#ccfbf1}.kpi.teal .num{color:#0f766e}');
-    H.push('table{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}');
-    H.push('thead th{background:#0f766e;color:#fff;padding:8px;font-weight:600;white-space:nowrap;font-size:11px;border:1px solid #0d5b56}');
-    H.push('tbody td{padding:8px;text-align:center;border:1px solid #eee}');
-    H.push('tbody tr:nth-child(even){background:#fafbfc}');
-    H.push('.badge{display:inline-block;padding:2px 10px;border-radius:20px;font-weight:700;font-size:11px}');
-    H.push('.badge.pass{background:#dcfce7;color:#166534}.badge.fail{background:#fef2f2;color:#991b1b}.badge.dq{background:#fef3c7;color:#92400e}');
-    H.push('.toolbar{max-width:1000px;margin:0 auto 16px;display:flex;gap:10px;flex-wrap:wrap;justify-content:center}');
+    H.push('.container{max-width:1100px;margin:0 auto;background:#fff;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,.08);overflow:hidden}');
+    H.push('.header-bar{background:linear-gradient(135deg,#1a5276,#2980b9);color:#fff;padding:20px 30px;text-align:center}');
+    H.push('.header-bar h1{font-size:22px;margin-bottom:4px}.header-bar p{font-size:13px;opacity:.85}');
+    H.push('.section{padding:20px 30px;border-bottom:1px solid #eee}.section:last-child{border-bottom:none}');
+    H.push('.section-title{font-size:16px;font-weight:bold;color:#1a5276;margin-bottom:15px;padding-bottom:8px;border-bottom:2px solid #2980b9;display:flex;align-items:center;gap:8px}');
+    H.push('.section-title .icon{font-size:20px}');
+    H.push('.info-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}');
+    H.push('.info-item label{font-size:12px;color:#666;display:block;margin-bottom:2px;font-weight:600}');
+    H.push('.info-item .val{font-size:14px;font-weight:700;color:#1e293b}');
+    H.push('.tw{overflow-x:auto;margin-top:10px}');
+    H.push('table{width:100%;border-collapse:collapse;font-size:12px}');
+    H.push('thead th{background:#2c3e50;color:#fff;padding:6px 4px;font-weight:600;white-space:nowrap;font-size:11px;border:1px solid #1a252f}');
+    H.push('tbody tr{border-bottom:1px solid #eee}');
+    H.push('tbody td{padding:6px 4px;text-align:center;vertical-align:middle;border:1px solid #eee}');
+    H.push('.summary-bar{display:flex;gap:15px;flex-wrap:wrap;padding:12px 0;justify-content:center}');
+    H.push('.summary-item{text-align:center;padding:8px 16px;border-radius:8px;min-width:80px}');
+    H.push('.summary-item .num{font-size:22px;font-weight:bold;display:block}');
+    H.push('.summary-item .lbl{font-size:11px;color:#666}');
+    H.push('.si-total{background:#eaf2f8}.si-total .num{color:#2980b9}');
+    H.push('.si-passed{background:#eafaf1}.si-passed .num{color:#27ae60}');
+    H.push('.si-failed{background:#fdedec}.si-failed .num{color:#c0392b}');
+    H.push('.si-rate{background:#f4ecf7}.si-rate .num{color:#8e44ad}');
+    H.push('.pop-table{width:auto;min-width:320px;margin:10px auto 0;border-collapse:collapse;font-size:13px}');
+    H.push('.pop-table th{background:#34495e;color:#fff;padding:8px 14px;font-weight:600;white-space:nowrap}');
+    H.push('.pop-table td{padding:6px 14px;text-align:center;border-bottom:1px solid #eee}');
+    H.push('.signature-area{text-align:center;padding:15px 0}');
+    H.push('.signature-line{width:200px;border-bottom:1px solid #333;margin:20px auto 5px}');
+    H.push('.signature-label{font-size:12px;color:#666}');
+    H.push('.signature-name{font-size:16px;font-weight:bold;color:#2c3e50;margin-top:8px}');
+    H.push('.toolbar{max-width:1100px;margin:0 auto 16px;display:flex;gap:10px;flex-wrap:wrap;justify-content:center}');
     H.push('.toolbar button{flex:1 1 180px;max-width:260px;cursor:pointer;border:none;border-radius:10px;padding:13px 16px;font-size:15px;font-weight:700;color:#fff;display:inline-flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 2px 8px rgba(0,0,0,.12)}');
     H.push('.toolbar button:active{transform:translateY(1px)}');
-    H.push('.btn-print{background:linear-gradient(135deg,#0f766e,#14b8a6)}');
+    H.push('.btn-print{background:linear-gradient(135deg,#1a5276,#2980b9)}');
     H.push('.btn-wa{background:linear-gradient(135deg,#16a34a,#22c55e)}');
     H.push('.btn-share{background:linear-gradient(135deg,#475569,#64748b)}');
     H.push('@page{size:A4;margin:8mm 10mm}');
-    H.push('@media print{body{background:#fff;padding:0}.container{box-shadow:none;max-width:100%}.no-print{display:none!important}thead th,.kpi{-webkit-print-color-adjust:exact;print-color-adjust:exact}}');
+    H.push('@media print{body{background:#fff;padding:0}.container{box-shadow:none;max-width:100%}.no-print{display:none!important}thead th,.summary-item,.pop-table th{-webkit-print-color-adjust:exact;print-color-adjust:exact}tbody tr{-webkit-print-color-adjust:exact;print-color-adjust:exact}}');
     H.push('</style></head><body>');
     H.push('<div class="toolbar no-print">');
     H.push('<button class="btn-print" onclick="__printReport()">🖨️ הדפס / שמור PDF</button>');
@@ -2484,23 +2522,54 @@
     H.push('</div>');
     H.push('<div class="container">');
 
-    H.push('<div class="header-bar"><h1>📊 דו"ח משותף לאתר</h1>');
-    H.push('<p>' + escHtml(data.site) + ' &nbsp;|&nbsp; ' + escHtml(dateStr) + ' &nbsp;|&nbsp; ' + sessions.length + ' סשנים</p></div>');
+    // Header
+    H.push('<div class="header-bar"><h1>📋 דו"ח משותף לאתר — מבחן תאוריה</h1>');
+    H.push('<p>סיכום מאוחד לכל הסשנים באתר — לבדיקת הרב בוחן</p></div>');
 
-    // KPIs
+    // Report details (info-grid)
     H.push('<div class="section">');
-    H.push('<div class="kpi-row">');
-    H.push('<div class="kpi blue"><div class="num">' + total + '</div><div class="lbl">סה"כ נבחנים</div></div>');
-    H.push('<div class="kpi green"><div class="num">' + passed + '</div><div class="lbl">עברו</div></div>');
-    H.push('<div class="kpi red"><div class="num">' + failed + '</div><div class="lbl">נכשלו</div></div>');
-    H.push('<div class="kpi orange"><div class="num">' + dq + '</div><div class="lbl">פסולים</div></div>');
-    H.push('<div class="kpi teal"><div class="num">' + rate + '%</div><div class="lbl">אחוז הצלחה</div></div>');
+    H.push('<div class="section-title"><span class="icon">📝</span> פרטי הדו"ח</div>');
+    H.push('<div class="info-grid">');
+    H.push('<div class="info-item"><label>תאריך</label><div class="val">' + escHtml(dateStr) + '</div></div>');
+    H.push('<div class="info-item"><label>אתר</label><div class="val">' + escHtml(data.site) + '</div></div>');
+    H.push('<div class="info-item"><label>מספר סשנים</label><div class="val">' + sessions.length + '</div></div>');
+    H.push('<div class="info-item"><label>מספר בוחנים</label><div class="val">' + examinerNames.length + '</div></div>');
+    H.push('<div class="info-item"><label>סה"כ נבחנים</label><div class="val">' + total + '</div></div>');
+    if (responsibleNames.length === 1) {
+      H.push('<div class="info-item"><label>בוחן אחראי</label><div class="val">' + escHtml(responsibleNames[0]) + '</div></div>');
+    }
     H.push('</div></div>');
+
+    // Summary
+    H.push('<div class="section">');
+    H.push('<div class="section-title"><span class="icon">📊</span> סיכום</div>');
+    H.push('<div class="summary-bar">');
+    H.push('<div class="summary-item si-total"><span class="num">' + total + '</span><span class="lbl">סה"כ</span></div>');
+    H.push('<div class="summary-item si-passed"><span class="num">' + passed + '</span><span class="lbl">עברו</span></div>');
+    H.push('<div class="summary-item si-failed"><span class="num">' + (failed + dq) + '</span><span class="lbl">נכשלו' + (dq > 0 ? ' (' + dq + ' פסולים)' : '') + '</span></div>');
+    H.push('<div class="summary-item si-rate"><span class="num">' + rate + '%</span><span class="lbl">אחוז הצלחה</span></div>');
+    H.push('</div>');
+    var popKeys = Object.keys(popStats);
+    if (popKeys.length > 0) {
+      H.push('<div style="margin-top:18px;"><h4 style="font-size:14px;color:#1a5276;margin-bottom:8px;">📊 פירוט לפי אוכלוסיה</h4>');
+      H.push('<div class="tw"><table class="pop-table"><thead><tr>');
+      H.push('<th>אוכלוסיה</th><th>סה"כ</th><th>עברו</th><th>נכשלו</th><th>אחוז</th>');
+      H.push('</tr></thead><tbody>');
+      for (var pk = 0; pk < popKeys.length; pk++) {
+        var psv = popStats[popKeys[pk]];
+        var ppr = psv.total > 0 ? Math.round((psv.passed / psv.total) * 100) : 0;
+        H.push('<tr><td>' + escHtml(popKeys[pk]) + '</td><td>' + psv.total + '</td>' +
+          '<td style="color:#27ae60;font-weight:600;">' + psv.passed + '</td>' +
+          '<td style="color:#c0392b;font-weight:600;">' + psv.failed + '</td><td>' + ppr + '%</td></tr>');
+      }
+      H.push('</tbody></table></div></div>');
+    }
+    H.push('</div>');
 
     // Sessions table
     H.push('<div class="section">');
-    H.push('<div class="section-title">סשנים שהשתתפו</div>');
-    H.push('<table><thead><tr>');
+    H.push('<div class="section-title"><span class="icon">📋</span> סשנים שהשתתפו</div>');
+    H.push('<div class="tw"><table><thead><tr>');
     H.push('<th>קוד סשן</th><th>בוחן</th><th>בוחן אחראי</th><th>כיתה</th><th>דרגה</th><th>שפה</th>');
     H.push('<th>סה"כ</th><th>עברו</th><th>נכשלו</th><th>פסולים</th><th>% הצלחה</th>');
     H.push('</tr></thead><tbody>');
@@ -2516,47 +2585,56 @@
       H.push('<td>' + escHtml(sess.license) + '</td>');
       H.push('<td>' + escHtml(sess.language) + '</td>');
       H.push('<td>' + st.total + '</td>');
-      H.push('<td>' + st.passed + '</td>');
-      H.push('<td>' + st.failed + '</td>');
-      H.push('<td>' + st.dq + '</td>');
+      H.push('<td style="color:#27ae60;font-weight:600;">' + st.passed + '</td>');
+      H.push('<td style="color:#c0392b;font-weight:600;">' + st.failed + '</td>');
+      H.push('<td style="color:#d4ac0d;font-weight:600;">' + st.dq + '</td>');
       H.push('<td><strong>' + sRate + '</strong></td>');
       H.push('</tr>');
     }
-    H.push('</tbody></table></div>');
+    H.push('</tbody></table></div></div>');
 
-    // Examinees table (all results across all sessions)
+    // Examinees table (all results across all sessions) — examiner-report style:
+    // family/first name split, colored result + row background.
     if (results.length > 0) {
       H.push('<div class="section">');
-      H.push('<div class="section-title">רשימת נבחנים מלאה</div>');
-      H.push('<table><thead><tr>');
-      H.push('<th>#</th><th>שם</th><th>ת.ז.</th><th>דרגה</th><th>שפה</th>');
-      H.push('<th>ציון</th><th>%</th><th>תוצאה</th><th>זמן</th><th>בוחן</th><th>סשן</th>');
+      H.push('<div class="section-title"><span class="icon">👥</span> טבלת נבחנים</div>');
+      H.push('<div class="tw"><table><thead><tr>');
+      H.push('<th>#</th><th>ת.ז.</th><th>שם משפחה</th><th>שם פרטי</th><th>דרגה</th><th>בוחן</th><th>תוצאה</th>');
       H.push('</tr></thead><tbody>');
+      var rowIdx = 0;
       for (var er = 0; er < results.length; er++) {
         var rrr = results[er];
         if (rrr.passed === 'בוטל') continue;
+        rowIdx++;
         var rrIsDQ = rrr.disqualified || rrr.passed === 'פסול';
-        var badgeClass = rrIsDQ ? 'dq' : (rrr.passed === 'עבר' ? 'pass' : 'fail');
-        var badgeText = rrIsDQ ? 'פסול' : (rrr.passed || '—');
-        H.push('<tr>');
-        H.push('<td>' + (er + 1) + '</td>');
-        H.push('<td style="font-weight:600;text-align:right;">' + escHtml(rrr.name) + '</td>');
-        H.push('<td>' + escHtml(rrr.idNumber) + '</td>');
+        var rrPassed = !rrIsDQ && rrr.passed === 'עבר';
+        var rowBg = rrIsDQ ? '#fef9e7' : (rrPassed ? '#eafaf1' : '#fdedec');
+        var resColor = rrIsDQ ? '#d4ac0d' : (rrPassed ? '#27ae60' : '#c0392b');
+        var resText = rrIsDQ ? 'פסול' : (rrPassed ? 'עבר' : 'נכשל');
+        var nm = splitNm(rrr.name);
+        H.push('<tr style="background:' + rowBg + ';">');
+        H.push('<td style="font-weight:bold;">' + rowIdx + '</td>');
+        H.push('<td style="direction:ltr;">' + escHtml(String(rrr.idNumber || '')) + '</td>');
+        H.push('<td style="text-align:right;">' + escHtml(nm.fam) + '</td>');
+        H.push('<td style="text-align:right;">' + escHtml(nm.first) + '</td>');
         H.push('<td>' + escHtml(rrr.license) + '</td>');
-        H.push('<td>' + escHtml(rrr.language) + '</td>');
-        H.push('<td>' + escHtml(String(rrr.score || '')) + '</td>');
-        H.push('<td>' + escHtml(String(rrr.percent || '')) + '</td>');
-        H.push('<td><span class="badge ' + badgeClass + '">' + escHtml(badgeText) + '</span></td>');
-        H.push('<td>' + escHtml(rrr.time) + '</td>');
         H.push('<td>' + escHtml(rrr.examiner) + '</td>');
-        H.push('<td style="font-family:monospace;font-size:11px;">' + escHtml(rrr.sessionCode) + '</td>');
+        H.push('<td style="font-weight:bold;color:' + resColor + ';">' + resText + '</td>');
         H.push('</tr>');
       }
-      H.push('</tbody></table></div>');
+      H.push('</tbody></table></div></div>');
     }
 
-    H.push('<div class="section" style="text-align:center;padding:14px 30px;background:#f8fafc;font-size:11px;color:#64748b;">');
-    H.push('הופק: ' + new Date().toLocaleString('he-IL') + ' &nbsp;|&nbsp; דו"ח משותף לאתר ' + escHtml(data.site));
+    // Signature
+    H.push('<div class="section"><div class="signature-area">');
+    H.push('<div class="signature-line"></div>');
+    H.push('<div class="signature-label">חותמת וחתימת הבוחן האחראי</div>');
+    if (signName) H.push('<div class="signature-name">' + escHtml(signName) + '</div>');
+    H.push('</div></div>');
+
+    // Footer
+    H.push('<div class="section" style="text-align:center;background:#f8fafc;font-size:11px;color:#64748b;">');
+    H.push('הופק: ' + new Date().toLocaleString('he-IL') + ' &nbsp;|&nbsp; דו"ח משותף לאתר ' + escHtml(data.site) + ' (שורות "בוטל" הושמטו)');
     H.push('</div></div>');
 
     // Self-contained action script for the new window. Defined globally so the
