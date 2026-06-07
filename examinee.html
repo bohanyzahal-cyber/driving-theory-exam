@@ -1631,6 +1631,23 @@
       return;
     }
 
+    // Fresh approval → WIPE any stale disqualification state from a PRIOR attempt
+    // in this same session+id (examiner did "reset" then re-approved). Without this,
+    // a leftover overturn-poll or examEnded/examSuspended marker re-surfaces the DQ
+    // screen ("הבוחן אישר את הפסילה") on the INSTRUCTIONS screen — even though the
+    // examinee was just re-approved and hasn't started. The reported bug. Note: live
+    // anti-cheat never fires here (it's all gated on examInProgress=false pre-exam),
+    // and the legitimate overturn-RESUME path goes through restoreExamFromSuspended,
+    // not here, so clearing the suspended marker on a fresh approval is safe.
+    try { stopDQOverturnPolling(); } catch(e) {}
+    tabSwitchDQConfirmed = false;
+    dqScreenActive = false;
+    tabSwitchWarnings = 0;
+    try {
+      localStorage.removeItem('examEnded_' + sessionCode + '_' + examineeData.idNumber);
+      localStorage.removeItem('examSuspended_' + sessionCode + '_' + examineeData.idNumber);
+    } catch(e) {}
+
     document.getElementById('waitingPhase').style.display = 'none';
     document.getElementById('instructionsPhase').style.display = 'block';
 
