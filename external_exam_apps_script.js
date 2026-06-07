@@ -5080,15 +5080,18 @@ function handleTeacherCommanderDashboard(p) {
   }
 
   // Parse a practice duration into seconds. The student app sends "MM:SS"
-  // (e.g. "5:03" = 5 min 3 sec), but Google Sheets AUTO-CONVERTS a valid-looking
-  // "M:SS" string on write into a time-of-day value — it reads "5:03" as 05:03
-  // (HH:MM) — so getValues() returns a Date (or a day-fraction number), NOT the
-  // original string. This is why time KPIs read --:-- with the string-only
-  // parser. We recover the original MM:SS from whichever shape the cell holds:
-  //   Date  → hours hold the minutes, minutes hold the seconds.
-  //   number→ same value as a fraction-of-day.
-  //   string→ "MM:SS" left as text (e.g. ≥24 min, which Sheets can't store as a time).
-  // Cap at 2h to drop garbage (practice has no 40-min ceiling).
+  // (e.g. "5:03" = 5 min 3 sec), but Google Sheets AUTO-CONVERTS the string on
+  // write, MISREADING "MM:SS" as "HH:MM". So getValues() never returns the
+  // original string — it returns one of:
+  //   • Date   — short sessions (<24 min). e.g. "5:03" → 05:03 time → Date.
+  //   • number — long sessions (≥24 min). "24:29" can't be a time-of-day, so
+  //              Sheets stores it as a DURATION serial (fraction of a day, e.g.
+  //              ~1.02 for 24h29m). Verified against real data: 28,637 Date
+  //              cells + 1,871 duration-number cells.
+  //   • string — only if a value somehow wasn't auto-converted.
+  // In every case the stored clock is H:M:S where the original minutes landed in
+  // H and the original seconds in M. We recover by mapping H→minutes, M→seconds.
+  // Cap at 2h to drop garbage (abandoned tabs produce multi-day serials).
   function parsePracticeTimeSec(v) {
     if (v === null || v === undefined || v === '') return 0;
     var mm, ss;
@@ -5096,15 +5099,11 @@ function handleTeacherCommanderDashboard(p) {
       mm = v.getHours();      // original minutes (Sheets read them as hours)
       ss = v.getMinutes();    // original seconds (Sheets read them as minutes)
     } else if (typeof v === 'number') {
-      if (v > 0 && v < 1) {
-        var totalMin = Math.round(v * 1440); // clock H*60+M from the day-fraction
-        mm = Math.floor(totalMin / 60);
-        ss = totalMin % 60;
-      } else if (v >= 1 && v <= 7200) {
-        return Math.round(v); // already a plain seconds count
-      } else {
-        return 0;
-      }
+      // Day-fraction serial (works for both <1 time serials and ≥1 durations).
+      if (v <= 0) return 0;
+      var totalClockSec = Math.round(v * 86400); // the misread H:M:S, in seconds
+      mm = Math.floor(totalClockSec / 3600);     // clock-hours → original minutes
+      ss = Math.floor((totalClockSec % 3600) / 60); // clock-minutes → original seconds
     } else {
       var m = String(v).trim().match(/^(\d{1,3}):(\d{2})$/);
       if (!m) return 0;
