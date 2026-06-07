@@ -2388,8 +2388,21 @@
   var FULLSCREEN_GRACE_MS = 500; // DESKTOP: near-instant — exiting/shrinking out of fullscreen = DQ within ~0.5s, no warning (per policy: desktop is strict, unlike the lenient phone). The brief re-check only absorbs a momentary programmatic fullscreen flicker; a real exit still fails fast. (Fullscreen enforcement is desktop-only.)
 
   function isFullscreenActive() {
-    return !!(document.fullscreenElement || document.webkitFullscreenElement ||
-              document.mozFullScreenElement || document.msFullscreenElement);
+    // Primary: the Fullscreen API — what the exam forces on the "start" click.
+    if (document.fullscreenElement || document.webkitFullscreenElement ||
+        document.mozFullScreenElement || document.msFullscreenElement) return true;
+    // Secondary (desktop): a window that visually FILLS the screen — no browser
+    // toolbar (e.g. the examinee pressed F11) — counts as fullscreen too, so the
+    // exam doesn't nag a screen that is ALREADY fullscreen just because it isn't the
+    // API kind (the inconsistent "must be fullscreen" message). A windowed/maximized
+    // page KEEPS its toolbar → innerHeight stays well below the screen height → still
+    // "not fullscreen" (message shown / DQ on shrink). innerHeight excludes the
+    // toolbar, so it cleanly distinguishes "toolbar hidden" from "toolbar present".
+    if (!isMobileDevice()) {
+      var sh = screen.height || 0;
+      if (sh > 0 && window.innerHeight >= sh * 0.97) return true;
+    }
+    return false;
   }
 
   function requestFullscreen() {
