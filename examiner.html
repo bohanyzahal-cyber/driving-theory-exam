@@ -2460,6 +2460,31 @@
       if (!pIsDQ && results[pj].passed === 'עבר') popStats[pp].passed++;
       else popStats[pp].failed++;
     }
+    // Population mapper + per-session execution, for the planning/execution
+    // table (mirrors the examiner report). DQ counts as failed.
+    function mapPop(pop) {
+      var s = String(pop || '').trim();
+      if (s === 'צבא') return 'army';
+      if (s.indexOf('קד') === 0) return 'kadatz';
+      if (s.indexOf('וואוצ') === 0 || s.indexOf('ווצ') === 0) return 'voucher';
+      return 'other';
+    }
+    var sessionExec = {};
+    function ensureExec(code) {
+      if (!sessionExec[code]) sessionExec[code] = { total: 0, audio: 0, pa: { army: 0, other: 0, voucher: 0, kadatz: 0 }, fa: { army: 0, other: 0, voucher: 0, kadatz: 0 } };
+      return sessionExec[code];
+    }
+    for (var ei = 0; ei < results.length; ei++) {
+      var er2 = results[ei];
+      if (er2.passed === 'בוטל') continue;
+      var ex2 = ensureExec(er2.sessionCode);
+      ex2.total++;
+      if (er2.audioMode === 'on') ex2.audio++;
+      var mk2 = mapPop(er2.population);
+      var dq2 = er2.disqualified || er2.passed === 'פסול';
+      if (!dq2 && er2.passed === 'עבר') ex2.pa[mk2]++;
+      else ex2.fa[mk2]++;
+    }
     var examinerNames = Object.keys(examinerSet);
     var responsibleNames = Object.keys(responsibleSet);
     var signName = responsibleNames.length === 1 ? responsibleNames[0]
@@ -2566,31 +2591,55 @@
     }
     H.push('</div>');
 
-    // Sessions table
+    // Work-planning / execution table — same layout as the examiner report,
+    // one row per session (static, read-only) + a totals row.
     H.push('<div class="section">');
-    H.push('<div class="section-title"><span class="icon">📋</span> סשנים שהשתתפו</div>');
-    H.push('<div class="tw"><table><thead><tr>');
-    H.push('<th>קוד סשן</th><th>בוחן</th><th>בוחן אחראי</th><th>כיתה</th><th>דרגה</th><th>שפה</th>');
-    H.push('<th>סה"כ</th><th>עברו</th><th>נכשלו</th><th>פסולים</th><th>% הצלחה</th>');
-    H.push('</tr></thead><tbody>');
+    H.push('<div class="section-title"><span class="icon">📋</span> סידור עבודה - תכנון וביצוע</div>');
+    H.push('<div class="tw"><table><thead>');
+    H.push('<tr><th rowspan="3">בוחן</th>');
+    H.push('<th colspan="6" style="background:#34495e;font-size:13px;">תכנון</th>');
+    H.push('<th rowspan="3">שעה</th>');
+    H.push('<th colspan="9" style="background:#1a5276;color:#f1c40f;font-size:13px;">ביצוע</th></tr>');
+    H.push('<tr>');
+    H.push('<th rowspan="2">ביה"ס</th><th rowspan="2">סוג רכב</th><th rowspan="2">כמות מבוקשת</th><th rowspan="2">כמות מאושרת</th><th rowspan="2">הערות</th><th rowspan="2">כמות בשמע</th>');
+    H.push('<th rowspan="2" style="background:#1a5276;color:#f1c40f;">כמות בפועל</th>');
+    H.push('<th colspan="4" style="background:#27ae60;color:#fff;">עבר</th>');
+    H.push('<th colspan="4" style="background:#c0392b;color:#fff;">נכשל</th></tr>');
+    H.push('<tr>');
+    H.push('<th style="background:#27ae60;color:#fff;">צבא</th><th style="background:#27ae60;color:#fff;">שונות</th><th style="background:#27ae60;color:#fff;">וואוצ׳ר</th><th style="background:#27ae60;color:#fff;">קד"ץ</th>');
+    H.push('<th style="background:#c0392b;color:#fff;">צבא</th><th style="background:#c0392b;color:#fff;">שונות</th><th style="background:#c0392b;color:#fff;">וואוצ׳ר</th><th style="background:#c0392b;color:#fff;">קד"ץ</th></tr>');
+    H.push('</thead><tbody>');
+    var tReq = 0, tAppr = 0, tAudio = 0, tTot = 0;
+    var tPA = { army: 0, other: 0, voucher: 0, kadatz: 0 }, tFA = { army: 0, other: 0, voucher: 0, kadatz: 0 };
     for (var s = 0; s < sessions.length; s++) {
       var sess = sessions[s];
-      var st = resultsBySession[sess.code] || { total: 0, passed: 0, failed: 0, dq: 0 };
-      var sRate = st.total > 0 ? Math.round((st.passed / st.total) * 100) + '%' : '—';
+      var ex = sessionExec[sess.code] || { total: 0, audio: 0, pa: { army: 0, other: 0, voucher: 0, kadatz: 0 }, fa: { army: 0, other: 0, voucher: 0, kadatz: 0 } };
+      var qReq = 0, qAppr = 0, quotas = sess.quotas || [];
+      for (var qi = 0; qi < quotas.length; qi++) { qReq += Number(quotas[qi].requested) || 0; qAppr += Number(quotas[qi].approved) || 0; }
+      tReq += qReq; tAppr += qAppr; tAudio += ex.audio; tTot += ex.total;
+      tPA.army += ex.pa.army; tPA.other += ex.pa.other; tPA.voucher += ex.pa.voucher; tPA.kadatz += ex.pa.kadatz;
+      tFA.army += ex.fa.army; tFA.other += ex.fa.other; tFA.voucher += ex.fa.voucher; tFA.kadatz += ex.fa.kadatz;
       H.push('<tr>');
-      H.push('<td style="font-family:monospace;font-weight:700;">' + escHtml(sess.code) + '</td>');
       H.push('<td style="font-weight:600;">' + escHtml(sess.examinerName) + '</td>');
-      H.push('<td>' + escHtml(sess.responsibleExaminer || '—') + '</td>');
       H.push('<td>' + escHtml(sess.classroom) + '</td>');
       H.push('<td>' + escHtml(sess.license) + '</td>');
-      H.push('<td>' + escHtml(sess.language) + '</td>');
-      H.push('<td>' + st.total + '</td>');
-      H.push('<td style="color:#27ae60;font-weight:600;">' + st.passed + '</td>');
-      H.push('<td style="color:#c0392b;font-weight:600;">' + st.failed + '</td>');
-      H.push('<td style="color:#d4ac0d;font-weight:600;">' + st.dq + '</td>');
-      H.push('<td><strong>' + sRate + '</strong></td>');
+      H.push('<td>' + (qReq || '') + '</td>');
+      H.push('<td>' + (qAppr || '') + '</td>');
+      H.push('<td>—</td>');
+      H.push('<td>' + (ex.audio || '') + '</td>');
+      H.push('<td>—</td>');
+      H.push('<td style="font-weight:700;background:#f0faf0;">' + ex.total + '</td>');
+      H.push('<td>' + ex.pa.army + '</td><td>' + ex.pa.other + '</td><td>' + ex.pa.voucher + '</td><td>' + ex.pa.kadatz + '</td>');
+      H.push('<td>' + ex.fa.army + '</td><td>' + ex.fa.other + '</td><td>' + ex.fa.voucher + '</td><td>' + ex.fa.kadatz + '</td>');
       H.push('</tr>');
     }
+    H.push('<tr style="font-weight:bold;background:#eef2f7;">');
+    H.push('<td>סה"כ</td><td>—</td><td>—</td>');
+    H.push('<td>' + (tReq || '') + '</td><td>' + (tAppr || '') + '</td><td>—</td><td>' + (tAudio || '') + '</td><td>—</td>');
+    H.push('<td style="background:#e8f5e9;">' + tTot + '</td>');
+    H.push('<td>' + tPA.army + '</td><td>' + tPA.other + '</td><td>' + tPA.voucher + '</td><td>' + tPA.kadatz + '</td>');
+    H.push('<td>' + tFA.army + '</td><td>' + tFA.other + '</td><td>' + tFA.voucher + '</td><td>' + tFA.kadatz + '</td>');
+    H.push('</tr>');
     H.push('</tbody></table></div></div>');
 
     // Examinees table (all results across all sessions) — examiner-report style:
@@ -2599,7 +2648,7 @@
       H.push('<div class="section">');
       H.push('<div class="section-title"><span class="icon">👥</span> טבלת נבחנים</div>');
       H.push('<div class="tw"><table><thead><tr>');
-      H.push('<th>#</th><th>ת.ז.</th><th>שם משפחה</th><th>שם פרטי</th><th>דרגה</th><th>בוחן</th><th>תוצאה</th>');
+      H.push('<th>#</th><th>ת.ז.</th><th>שם משפחה</th><th>שם פרטי</th><th>סוג רכב</th><th>מגזר</th><th>סוג מבחן</th><th>מבחן מס\'</th><th>תוצאה</th><th>בוחן</th>');
       H.push('</tr></thead><tbody>');
       var rowIdx = 0;
       for (var er = 0; er < results.length; er++) {
@@ -2618,8 +2667,11 @@
         H.push('<td style="text-align:right;">' + escHtml(nm.fam) + '</td>');
         H.push('<td style="text-align:right;">' + escHtml(nm.first) + '</td>');
         H.push('<td>' + escHtml(rrr.license) + '</td>');
-        H.push('<td>' + escHtml(rrr.examiner) + '</td>');
+        H.push('<td>' + escHtml(rrr.population || '') + '</td>');
+        H.push('<td>' + (rrr.audioMode === 'on' ? '🔊 שמע' : 'מחשב') + '</td>');
+        H.push('<td>' + (rrr.attemptNum || 1) + '</td>');
         H.push('<td style="font-weight:bold;color:' + resColor + ';">' + resText + '</td>');
+        H.push('<td>' + escHtml(rrr.examiner) + '</td>');
         H.push('</tr>');
       }
       H.push('</tbody></table></div></div>');
