@@ -18,7 +18,13 @@ const ALLOWED_ORIGINS = [
 ];
 
 const MAX_HTML_SIZE = 2 * 1024 * 1024; // 2MB
-const TTL_SECONDS = 86400; // 24 hours
+// Report links are PERMANENT — the chief examiner can print/save the combined
+// report any time, not only within 24h. The KV put() below omits expirationTtl,
+// so entries persist until manually deleted. (The underlying results also live
+// in the Google Sheet, so this is just the rendered HTML snapshot.)
+// To re-introduce an expiry later, set a value here and pass it as
+// `expirationTtl` in the put() call.
+// const TTL_SECONDS = 86400; // 24 hours (disabled — links no longer expire)
 
 function getCorsHeaders(request) {
   var origin = request.headers.get('Origin') || '';
@@ -130,8 +136,8 @@ export default {
 
         var id = generateId();
 
+        // No expirationTtl → the entry never expires (permanent link).
         await env.EXAM_RESULTS.put(id, html, {
-          expirationTtl: TTL_SECONDS,
           metadata: {
             created: new Date().toISOString(),
             size: html.length
@@ -174,8 +180,8 @@ export default {
         return new Response(
           '<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>' +
           '<body style="font-family:Arial,sans-serif;text-align:center;padding:60px 20px;">' +
-          '<h1 style="color:#f59e0b;">\u05D4\u05E7\u05D9\u05E9\u05D5\u05E8 \u05E4\u05D2 \u05EA\u05D5\u05E7\u05E3</h1>' +
-          '<p style="color:#64748b;">\u05E7\u05D9\u05E9\u05D5\u05E8\u05D9\u05DD \u05EA\u05E7\u05E4\u05D9\u05DD \u05DC-24 \u05E9\u05E2\u05D5\u05EA</p>' +
+          '<h1 style="color:#f59e0b;">\u05D4\u05D3\u05D5"\u05D7 \u05DC\u05D0 \u05E0\u05DE\u05E6\u05D0</h1>' +
+          '<p style="color:#64748b;">\u05D9\u05D9\u05EA\u05DB\u05DF \u05E9\u05D4\u05E7\u05D9\u05E9\u05D5\u05E8 \u05E9\u05D2\u05D5\u05D9 \u05D0\u05D5 \u05E9\u05D4\u05D3\u05D5"\u05D7 \u05D4\u05D5\u05E1\u05E8</p>' +
           '</body></html>',
           { status: 404, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
         );
