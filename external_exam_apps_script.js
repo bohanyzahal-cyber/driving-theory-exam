@@ -1489,6 +1489,17 @@ function handleRegisterExaminee(p) {
         if (status === 'waiting' || status === 'approved' || status === 'in_exam') {
           return jsonResponse({ status: 'error', message: 'כבר רשום בסשן זה' });
         }
+        // A PENDING disqualification (anti-cheat fired, examiner hasn't decided)
+        // must NOT allow a fresh registration. Re-registering while the DQ was
+        // still on the examiner's screen created a SECOND ממתינים row, so the
+        // soldier appeared twice in "במבחן כרגע" (incident @ בוחן יניר 2026-06-08).
+        // The examiner must first decide — "בטל פסילה" (resume) or "אשר פסילה"
+        // (finalize). 'dq_confirmed'/'completed' are intentionally NOT blocked:
+        // they're final (a legitimate retake may re-register) and don't surface
+        // in "במבחן כרגע".
+        if (status === 'disqualified') {
+          return jsonResponse({ status: 'error', message: 'יש פסילה הממתינה להחלטת הבוחן — פנה לבוחן לפני רישום מחדש' });
+        }
       }
       if (status === 'waiting' || status === 'approved' || status === 'in_exam') {
         activeCount++;
