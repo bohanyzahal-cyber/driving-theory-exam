@@ -2037,6 +2037,16 @@ function handleDisqualify(p) {
     var prevCount = 0;
     if (pendData[pendRowIdx].length > 13) prevCount = Number(pendData[pendRowIdx][13]) || 0;
     pendSheet.getRange(pendRowIdx + 1, 14).setValue(prevCount + 1);
+    // Clear any OTHER active (in_exam/approved) rows for this examinee so a
+    // duplicate row doesn't linger on the board beside the disqualified one.
+    for (var dqd = 1; dqd < pendData.length; dqd++) {
+      if (dqd === pendRowIdx) continue;
+      if (String(pendData[dqd][0]) !== String(p.sessionCode) || normalizeId(pendData[dqd][1]) !== normalizeId(p.idNumber)) continue;
+      var dqdStatus = String(pendData[dqd][5]).trim();
+      if (dqdStatus === 'in_exam' || dqdStatus === 'approved') {
+        pendSheet.getRange(dqd + 1, 6).setValue('cancelled');
+      }
+    }
   }
 
   // Idempotency: prevent duplicate פסול rows when examinee anti-cheat AND examiner
@@ -2157,17 +2167,24 @@ function handleResetExaminee(p) {
   }
   var sheet = getSheet('ממתינים');
   var data = sheet.getDataRange().getValues();
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
-      var s = String(data[i][5]).trim();
-      if (s === 'in_exam' || s === 'approved' || s === 'waiting') {
-        sheet.getRange(i + 1, 6).setValue('cancelled');
-        SpreadsheetApp.flush();
-        return jsonResponse({ status: 'ok' });
-      }
+  // Reset EVERY non-final row for this examinee (not just the latest) and accept
+  // ALL stuck states — including 'disqualified'/'dq_confirmed'. Previously reset
+  // refused those, so a soldier stuck on a pending DQ could not be cleared at all.
+  // "אפס" should fully remove a stuck soldier from the board so they can re-register.
+  var resetCount = 0;
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]) !== String(p.sessionCode) || normalizeId(data[i][1]) !== normalizeId(p.idNumber)) continue;
+    var s = String(data[i][5]).trim();
+    if (s === 'waiting' || s === 'approved' || s === 'in_exam' || s === 'disqualified' || s === 'dq_confirmed') {
+      sheet.getRange(i + 1, 6).setValue('cancelled');
+      resetCount++;
     }
   }
-  return jsonResponse({ status: 'error', message: 'לא נמצא נבחן פעיל לאיפוס' });
+  if (resetCount === 0) {
+    return jsonResponse({ status: 'error', message: 'לא נמצא נבחן פעיל לאיפוס' });
+  }
+  SpreadsheetApp.flush();
+  return jsonResponse({ status: 'ok', resetCount: resetCount });
 }
 
 // Force-complete a stuck in_exam examinee (examiner manual action)
@@ -2179,21 +2196,26 @@ function handleForceComplete(p) {
   var pendData = pendSheet.getDataRange().getValues();
   var found = false;
   var name = '', phone = '', population = '', examineeLicense = '', examineeAudio = 'off', language = 'he';
+  // Close EVERY in_exam/approved row for this examinee (not just the latest, and
+  // 'approved' too — markExamStarted can fail on iOS, leaving a stuck 'approved'
+  // even after the soldier finished). One "סיים ידנית" must clear them all.
   for (var j = pendData.length - 1; j >= 1; j--) {
-    if (String(pendData[j][0]) === String(p.sessionCode) && normalizeId(pendData[j][1]) === normalizeId(p.idNumber) && String(pendData[j][5]).trim() === 'in_exam') {
+    if (String(pendData[j][0]) !== String(p.sessionCode) || normalizeId(pendData[j][1]) !== normalizeId(p.idNumber)) continue;
+    var fcStatus = String(pendData[j][5]).trim();
+    if (fcStatus !== 'in_exam' && fcStatus !== 'approved') continue;
+    if (!found) { // capture details from the latest matching row
       name = pendData[j][2] || '';
       phone = pendData[j][3] || '';
       language = pendData[j][6] || 'he';
       population = pendData[j][7] || '';
       examineeLicense = pendData[j][8] || '';
       examineeAudio = pendData[j][9] || 'off';
-      pendSheet.getRange(j + 1, 6).setValue('completed');
-      found = true;
-      break;
     }
+    pendSheet.getRange(j + 1, 6).setValue('completed');
+    found = true;
   }
   if (!found) {
-    return jsonResponse({ status: 'error', message: 'לא נמצא נבחן עם סטטוס in_exam' });
+    return jsonResponse({ status: 'error', message: 'לא נמצא נבחן עם סטטוס in_exam/approved' });
   }
 
   // Check if result already exists — if so, just mark pending as completed (done above)
@@ -3159,14 +3181,16 @@ function handleSubmitResult(data) {
   return jsonResponse({ status: 'ok', waLink: waLink });
 }
 
-// Helper: mark the latest pending row for this session+ID as completed
+// Helper: mark ALL active pending rows for this session+ID as completed.
+// Closes EVERY in_exam/approved row (not just the latest) — a duplicate pending
+// row otherwise leaves the soldier stuck on the board even though they finished
+// and submitted (reported: "stuck in ממתינים/במבחן despite finishing").
 function markPendingCompleted(sessionCode, idNumber) {
   var pendSheet = getSheet('ממתינים');
   var pendData = pendSheet.getDataRange().getValues();
   for (var j = pendData.length - 1; j >= 1; j--) {
     if (String(pendData[j][0]) === String(sessionCode) && normalizeId(pendData[j][1]) === normalizeId(idNumber) && (String(pendData[j][5]).trim() === 'in_exam' || String(pendData[j][5]).trim() === 'approved')) {
       pendSheet.getRange(j + 1, 6).setValue('completed');
-      break;
     }
   }
 }
