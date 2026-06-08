@@ -1780,32 +1780,65 @@ function handleExaminerDashboard(p) {
     attemptsTodayById[aiId] = (attemptsTodayById[aiId] || 0) + 1;
   }
 
+  // Build pending (waiting/approved) and active (in_exam/disqualified) lists,
+  // DEDUPED per examinee. A soldier must appear ONCE in each list even when the
+  // ממתינים sheet holds duplicate rows for them (re-registration after a stuck
+  // row, mid-incident states). Without this the examiner saw the same person
+  // two/three times in "במבחן כרגע" (reported incident @ בוחן יניר). Dedup keys
+  // on normalized id within this session. Collapse priority:
+  //   • pending: latest row wins.
+  //   • active: a 'disqualified' (needs-decision) row beats an 'in_exam' row;
+  //     within the same status, the latest row wins.
+  var pendingById = {};
+  var activeById = {};
   for (var i = 1; i < pendData.length; i++) {
     if (String(pendData[i][0]) !== code) continue;
     var s = String(pendData[i][5] || '').trim();
+    if (s !== 'waiting' && s !== 'approved' && s !== 'in_exam' && s !== 'disqualified') continue;
     var dqCount = (pendData[i].length > 13) ? (Number(pendData[i][13]) || 0) : 0;
     var hasExtScreen = (pendData[i].length > 14) ? (String(pendData[i][14] || '').trim() === 'כן') : false;
     var warnCount = (pendData[i].length > 15) ? (Number(pendData[i][15]) || 0) : 0;
     var lastWarn = (pendData[i].length > 16) ? String(pendData[i][16] || '') : '';
     var idNorm = normalizeId(pendData[i][1]);
     var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], examStartTime: pendData[i][11] || '', status: s, language: pendData[i][6] || '', population: pendData[i][7] || '', license: pendData[i][8] || '', audioMode: pendData[i][9] || 'off', timeExtension: String(pendData[i][10] || ''), dqCount: dqCount, warnings: warnCount, lastWarning: lastWarn, attemptsToday: attemptsTodayById[idNorm] || 0, hasExtendedScreen: hasExtScreen };
-    if (s === 'waiting') pending.push(item);
-    else if (s === 'approved') pending.push(item);
-    else if (s === 'in_exam') active.push(item);
-    else if (s === 'disqualified') {
-      // Surface DQ events that examiner needs to decide on (was previously
-      // invisible — caused examiner to be unaware that DQ happened, see Bug #2/#4).
-      item.dqPending = true;
-      active.push(item);
+    if (s === 'waiting' || s === 'approved') {
+      pendingById[idNorm] = item; // ascending loop → latest row wins
+    } else {
+      // Surface DQ events the examiner must decide on (in_exam + disqualified).
+      if (s === 'disqualified') item.dqPending = true;
+      var prevA = activeById[idNorm];
+      if (!prevA) {
+        activeById[idNorm] = item;
+      } else {
+        // 'disqualified' (needs decision) beats 'in_exam'; same status → latest wins.
+        var curDQ = (s === 'disqualified');
+        var prevDQ = (prevA.status === 'disqualified');
+        if (curDQ || !prevDQ) activeById[idNorm] = item;
+      }
     }
   }
+  for (var pkA in pendingById) pending.push(pendingById[pkA]);
+  for (var akA in activeById) active.push(activeById[akA]);
 
   // Re-read resData in case cleanup added new results
   resData = resSheet.getDataRange().getValues();
+  // DEDUP results per examinee: the תוצאות sheet can end up with several
+  // non-בוטל rows for one (session, id) when recovery paths (timeout-fail,
+  // manual force-complete, disqualify) appended rows that weren't superseded.
+  // The examiner must see each soldier ONCE — keep only the LATEST row, which
+  // matches the system's own canonical rule (every supersede appends the newest
+  // and marks older ones בוטל; latest-wins is the safety net when that didn't run).
+  var latestResRowById = {};
+  for (var jd = 1; jd < resData.length; jd++) {
+    if (String(resData[jd][13]) !== code) continue;
+    if (String(resData[jd][7] || '') === 'בוטל') continue;
+    latestResRowById[normalizeId(resData[jd][1])] = jd; // ascending → ends as latest
+  }
   var completed = [];
   for (var j = 1; j < resData.length; j++) {
     if (String(resData[j][13]) !== code) continue;
     if (String(resData[j][7] || '') === 'בוטל') continue;
+    if (latestResRowById[normalizeId(resData[j][1])] !== j) continue; // keep latest only
     completed.push({
       date: resData[j][0],
       idNumber: resData[j][1],
