@@ -197,8 +197,12 @@ export default {
     }
 
     // --- GET / — health check ---
+    // 'links' makes the DEPLOYED behaviour verifiable from outside: a quick
+    // `curl https://steep-night-dd06.bohanyzahal.workers.dev/` must show
+    // links:"permanent". If it still shows "24h" (or this field is missing),
+    // the worker was NOT redeployed and report links will still expire.
     if (request.method === 'GET' && url.pathname === '/') {
-      return Response.json({ status: 'ok', service: 'exam-results' });
+      return Response.json({ status: 'ok', service: 'exam-results', version: '2026-06-09', links: 'permanent' });
     }
 
     return new Response('Not Found', { status: 404 });
