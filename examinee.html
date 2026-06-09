@@ -3531,16 +3531,49 @@
     if (sources[0] === sources[1]) sources = [sources[0]];
     var maxRetriesPerSource = 2;
     var retriesThisSource = 0;
+    var loadTimer = null;
+    var settled = false;       // per-attempt guard: onload/onerror/timeout fire once
+    var LOAD_TIMEOUT_MS = 7000; // hang window before we give up on this attempt
+
+    function clearLoadTimer() { if (loadTimer) { clearTimeout(loadTimer); loadTimer = null; } }
+
+    function handleImgFailure() {
+      clearLoadTimer();
+      retriesThisSource++;
+      if (retriesThisSource < maxRetriesPerSource) {
+        setTimeout(tryNext, 800);           // brief wait, retry same source
+      } else {
+        attempt++;                           // move to next source (proxy → direct gov.il)
+        retriesThisSource = 0;
+        if (attempt < sources.length) tryNext();
+        else showError();
+      }
+    }
 
     function tryNext() {
+      settled = false;
+      clearLoadTimer();
       var src = sources[attempt];
       if (!src) { showError(); return; }
       // Cache-busting query param on retries (forces fresh fetch)
       var bust = retriesThisSource > 0 ? (src.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now() : '';
+      // Hang guard: if NEITHER onload nor onerror fires within the window (slow
+      // mobile network, captive portal, or a network that blocks workers.dev),
+      // treat it as a failure so the retry/fallback runs — instead of an infinite
+      // "טוען תמונה..." spinner. This is the device/network-dependent case where
+      // images never appeared and no error was shown.
+      loadTimer = setTimeout(function() {
+        if (settled) return;
+        settled = true;
+        handleImgFailure();
+      }, LOAD_TIMEOUT_MS);
       img.src = src + bust;
     }
 
     img.onload = function() {
+      if (settled) return;
+      settled = true;
+      clearLoadTimer();
       loading.style.display = 'none';
       img.style.display = '';
       // Remove error UI if present
@@ -3549,20 +3582,9 @@
     };
 
     img.onerror = function() {
-      retriesThisSource++;
-      if (retriesThisSource < maxRetriesPerSource) {
-        // Wait briefly then retry the same source
-        setTimeout(tryNext, 800);
-      } else {
-        // Move to next source (proxy → direct gov.il)
-        attempt++;
-        retriesThisSource = 0;
-        if (attempt < sources.length) {
-          tryNext();
-        } else {
-          showError();
-        }
-      }
+      if (settled) return;
+      settled = true;
+      handleImgFailure();
     };
 
     function showError() {
