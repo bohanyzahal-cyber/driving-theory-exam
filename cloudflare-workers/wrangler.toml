@@ -1,0 +1,10 @@
+name = "steep-night-dd06"
+main = "exam-results-worker.js"
+compatibility_date = "2024-09-23"
+
+# KV storage binding — REQUIRED so the deploy KEEPS the report storage.
+# Replace PASTE_KV_ID_HERE with the id printed by:  npx wrangler kv namespace list
+# (look for the namespace whose title contains EXAM_RESULTS, copy its "id").
+[[kv_namespaces]]
+binding = "EXAM_RESULTS"
+id = "6f259d548e2f469dac58720ab0ef8974"

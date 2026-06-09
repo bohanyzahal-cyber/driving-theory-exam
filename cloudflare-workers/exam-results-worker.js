@@ -1,17 +1,15 @@
 /**
- * Cloudflare Worker: exam-results  — SERVICE WORKER format
+ * Cloudflare Worker: exam-results  — ES Modules format (deploy with `wrangler deploy`)
  * מאחסן ומגיש דפי תוצאות מבחן דרך KV
  * Deploy at: steep-night-dd06.bohanyzahal.workers.dev
  *
- * Written in the classic Service Worker format (addEventListener('fetch')) so it
- * pastes cleanly into the Cloudflare dashboard "Quick edit". An ES-Modules
- * version (export default) gives "No event handlers were registered" on a
- * Service-Worker-type worker, which is why earlier deploys silently failed and
- * report links kept their 24h expiry.
+ * Deployed via wrangler (see wrangler.toml next to this file). The dashboard
+ * "Edit code → Deploy" was returning 403 on the legacy services/environments
+ * endpoint, so wrangler (modern /workers/scripts/ endpoint) is the deploy path.
  *
- * Bindings are GLOBALS in this format:
- *   KV namespace binding: EXAM_RESULTS
- *   Secret:               UPLOAD_SECRET   (must match RESULT_UPLOAD_SECRET in Apps Script)
+ * Bindings (accessed via env):
+ *   KV namespace: EXAM_RESULTS
+ *   Secret:       UPLOAD_SECRET   (must match RESULT_UPLOAD_SECRET in Apps Script)
  *
  * Endpoints:
  *   POST /     — { html } -> store in KV (PERMANENT, no TTL) -> { status:"ok", link }
@@ -48,8 +46,6 @@ function generateId() {
 }
 
 // --- HMAC token verification (matches handleGetResultUploadToken in Apps Script) ---
-// Token format: "<payloadB64>.<sigB64>" where payload is JSON({"exp": <ms>})
-// and signature = HMAC-SHA256(payloadB64, UPLOAD_SECRET), both base64url-encoded.
 function base64UrlDecode(s) {
   s = s.replace(/-/g, '+').replace(/_/g, '/');
   var pad = (4 - (s.length % 4)) % 4;
@@ -91,125 +87,123 @@ async function verifyUploadToken(tokenStr, secret) {
   }
 }
 
-addEventListener('fetch', function(event) {
-  event.respondWith(handleRequest(event.request));
-});
+export default {
+  async fetch(request, env) {
+    var url = new URL(request.url);
+    var cors = getCorsHeaders(request);
 
-async function handleRequest(request) {
-  var url = new URL(request.url);
-  var cors = getCorsHeaders(request);
-
-  // --- CORS preflight ---
-  if (request.method === 'OPTIONS') {
-    return new Response(null, { status: 204, headers: cors });
-  }
-
-  // --- POST / — store result HTML ---
-  if (request.method === 'POST' && url.pathname === '/') {
-    // Auth: require valid HMAC token issued by Apps Script. The UPLOAD_SECRET
-    // binding must match the RESULT_UPLOAD_SECRET ScriptProperty in Apps Script.
-    if (typeof UPLOAD_SECRET === 'undefined' || !UPLOAD_SECRET) {
-      return Response.json(
-        { status: 'error', message: 'UPLOAD_SECRET binding not configured on worker' },
-        { status: 500, headers: cors }
-      );
+    // --- CORS preflight ---
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: cors });
     }
-    var authToken = request.headers.get('X-Auth-Token') || '';
-    var authResult = await verifyUploadToken(authToken, UPLOAD_SECRET);
-    if (!authResult.valid) {
-      return Response.json(
-        { status: 'error', message: 'Unauthorized', reason: authResult.reason },
-        { status: 401, headers: cors }
-      );
-    }
-    try {
-      var body = await request.json();
-      var html = body.html;
 
-      if (!html || typeof html !== 'string') {
+    // --- POST / — store result HTML ---
+    if (request.method === 'POST' && url.pathname === '/') {
+      // Auth: require valid HMAC token issued by Apps Script. UPLOAD_SECRET
+      // binding must match RESULT_UPLOAD_SECRET ScriptProperty in Apps Script.
+      if (!env.UPLOAD_SECRET) {
         return Response.json(
-          { status: 'error', message: 'Missing or invalid html field' },
-          { status: 400, headers: cors }
+          { status: 'error', message: 'UPLOAD_SECRET binding not configured on worker' },
+          { status: 500, headers: cors }
+        );
+      }
+      var authToken = request.headers.get('X-Auth-Token') || '';
+      var authResult = await verifyUploadToken(authToken, env.UPLOAD_SECRET);
+      if (!authResult.valid) {
+        return Response.json(
+          { status: 'error', message: 'Unauthorized', reason: authResult.reason },
+          { status: 401, headers: cors }
+        );
+      }
+      try {
+        var body = await request.json();
+        var html = body.html;
+
+        if (!html || typeof html !== 'string') {
+          return Response.json(
+            { status: 'error', message: 'Missing or invalid html field' },
+            { status: 400, headers: cors }
+          );
+        }
+
+        if (html.length > MAX_HTML_SIZE) {
+          return Response.json(
+            { status: 'error', message: 'HTML too large (max 2MB)' },
+            { status: 413, headers: cors }
+          );
+        }
+
+        var id = generateId();
+
+        // No expirationTtl → the entry never expires (permanent link).
+        await env.EXAM_RESULTS.put(id, html, {
+          metadata: {
+            created: new Date().toISOString(),
+            size: html.length
+          }
+        });
+
+        var link = url.origin + '/' + id;
+
+        return Response.json(
+          { status: 'ok', link: link },
+          { status: 200, headers: cors }
+        );
+      } catch (err) {
+        return Response.json(
+          { status: 'error', message: err.message || 'Server error' },
+          { status: 500, headers: cors }
+        );
+      }
+    }
+
+    // --- GET /:id — serve stored HTML ---
+    if (request.method === 'GET' && url.pathname.length > 1) {
+      var id = url.pathname.slice(1);
+
+      // UUID format validation
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+        return new Response(
+          '<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>' +
+          '<body style="font-family:Arial,sans-serif;text-align:center;padding:60px 20px;">' +
+          '<h1 style="color:#ef4444;">קישור לא תקין</h1>' +
+          '<p style="color:#64748b;">הכתובת אינה תקינה</p>' +
+          '</body></html>',
+          { status: 400, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
         );
       }
 
-      if (html.length > MAX_HTML_SIZE) {
-        return Response.json(
-          { status: 'error', message: 'HTML too large (max 2MB)' },
-          { status: 413, headers: cors }
+      var stored = await env.EXAM_RESULTS.get(id);
+
+      if (!stored) {
+        return new Response(
+          '<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>' +
+          '<body style="font-family:Arial,sans-serif;text-align:center;padding:60px 20px;">' +
+          '<h1 style="color:#f59e0b;">הדו"ח לא נמצא</h1>' +
+          '<p style="color:#64748b;">ייתכן שהקישור שגוי או שהדו"ח הוסר</p>' +
+          '</body></html>',
+          { status: 404, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
         );
       }
 
-      var id = generateId();
-
-      // No expirationTtl → the entry never expires (permanent link).
-      await EXAM_RESULTS.put(id, html, {
-        metadata: {
-          created: new Date().toISOString(),
-          size: html.length
+      return new Response(stored, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Cache-Control': 'public, max-age=3600'
         }
       });
-
-      var link = url.origin + '/' + id;
-
-      return Response.json(
-        { status: 'ok', link: link },
-        { status: 200, headers: cors }
-      );
-    } catch (err) {
-      return Response.json(
-        { status: 'error', message: err.message || 'Server error' },
-        { status: 500, headers: cors }
-      );
-    }
-  }
-
-  // --- GET /:id — serve stored HTML ---
-  if (request.method === 'GET' && url.pathname.length > 1) {
-    var id = url.pathname.slice(1);
-
-    // UUID format validation
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
-      return new Response(
-        '<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>' +
-        '<body style="font-family:Arial,sans-serif;text-align:center;padding:60px 20px;">' +
-        '<h1 style="color:#ef4444;">קישור לא תקין</h1>' +
-        '<p style="color:#64748b;">הכתובת אינה תקינה</p>' +
-        '</body></html>',
-        { status: 400, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
-      );
     }
 
-    var stored = await EXAM_RESULTS.get(id);
-
-    if (!stored) {
-      return new Response(
-        '<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>' +
-        '<body style="font-family:Arial,sans-serif;text-align:center;padding:60px 20px;">' +
-        '<h1 style="color:#f59e0b;">הדו"ח לא נמצא</h1>' +
-        '<p style="color:#64748b;">ייתכן שהקישור שגוי או שהדו"ח הוסר</p>' +
-        '</body></html>',
-        { status: 404, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
-      );
+    // --- GET / — health check ---
+    // 'links' makes the DEPLOYED behaviour verifiable: a quick
+    // `curl https://steep-night-dd06.bohanyzahal.workers.dev/` must show
+    // links:"permanent". If it still shows just {"status":"ok","service":"exam-results"}
+    // the new version is NOT live and links will still expire.
+    if (request.method === 'GET' && url.pathname === '/') {
+      return Response.json({ status: 'ok', service: 'exam-results', version: '2026-06-09', links: 'permanent' });
     }
 
-    return new Response(stored, {
-      status: 200,
-      headers: {
-        'Content-Type': 'text/html; charset=utf-8',
-        'Cache-Control': 'public, max-age=3600'
-      }
-    });
+    return new Response('Not Found', { status: 404 });
   }
-
-  // --- GET / — health check ---
-  // 'links' makes the DEPLOYED behaviour verifiable from outside: a quick
-  // `curl https://steep-night-dd06.bohanyzahal.workers.dev/` must show
-  // links:"permanent". If it still shows {"status":"ok","service":"exam-results"}
-  // (no links field), the worker was NOT redeployed and links will still expire.
-  if (request.method === 'GET' && url.pathname === '/') {
-    return Response.json({ status: 'ok', service: 'exam-results', version: '2026-06-09', links: 'permanent' });
-  }
-
-  return new Response('Not Found', { status: 404 });
-}
+};
