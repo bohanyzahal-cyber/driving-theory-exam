@@ -863,7 +863,12 @@
           </select>
         </label>
         <label style="flex:1;">אוכלוסיה
-          <input id="manualResPopulation" type="text" placeholder="צבא / קד״ץ / אחר" autocomplete="off" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-family:inherit;" />
+          <select id="manualResPopulation" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-family:inherit;">
+            <option value="צבא">צבא</option>
+            <option value="קד״ץ">קד״ץ</option>
+            <option value="וואוצ׳ר">וואוצ׳ר</option>
+            <option value="עיוני בלבד">עיוני בלבד</option>
+          </select>
         </label>
       </div>
       <label>ציון (נכון מתוך סה"כ) <span style="color:#dc2626;">*</span>
@@ -2836,7 +2841,7 @@
         H.push('<td style="text-align:right;">' + escHtml(nm.first) + '</td>');
         H.push('<td>' + escHtml(rrr.license) + '</td>');
         H.push('<td>' + escHtml(rrr.population || '') + '</td>');
-        H.push('<td>' + (rrr.audioMode === 'on' ? '🔊 שמע' : 'מחשב') + '</td>');
+        H.push('<td>' + (String(rrr.verified || '') === 'ידני' ? 'מבחן בכתב' : ((({ phone: 'טלפון', tablet: 'טאבלט', desktop: 'מחשב' })[String(rrr.device || '')] || 'מחשב') + (rrr.audioMode === 'on' ? ' 🔊' : ''))) + '</td>');
         H.push('<td>' + (rrr.attemptNum || 1) + '</td>');
         H.push('<td style="font-weight:bold;color:' + resColor + ';">' + resText + '</td>');
         H.push('<td>' + escHtml(rrr.examiner) + '</td>');
@@ -3067,7 +3072,7 @@
     document.getElementById('manualResId').value = '';
     document.getElementById('manualResPhone').value = '';
     document.getElementById('manualResLicense').value = currentLicense || 'B';
-    document.getElementById('manualResPopulation').value = '';
+    document.getElementById('manualResPopulation').value = 'צבא';
     document.getElementById('manualResScore').value = '';
     document.getElementById('manualResTotal').value = 30;
     document.getElementById('manualResPassPreview').textContent = '';
@@ -4160,6 +4165,16 @@
       return 'other';
     }
 
+    // "סוג מבחן" label: paper entries (verified='ידני') → 'מבחן בכתב';
+    // digital → the examinee's device (phone/tablet/desktop, old rows default
+    // to מחשב) with a 🔊 suffix when the exam ran in audio mode.
+    function examTypeLabel(rr) {
+      if (String(rr.verified || '') === 'ידני') return 'מבחן בכתב';
+      var dvMap = { phone: 'טלפון', tablet: 'טאבלט', desktop: 'מחשב' };
+      var dv = dvMap[String(rr.device || '')] || 'מחשב';
+      return rr.audioMode === 'on' ? dv + ' 🔊' : dv;
+    }
+
     function getExecForLicense(lic) {
       if (!execByLicense[lic]) {
         execByLicense[lic] = { total: 0, audio: 0, pa: { army: 0, kadatz: 0, voucher: 0, other: 0 }, fa: { army: 0, kadatz: 0, voucher: 0, other: 0 } };
@@ -4225,7 +4240,7 @@
         '<td>' + escHtml(r.site || '') + '</td>' +
         '<td>' + escHtml(r.license || license) + '</td>' +
         '<td>' + escHtml(pop) + '</td>' +
-        '<td>' + (r.audioMode === 'on' ? '\uD83D\uDD0A \u05E9\u05DE\u05E2' : '\u05DE\u05D7\u05E9\u05D1') + '</td>' +
+        '<td>' + examTypeLabel(r) + '</td>' +
         '<td>' + (r.attempt || 1) + '</td>' +
         '<td style="font-weight:bold;color:' + resultColor + ';">' + resultText + '</td></tr>';
     }

@@ -1998,6 +1998,7 @@
                 time: getElapsedTimeStr(),
                 population: examineeData.population || '',
                 audioMode: sessionData.audioMode || 'off',
+                device: getDeviceClass(),
                 origin: API_ORIGIN,
                 examineeToken: examineeToken
               })], { type: 'application/json' }));
@@ -4109,6 +4110,7 @@
       classroom: sessionData.classroom || '',
       population: examineeData.population || '',
       audioMode: sessionData.audioMode || 'off',
+      device: getDeviceClass(),
       answers: rawAnswers,
       // Layer-1 consolidation: send wrong-answers WITH the result, so it's one
       // server call/write instead of a separate submitWrongAnswers POST. The

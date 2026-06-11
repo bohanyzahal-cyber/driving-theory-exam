@@ -13,7 +13,7 @@ var SHEET_HEADERS = {
   'אתרים': ['שם אתר', 'מזהה', 'טלפון מנהל', 'כיתות'],
   'סשנים': ['קוד', 'בוחן ת.ז.', 'שם בוחן', 'אתר', 'כיתה', 'דרגה', 'שפה', 'מצב שמע', 'זמן יצירה', 'תקף עד', 'פעיל', 'כמויות JSON', 'מאושרים JSON', 'בוחן אחראי'],
   'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה', 'דרגה', 'שמע', 'הארכת זמן', 'התחלת מבחן', 'טוקן נבחן', 'ספירת DQ', 'מסך נוסף'],
-  'תוצאות': ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר', 'כיתה', 'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ', 'אוכלוסיה', 'תוקן?', 'שמע', 'מאומת', 'חשוד', 'dqEventId', 'תוקן ע"י', 'סיבת תיקון', 'תאריך תיקון', 'מסלול שפות'],
+  'תוצאות': ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר', 'כיתה', 'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ', 'אוכלוסיה', 'תוקן?', 'שמע', 'מאומת', 'חשוד', 'dqEventId', 'תוקן ע"י', 'סיבת תיקון', 'תאריך תיקון', 'מסלול שפות', 'מכשיר'],
   'מורים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד'],
   'כיתות': ['קוד כיתה', 'שם כיתה', 'מורה ת.ז.', 'שם מורה', 'דרגה', 'תאריך יצירה', 'פעיל'],
   'תלמידי כיתות': ['קוד כיתה', 'שם תלמיד', 'מזהה תלמיד', 'תאריך הצטרפות'],
@@ -500,6 +500,7 @@ function doGet(e) {
           classroom: p.classroom || '',
           population: p.population || '',
           audioMode: p.audioMode || 'off',
+          device: p.device || '',
           wrongAnswers: []
         };
         try { if (p.wrongAnswers) resultData.wrongAnswers = JSON.parse(p.wrongAnswers); } catch(ex) {}
@@ -524,7 +525,8 @@ function doGet(e) {
           totalQuestions: Number(p.totalQuestions) || 30,
           time: p.time || '',
           population: p.population || '',
-          audioMode: p.audioMode || 'off'
+          audioMode: p.audioMode || 'off',
+          device: p.device || ''
         };
         return handleSubmitFailOnClose(failData);
 
@@ -647,6 +649,8 @@ function doPost(e) {
       return handleSaveStudentProgress(data);
     } else if (action === 'commanderCorrectResult') {
       return handleCommanderCorrectResult(data);
+    } else if (action === 'correctExamineeMeta') {
+      return handleCorrectExamineeMeta(data);
     } else if (action === 'submitManualResult') {
       return handleSubmitManualResult(data);
     } else {
@@ -1227,7 +1231,9 @@ function handleSiteCombinedReport(p) {
       attemptNum: resData[r][14],
       population: String(resData[r][19] || ''),
       disqualified: resData[r][17] === true || String(resData[r][17]).toUpperCase() === 'TRUE',
-      audioMode: String(resData[r][21] || '')
+      audioMode: String(resData[r][21] || ''),
+      verified: (resData[r].length > 22) ? String(resData[r][22] || '') : '',
+      device: (resData[r].length > 29) ? String(resData[r][29] || '') : ''
     });
   }
 
@@ -1904,7 +1910,8 @@ function handleExaminerDashboard(p) {
       // (missing answer key, missing exam-registration, or a tampered/forged
       // submit) instead of it looking identical to a clean pass.
       verified: (resData[j].length > 22) ? (resData[j][22] || '') : '',
-      suspicious: (resData[j].length > 23) ? (resData[j][23] || '') : ''
+      suspicious: (resData[j].length > 23) ? (resData[j][23] || '') : '',
+      device: (resData[j].length > 29) ? (resData[j][29] || '') : ''
     });
   }
 
@@ -2532,10 +2539,14 @@ function handleSubmitManualResult(p) {
 // Required params: sessionCode, idNumber, newScore (e.g. "28"), newTotal (e.g. "30"),
 //                  newStatus ('עבר' | 'נכשל' | 'פסול'), reason (non-empty).
 // Examiner-level correction of an examinee's site + population on their result
-// row (the examinee picked the wrong site/population at registration). Gated on
-// session ownership (examiner token already verified by the examinerActions
-// allowlist). Updates תוצאות col 11 (אתר, idx 10) / col 20 (אוכלוסיה, idx 19).
+// row (the examinee picked the wrong site/population at registration). Reached
+// via doPost (apiPost auto-attaches examinerId+token), which does NOT run the
+// examinerActions allowlist — so the token is verified HERE, then session
+// ownership. Updates תוצאות col 11 (אתר, idx 10) / col 20 (אוכלוסיה, idx 19).
 function handleCorrectExamineeMeta(p) {
+  if (!verifyToken(p.examinerId, p.token)) {
+    return jsonResponse({ status: 'error', message: 'טוקן בוחן לא תקין', tokenExpired: true });
+  }
   if (!verifyExaminerForSession(p.sessionCode, p.examinerId)) {
     return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
   }
@@ -3224,7 +3235,8 @@ function handleSubmitResult(data) {
     '',                                 // Z (25) תוקן ע"י — empty (no correction yet)
     '',                                 // AA (26) סיבת תיקון — empty
     '',                                 // AB (27) תאריך תיקון — empty
-    langPath                            // AC (28) מסלול שפות — full path he → ru → he
+    langPath,                           // AC (28) מסלול שפות — full path he → ru → he
+    String(data.device || '')           // AD (29) מכשיר — phone / tablet / desktop
   ]);
 
   // Update pending status to completed
@@ -3423,7 +3435,9 @@ function handleSubmitFailOnClose(data) {
     '',
     data.population || '',
     false,
-    data.audioMode || 'off'
+    data.audioMode || 'off',
+    '', '', '', '', '', '', '',         // idx 22-28 (מאומת..מסלול שפות) — N/A for a close-fail row
+    String(data.device || '')           // AD (29) מכשיר — phone / tablet / desktop
   ]);
 
   markPendingCompleted(data.sessionCode, data.idNumber);
