@@ -316,6 +316,10 @@
           <option value="am">אמהרית</option>
         </select>
       </label>
+      <label id="siteSelectWrap" style="display:none;">
+        <span>אתר</span>
+        <select id="siteSelect"></select>
+      </label>
       <label>
         <span>אוכלוסיה</span>
         <select id="populationSelect">
@@ -1338,6 +1342,26 @@
         var licSel = document.getElementById('licenseSelect');
         if (licSel) licSel.value = sessionData.license || 'B';
         document.getElementById('topbarSub').textContent = sessionData.site + ' | ' + (LICENSE_LABELS[sessionData.license] || sessionData.license);
+        // Multi-site: if the session declares more than one site (host + guest),
+        // let the examinee pick theirs. Single-site sessions keep it hidden.
+        (function() {
+          var siteWrap = document.getElementById('siteSelectWrap');
+          var siteSel = document.getElementById('siteSelect');
+          if (!siteWrap || !siteSel) return;
+          var sites = (sessionData.sites && sessionData.sites.length) ? sessionData.sites : (sessionData.site ? [sessionData.site] : []);
+          if (sites.length > 1) {
+            siteSel.innerHTML = '';
+            for (var si = 0; si < sites.length; si++) {
+              var o = document.createElement('option');
+              o.value = sites[si]; o.textContent = sites[si];
+              siteSel.appendChild(o);
+            }
+            siteSel.value = sessionData.site || sites[0];
+            siteWrap.style.display = '';
+          } else {
+            siteWrap.style.display = 'none';
+          }
+        })();
         saveExamineeState('screenIdForm');
         showScreen('screenIdForm');
       } else {
@@ -1380,6 +1404,9 @@
       examineeData.phone = document.getElementById('phoneNumber').value.trim();
       examineeData.language = document.getElementById('langSelect').value || sessionData.language || 'he';
       examineeData.population = document.getElementById('populationSelect').value || '\u05E6\u05D1\u05D0';
+      var _siteWrap = document.getElementById('siteSelectWrap');
+      var _siteSel = document.getElementById('siteSelect');
+      examineeData.site = (_siteWrap && _siteWrap.style.display !== 'none' && _siteSel && _siteSel.value) ? _siteSel.value : (sessionData.site || '');
       examineeData.license = document.getElementById('licenseSelect').value || sessionData.license || 'B';
     }
     return valid;
@@ -1963,7 +1990,7 @@
                 license: examineeData.license || sessionData.license || 'B',
                 language: examineeData.language || sessionData.language || 'he',
                 examinerName: sessionData.examinerName || '',
-                site: sessionData.site || '',
+                site: examineeData.site || sessionData.site || '',
                 classroom: sessionData.classroom || '',
                 answeredCount: getAnsweredCount(),
                 totalQuestions: TOTAL_QUESTIONS,
@@ -4077,7 +4104,7 @@
       passed: passed,
       time: timeStr,
       examinerName: sessionData.examinerName || '',
-      site: sessionData.site || '',
+      site: examineeData.site || sessionData.site || '',
       classroom: sessionData.classroom || '',
       population: examineeData.population || '',
       audioMode: sessionData.audioMode || 'off',

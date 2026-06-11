@@ -393,6 +393,33 @@
       </div>
     </div>
 
+    <!-- Optional guest site: a second base joining this exam, with its own quotas. -->
+    <div style="margin: 14px 0;">
+      <label style="display:flex; align-items:center; gap:8px; font-size:14px; font-weight:600; cursor:pointer;">
+        <input type="checkbox" id="enableGuestSite" style="width:auto;"> ➕ הוסף אתר אורח (בסיס נוסף)
+      </label>
+      <div id="guestSiteFields" style="display:none; margin-top:10px; background:#fffaf0; border:1px solid #fcd9a8; border-radius:10px; padding:12px;">
+        <label>
+          <span>אתר אורח</span>
+          <select id="guestSiteSelect"><option value="">— בחר אתר —</option></select>
+          <input type="text" id="guestSiteCustomInput" placeholder="הקלד שם אתר אורח..." style="display:none; margin-top:6px;" />
+        </label>
+        <div style="font-size:13px; font-weight:600; margin:10px 0 6px;">כמויות נבחנים לפי דרגה (אתר אורח)</div>
+        <table style="width:100%; border-collapse:collapse; font-size:14px;">
+          <thead>
+            <tr style="font-size:12px; color:#64748b;">
+              <th style="text-align:right; padding:4px 6px; font-weight:600;">דרגה</th>
+              <th style="padding:4px 6px; font-weight:600;">מבוקשת</th>
+              <th style="padding:4px 6px; font-weight:600;">מאושרת</th>
+              <th style="width:36px;"></th>
+            </tr>
+          </thead>
+          <tbody id="guestQuotasTableBody"></tbody>
+        </table>
+        <button type="button" id="addGuestQuotaRowBtn" style="margin-top:8px; padding:6px 14px; background:#27ae60; font-size:13px; font-weight:600;">+ הוסף שורה</button>
+      </div>
+    </div>
+
     <div class="form-error" id="setupError"></div>
     <button id="createSessionBtn" style="display:block; width:100%; padding:14px; font-size:17px; margin-top:12px;">פתח בחינה</button>
     <button id="backToCommanderSetup" onclick="switchToCommander()" style="display:none; width:100%; padding:12px; font-size:15px; margin-top:8px; background:#0d47a1;">חזרה ללוח מפקד</button>
@@ -905,6 +932,7 @@
   var currentQuotas = [];
   // Working copy used while filling the setup form (before session is created).
   var setupQuotas = [];
+  var setupQuotasGuest = [];  // optional guest-site quota rows (multi-site sessions)
   // Becomes true once the examiner uploads the report via shareExaminerReport.
   // confirmCloseSession refuses to close until this is true — guarantees the
   // report is persisted to the shareable cache before session data is gone.
@@ -1461,7 +1489,92 @@
     var primary = (document.getElementById('licenseSetup') || {}).value || 'B';
     setupQuotas = [{ license: primary, requested: '', approved: '' }];
     renderQuotasTable();
+    // Reset the optional guest-site section too.
+    setupQuotasGuest = [];
+    var gchk = document.getElementById('enableGuestSite');
+    if (gchk) gchk.checked = false;
+    var gfields = document.getElementById('guestSiteFields');
+    if (gfields) gfields.style.display = 'none';
+    var gcustom = document.getElementById('guestSiteCustomInput');
+    if (gcustom) { gcustom.style.display = 'none'; gcustom.value = ''; }
+    if (typeof renderGuestQuotasTable === 'function') renderGuestQuotasTable();
   }
+
+  // ===== Guest-site quotas (optional 2nd base joining the same exam) =====
+  function quotaLicenseSelectHtmlGuest(selected, idx) {
+    var html = '<select onchange="updateGuestQuotaCell(' + idx + ',\'license\',this.value)" style="background:#fff;border:1px solid #cbd5e1;border-radius:6px;padding:5px 8px;font-size:13px;width:100%;">';
+    for (var i = 0; i < QUOTA_LICENSE_OPTIONS.length; i++) {
+      var o = QUOTA_LICENSE_OPTIONS[i];
+      html += '<option value="' + o.value + '"' + (selected === o.value ? ' selected' : '') + '>' + escHtml(o.label) + '</option>';
+    }
+    return html + '</select>';
+  }
+  function renderGuestQuotasTable() {
+    var tbody = document.getElementById('guestQuotasTableBody');
+    if (!tbody) return;
+    if (setupQuotasGuest.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#94a3b8;padding:10px;font-size:13px;">לחץ "+ הוסף שורה"</td></tr>';
+      return;
+    }
+    var rows = '';
+    for (var i = 0; i < setupQuotasGuest.length; i++) {
+      var q = setupQuotasGuest[i];
+      var reqVal = (q.requested === '' || q.requested == null) ? '' : String(q.requested);
+      var apprVal = (q.approved === '' || q.approved == null) ? '' : String(q.approved);
+      rows += '<tr>' +
+        '<td style="padding:4px;">' + quotaLicenseSelectHtmlGuest(q.license, i) + '</td>' +
+        '<td style="padding:4px;"><input type="number" min="1" max="200" inputmode="numeric" value="' + escHtml(reqVal) + '" onchange="updateGuestQuotaCell(' + i + ',\'requested\',this.value)" style="background:#fff;border:1px solid #cbd5e1;border-radius:6px;padding:5px 8px;font-size:13px;width:100%;text-align:center;" placeholder="מבוקש"></td>' +
+        '<td style="padding:4px;"><input type="number" min="0" max="200" inputmode="numeric" value="' + escHtml(apprVal) + '" onchange="updateGuestQuotaCell(' + i + ',\'approved\',this.value)" style="background:#fff;border:1px solid #cbd5e1;border-radius:6px;padding:5px 8px;font-size:13px;width:100%;text-align:center;" placeholder="מאושר"></td>' +
+        '<td style="padding:4px;text-align:center;"><button type="button" onclick="removeGuestQuotaRow(' + i + ')" style="background:#c0392b;color:#fff;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;" title="הסר שורה">✕</button></td>' +
+        '</tr>';
+    }
+    tbody.innerHTML = rows;
+  }
+  window.updateGuestQuotaCell = function(idx, field, value) { if (setupQuotasGuest[idx]) setupQuotasGuest[idx][field] = value; };
+  window.removeGuestQuotaRow = function(idx) { setupQuotasGuest.splice(idx, 1); renderGuestQuotasTable(); };
+  function populateGuestSiteSelect() {
+    var sel = document.getElementById('guestSiteSelect');
+    if (!sel || !Array.isArray(sitesData)) return;
+    var prev = sel.value;
+    sel.innerHTML = '<option value="">— בחר אתר —</option>';
+    for (var i = 0; i < sitesData.length; i++) {
+      var opt = document.createElement('option');
+      opt.value = sitesData[i].name; opt.textContent = sitesData[i].name;
+      sel.appendChild(opt);
+    }
+    var other = document.createElement('option');
+    other.value = '__other__'; other.textContent = 'אחר (הקלדה ידנית)';
+    sel.appendChild(other);
+    if (prev) sel.value = prev;
+  }
+  (function wireGuestSite() {
+    var chk = document.getElementById('enableGuestSite');
+    var gsel = document.getElementById('guestSiteSelect');
+    var gcustom = document.getElementById('guestSiteCustomInput');
+    var addBtn = document.getElementById('addGuestQuotaRowBtn');
+    if (chk) chk.addEventListener('change', function() {
+      var fields = document.getElementById('guestSiteFields');
+      if (this.checked) {
+        fields.style.display = '';
+        populateGuestSiteSelect();
+        if (setupQuotasGuest.length === 0) {
+          setupQuotasGuest = [{ license: (document.getElementById('licenseSetup') || {}).value || 'B', requested: '', approved: '' }];
+        }
+        renderGuestQuotasTable();
+      } else {
+        fields.style.display = 'none';
+      }
+    });
+    if (gsel) gsel.addEventListener('change', function() {
+      if (gcustom) gcustom.style.display = (this.value === '__other__') ? 'block' : 'none';
+    });
+    if (addBtn) addBtn.addEventListener('click', function() {
+      var used = {}; for (var i = 0; i < setupQuotasGuest.length; i++) used[setupQuotasGuest[i].license] = true;
+      var pick = ''; for (var j = 0; j < QUOTA_LICENSE_OPTIONS.length; j++) { if (!used[QUOTA_LICENSE_OPTIONS[j].value]) { pick = QUOTA_LICENSE_OPTIONS[j].value; break; } }
+      setupQuotasGuest.push({ license: pick || 'B', requested: '', approved: '' });
+      renderGuestQuotasTable();
+    });
+  })();
 
   // Wire up the "+ הוסף שורה" button + keep first row in sync with the primary
   // license dropdown as long as the user hasn't typed values yet.
@@ -1540,10 +1653,37 @@
       if (qAppr > qReq) {
         errEl.textContent = 'כמות מאושרת לא יכולה להיות גדולה מהמבוקשת (דרגה ' + qLic + ')'; errEl.style.display = 'block'; return;
       }
-      quotas.push({ license: qLic, requested: qReq, approved: qAppr });
+      quotas.push({ site: site, license: qLic, requested: qReq, approved: qAppr });
     }
     if (quotas.length === 0) {
       errEl.textContent = 'הוסף לפחות שורת כמויות אחת'; errEl.style.display = 'block'; return;
+    }
+
+    // Optional guest site: a second base with its own quota rows, tagged with the
+    // guest site name so the examinee's picker and the report can split host/guest.
+    var guestEnabled = document.getElementById('enableGuestSite') && document.getElementById('enableGuestSite').checked;
+    if (guestEnabled) {
+      var gSelVal = document.getElementById('guestSiteSelect').value;
+      var guestSite = gSelVal === '__other__' ? document.getElementById('guestSiteCustomInput').value.trim() : gSelVal;
+      if (!guestSite) { errEl.textContent = 'בחר אתר אורח (או בטל את הסימון)'; errEl.style.display = 'block'; return; }
+      if (guestSite === site) { errEl.textContent = 'אתר האורח זהה לאתר המארח'; errEl.style.display = 'block'; return; }
+      var gSeen = {};
+      var gCount = 0;
+      for (var gi = 0; gi < setupQuotasGuest.length; gi++) {
+        var gq = setupQuotasGuest[gi];
+        var gLic = String(gq.license || '').trim();
+        var gReq = parseInt(gq.requested, 10);
+        var gAppr = parseInt(gq.approved, 10);
+        if (!gLic) { errEl.textContent = 'בחר דרגה בכל שורה (אתר אורח)'; errEl.style.display = 'block'; return; }
+        if (gSeen[gLic]) { errEl.textContent = 'דרגה "' + gLic + '" כפולה באתר האורח'; errEl.style.display = 'block'; return; }
+        gSeen[gLic] = true;
+        if (!isFinite(gReq) || gReq < 1) { errEl.textContent = 'כמות מבוקשת חייבת להיות לפחות 1 (אתר אורח, דרגה ' + gLic + ')'; errEl.style.display = 'block'; return; }
+        if (!isFinite(gAppr) || gAppr < 0) { errEl.textContent = 'הזן כמות מאושרת (אתר אורח, דרגה ' + gLic + ')'; errEl.style.display = 'block'; return; }
+        if (gAppr > gReq) { errEl.textContent = 'כמות מאושרת גדולה מהמבוקשת (אתר אורח, דרגה ' + gLic + ')'; errEl.style.display = 'block'; return; }
+        quotas.push({ site: guestSite, license: gLic, requested: gReq, approved: gAppr });
+        gCount++;
+      }
+      if (gCount === 0) { errEl.textContent = 'הוסף לפחות שורת כמויות אחת לאתר האורח'; errEl.style.display = 'block'; return; }
     }
 
     // Responsible-examiner field — empty means "I'm the responsible one or

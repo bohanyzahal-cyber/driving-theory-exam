@@ -1294,15 +1294,19 @@ function parseAndValidateQuotas(raw) {
   for (var i = 0; i < parsed.length; i++) {
     var r = parsed[i] || {};
     var lic = String(r.license || '').trim();
+    var site = String(r.site || '').trim();  // '' = host site (backward compatible)
     var req = parseInt(r.requested, 10);
     var appr = parseInt(r.approved, 10);
     if (!QUOTA_VALID_LICENSES[lic]) {
       return { error: 'דרגה לא חוקית בשורה ' + (i + 1) };
     }
-    if (seen[lic]) {
-      return { error: 'דרגה "' + lic + '" מופיעה יותר מפעם אחת' };
+    // Uniqueness is per (site, license): the same license may appear once per
+    // site (host + guest) but not twice for the same site.
+    var _qkey = site + '|' + lic;
+    if (seen[_qkey]) {
+      return { error: 'דרגה "' + lic + '" מופיעה יותר מפעם אחת' + (site ? ' לאתר "' + site + '"' : '') };
     }
-    seen[lic] = true;
+    seen[_qkey] = true;
     if (!isFinite(req) || req < 1) {
       return { error: 'כמות מבוקשת חייבת להיות לפחות 1 (דרגה ' + lic + ')' };
     }
@@ -1312,7 +1316,7 @@ function parseAndValidateQuotas(raw) {
     if (appr > req) {
       return { error: 'כמות מאושרת גדולה מהמבוקשת (דרגה ' + lic + ')' };
     }
-    clean.push({ license: lic, requested: req, approved: appr });
+    clean.push({ site: site, license: lic, requested: req, approved: appr });
   }
   return { rows: clean };
 }
@@ -1334,6 +1338,7 @@ function decodeSessionQuotas(colL, colM, sessionLicense) {
         for (var i = 0; i < arr.length; i++) {
           var r = arr[i] || {};
           out.push({
+            site: String(r.site || ''),
             license: String(r.license || ''),
             requested: Number(r.requested) || 0,
             approved: Number(r.approved) || 0
@@ -1349,6 +1354,7 @@ function decodeSessionQuotas(colL, colM, sessionLicense) {
   var legacyAppr = parseInt(colM, 10);
   if (isFinite(legacyReq) && legacyReq > 0) {
     return [{
+      site: '',
       license: String(sessionLicense || 'B'),
       requested: legacyReq,
       approved: isFinite(legacyAppr) ? legacyAppr : 0
@@ -1451,17 +1457,30 @@ function handleGetSessionInfo(p) {
         sheet.getRange(i + 1, 11).setValue(false);
         return jsonResponse({ status: 'error', message: 'תוקף הסשן פג' });
       }
+      var _siQuotas = decodeSessionQuotas(data[i][11], data[i][12], data[i][5]);
+      // Build the distinct site list (host first, then guest sites declared in
+      // the quotas). Quota rows with an empty site belong to the host (column D).
+      // The examinee picks from this list when more than one site exists.
+      var _hostSite = String(data[i][3] || '').trim();
+      var _siteSeen = {};
+      var _sites = [];
+      if (_hostSite) { _sites.push(_hostSite); _siteSeen[_hostSite] = true; }
+      for (var _sq = 0; _sq < _siQuotas.length; _sq++) {
+        var _sName = String(_siQuotas[_sq].site || '').trim() || _hostSite;
+        if (_sName && !_siteSeen[_sName]) { _siteSeen[_sName] = true; _sites.push(_sName); }
+      }
       return jsonResponse({
         status: 'ok',
         session: {
           site: data[i][3],
+          sites: _sites,
           classroom: data[i][4],
           license: data[i][5],
           language: data[i][6],
           audioMode: data[i][7],
           examinerName: data[i][2],
           validUntil: data[i][9],
-          quotas: decodeSessionQuotas(data[i][11], data[i][12], data[i][5]),
+          quotas: _siQuotas,
           // Column N (13) may be missing on rows created before this feature
           // shipped — defensive read returns '' for those, treating them as
           // sessions without a designated responsible examiner.
