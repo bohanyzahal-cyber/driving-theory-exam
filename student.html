@@ -921,7 +921,7 @@ function updateStreak(){try{var today=new Date().toISOString().slice(0,10);var d
 function renderStreak(){try{var data=JSON.parse(localStorage.getItem('student_streak')||'{}');var banner=document.getElementById('streakBanner');if(!banner)return;var today=new Date().toISOString().slice(0,10);var yesterday=new Date(Date.now()-86400000).toISOString().slice(0,10);var count=data.count||0;if(data.lastDate!==today&&data.lastDate!==yesterday)count=0;if(count<=0){banner.style.display='none';return;}banner.style.display='block';var msgs=['התחלה טובה! המשך כך','יופי! אתה בדרך הנכונה','מדהים! אל תעצור','אלוף! ממשיכים','בלתי ניתן לעצירה!'];var msgIdx=Math.min(Math.floor((count-1)/2),msgs.length-1);banner.innerHTML='<div class="streak-fire">🔥</div><div class="streak-count">'+count+' ימים רצופים!</div><div class="streak-msg">'+msgs[msgIdx]+'</div>';}catch(e){}}
 // ===== Spaced Repetition =====
 function saveWrongQuestions(){try{var wrong=JSON.parse(localStorage.getItem('student_wrong_qs')||'[]');var existingIds={};for(var e=0;e<wrong.length;e++)existingIds[wrong[e].id]=e;for(var i=0;i<userAnswers.length;i++){var q=examQuestions[i];var qId=q.id||(getQText(q)||'').substring(0,50);if(userAnswers[i]&&!userAnswers[i].isCorrect){if(existingIds[qId]!==undefined){wrong[existingIds[qId]].wrongCount=(wrong[existingIds[qId]].wrongCount||1)+1;wrong[existingIds[qId]].lastSeen=Date.now();}else{wrong.push({id:qId,license:currentLicense,category:classifyCategory(q.category),wrongCount:1,correctStreak:0,lastSeen:Date.now()});}}else if(userAnswers[i]&&userAnswers[i].isCorrect){if(existingIds[qId]!==undefined){wrong[existingIds[qId]].correctStreak=(wrong[existingIds[qId]].correctStreak||0)+1;if(wrong[existingIds[qId]].correctStreak>=2){wrong.splice(existingIds[qId],1);}}}}if(wrong.length>200)wrong=wrong.slice(-200);localStorage.setItem('student_wrong_qs',JSON.stringify(wrong));}catch(e){}}
-function getSpacedRepetitionQuestions(license,language){try{var wrong=JSON.parse(localStorage.getItem('student_wrong_qs')||'[]');if(wrong.length===0)return[];var allQs=getFilteredQuestions(license,language);var wrongIds={};for(var w=0;w<wrong.length;w++){if(wrong[w].license===license)wrongIds[wrong[w].id]=wrong[w];}var matched=[];for(var i=0;i<allQs.length;i++){var qId=allQs[i].id||(getQText(allQs[i])||'').substring(0,50);if(wrongIds[qId])matched.push(allQs[i]);}shuffle(matched);return matched.slice(0,15);}catch(e){return[];}}
+function getSpacedRepetitionQuestions(license,language,onReady){try{var wrong=JSON.parse(localStorage.getItem('student_wrong_qs')||'[]');var ids=[];for(var w=0;w<wrong.length;w++){if(wrong[w].license===license){var n=parseInt(wrong[w].id,10);if(!isNaN(n))ids.push(n);}}if(ids.length===0){onReady([]);return;}ids=shuffle(ids).slice(0,50);showLoadingOverlay('טוען שאלות…');var qs='action=getQuestionsByIds&language='+encodeURIComponent(language)+'&ids='+encodeURIComponent(ids.join(','))+'&studentId='+encodeURIComponent(currentStudentId||'anon')+'&classCode='+encodeURIComponent(currentClassCode||'')+'&origin=student-app&_t='+Date.now();fetch(API_URL+'?'+qs,{cache:'no-store'}).then(function(r){return r.json();}).then(function(resp){hideLoadingOverlay();if(!resp||resp.status!=='ok'||!Array.isArray(resp.questions)){onReady([]);return;}var matched=resp.questions.filter(function(q){return q&&q.id;});matched=shuffle(matched).slice(0,15);onReady(matched);}).catch(function(){hideLoadingOverlay();alert('שגיאת תקשורת');onReady(null);});}catch(e){onReady([]);}}
 function saveToHistory(mode, category, score, total, pct, passed, elapsed) {
   try {
     var history = JSON.parse(localStorage.getItem('student_history') || '[]');
@@ -1073,10 +1073,18 @@ function startFlashcards(category){
   flashcardCategory=category||'all';
   flashcardIndex=0;
   flashcardRevealed=false;
-  flashcardQuestions=buildFlashcardSet(currentLicense,currentLanguage,flashcardCategory);
-  if(flashcardQuestions.length===0){alert('\u05DC\u05D0 \u05E0\u05DE\u05E6\u05D0\u05D5 \u05E9\u05D0\u05DC\u05D5\u05EA \u05D1\u05E0\u05D5\u05E9\u05D0 \u05D6\u05D4.');return;}
-  showScreen('screenFlashcards');
-  renderFlashcard();
+  // Questions now come from the server (local questions.js was removed in 650f07b).
+  // Presentation is UNCHANGED \u2014 renderFlashcard still shows question -> reveal answer.
+  // 'all' has no categoryFilter so the server returns a balanced set; we trim to a
+  // ~20-card study deck client-side so it stays a deck, not a 30-question exam.
+  var params={mode:'category',maxCount:20};
+  if(flashcardCategory&&flashcardCategory!=='all')params.categoryFilter=flashcardCategory;
+  _fetchServerQuestions(params,function(qs){
+    flashcardQuestions=(qs||[]).slice(0,20);
+    if(flashcardQuestions.length===0){alert('\u05DC\u05D0 \u05E0\u05DE\u05E6\u05D0\u05D5 \u05E9\u05D0\u05DC\u05D5\u05EA \u05D1\u05E0\u05D5\u05E9\u05D0 \u05D6\u05D4.');return;}
+    showScreen('screenFlashcards');
+    renderFlashcard();
+  },function(msg){alert(msg||'\u05DC\u05D0 \u05E0\u05DE\u05E6\u05D0\u05D5 \u05E9\u05D0\u05DC\u05D5\u05EA \u05D1\u05E0\u05D5\u05E9\u05D0 \u05D6\u05D4.');});
 }
 
 function renderFlashcard(){
@@ -1222,7 +1230,7 @@ if(classInput&&classInput!==currentClassCode){joinClass(classInput,currentName,c
 else if(savedClass){currentClassCode=savedClass;loadProgressFromCloud(proceedToApp);}
 else{proceedToApp();}});
 document.getElementById('btnBackToWelcome').addEventListener('click',function(){showScreen('screenWelcome');});
-document.getElementById('cardSpacedRep').addEventListener('click',function(){var qs=getSpacedRepetitionQuestions(currentLicense,currentLanguage);if(qs.length===0){alert('אין שאלות לחזרה! תתרגל קודם כדי שהמערכת תזהה שגיאות.');return;}currentMode='category';immediateMode=true;currentCategory='חזרה על שגיאות';currentIndex=0;userAnswers=[];shuffledOrders=[];answerLocked=false;examStartTime=Date.now();examQuestions=qs;for(var i=0;i<examQuestions.length;i++)userAnswers.push(null);showScreen('screenPractice');renderQuestion();});
+document.getElementById('cardSpacedRep').addEventListener('click',function(){getSpacedRepetitionQuestions(currentLicense,currentLanguage,function(qs){if(qs===null)return;if(!qs||qs.length===0){alert('אין שאלות לחזרה! תתרגל קודם כדי שהמערכת תזהה שגיאות.');return;}currentMode='category';immediateMode=true;currentCategory='חזרה על שגיאות';currentIndex=0;userAnswers=[];shuffledOrders=[];answerLocked=false;examStartTime=Date.now();examQuestions=qs;for(var i=0;i<examQuestions.length;i++)userAnswers.push(null);showScreen('screenPractice');renderQuestion();});});
 document.getElementById('btnShowHistory').addEventListener('click', function() { showHistory(); });
 document.getElementById('btnBackFromHistory').addEventListener('click', function() { showScreen('screenModeSelect'); });
 document.getElementById('btnShowTips').addEventListener('click', function() { showScreen('screenTips'); });
