@@ -4057,6 +4057,7 @@
     var popStats = {};
     // Execution breakdown PER LICENSE: pass/fail by mapped population
     var execByLicense = {};
+    var execBySiteLicense = {};  // multi-site: pass/fail keyed by site+license
     var licenseOrder = [];
     var rows = '';
 
@@ -4075,6 +4076,14 @@
         licenseOrder.push(lic);
       }
       return execByLicense[lic];
+    }
+
+    function getExecForSiteLicense(siteKey, lic) {
+      var key = siteKey + '|' + lic;
+      if (!execBySiteLicense[key]) {
+        execBySiteLicense[key] = { total: 0, audio: 0, pa: { army: 0, kadatz: 0, voucher: 0, other: 0 }, fa: { army: 0, kadatz: 0, voucher: 0, other: 0 } };
+      }
+      return execBySiteLicense[key];
     }
 
     for (var i = 0; i < completedResults.length; i++) {
@@ -4110,6 +4119,13 @@
       if (r.audioMode === 'on') ex.audio++;
       if (isPassed) ex.pa[mk]++;
       else ex.fa[mk]++;
+      // Multi-site: same tally keyed by (site, license). Empty result-site → host.
+      var rSiteKey = String(r.site || '').trim() || site;
+      var exs = getExecForSiteLicense(rSiteKey, rLic);
+      exs.total++;
+      if (r.audioMode === 'on') exs.audio++;
+      if (isPassed) exs.pa[mk]++;
+      else exs.fa[mk]++;
 
       rows += '<tr style="background:' + rowBg + ';">' +
         '<td style="font-weight:bold;">' + (i + 1) + '</td>' +
@@ -4349,6 +4365,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     }
     exJson += '}';
     H.push('var EX_BY_LIC=' + exJson + ';');
+    H.push('var EX_BY_SITE_LIC=' + JSON.stringify(execBySiteLicense).replace(/</g, '\\u003c') + ';');
     H.push('var planRows=[];');
     H.push('try{');
     // Plan-table seeding strategy:
@@ -4365,8 +4382,10 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       var qrow = currentQuotas[qi];
       var qLic = String(qrow.license || '');
       if (!qLic) continue;
-      var qAudio = execByLicense[qLic] ? execByLicense[qLic].audio : 0;
-      H.push('planRows.push({site:"' + jsEsc(site) + '",license:"' + jsEsc(qLic) + '",qtyReq:"' + (qrow.requested || '') + '",qtyAppr:"' + (qrow.approved || '') + '",notes:"",qtyAudio:"' + (qAudio > 0 ? qAudio : '') + '",time:""});');
+      var qSite = qrow.site || site;
+      var qpExec = execBySiteLicense[qSite + '|' + qLic];
+      var qAudio = qpExec ? qpExec.audio : 0;
+      H.push('planRows.push({site:"' + jsEsc(qSite) + '",license:"' + jsEsc(qLic) + '",qtyReq:"' + (qrow.requested || '') + '",qtyAppr:"' + (qrow.approved || '') + '",notes:"",qtyAudio:"' + (qAudio > 0 ? qAudio : '') + '",time:""});');
       planSeedLicenses[qLic] = true;
       hasAnySeed = true;
     }
@@ -4410,7 +4429,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     // Time
     H.push('h+="<td><input class=\\"pi\\" type=\\"time\\" value=\\""+r.time+"\\" onchange=\\"upd("+idx+",\'time\',this.value)\\" style=\\"width:80px\\"></td>";');
     // Execution columns — auto-filled from EX_BY_LIC by matching license
-    H.push('var lic=r.license;var ex=EX_BY_LIC[lic];');
+    H.push('var lic=r.license;var ex=EX_BY_SITE_LIC[(r.site||"")+"|"+lic];');
     H.push('if(ex){');
     H.push('var ec=function(v){return v>0?"<td class=\\"exec-val\\">"+v+"</td>":"<td class=\\"exec-val z\\">0</td>";};');
     H.push('h+=ec(ex.total);');
@@ -4442,7 +4461,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     H.push('var hp=planRows.some(function(r){return r.site||r.qtyReq||r.qtyAppr;});');
     H.push('if(hp){msg+="*\\uD83D\\uDCCB \\u05E1\\u05D9\\u05D3\\u05D5\\u05E8 \\u05E2\\u05D1\\u05D5\\u05D3\\u05D4:*\\n";');
     H.push('for(var i=0;i<planRows.length;i++){var pr=planRows[i];if(!pr.site&&!pr.qtyReq)continue;');
-    H.push('var lex=EX_BY_LIC[pr.license];var lt=lex?lex.total:0;');
+    H.push('var lex=EX_BY_SITE_LIC[(pr.site||"")+"|"+pr.license];var lt=lex?lex.total:0;');
     H.push('msg+=(pr.site||"-")+" | "+pr.license+" | \\u05DE\\u05D1\\u05D5\\u05E7\\u05E9\\u05EA: "+(pr.qtyReq||"0")+" | \\u05DE\\u05D0\\u05D5\\u05E9\\u05E8\\u05EA: "+(pr.qtyAppr||"0")+" | \\u05D1\\u05E4\\u05D5\\u05E2\\u05DC: "+lt+"\\n";}');
     H.push('msg+="\\n";}');
     // Results
