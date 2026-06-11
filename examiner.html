@@ -811,6 +811,32 @@
   </div>
 </div>
 
+<!-- Correct examinee site/population (examiner) — for when the examinee picked wrong -->
+<div class="modal-overlay" id="correctMetaModal">
+  <div class="modal-box" style="max-width:420px;">
+    <h3>תיקון אתר / אוכלוסיה</h3>
+    <p class="muted" id="correctMetaExamineeInfo" style="margin:4px 0 14px;"></p>
+    <div style="display:grid; gap:14px; margin:14px 0;">
+      <label>אתר
+        <select id="correctMetaSite" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-family:inherit;"></select>
+      </label>
+      <label>אוכלוסיה
+        <select id="correctMetaPopulation" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-family:inherit;">
+          <option value="צבא">צבא</option>
+          <option value="קד״ץ">קד״ץ</option>
+          <option value="וואוצ׳ר">וואוצ׳ר</option>
+          <option value="עיוני בלבד">עיוני בלבד</option>
+        </select>
+      </label>
+      <div id="correctMetaError" style="color:#dc2626; font-size:13px; display:none;"></div>
+    </div>
+    <div style="display:flex; gap:8px; justify-content:flex-end;">
+      <button style="background:#64748b;" onclick="closeCorrectMetaModal()">ביטול</button>
+      <button onclick="submitCorrectMeta()" style="background:#2980b9;">שמור</button>
+    </div>
+  </div>
+</div>
+
 <!-- Manual result entry modal — for paper-based exams during transition period -->
 <div class="modal-overlay" id="manualResultModal">
   <div class="modal-box" style="max-width:520px;">
@@ -2427,6 +2453,7 @@
           (false ? '<a href="' + waUrl + '" target="_blank" class="wa-btn" onclick="markSentWA(' + i + ')" style="margin-left:3px;" title="\u05E9\u05DC\u05D7 \u05D1\u05D5\u05D5\u05D0\u05D8\u05E1\u05D0\u05E4">\u{1F4F1}WA</a>' : '') +
           (false ? '<a href="' + smsUrl + '" class="wa-btn" style="background:#2563eb;margin-left:3px;" title="\u05E9\u05DC\u05D7 \u05D1-SMS">SMS</a>' : '') +
           '<button class="wa-btn" style="background:#64748b;margin-left:3px;" onclick="editPhone(' + i + ')" title="\u05E2\u05E8\u05D5\u05DA \u05D8\u05DC\u05E4\u05D5\u05DF">\u270E</button>' +
+          '<button class="wa-btn" style="background:#0ea5e9;margin-left:3px;" onclick="openCorrectMetaModal(' + i + ')" title="\u05EA\u05E7\u05DF \u05D0\u05EA\u05E8/\u05D0\u05D5\u05DB\u05DC\u05D5\u05E1\u05D9\u05D4">\u{1F4CD}</button>' +
           (!isDQ ? ' <button class="btn-disqualify" onclick="disqualifyResult(' + i + ')" title="\u05E4\u05E1\u05D5\u05DC \u05E0\u05D1\u05D7\u05DF">\u26D4</button>' : ' <button style="background:#16a34a;color:white;padding:4px 8px;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;margin-left:3px;" onclick="overturnDQ(' + i + ')" title="\u05D1\u05D9\u05D8\u05D5\u05DC \u05E4\u05E1\u05D9\u05DC\u05D4">\u21A9 \u05D1\u05D8\u05DC</button> <button style="background:#dc2626;color:white;padding:4px 8px;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;margin-left:3px;" onclick="confirmDQ(' + i + ')" title="\u05D0\u05D9\u05E9\u05D5\u05E8 \u05E4\u05E1\u05D9\u05DC\u05D4">\u2714 \u05D0\u05E9\u05E8</button>') +
           (canCorrect ? ' <button style="background:#f59e0b;color:white;padding:4px 8px;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;margin-left:3px;" onclick="correctToPass(' + i + ')" title="\u05EA\u05E7\u05DF \u05DC\u05E2\u05D5\u05D1\u05E8">\u05EA\u05E7\u05DF</button>' : '') +
           (userRole === 'מפקד' ? ' <button style="background:#7c2d12;color:white;padding:4px 8px;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;margin-left:3px;" onclick="openCorrectResultModal(' + i + ')" title="תקן תוצאה (מפקד)">✎ תקן</button>' : '') +
@@ -2924,6 +2951,68 @@
   window.closeCorrectResultModal = function() {
     document.getElementById('correctResultModal').classList.remove('show');
     correctResultEditingIdx = -1;
+  };
+
+  // ===== Correct examinee site/population (examiner-level) =====
+  var correctMetaEditingIdx = -1;
+  window.openCorrectMetaModal = function(idx) {
+    var r = completedResults[idx];
+    if (!r) return;
+    correctMetaEditingIdx = idx;
+    // Site dropdown: the session's sites (host + any guest) + the result's own site.
+    var siteSel = document.getElementById('correctMetaSite');
+    var sites = [];
+    function addSite(s) { s = String(s || '').trim(); if (s && sites.indexOf(s) === -1) sites.push(s); }
+    addSite(currentSite);
+    if (Array.isArray(currentQuotas)) for (var q = 0; q < currentQuotas.length; q++) addSite(currentQuotas[q].site);
+    addSite(r.site);
+    siteSel.innerHTML = '';
+    for (var s = 0; s < sites.length; s++) {
+      var o = document.createElement('option'); o.value = sites[s]; o.textContent = sites[s]; siteSel.appendChild(o);
+    }
+    siteSel.value = r.site || currentSite || (sites[0] || '');
+    // Population dropdown: ensure the current value is selectable even if non-standard.
+    var popSel = document.getElementById('correctMetaPopulation');
+    if (r.population) {
+      var found = false;
+      for (var pi = 0; pi < popSel.options.length; pi++) { if (popSel.options[pi].value === r.population) { found = true; break; } }
+      if (!found) { var po = document.createElement('option'); po.value = r.population; po.textContent = r.population; popSel.appendChild(po); }
+      popSel.value = r.population;
+    }
+    document.getElementById('correctMetaError').style.display = 'none';
+    document.getElementById('correctMetaExamineeInfo').textContent = r.name + '  |  ת.ז. ' + r.idNumber;
+    document.getElementById('correctMetaModal').classList.add('show');
+  };
+
+  window.closeCorrectMetaModal = function() {
+    document.getElementById('correctMetaModal').classList.remove('show');
+    correctMetaEditingIdx = -1;
+  };
+
+  window.submitCorrectMeta = function() {
+    var errEl = document.getElementById('correctMetaError');
+    errEl.style.display = 'none';
+    if (correctMetaEditingIdx < 0) { errEl.textContent = 'אין שורה נבחרת'; errEl.style.display = 'block'; return; }
+    var r = completedResults[correctMetaEditingIdx];
+    if (!r) { errEl.textContent = 'תוצאה לא נמצאה'; errEl.style.display = 'block'; return; }
+    apiPost({
+      action: 'correctExamineeMeta',
+      sessionCode: r.sessionCode || sessionCode,
+      idNumber: r.idNumber,
+      site: document.getElementById('correctMetaSite').value,
+      population: document.getElementById('correctMetaPopulation').value
+    }).then(function(data) {
+      if (data.status === 'ok') {
+        closeCorrectMetaModal();
+        if (typeof pollDashboard === 'function') pollDashboard();
+      } else {
+        errEl.textContent = data.message || 'שגיאה בתיקון';
+        errEl.style.display = 'block';
+      }
+    }).catch(function() {
+      errEl.textContent = 'שגיאת תקשורת';
+      errEl.style.display = 'block';
+    });
   };
 
   window.submitCorrectResult = function() {

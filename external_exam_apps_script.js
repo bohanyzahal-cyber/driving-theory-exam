@@ -363,7 +363,7 @@ function doGet(e) {
     var examinerActions = ['getSites','listSessions','listAllSessions','createSession','updateSession','closeSession',
       'approveExaminee','rejectExaminee','examinerDashboard','resetExaminee',
       'correctToPass','overturnDQ','confirmDQ','forceComplete','markSent','commanderDashboard',
-      'commanderCorrectResult','getResultUploadToken','centerManagerReport'];
+      'commanderCorrectResult','correctExamineeMeta','getResultUploadToken','centerManagerReport'];
     // Note: 'disqualify' is NOT in this list because it can be sent by the examinee client (no token)
     // — auth is enforced inside handleDisqualify itself (examiner token OR active pending row).
     if (examinerActions.indexOf(action) !== -1) {
@@ -467,6 +467,9 @@ function doGet(e) {
 
       case 'correctToPass':
         return handleCorrectToPass(p);
+
+      case 'correctExamineeMeta':
+        return handleCorrectExamineeMeta(p);
 
       case 'forceComplete':
         return handleForceComplete(p);
@@ -2528,6 +2531,33 @@ function handleSubmitManualResult(p) {
 // Caller must have a valid examiner token AND role 'מפקד' in the בוחנים sheet.
 // Required params: sessionCode, idNumber, newScore (e.g. "28"), newTotal (e.g. "30"),
 //                  newStatus ('עבר' | 'נכשל' | 'פסול'), reason (non-empty).
+// Examiner-level correction of an examinee's site + population on their result
+// row (the examinee picked the wrong site/population at registration). Gated on
+// session ownership (examiner token already verified by the examinerActions
+// allowlist). Updates תוצאות col 11 (אתר, idx 10) / col 20 (אוכלוסיה, idx 19).
+function handleCorrectExamineeMeta(p) {
+  if (!verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+    return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
+  }
+  var newSite = (typeof p.site !== 'undefined' && p.site !== null) ? String(p.site).trim() : '';
+  var newPop = (typeof p.population !== 'undefined' && p.population !== null) ? String(p.population).trim() : '';
+  if (!newSite && !newPop) {
+    return jsonResponse({ status: 'error', message: 'לא הוזן אתר או אוכלוסיה לעדכון' });
+  }
+  var sheet = getSheet('תוצאות');
+  var rows = sheet.getDataRange().getValues();
+  for (var i = rows.length - 1; i >= 1; i--) {
+    if (String(rows[i][13]) === String(p.sessionCode) && normalizeId(rows[i][1]) === normalizeId(p.idNumber)) {
+      var rowIdx = i + 1;
+      if (newSite) sheet.getRange(rowIdx, 11).setValue(newSite);   // K (idx 10) = אתר
+      if (newPop) sheet.getRange(rowIdx, 20).setValue(newPop);     // T (idx 19) = אוכלוסיה
+      SpreadsheetApp.flush();
+      return jsonResponse({ status: 'ok' });
+    }
+  }
+  return jsonResponse({ status: 'error', message: 'תוצאה לא נמצאה' });
+}
+
 function handleCommanderCorrectResult(data) {
   // Token + role check (token already verified by examinerActions allowlist,
   // but we re-check role here since the role doesn't appear in that allowlist).
