@@ -2333,7 +2333,7 @@
     document.getElementById('resultsSearchBar').style.display = 'block';
 
     var html = '<div style="overflow-x:auto;"><table class="results-table"><thead><tr>' +
-      '<th>#</th><th>שם</th><th>ת.ז.</th><th>אוכלוסיה</th><th>ניסיון</th><th>ציון</th><th>תוצאה</th><th>זמן</th><th>פעולות</th>' +
+      '<th>#</th><th>שם</th><th>ת.ז.</th><th>אתר</th><th>אוכלוסיה</th><th>ניסיון</th><th>ציון</th><th>תוצאה</th><th>זמן</th><th>פעולות</th>' +
       '</tr></thead><tbody>';
 
     // First pass: tally global stats (independent of filter so user always sees the full picture).
@@ -2414,6 +2414,7 @@
         '<td>' + visibleCount + '</td>' +
         '<td>' + escHtml(r.name) + '</td>' +
         '<td>....' + id4 + '</td>' +
+        '<td>' + escHtml(r.site || '') + '</td>' +
         '<td>' + escHtml(r.population || '') + '</td>' +
         '<td>' + (r.attempt || 1) + '</td>' +
         '<td>' + escHtml(String(r.score || '')) + flagHtml + '</td>' +
@@ -4132,6 +4133,7 @@
         '<td style="direction:ltr;">' + escHtml(String(r.idNumber || '')) + '</td>' +
         '<td style="text-align:right;">' + escHtml(familyName) + '</td>' +
         '<td style="text-align:right;">' + escHtml(firstName) + '</td>' +
+        '<td>' + escHtml(r.site || '') + '</td>' +
         '<td>' + escHtml(r.license || license) + '</td>' +
         '<td>' + escHtml(pop) + '</td>' +
         '<td>' + (r.audioMode === 'on' ? '\uD83D\uDD0A \u05E9\u05DE\u05E2' : '\u05DE\u05D7\u05E9\u05D1') + '</td>' +
@@ -4316,7 +4318,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     H.push('<div class="section">');
     H.push('<div class="section-title"><span class="icon">\uD83D\uDC65</span> \u05D8\u05D1\u05DC\u05EA \u05E0\u05D1\u05D7\u05E0\u05D9\u05DD</div>');
     H.push('<div class="tw"><table><thead><tr>');
-    H.push('<th>#</th><th>\u05EA.\u05D6.</th><th>\u05E9\u05DD \u05DE\u05E9\u05E4\u05D7\u05D4</th><th>\u05E9\u05DD \u05E4\u05E8\u05D8\u05D9</th>');
+    H.push('<th>#</th><th>\u05EA.\u05D6.</th><th>\u05E9\u05DD \u05DE\u05E9\u05E4\u05D7\u05D4</th><th>\u05E9\u05DD \u05E4\u05E8\u05D8\u05D9</th><th>\u05D0\u05EA\u05E8</th>');
     H.push('<th>\u05E1\u05D5\u05D2 \u05E8\u05DB\u05D1</th><th>\u05DE\u05D2\u05D6\u05E8</th><th>\u05E1\u05D5\u05D2 \u05DE\u05D1\u05D7\u05DF</th>');
     H.push('<th>\u05DE\u05D1\u05D7\u05DF \u05DE\u05E1\'</th><th>\u05EA\u05D5\u05E6\u05D0\u05D4</th>');
     H.push('</tr></thead><tbody>' + rows + '</tbody></table></div></div>');
