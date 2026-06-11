@@ -1909,7 +1909,7 @@
           timeBadge = ' <span style="background:#ede9fe;color:#6d28d9;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">⏱ +50%</span>';
         }
         li.innerHTML =
-          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + statusBadge + timeBadge + langBadge + popBadge + licBadge + audioBadge + extScreenBadge + '</div>' +
+          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + statusBadge + timeBadge + langBadge + popBadge + (item.site && item.site !== currentSite ? ' <span style="background:#dbeafe;color:#1e40af;padding:1px 7px;border-radius:8px;font-size:0.8em;font-weight:700;">📍 ' + escHtml(item.site) + '</span>' : '') + licBadge + audioBadge + extScreenBadge + '</div>' +
           '<div class="person-meta">ת.ז. ....' + id4 + ' | ' + escHtml(item.phone) + '</div>' + repeatBadge + '</div>' +
           '<div class="person-actions"></div>';
         // Stronger red visual treatment when this examinee already tested today
@@ -2171,7 +2171,7 @@
           warnBadge = ' <span' + warnTitle + ' style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:700;">⚠ ' + item.warnings + ' אזהרות</span>';
         }
         li.innerHTML =
-          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + dqCountBadge + warnBadge + timeBadge + langBadge + popBadge + licBadge + audioBadge + extScreenBadgeActive + '</div>' +
+          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + dqCountBadge + warnBadge + timeBadge + langBadge + popBadge + (item.site && item.site !== currentSite ? ' <span style="background:#dbeafe;color:#1e40af;padding:1px 7px;border-radius:8px;font-size:0.8em;font-weight:700;">📍 ' + escHtml(item.site) + '</span>' : '') + licBadge + audioBadge + extScreenBadgeActive + '</div>' +
           '<div class="person-meta">ת.ז. ....' + id4 + (elapsed ? ' | <span style="' + elapsedStyle + '">זמן: ' + elapsed + '</span>' : '') + overtimeWarning + '</div>' +
           dqBanner + '</div>' +
           '<div class="person-actions"></div>';

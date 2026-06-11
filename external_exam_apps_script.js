@@ -1547,7 +1547,10 @@ function handleRegisterExaminee(p) {
     '',                       // L (11): התחלת מבחן — נקבע ע"י markExamStarted
     examineeToken,            // M (12): טוקן נבחן — מוחזר ללקוח, נדרש בקריאות עוקבות
     0,                        // N (13): ספירת DQ — מתעלה עם כל disqualify
-    hasExtendedScreen ? 'כן' : '' // O (14): מסך נוסף — סימן אזהרה
+    hasExtendedScreen ? 'כן' : '', // O (14): מסך נוסף — סימן אזהרה
+    0,                        // P (15): ספירת אזהרות — מאותחל ל-0 (נכתב ע"י warning)
+    '',                       // Q (16): אזהרה אחרונה — נכתב ע"י warning
+    p.site || ''              // R (17): אתר — האתר שהנבחן בחר (מארח/אורח), לתצוגה חיה לבוחן
   ]);
   return jsonResponse({ status: 'ok', examineeToken: examineeToken });
 }
@@ -1830,7 +1833,7 @@ function handleExaminerDashboard(p) {
     var warnCount = (pendData[i].length > 15) ? (Number(pendData[i][15]) || 0) : 0;
     var lastWarn = (pendData[i].length > 16) ? String(pendData[i][16] || '') : '';
     var idNorm = normalizeId(pendData[i][1]);
-    var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], examStartTime: pendData[i][11] || '', status: s, language: pendData[i][6] || '', population: pendData[i][7] || '', license: pendData[i][8] || '', audioMode: pendData[i][9] || 'off', timeExtension: String(pendData[i][10] || ''), dqCount: dqCount, warnings: warnCount, lastWarning: lastWarn, attemptsToday: attemptsTodayById[idNorm] || 0, hasExtendedScreen: hasExtScreen };
+    var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], examStartTime: pendData[i][11] || '', status: s, language: pendData[i][6] || '', population: pendData[i][7] || '', site: (pendData[i].length > 17) ? (pendData[i][17] || '') : '', license: pendData[i][8] || '', audioMode: pendData[i][9] || 'off', timeExtension: String(pendData[i][10] || ''), dqCount: dqCount, warnings: warnCount, lastWarning: lastWarn, attemptsToday: attemptsTodayById[idNorm] || 0, hasExtendedScreen: hasExtScreen };
     if (s === 'waiting' || s === 'approved') {
       pendingById[idNorm] = item; // ascending loop → latest row wins
     } else {
