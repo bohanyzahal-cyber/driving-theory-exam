@@ -872,6 +872,36 @@ function switchLanguage(newLang){
     if(activeScreen==='flashcard'&&typeof renderFlashcard==='function')renderFlashcard();
     else if(activeScreen==='practice')renderQuestion();
   }
+  // Flashcards use their own array (flashcardQuestions). Handle the language
+  // switch for card mode here so the cards actually re-translate; the
+  // practice/exam path below (examQuestions) is left exactly as-is.
+  var _fcEl=document.getElementById('screenFlashcards');
+  if(_fcEl&&_fcEl.classList.contains('active')){
+    if(!Array.isArray(flashcardQuestions)||flashcardQuestions.length===0){_finishSwitch();return;}
+    var _fcCache=window._practiceTranslations;
+    if(_fcCache&&_fcCache[newLang]){
+      var _ft=_fcCache[newLang],_fcMissing=false;
+      for(var _fi=0;_fi<flashcardQuestions.length;_fi++){
+        var _ftr=_ft[flashcardQuestions[_fi].id];
+        if(_ftr&&typeof _ftr.ci==='number'){flashcardQuestions[_fi].text=_ftr.t;flashcardQuestions[_fi].answers=_ftr.a;flashcardQuestions[_fi].ci=_ftr.ci;}
+        else{_fcMissing=true;}
+      }
+      if(!_fcMissing){_finishSwitch();return;}
+    }
+    showLoadingOverlay('מתחלף לשפה…');
+    var _fcIds=flashcardQuestions.map(function(q){return q.id;}).join(',');
+    var _fcUrl=API_URL+'?action=getQuestionsByIds&language='+encodeURIComponent(newLang)+'&ids='+encodeURIComponent(_fcIds)+'&studentId='+encodeURIComponent(currentStudentId||'anon')+'&classCode='+encodeURIComponent(currentClassCode||'')+'&origin=student-app&_t='+Date.now();
+    fetch(_fcUrl,{cache:'no-store'}).then(function(r){return r.json();}).then(function(resp){
+      hideLoadingOverlay();
+      if(!resp||resp.status!=='ok'||!Array.isArray(resp.questions)){alert('שגיאה בטעינת שאלות בשפה החדשה');return;}
+      for(var _i=0;_i<flashcardQuestions.length;_i++){
+        var _nq=resp.questions[_i];
+        if(_nq&&_nq.id===flashcardQuestions[_i].id){flashcardQuestions[_i].text=_nq.text;flashcardQuestions[_i].answers=_nq.answers;if(typeof _nq.ci==='number')flashcardQuestions[_i].ci=_nq.ci;if(_nq.imageUrl)flashcardQuestions[_i].imageUrl=_nq.imageUrl;}
+      }
+      _finishSwitch();
+    }).catch(function(){hideLoadingOverlay();alert('שגיאת תקשורת');});
+    return;
+  }
   // If no exam is active yet, just flip the language locally.
   if(!Array.isArray(examQuestions)||examQuestions.length===0){_finishSwitch();return;}
   // Fast path: translations cached at exam start → instant switch, no server call.
