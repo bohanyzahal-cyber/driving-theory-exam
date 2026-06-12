@@ -619,17 +619,24 @@
 
     <div id="cmdKPIs" class="card" style="display:none;">
       <div style="display:flex;gap:16px;flex-wrap:wrap;justify-content:center;">
-        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdTotal">0</div><div class="cmd-kpi-lbl">סה"כ נבחנים</div></div>
+        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdTotal">0</div><div class="cmd-kpi-lbl">סה"כ נבחנים</div><div id="cmdTotalDelta" style="font-size:10px;margin-top:2px;min-height:12px;font-weight:700;"></div></div>
         <div class="cmd-kpi cmd-kpi-pass"><div class="cmd-kpi-val" id="cmdPassed">0</div><div class="cmd-kpi-lbl">עברו</div></div>
         <div class="cmd-kpi cmd-kpi-fail"><div class="cmd-kpi-val" id="cmdFailed">0</div><div class="cmd-kpi-lbl">נכשלו</div></div>
         <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdDQ">0</div><div class="cmd-kpi-lbl">פסולים</div></div>
-        <div class="cmd-kpi cmd-kpi-rate"><div class="cmd-kpi-val" id="cmdPassRate">0%</div><div class="cmd-kpi-lbl">אחוז הצלחה</div></div>
+        <div class="cmd-kpi cmd-kpi-rate"><div class="cmd-kpi-val" id="cmdPassRate">0%</div><div class="cmd-kpi-lbl">אחוז הצלחה</div><div id="cmdPassRateDelta" style="font-size:10px;margin-top:2px;min-height:12px;font-weight:700;"></div></div>
         <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdStayAvg">--:--</div><div class="cmd-kpi-lbl">זמן ממוצע</div></div>
         <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdStayMedian">--:--</div><div class="cmd-kpi-lbl">חציון זמן</div></div>
         <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdReattemptRate">0%</div><div class="cmd-kpi-lbl">ניסיון חוזר</div></div>
       </div>
       <div id="cmdStayBar" style="margin-top:12px;"></div>
       <div id="cmdOverallPie" style="margin-top:10px;"></div>
+    </div>
+
+    <!-- Integrity panel — green one-liner when clean, compact table when not.
+         Hidden entirely until the server sends integrity data. -->
+    <div class="card" id="cmdIntegrityCard" style="display:none;">
+      <h3 style="margin:0 0 10px;font-size:15px;color:#334155;">🛡 אמינות תוצאות</h3>
+      <div id="cmdIntegrity"></div>
     </div>
 
     <div class="card" id="cmdTimelineCard" style="display:none;">
@@ -5805,6 +5812,8 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     document.getElementById('cmdTimelineCard').style.display = 'none';
     document.getElementById('cmdHeatmapCard').style.display = 'none';
     document.getElementById('cmdTopWrongCard').style.display = 'none';
+    var integCard = document.getElementById('cmdIntegrityCard');
+    if (integCard) integCard.style.display = 'none';
     document.getElementById('cmdPracticeImpactCard').style.display = 'none';
     document.getElementById('cmdBreakdowns').style.display = 'none';
     document.getElementById('cmdComparison').style.display = 'none';
@@ -5822,6 +5831,8 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       if (resp.status === 'ok') {
         cmdData = resp.data;
         renderCommanderKPIs(cmdData.overall);
+        renderKpiDeltas(cmdData.overall, cmdData.prevOverall);
+        renderIntegrity(cmdData.integrity);
         renderTimeline(cmdData.timeline);
         renderHeatmap(cmdData.heatmap);
         renderTopWrong(cmdData.topWrong);
@@ -5936,6 +5947,138 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     if (pieEl) pieEl.innerHTML = buildPieChart(o.passed, o.failed, o.disqualified, 100);
   }
 
+  // ▲▼ trend badges vs the previous period of identical length. Volume delta
+  // stays neutral-colored (more exams isn't inherently good or bad); the
+  // pass-rate delta is green/red. Cleared when there's no baseline (previous
+  // period empty, or an older server that doesn't send prevOverall).
+  function renderKpiDeltas(o, prev) {
+    var tEl = document.getElementById('cmdTotalDelta');
+    var pEl = document.getElementById('cmdPassRateDelta');
+    if (!tEl || !pEl) return;
+    tEl.textContent = ''; pEl.textContent = ''; tEl.title = ''; pEl.title = '';
+    if (!o || !prev || !prev.total) return;
+    var dT = o.total - prev.total;
+    var pctT = Math.round((dT / prev.total) * 100);
+    tEl.textContent = dT === 0 ? '= כמו בתקופה הקודמת' : ((dT > 0 ? '▲ +' : '▼ ') + pctT + '% מול תקופה קודמת');
+    tEl.style.color = '#64748b';
+    tEl.title = 'תקופה קודמת: ' + prev.total + ' נבחנים';
+    var dP = (o.passRate || 0) - (prev.passRate || 0);
+    pEl.textContent = dP === 0 ? '= ללא שינוי מול תקופה קודמת' : ((dP > 0 ? '▲ +' : '▼ ') + dP + ' נק׳ מול תקופה קודמת');
+    pEl.style.color = dP > 0 ? '#16a34a' : (dP < 0 ? '#dc2626' : '#94a3b8');
+    pEl.title = 'תקופה קודמת: ' + (prev.passRate || 0) + '% הצלחה';
+  }
+
+  // Integrity panel: hidden on old servers (no integrity payload); a slim
+  // green "all clear" line when the period is clean; otherwise 3 mini-KPIs +
+  // a compact per-examiner table of flagged rows only (top 8). Definitions
+  // mirror the per-row badges in the results table.
+  function renderIntegrity(integ) {
+    var card = document.getElementById('cmdIntegrityCard');
+    var host = document.getElementById('cmdIntegrity');
+    if (!card || !host) return;
+    if (!integ || !integ.overall) { card.style.display = 'none'; return; }
+    var o = integ.overall;
+    var anyFlags = (o.unverified || 0) + (o.suspicious || 0) + (o.corrected || 0);
+    card.style.display = '';
+    if (!anyFlags) {
+      host.innerHTML = '<div style="background:#f0fdf4;border:1px solid #bbf7d0;color:#166534;border-radius:10px;padding:10px 14px;font-size:13px;font-weight:600;">✓ ללא חריגות בתקופה — כל הציונים אומתו, אין מבחנים חשודים ואין תיקונים ידניים</div>';
+      return;
+    }
+    function chip(num, lbl, bg, clr, tip) {
+      return '<div title="' + tip + '" style="flex:1;min-width:110px;text-align:center;background:' + bg + ';border-radius:10px;padding:10px;">' +
+        '<div style="font-size:22px;font-weight:900;color:' + clr + ';">' + num + '</div>' +
+        '<div style="font-size:11px;color:#64748b;">' + lbl + '</div></div>';
+    }
+    var h = '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;">';
+    h += chip(o.unverified || 0, 'לא מאומתים', '#fef3c7', '#92400e', 'ציון שלא אומת מול מפתח התשובות בשרת — דורש בדיקה');
+    h += chip(o.suspicious || 0, 'חשודים (מתחת ל-3 דק׳)', '#fee2e2', '#991b1b', 'מבחן שהסתיים בפחות מ-3 דקות');
+    h += chip(o.corrected || 0, 'תוקנו ידנית', '#ede9fe', '#6d28d9', 'תוצאה ששונתה ידנית לאחר המבחן');
+    h += '</div>';
+    var rows = [];
+    var be = integ.byExaminer || {};
+    for (var k in be) {
+      var v = be[k];
+      var s = (v.unverified || 0) + (v.suspicious || 0) + (v.corrected || 0);
+      if (s > 0) rows.push({ name: k, u: v.unverified || 0, s: v.suspicious || 0, c: v.corrected || 0, sum: s });
+    }
+    rows.sort(function(a, b) { return b.sum - a.sum; });
+    if (rows.length) {
+      h += '<div style="overflow-x:auto;"><table class="results-table" style="font-size:12px;"><thead><tr>' +
+        '<th>בוחן</th><th title="ציון שלא אומת מול מפתח התשובות">לא מאומת</th><th title="מבחן מתחת ל-3 דקות">חשוד</th><th title="תוצאה ששונתה ידנית">תוקן</th>' +
+        '</tr></thead><tbody>';
+      for (var ri = 0; ri < rows.length && ri < 8; ri++) {
+        var r = rows[ri];
+        h += '<tr><td style="text-align:right;font-weight:600;">' + escHtml(r.name) + '</td>' +
+          '<td>' + (r.u || '—') + '</td><td>' + (r.s || '—') + '</td><td>' + (r.c || '—') + '</td></tr>';
+      }
+      h += '</tbody></table></div>';
+      if (rows.length > 8) h += '<div style="font-size:11px;color:#94a3b8;margin-top:4px;">מוצגים 8 הבוחנים עם הכי הרבה חריגות מתוך ' + rows.length + '</div>';
+    }
+    host.innerHTML = h;
+  }
+
+  // Stacked daily bars (passed green / failed red / DQ orange) + a dashed
+  // blue daily pass-rate line. Replaces the plain-count polyline whenever the
+  // server sends per-day splits.
+  function renderTimelineStacked(host, timeline) {
+    var w = Math.max(timeline.length * 18, 320);
+    var h = 175;
+    var pad = { t: 14, r: 14, b: 30, l: 36 };
+    var iw = w - pad.l - pad.r;
+    var ih = h - pad.t - pad.b;
+    var maxCount = 0, totalCount = 0, peakIdx = 0;
+    for (var i = 0; i < timeline.length; i++) {
+      if (timeline[i].count > maxCount) maxCount = timeline[i].count;
+      if (timeline[i].count > timeline[peakIdx].count) peakIdx = i;
+      totalCount += timeline[i].count;
+    }
+    var yMax = Math.max(maxCount, 1);
+    var xStep = iw / Math.max(timeline.length, 1);
+    var barW = Math.min(Math.max(xStep * 0.65, 3), 14);
+    var bars = [], ratePts = [], rateDots = [];
+    for (var j = 0; j < timeline.length; j++) {
+      var t = timeline[j];
+      if (!t.count) continue;
+      var xC = pad.l + j * xStep + xStep / 2;
+      var x = (xC - barW / 2).toFixed(1);
+      var rate = Math.round((t.passed / t.count) * 100);
+      var g = '<g><title>' + t.date + ': ' + t.passed + ' עברו · ' + t.failed + ' נכשלו · ' + t.dq + ' פסולים (' + rate + '%)</title>';
+      var yCur = pad.t + ih;
+      var hP = (t.passed / yMax) * ih, hF = (t.failed / yMax) * ih, hD = (t.dq / yMax) * ih;
+      if (hP > 0) { yCur -= hP; g += '<rect x="' + x + '" y="' + yCur.toFixed(1) + '" width="' + barW.toFixed(1) + '" height="' + hP.toFixed(1) + '" fill="#16a34a"/>'; }
+      if (hF > 0) { yCur -= hF; g += '<rect x="' + x + '" y="' + yCur.toFixed(1) + '" width="' + barW.toFixed(1) + '" height="' + hF.toFixed(1) + '" fill="#dc2626"/>'; }
+      if (hD > 0) { yCur -= hD; g += '<rect x="' + x + '" y="' + yCur.toFixed(1) + '" width="' + barW.toFixed(1) + '" height="' + hD.toFixed(1) + '" fill="#f59e0b"/>'; }
+      g += '</g>';
+      bars.push(g);
+      var yR = pad.t + (1 - rate / 100) * ih;
+      ratePts.push(xC.toFixed(1) + ',' + yR.toFixed(1));
+      rateDots.push('<circle cx="' + xC.toFixed(1) + '" cy="' + yR.toFixed(1) + '" r="2.2" fill="#1a73e8"><title>' + t.date + ': ' + rate + '% הצלחה</title></circle>');
+    }
+    var yTicks = '<text x="' + (pad.l - 6) + '" y="' + (pad.t + ih + 4) + '" font-size="10" fill="#64748b" text-anchor="end">0</text>' +
+      '<text x="' + (pad.l - 6) + '" y="' + (pad.t + 4) + '" font-size="10" fill="#64748b" text-anchor="end">' + yMax + '</text>';
+    function xLabelStacked(i) {
+      var x = pad.l + i * xStep + xStep / 2;
+      return '<text x="' + x.toFixed(1) + '" y="' + (pad.t + ih + 18) + '" font-size="10" fill="#64748b" text-anchor="middle">' + timeline[i].date.substring(5) + '</text>';
+    }
+    var xLabels = xLabelStacked(0);
+    if (peakIdx !== 0 && peakIdx !== timeline.length - 1) xLabels += xLabelStacked(peakIdx);
+    if (timeline.length > 1) xLabels += xLabelStacked(timeline.length - 1);
+    var svg = '<svg width="' + w + '" height="' + h + '" xmlns="http://www.w3.org/2000/svg" style="background:#f8fafc;border-radius:8px;">';
+    svg += '<line x1="' + pad.l + '" y1="' + (pad.t + ih) + '" x2="' + (pad.l + iw) + '" y2="' + (pad.t + ih) + '" stroke="#cbd5e1" stroke-width="1"/>';
+    svg += bars.join('');
+    if (ratePts.length > 1) svg += '<polyline points="' + ratePts.join(' ') + '" fill="none" stroke="#1a73e8" stroke-width="1.5" stroke-dasharray="4,3"/>';
+    svg += rateDots.join('');
+    svg += xLabels + yTicks + '</svg>';
+    var legend = '<div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:center;font-size:11px;color:#475569;margin-top:6px;">' +
+      '<span><span style="display:inline-block;width:10px;height:10px;background:#16a34a;border-radius:2px;margin-left:4px;"></span>עברו</span>' +
+      '<span><span style="display:inline-block;width:10px;height:10px;background:#dc2626;border-radius:2px;margin-left:4px;"></span>נכשלו</span>' +
+      '<span><span style="display:inline-block;width:10px;height:10px;background:#f59e0b;border-radius:2px;margin-left:4px;"></span>פסולים</span>' +
+      '<span style="color:#1a73e8;">- - אחוז הצלחה יומי</span>' +
+      '<span style="color:#94a3b8;">| ' + timeline.length + ' ימים · ' + totalCount + ' מבחנים · שיא ' + timeline[peakIdx].count + ' ב-' + timeline[peakIdx].date + '</span>' +
+      '</div>';
+    host.innerHTML = svg + legend;
+  }
+
   // Throughput line chart — SVG polyline over [N] daily counts. Designed to
   // be readable at a glance; X-axis labels only on first/last/peak days to
   // keep the chart legible on phones. Returns empty if no data.
@@ -5943,6 +6086,9 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     var host = document.getElementById('cmdTimeline');
     if (!host) return;
     if (!timeline || timeline.length === 0) { host.innerHTML = '<p style="color:#94a3b8;">אין נתונים לטווח שנבחר</p>'; return; }
+    // New servers send per-day passed/failed/dq splits — render the stacked
+    // quality chart. Plain-count payloads (older server) keep the legacy line.
+    if (typeof timeline[0].passed !== 'undefined') { renderTimelineStacked(host, timeline); return; }
     var w = Math.max(timeline.length * 18, 320);
     var h = 160;
     var pad = { t: 14, r: 14, b: 28, l: 36 };

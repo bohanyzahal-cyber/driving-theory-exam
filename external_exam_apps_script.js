@@ -4383,6 +4383,17 @@ function handleCommanderDashboard(p) {
   // Aggregate. stayTimes tracks duration-in-seconds per result so we can
   // compute avg / median / p10 / p90 / 3-bucket histogram per group.
   var overall = { total: 0, passed: 0, failed: 0, disqualified: 0, stayTimes: [], reattempts: 0 };
+  // Previous period of identical length, ending right before dateFrom —
+  // powers the ▲▼ trend badges on the KPI cards (this period vs the last one).
+  var prevOverall = { total: 0, passed: 0, failed: 0, disqualified: 0 };
+  var prevWindowMs = dateTo.getTime() - dateFrom.getTime();
+  var prevFrom = new Date(dateFrom.getTime() - prevWindowMs - 1);
+  // Integrity flags (current window only). Definitions mirror the per-row
+  // badges in the examiner results table, so commander totals always match
+  // what the examiner sees row-by-row.
+  var integrityOverall = { unverified: 0, suspicious: 0, corrected: 0 };
+  var integrityByExaminer = {};
+  var integrityBySite = {};
   var byExaminer = {};
   var bySite = {};
   var byLicense = {};
@@ -4464,7 +4475,9 @@ function handleCommanderDashboard(p) {
 
   for (var r = 1; r < resData.length; r++) {
     var rowDate = parseSheetDate(resData[r][0]);
-    if (!rowDate || rowDate < dateFrom || rowDate > dateTo) continue;
+    if (!rowDate) continue;
+    var inPrevWindow = rowDate >= prevFrom && rowDate < dateFrom;
+    if ((rowDate < dateFrom || rowDate > dateTo) && !inPrevWindow) continue;
 
     var examinerName = String(resData[r][9] || '');
     var siteName = String(resData[r][10] || '');
@@ -4474,6 +4487,36 @@ function handleCommanderDashboard(p) {
     if (passedStr === 'בוטל') continue;
     var isDQ = resData[r][17] === true || String(resData[r][17]).toUpperCase() === 'TRUE' || passedStr === 'פסול';
     var isPassed = !isDQ && (passedStr === 'עבר');
+
+    // Previous-window rows feed ONLY the trend comparison — none of the
+    // breakdowns, charts or integrity tallies below.
+    if (inPrevWindow) {
+      prevOverall.total++;
+      if (isDQ) prevOverall.disqualified++;
+      else if (isPassed) prevOverall.passed++;
+      else prevOverall.failed++;
+      continue;
+    }
+
+    // Integrity flags — same definitions as the examiner results-table badges:
+    // unverified = score not re-verified against the trusted answer key
+    // (anything except 'מאומת'/'ידני'), excluding DQ rows and 0/X system-fails;
+    // suspicious = exam finished in under 3 minutes; corrected = manually
+    // amended result (col תוקן?).
+    var integVState = (resData[r].length > 22) ? String(resData[r][22] || '') : '';
+    var integSuspicious = (resData[r].length > 23) && String(resData[r][23] || '') === 'חשוד';
+    var integCorrected = resData[r][20] === true || String(resData[r][20]).toUpperCase() === 'TRUE';
+    var integZeroScore = /^0\//.test(String(resData[r][5] || ''));
+    var integUnverified = !isDQ && !integZeroScore && integVState !== 'מאומת' && integVState !== 'ידני';
+    if (integUnverified || integSuspicious || integCorrected) {
+      var integEx = examinerName || 'לא צוין';
+      var integSite = siteName || 'לא צוין';
+      if (!integrityByExaminer[integEx]) integrityByExaminer[integEx] = { unverified: 0, suspicious: 0, corrected: 0 };
+      if (!integrityBySite[integSite]) integrityBySite[integSite] = { unverified: 0, suspicious: 0, corrected: 0 };
+      if (integUnverified) { integrityOverall.unverified++; integrityByExaminer[integEx].unverified++; integrityBySite[integSite].unverified++; }
+      if (integSuspicious) { integrityOverall.suspicious++; integrityByExaminer[integEx].suspicious++; integrityBySite[integSite].suspicious++; }
+      if (integCorrected) { integrityOverall.corrected++; integrityByExaminer[integEx].corrected++; integrityBySite[integSite].corrected++; }
+    }
 
     // Stay-time: approval → submit. We use the exam's elapsed-time column 8
     // ('זמן', MM:SS) as the proxy — examinee clicks "Start Exam" within a
@@ -4546,7 +4589,11 @@ function handleCommanderDashboard(p) {
 
     // Time-series — one increment per row, no sub-groups (keeps payload small)
     var dayKey = isoDateStr(rowDate);
-    byDay[dayKey] = (byDay[dayKey] || 0) + 1;
+    if (!byDay[dayKey]) byDay[dayKey] = { total: 0, passed: 0, failed: 0, dq: 0 };
+    byDay[dayKey].total++;
+    if (isDQ) byDay[dayKey].dq++;
+    else if (isPassed) byDay[dayKey].passed++;
+    else byDay[dayKey].failed++;
     var hourKey = rowDate.getDay() + '-' + rowDate.getHours();
     byHour[hourKey] = (byHour[hourKey] || 0) + 1;
 
@@ -4726,7 +4773,9 @@ function handleCommanderDashboard(p) {
   var safetyLimit = 0;
   while (cursor <= endDay && safetyLimit < 400) {
     var k = isoDateStr(cursor);
-    timeline.push({ date: k, count: byDay[k] || 0 });
+    var dayAgg = byDay[k] || { total: 0, passed: 0, failed: 0, dq: 0 };
+    // `count` kept so an older client (plain-count polyline) keeps working.
+    timeline.push({ date: k, count: dayAgg.total, passed: dayAgg.passed, failed: dayAgg.failed, dq: dayAgg.dq });
     cursor.setDate(cursor.getDate() + 1);
     safetyLimit++;
   }
@@ -4746,6 +4795,10 @@ function handleCommanderDashboard(p) {
   overallStats.reattemptRate = overall.total > 0
     ? Math.round((overall.reattempts / overall.total) * 100)
     : 0;
+
+  // Previous-period rates for the KPI trend badges.
+  prevOverall.passRate = prevOverall.total > 0 ? Math.round((prevOverall.passed / prevOverall.total) * 100) : 0;
+  prevOverall.dqRate = prevOverall.total > 0 ? Math.round((prevOverall.disqualified / prevOverall.total) * 100) : 0;
 
   // Top-N most-missed questions, sorted by count descending. Capped at 10 —
   // beyond that the list gets noisy and stops driving decisions.
@@ -4868,7 +4921,9 @@ function handleCommanderDashboard(p) {
     timeline: timeline,
     heatmap: heatmap,
     topWrong: topWrong,
-    practiceImpact: practiceImpactOut
+    practiceImpact: practiceImpactOut,
+    prevOverall: prevOverall,
+    integrity: { overall: integrityOverall, byExaminer: integrityByExaminer, bySite: integrityBySite }
   };
 
   return jsonResponse({ status: 'ok', data: result });
