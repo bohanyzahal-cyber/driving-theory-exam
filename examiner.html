@@ -4625,6 +4625,26 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     var total = passCount + failCount + dqCount;
     var rate = total > 0 ? Math.round((passCount / total) * 100) : 0;
 
+    // Multi-site sessions (host + guest base): per-site pass/fail tallies.
+    // Empty result-site → host (same default as the examiner-report plan table).
+    // The per-site section + the אתר column render only when 2+ sites appear,
+    // so single-site reports stay exactly as before.
+    var siteStats = {};
+    var siteOrder = [];
+    for (var sst = 0; sst < completedResults.length; sst++) {
+      var rs = completedResults[sst];
+      var sKey = String(rs.site || '').trim() || site;
+      if (!siteStats[sKey]) { siteStats[sKey] = { total: 0, passed: 0, failed: 0, dq: 0 }; siteOrder.push(sKey); }
+      var isDQs = rs.disqualified === true || rs.disqualified === 'TRUE' || rs.passed === 'פסול';
+      var isPassedS = !isDQs && (rs.passed === 'עבר' || rs.passed === true);
+      siteStats[sKey].total++;
+      if (isDQs) siteStats[sKey].dq++;
+      else if (isPassedS) siteStats[sKey].passed++;
+      else siteStats[sKey].failed++;
+    }
+    var smrMulti = siteOrder.length > 1;
+    siteOrder.sort(function(a, b) { return a === site ? -1 : (b === site ? 1 : a.localeCompare(b, 'he')); });
+
     // === Category analysis ===
     var dominantLicense = license || 'B';
     for (var li = 0; li < completedResults.length; li++) {
@@ -4765,6 +4785,41 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       }
     })();
 
+    // Per-site breakdown (multi-site sessions only): success/failure split per
+    // site, closed by an overall summary row — per the Rav-Bochen's request.
+    if (smrMulti) {
+      H.push('<div class="section">');
+      H.push('<div class="section-title"><span style="font-size:20px;">📍</span> פירוט לפי אתר</div>');
+      H.push('<div class="tw"><table><thead><tr>');
+      H.push('<th>אתר</th><th>סה"כ</th><th>עברו</th><th>נכשלו</th><th>פסולים</th><th>אחוז הצלחה</th><th>אחוז כשלון</th>');
+      H.push('</tr></thead><tbody>');
+      for (var so = 0; so < siteOrder.length; so++) {
+        var ssK = siteOrder[so];
+        var ss = siteStats[ssK];
+        var sRate = ss.total > 0 ? Math.round((ss.passed / ss.total) * 100) : 0;
+        var sFailRate = ss.total > 0 ? 100 - sRate : 0;
+        H.push('<tr>');
+        H.push('<td style="font-weight:700;text-align:right;">' + escHtml(ssK) + (ssK === site ? ' <span style="font-size:10px;color:#64748b;">(מארח)</span>' : ' <span style="font-size:10px;color:#0e4a6e;">(אורח)</span>') + '</td>');
+        H.push('<td>' + ss.total + '</td>');
+        H.push('<td style="color:#27ae60;font-weight:700;">' + ss.passed + '</td>');
+        H.push('<td style="color:#c0392b;font-weight:700;">' + ss.failed + '</td>');
+        H.push('<td style="color:#d97706;font-weight:700;">' + ss.dq + '</td>');
+        H.push('<td style="color:' + (sRate >= 50 ? '#16a34a' : '#dc2626') + ';font-weight:800;">' + sRate + '%</td>');
+        H.push('<td style="color:#64748b;font-weight:700;">' + sFailRate + '%</td>');
+        H.push('</tr>');
+      }
+      H.push('<tr style="background:#f1f5f9;font-weight:900;border-top:2px solid #34495e;">');
+      H.push('<td style="text-align:right;">סה"כ כללי</td>');
+      H.push('<td>' + total + '</td>');
+      H.push('<td style="color:#27ae60;">' + passCount + '</td>');
+      H.push('<td style="color:#c0392b;">' + failCount + '</td>');
+      H.push('<td style="color:#d97706;">' + dqCount + '</td>');
+      H.push('<td style="color:' + (rate >= 50 ? '#16a34a' : '#dc2626') + ';">' + rate + '%</td>');
+      H.push('<td style="color:#64748b;">' + (total > 0 ? 100 - rate : 0) + '%</td>');
+      H.push('</tr>');
+      H.push('</tbody></table></div></div>');
+    }
+
     // Weak Topics (aggregate)
     if (hasCatData) {
       H.push('<div class="section">');
@@ -4883,7 +4938,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     H.push('<div class="section">');
     H.push('<div class="section-title"><span style="font-size:20px;">\uD83D\uDC65</span> \u05E4\u05D9\u05E8\u05D5\u05D8 \u05DC\u05E4\u05D9 \u05E0\u05D1\u05D7\u05DF</div>');
     H.push('<div class="tw"><table><thead><tr>');
-    H.push('<th>#</th><th>\u05E9\u05DD</th><th>\u05D3\u05E8\u05D2\u05D4</th><th>\u05E9\u05E4\u05D4</th><th>\u05E6\u05D9\u05D5\u05DF</th><th>\u05D0\u05D7\u05D5\u05D6</th><th>\u05EA\u05D5\u05E6\u05D0\u05D4</th><th>\u05D6\u05DE\u05DF</th>');
+    H.push('<th>#</th><th>\u05E9\u05DD</th>' + (smrMulti ? '<th>\u05D0\u05EA\u05E8</th>' : '') + '<th>\u05D3\u05E8\u05D2\u05D4</th><th>\u05E9\u05E4\u05D4</th><th>\u05E6\u05D9\u05D5\u05DF</th><th>\u05D0\u05D7\u05D5\u05D6</th><th>\u05EA\u05D5\u05E6\u05D0\u05D4</th><th>\u05D6\u05DE\u05DF</th>');
     H.push('</tr></thead><tbody>');
     for (var ti = 0; ti < completedResults.length; ti++) {
       var tr = completedResults[ti];
@@ -4897,6 +4952,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       H.push('<tr>');
       H.push('<td>' + (ti + 1) + '</td>');
       H.push('<td style="font-weight:700;text-align:right;">' + escHtml(tr.name) + '</td>');
+      if (smrMulti) H.push('<td>' + escHtml(String(tr.site || '').trim() || site) + '</td>');
       H.push('<td>' + escHtml(tr.license || '') + '</td>');
       H.push('<td>' + flag + ' ' + escHtml(tr.language || '') + '</td>');
       H.push('<td>' + escHtml(String(tr.score || '')) + '</td>');
