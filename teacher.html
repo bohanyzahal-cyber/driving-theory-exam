@@ -342,6 +342,12 @@
       <div id="cmdTopWrong"></div>
     </div>
 
+    <div class="card" id="cmdRepeatFailCard" style="display:none;">
+      <h3 style="margin:0 0 6px;font-size:15px;color:#334155;">🔁 נכשלים חוזרים — מבחן התאוריה החיצוני</h3>
+      <p style="margin:0 0 10px;font-size:11px;color:#94a3b8;line-height:1.4;">חיילים שנכשלו במבחן האמת פעמיים או יותר בטווח שנבחר — מועמדים לתרגול ממוקד לפני שיבוץ למבחן נוסף.</p>
+      <div id="cmdRepeatFail" style="overflow-x:auto;"></div>
+    </div>
+
     <div class="card" id="cmdBreakdowns" style="display:none;">
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
         <button class="cmd-tab-btn active" data-tab="byTeacher" onclick="cmdSelectTab(this)">לפי מורה</button>
@@ -1193,6 +1199,8 @@ window.fetchCommanderData = function(period) {
   document.getElementById('cmdKPIs').style.display = 'none';
   document.getElementById('cmdHourlyCard').style.display = 'none';
   document.getElementById('cmdTopWrongCard').style.display = 'none';
+  var rfCard = document.getElementById('cmdRepeatFailCard');
+  if (rfCard) rfCard.style.display = 'none';
   document.getElementById('cmdBreakdowns').style.display = 'none';
   document.getElementById('cmdActions').style.display = 'none';
 
@@ -1209,6 +1217,7 @@ window.fetchCommanderData = function(period) {
       renderCommanderKPIs(cmdData.overall);
       renderHourly(cmdData.hourly || []);
       renderTopWrong(cmdData.topWrong || []);
+      renderRepeatFailures(cmdData.repeatFailures || []);
       renderBreakdownTable(cmdData, cmdCurrentTab);
       renderActiveClasses(cmdData.activeClasses || []);
       document.getElementById('cmdKPIs').style.display = '';
@@ -1232,6 +1241,41 @@ window.fetchCommanderData = function(period) {
     document.getElementById('cmdLoading').style.color = '#ef4444';
   });
 };
+
+// Repeat real-exam failures table (training commander's intervention list).
+// Hidden when empty or when the server predates the repeatFailures payload.
+function renderRepeatFailures(list) {
+  var card = document.getElementById('cmdRepeatFailCard');
+  var host = document.getElementById('cmdRepeatFail');
+  if (!card || !host) return;
+  if (!list || list.length === 0) { card.style.display = 'none'; return; }
+  function rfEsc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  var h = '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+  h += '<thead><tr style="background:#f1f5f9;">';
+  h += '<th style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;">שם</th>';
+  h += '<th style="padding:6px 8px;font-size:11px;color:#64748b;">ת.ז.</th>';
+  h += '<th style="padding:6px 8px;font-size:11px;color:#64748b;">דרגה</th>';
+  h += '<th style="padding:6px 8px;font-size:11px;color:#64748b;">אתר</th>';
+  h += '<th style="padding:6px 8px;font-size:11px;color:#64748b;">כשלונות</th>';
+  h += '<th style="padding:6px 8px;font-size:11px;color:#64748b;">ציון אחרון</th>';
+  h += '<th style="padding:6px 8px;font-size:11px;color:#64748b;">תאריך אחרון</th>';
+  h += '</tr></thead><tbody>';
+  for (var i = 0; i < list.length; i++) {
+    var r = list[i];
+    h += '<tr style="border-bottom:1px solid #e2e8f0;' + (r.fails >= 3 ? 'background:#fef2f2;' : '') + '">';
+    h += '<td style="padding:6px 8px;text-align:right;font-weight:600;color:#1e293b;">' + rfEsc(r.name) + '</td>';
+    h += '<td style="padding:6px 8px;text-align:center;color:#64748b;">....' + rfEsc(r.idLast4) + '</td>';
+    h += '<td style="padding:6px 8px;text-align:center;">' + rfEsc(r.license) + '</td>';
+    h += '<td style="padding:6px 8px;text-align:center;">' + rfEsc(r.site) + '</td>';
+    h += '<td style="padding:6px 8px;text-align:center;"><span style="background:' + (r.fails >= 3 ? '#fee2e2' : '#fef3c7') + ';color:' + (r.fails >= 3 ? '#991b1b' : '#92400e') + ';border-radius:10px;padding:1px 9px;font-weight:800;">' + r.fails + '</span></td>';
+    h += '<td style="padding:6px 8px;text-align:center;">' + rfEsc(r.lastScore) + '</td>';
+    h += '<td style="padding:6px 8px;text-align:center;color:#64748b;">' + rfEsc(r.lastDate) + '</td>';
+    h += '</tr>';
+  }
+  h += '</tbody></table>';
+  card.style.display = '';
+  host.innerHTML = h;
+}
 
 function buildPieChart(passed, failed, size) {
   size = size || 80;

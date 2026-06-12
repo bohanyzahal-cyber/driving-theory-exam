@@ -4403,6 +4403,14 @@ function handleCommanderDashboard(p) {
   var byAttempt = {};        // 'ניסיון 1' / 'ניסיון 2' / 'ניסיון 3+' → stats.
                               // Shows whether re-attempts have higher/lower
                               // pass rate (does the second try go better?).
+  var byDevice = {};         // 'טלפון'/'טאבלט'/'מחשב'/'מבחן בכתב'/'לא צוין (ישן)' → stats.
+  var byAudio = {};          // '🔊 שמע' / 'רגיל' → stats.
+  // Weak-topic aggregation: per graded exam, the license blueprint tells how
+  // many questions of each topic were asked; each parsed wrong-block is later
+  // resolved (id→category via the question DB) and counted against that.
+  var topicAsked = {};
+  var topicAskedByLic = {};
+  var weakTopicPending = [];
   var byDay = {};            // 'YYYY-MM-DD' → count. Drives the throughput line chart.
   var byHour = {};           // 'dow-hour' (0–6 dow, 0–23 hour) → count. Heatmap data.
   var wrongQuestionCounts = {}; // question text → fail count. Aggregated from
@@ -4604,6 +4612,7 @@ function handleCommanderDashboard(p) {
     // key. Question text is a stable identifier across rows because the same
     // text is rendered for every examinee who got that question wrong.
     var wrongDetails = String(resData[r][15] || '');
+    var topicBlocksParsed = 0;
     if (wrongDetails) {
       var blocks = wrongDetails.split(/\n\s*\n/);
       for (var wb = 0; wb < blocks.length; wb++) {
@@ -4643,9 +4652,31 @@ function handleCommanderDashboard(p) {
           continue;
         }
         if (!wrongQuestionCounts[key]) {
-          wrongQuestionCounts[key] = { count: 0, text: qText, correctAnswer: qCorrect, questionId: qId };
+          wrongQuestionCounts[key] = { count: 0, text: qText, correctAnswer: qCorrect, questionId: qId, langCounts: {} };
         }
         wrongQuestionCounts[key].count++;
+        // Per-language split — a question failing mostly in one non-Hebrew
+        // language is a translation-bug signal for the content team.
+        wrongQuestionCounts[key].langCounts[langName] = (wrongQuestionCounts[key].langCounts[langName] || 0) + 1;
+        // Weak-topic pending item: resolved to a topic after the loop via the
+        // question DB (id preferred; text fallback for legacy rows).
+        topicBlocksParsed++;
+        weakTopicPending.push({ id: qId || '', text: qText || '', license: license, topic: '' });
+      }
+    }
+
+    // Blueprint-based "asked" totals per topic: count a row's blueprint once
+    // per graded digital exam (server-verified, or legacy rows that at least
+    // carry parsed wrong-blocks). DQ rows, 0/X system-fails and manual paper
+    // entries (no per-question data) stay out of both numerator & denominator.
+    if (!isDQ && !integZeroScore && (integVState === 'מאומת' || topicBlocksParsed > 0)) {
+      var topicBp = EXAM_STRUCTURE_SERVER[license];
+      if (topicBp) {
+        if (!topicAskedByLic[license]) topicAskedByLic[license] = {};
+        for (var tbk in topicBp) {
+          topicAsked[tbk] = (topicAsked[tbk] || 0) + topicBp[tbk];
+          topicAskedByLic[license][tbk] = (topicAskedByLic[license][tbk] || 0) + topicBp[tbk];
+        }
       }
     }
 
@@ -4666,6 +4697,17 @@ function handleCommanderDashboard(p) {
     addToGroup(byPopulation, pName, isPassed, isDQ, timeSec);
     addToGroup(byLanguage, langName, isPassed, isDQ, timeSec);
     addToGroup(byAttempt, attemptLabel, isPassed, isDQ, timeSec);
+
+    // Device + audio dimensions. Device (col 30) exists only on new rows —
+    // older rows group under 'לא צוין (ישן)'; paper entries show 'מבחן בכתב'.
+    var deviceRaw = (resData[r].length > 29) ? String(resData[r][29] || '').trim() : '';
+    var deviceLabel = deviceRaw === 'phone' ? 'טלפון'
+                      : deviceRaw === 'tablet' ? 'טאבלט'
+                      : deviceRaw === 'desktop' ? 'מחשב'
+                      : (integVState === 'ידני' ? 'מבחן בכתב' : 'לא צוין (ישן)');
+    var audioLabel = String(resData[r][21] || 'off') === 'on' ? '🔊 שמע' : 'רגיל';
+    addToGroup(byDevice, deviceLabel, isPassed, isDQ, timeSec);
+    addToGroup(byAudio, audioLabel, isPassed, isDQ, timeSec);
 
     // Cross-tabulation sub-groups
     addToSubGroup(byExaminer, eName, 'byLicense', lName, isPassed, isDQ, timeSec);
@@ -4800,6 +4842,114 @@ function handleCommanderDashboard(p) {
   prevOverall.passRate = prevOverall.total > 0 ? Math.round((prevOverall.passed / prevOverall.total) * 100) : 0;
   prevOverall.dqRate = prevOverall.total > 0 ? Math.round((prevOverall.disqualified / prevOverall.total) * 100) : 0;
 
+  // ===== Weak topics: resolve pending wrong-blocks to topics =====
+  // id is language-independent (all language files carry the Hebrew category),
+  // so most items resolve on the first (Hebrew) pass; text-fallback items from
+  // legacy rows resolve when their exam language comes up. Cache makes the
+  // repeated loads cheap (~300ms warm per language).
+  var topicWrong = {};
+  var topicWrongByLic = {};
+  try {
+    var WT_LANGS = ['he', 'ru', 'en', 'ar', 'fr', 'es', 'am'];
+    for (var wtl = 0; wtl < WT_LANGS.length; wtl++) {
+      var wtUnresolved = false;
+      for (var wtc = 0; wtc < weakTopicPending.length; wtc++) {
+        if (!weakTopicPending[wtc].topic) { wtUnresolved = true; break; }
+      }
+      if (!wtUnresolved) break;
+      var wtQs;
+      try { wtQs = loadQuestionsForLanguageServer(WT_LANGS[wtl]); } catch (eWtLoad) { continue; }
+      if (!Array.isArray(wtQs) || wtQs.length === 0) continue;
+      var wtById = {}, wtByText = {};
+      for (var wtq = 0; wtq < wtQs.length; wtq++) {
+        var wtRec = wtQs[wtq];
+        if (!wtRec) continue;
+        if (wtRec.id) wtById[String(wtRec.id)] = wtRec;
+        if (wtRec.text) wtByText[String(wtRec.text).substring(0, 200)] = wtRec;
+      }
+      for (var wtp = 0; wtp < weakTopicPending.length; wtp++) {
+        var wtItem = weakTopicPending[wtp];
+        if (wtItem.topic) continue;
+        var wtFound = wtItem.id ? wtById[wtItem.id] : null;
+        if (!wtFound && wtItem.text) wtFound = wtByText[wtItem.text];
+        if (wtFound) {
+          var wtTopic = classifyCategoryServer(wtFound.category);
+          if (wtTopic) wtItem.topic = wtTopic;
+        }
+      }
+    }
+  } catch (eWtAll) { /* weak-topic section degrades to empty, dashboard still works */ }
+  for (var wtf = 0; wtf < weakTopicPending.length; wtf++) {
+    var wtFin = weakTopicPending[wtf];
+    if (!wtFin.topic) continue;
+    topicWrong[wtFin.topic] = (topicWrong[wtFin.topic] || 0) + 1;
+    if (!topicWrongByLic[wtFin.license]) topicWrongByLic[wtFin.license] = {};
+    topicWrongByLic[wtFin.license][wtFin.topic] = (topicWrongByLic[wtFin.license][wtFin.topic] || 0) + 1;
+  }
+  function buildTopicArr(wrongMap, askedMap) {
+    var tArr = [];
+    for (var tk in askedMap) {
+      var tAsked = askedMap[tk] || 0;
+      if (!tAsked) continue;
+      var tWrong = wrongMap[tk] || 0;
+      tArr.push({ topic: tk, wrong: tWrong, asked: tAsked, pct: Math.round((tWrong / tAsked) * 100) });
+    }
+    tArr.sort(function(a, b) { return b.pct - a.pct; });
+    return tArr;
+  }
+  var weakTopicsOut = { overall: buildTopicArr(topicWrong, topicAsked), byLicense: {} };
+  for (var wtLic in topicAskedByLic) {
+    weakTopicsOut.byLicense[wtLic] = buildTopicArr(topicWrongByLic[wtLic] || {}, topicAskedByLic[wtLic]);
+  }
+
+  // ===== Wait time: registration → exam start (ממתינים col E + col L) =====
+  // Approval time isn't stored, so this measures the full soldier experience:
+  // registered → waited for approval → pressed Start. Per-site via the row's
+  // own site (new rows) or the session's host site (fallback).
+  var waitTimesOut = { overall: { avg: 0, median: 0, p90: 0, count: 0 }, bySite: {} };
+  try {
+    var pendSheetW = getSheet('ממתינים');
+    var pendDataW = pendSheetW.getDataRange().getValues();
+    var sessSheetW = getSheet('סשנים');
+    var sessDataW = sessSheetW.getDataRange().getValues();
+    var sessSiteMapW = {};
+    for (var swi = 1; swi < sessDataW.length; swi++) {
+      sessSiteMapW[String(sessDataW[swi][0]).trim()] = String(sessDataW[swi][3] || '');
+    }
+    var waitAll = [];
+    var waitBySiteArr = {};
+    for (var pwi = 1; pwi < pendDataW.length; pwi++) {
+      var regRaw = pendDataW[pwi][4];
+      var startRaw = pendDataW[pwi][11];
+      if (!regRaw || !startRaw) continue;
+      var regD = regRaw instanceof Date ? regRaw : new Date(regRaw);
+      var startD = startRaw instanceof Date ? startRaw : new Date(startRaw);
+      if (isNaN(regD.getTime()) || isNaN(startD.getTime())) continue;
+      if (regD < dateFrom || regD > dateTo) continue;
+      var waitSec = Math.round((startD.getTime() - regD.getTime()) / 1000);
+      if (waitSec <= 0 || waitSec > 4 * 3600) continue; // clock skew / stuck rows
+      waitAll.push(waitSec);
+      var waitSite = ((pendDataW[pwi].length > 17 ? String(pendDataW[pwi][17] || '') : '').trim())
+        || sessSiteMapW[String(pendDataW[pwi][0]).trim()] || 'לא צוין';
+      if (!waitBySiteArr[waitSite]) waitBySiteArr[waitSite] = [];
+      waitBySiteArr[waitSite].push(waitSec);
+    }
+    function waitStatsOf(arr) {
+      if (!arr.length) return { avg: 0, median: 0, p90: 0, count: 0 };
+      var wSum = 0;
+      for (var wsi = 0; wsi < arr.length; wsi++) wSum += arr[wsi];
+      var wSorted = arr.slice().sort(function(a, b) { return a - b; });
+      return {
+        avg: Math.round(wSum / arr.length),
+        median: percentileSorted(wSorted, 50),
+        p90: percentileSorted(wSorted, 90),
+        count: arr.length
+      };
+    }
+    waitTimesOut.overall = waitStatsOf(waitAll);
+    for (var wbs in waitBySiteArr) waitTimesOut.bySite[wbs] = waitStatsOf(waitBySiteArr[wbs]);
+  } catch (eWait) { /* wait-time card simply stays hidden */ }
+
   // Top-N most-missed questions, sorted by count descending. Capped at 10 —
   // beyond that the list gets noisy and stops driving decisions.
   // Values are objects {count, text, correctAnswer, questionId}; questionId
@@ -4816,7 +4966,8 @@ function handleCommanderDashboard(p) {
       question: entry.text || '',
       correctAnswer: entry.correctAnswer || '',
       questionId: entry.questionId || '',
-      count: entry.count
+      count: entry.count,
+      langCounts: entry.langCounts || {}
     });
   }
 
@@ -4923,7 +5074,11 @@ function handleCommanderDashboard(p) {
     topWrong: topWrong,
     practiceImpact: practiceImpactOut,
     prevOverall: prevOverall,
-    integrity: { overall: integrityOverall, byExaminer: integrityByExaminer, bySite: integrityBySite }
+    integrity: { overall: integrityOverall, byExaminer: integrityByExaminer, bySite: integrityBySite },
+    byDevice: computeGroupWithSub(byDevice),
+    byAudio: computeGroupWithSub(byAudio),
+    weakTopics: weakTopicsOut,
+    waitTimes: waitTimesOut
   };
 
   return jsonResponse({ status: 'ok', data: result });
@@ -5384,6 +5539,46 @@ function handleTeacherCommanderDashboard(p) {
   }
   result.topWrong = topWrong;
   result.hourly = hourBuckets;
+
+  // Repeat REAL-exam failures — soldiers who failed the external theory exam
+  // (תוצאות, not practice) 2+ times in the window. The training commander owns
+  // the intervention: targeted practice before they burn another exam slot.
+  // Site scoping mirrors the practice rows (local/multi-site commanders see
+  // only their sites; exam rows carry the site in col 11).
+  try {
+    var examResSheet = getSheet('תוצאות');
+    var examResData = examResSheet.getDataRange().getValues();
+    var failsById = {};
+    for (var er = 1; er < examResData.length; er++) {
+      var erDate = parseSheetDate(examResData[er][0]);
+      if (!erDate || erDate < dateFrom || erDate > dateTo) continue;
+      // Only genuine knowledge fails: skip עבר, פסול (anti-cheat, not knowledge)
+      // and בוטל (superseded/overturned rows).
+      if (String(examResData[er][7] || '').trim() !== 'נכשל') continue;
+      var erSite = String(examResData[er][10] || '');
+      if (isLocal && userSite && erSite !== userSite) continue;
+      if (isMultiSite && managedSites.indexOf(erSite) === -1) continue;
+      var erId = normalizeId(examResData[er][1]);
+      if (!erId) continue;
+      if (!failsById[erId]) {
+        failsById[erId] = { name: '', idLast4: String(examResData[er][1] || '').slice(-4), license: '', site: '', fails: 0, lastDate: '', lastScore: '' };
+      }
+      failsById[erId].fails++;
+      // Rows are appended chronologically — the last in-range row wins the
+      // "latest" fields.
+      if (examResData[er][2]) failsById[erId].name = String(examResData[er][2]);
+      if (examResData[er][4]) failsById[erId].license = String(examResData[er][4]);
+      if (erSite) failsById[erId].site = erSite;
+      failsById[erId].lastDate = erDate.getDate() + '/' + (erDate.getMonth() + 1) + '/' + erDate.getFullYear();
+      failsById[erId].lastScore = String(examResData[er][5] || '');
+    }
+    var repeatFailures = [];
+    for (var rfk in failsById) {
+      if (failsById[rfk].fails >= 2) repeatFailures.push(failsById[rfk]);
+    }
+    repeatFailures.sort(function(a, b) { return b.fails - a.fails; });
+    result.repeatFailures = repeatFailures.slice(0, 50);
+  } catch (eRF) { result.repeatFailures = []; }
 
   return jsonResponse({ status: 'ok', data: result });
 }

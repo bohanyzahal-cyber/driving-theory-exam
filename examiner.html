@@ -654,6 +654,16 @@
       <div id="cmdTopWrong"></div>
     </div>
 
+    <div class="card" id="cmdWeakTopicsCard" style="display:none;">
+      <h3 style="margin:0 0 10px;font-size:15px;color:#334155;">🎯 נושאים חלשים — שיעור שגיאה לפי נושא</h3>
+      <div id="cmdWeakTopics"></div>
+    </div>
+
+    <div class="card" id="cmdWaitCard" style="display:none;">
+      <h3 style="margin:0 0 10px;font-size:15px;color:#334155;">⏱ זמן המתנה — מהרשמה ועד תחילת מבחן</h3>
+      <div id="cmdWait"></div>
+    </div>
+
     <div class="card" id="cmdPracticeImpactCard" style="display:none;">
       <h3 style="margin:0 0 10px;font-size:15px;color:#334155;">🔬 השפעת תרגול במערכת על מבחן</h3>
       <p style="margin:0 0 12px;font-size:11px;color:#94a3b8;line-height:1.4;">
@@ -672,6 +682,7 @@
         <button class="cmd-tab-btn" data-tab="byPopulation" onclick="cmdSelectTab(this)">לפי אוכלוסיה</button>
         <button class="cmd-tab-btn" data-tab="byLanguage" onclick="cmdSelectTab(this)">לפי שפה</button>
         <button class="cmd-tab-btn" data-tab="byAttempt" onclick="cmdSelectTab(this)">לפי ניסיון</button>
+        <button class="cmd-tab-btn" data-tab="byDevice" onclick="cmdSelectTab(this)">לפי מכשיר</button>
       </div>
       <div id="cmdBreakdownContent" style="overflow-x:auto;"></div>
     </div>
@@ -5814,6 +5825,10 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     document.getElementById('cmdTopWrongCard').style.display = 'none';
     var integCard = document.getElementById('cmdIntegrityCard');
     if (integCard) integCard.style.display = 'none';
+    var wtCard = document.getElementById('cmdWeakTopicsCard');
+    if (wtCard) wtCard.style.display = 'none';
+    var waitCard = document.getElementById('cmdWaitCard');
+    if (waitCard) waitCard.style.display = 'none';
     document.getElementById('cmdPracticeImpactCard').style.display = 'none';
     document.getElementById('cmdBreakdowns').style.display = 'none';
     document.getElementById('cmdComparison').style.display = 'none';
@@ -5833,6 +5848,8 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
         renderCommanderKPIs(cmdData.overall);
         renderKpiDeltas(cmdData.overall, cmdData.prevOverall);
         renderIntegrity(cmdData.integrity);
+        renderWeakTopics(cmdData.weakTopics);
+        renderWaitTimes(cmdData.waitTimes);
         renderTimeline(cmdData.timeline);
         renderHeatmap(cmdData.heatmap);
         renderTopWrong(cmdData.topWrong);
@@ -6014,6 +6031,79 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       h += '</tbody></table></div>';
       if (rows.length > 8) h += '<div style="font-size:11px;color:#94a3b8;margin-top:4px;">מוצגים 8 הבוחנים עם הכי הרבה חריגות מתוך ' + rows.length + '</div>';
     }
+    host.innerHTML = h;
+  }
+
+  // Weak topics: error-rate bars per topic (worst first), with license filter
+  // chips. Error rate = wrong answers / blueprint-based questions asked, so
+  // 'תמרורים 18%' means 18% of all sign questions asked were missed.
+  var cmdWeakTopicsData = null;
+  var cmdWeakTopicsLic = 'הכל';
+  function renderWeakTopics(wt) {
+    var card = document.getElementById('cmdWeakTopicsCard');
+    var host = document.getElementById('cmdWeakTopics');
+    if (!card || !host) return;
+    if (!wt || !wt.overall || wt.overall.length === 0) { card.style.display = 'none'; return; }
+    cmdWeakTopicsData = wt;
+    card.style.display = '';
+    var lics = Object.keys(wt.byLicense || {});
+    var opts = ['הכל'].concat(lics);
+    var chips = '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">';
+    for (var ci = 0; ci < opts.length; ci++) {
+      var isOn = opts[ci] === cmdWeakTopicsLic;
+      chips += '<button onclick="cmdWeakTopicsPick(\'' + opts[ci].replace(/'/g, "\\'") + '\')" style="padding:4px 12px;border-radius:999px;border:1px solid ' + (isOn ? '#1a73e8' : '#cbd5e1') + ';background:' + (isOn ? '#e8f0fe' : '#fff') + ';color:' + (isOn ? '#1a73e8' : '#475569') + ';font-size:12px;font-weight:700;cursor:pointer;">' + escapeHtml(opts[ci]) + '</button>';
+    }
+    chips += '</div>';
+    var arr = cmdWeakTopicsLic === 'הכל' ? wt.overall : (wt.byLicense[cmdWeakTopicsLic] || []);
+    var bars = '';
+    for (var bi = 0; bi < arr.length; bi++) {
+      var it = arr[bi];
+      var barColor = it.pct >= 25 ? '#ef4444' : (it.pct >= 12 ? '#f59e0b' : '#22c55e');
+      bars += '<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #f1f5f9;">' +
+        '<div style="flex:1;"><div style="font-weight:700;font-size:13px;color:#1e293b;">' + escapeHtml(it.topic) + '</div>' +
+        '<div style="font-size:11px;color:#64748b;">' + it.wrong + ' שגיאות מתוך ' + it.asked + ' שאלות שנשאלו</div></div>' +
+        '<div style="width:130px;height:18px;background:#f1f5f9;border-radius:6px;overflow:hidden;border:1px solid #e2e8f0;">' +
+        '<div style="height:100%;width:' + Math.min(Math.max(it.pct, 6), 100) + '%;background:' + barColor + ';display:flex;align-items:center;justify-content:flex-end;padding-left:4px;font-size:10px;font-weight:700;color:#fff;direction:ltr;">' + it.pct + '%</div></div>' +
+        '</div>';
+    }
+    if (!arr.length) bars = '<p style="color:#94a3b8;font-size:12px;">אין נתונים לדרגה זו</p>';
+    host.innerHTML = chips + bars + '<div style="font-size:10px;color:#94a3b8;margin-top:6px;">שיעור שגיאה = שגיאות מתוך כלל השאלות שנשאלו בנושא (מבחנים דיגיטליים מדורגים בלבד)</div>';
+  }
+  window.cmdWeakTopicsPick = function(lic) {
+    cmdWeakTopicsLic = lic;
+    if (cmdWeakTopicsData) renderWeakTopics(cmdWeakTopicsData);
+  };
+
+  // Wait time (registration → exam start): overall chips + per-site table.
+  // Hidden when the server doesn't send waitTimes or nothing was measured.
+  function renderWaitTimes(w) {
+    var card = document.getElementById('cmdWaitCard');
+    var host = document.getElementById('cmdWait');
+    if (!card || !host) return;
+    if (!w || !w.overall || !w.overall.count) { card.style.display = 'none'; return; }
+    card.style.display = '';
+    var o = w.overall;
+    function chipW(val, lbl) {
+      return '<div style="flex:1;min-width:100px;text-align:center;background:#eaf2f8;border-radius:10px;padding:10px;">' +
+        '<div style="font-size:20px;font-weight:900;color:#2980b9;">' + fmtStaySec(val) + '</div>' +
+        '<div style="font-size:11px;color:#64748b;">' + lbl + '</div></div>';
+    }
+    var h = '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;">' +
+      chipW(o.median, 'חציון המתנה') + chipW(o.avg, 'ממוצע') + chipW(o.p90, '90% המתינו פחות מ-') +
+      '<div style="flex:1;min-width:100px;text-align:center;background:#f8fafc;border-radius:10px;padding:10px;"><div style="font-size:20px;font-weight:900;color:#475569;">' + o.count + '</div><div style="font-size:11px;color:#64748b;">נבחנים נמדדו</div></div>' +
+      '</div>';
+    var sites = [];
+    var wbs = w.bySite || {};
+    for (var k in wbs) sites.push({ name: k, s: wbs[k] });
+    sites.sort(function(a, b) { return b.s.count - a.s.count; });
+    if (sites.length > 1) {
+      h += '<div style="overflow-x:auto;"><table class="cmd-table"><thead><tr><th>אתר</th><th>חציון</th><th>ממוצע</th><th>נמדדו</th></tr></thead><tbody>';
+      for (var si = 0; si < sites.length && si < 10; si++) {
+        h += '<tr><td style="font-weight:600;">' + escapeHtml(sites[si].name) + '</td><td>' + fmtStaySec(sites[si].s.median) + '</td><td>' + fmtStaySec(sites[si].s.avg) + '</td><td>' + sites[si].s.count + '</td></tr>';
+      }
+      h += '</tbody></table></div>';
+    }
+    h += '<div style="font-size:10px;color:#94a3b8;margin-top:6px;">מהרשמת הנבחן ועד לחיצת "התחל מבחן" — כולל ההמתנה לאישור הבוחן</div>';
     host.innerHTML = h;
   }
 
@@ -6269,6 +6359,22 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       if (item.questionId) {
         html += '<div style="margin-top:2px;font-size:10px;color:#94a3b8;">id: ' + item.questionId + '</div>';
       }
+      // Per-language failure chips — shown only when a non-Hebrew language
+      // appears, so Hebrew-only questions stay clean. A question failing
+      // mostly in one language is a translation-bug signal.
+      if (item.langCounts) {
+        var lcKeys = Object.keys(item.langCounts);
+        var hasNonHe = false;
+        for (var lk = 0; lk < lcKeys.length; lk++) { if (lcKeys[lk] !== 'עברית') { hasNonHe = true; break; } }
+        if (hasNonHe && lcKeys.length > 0) {
+          lcKeys.sort(function(a, b) { return item.langCounts[b] - item.langCounts[a]; });
+          var lcHtml = '';
+          for (var lk2 = 0; lk2 < lcKeys.length; lk2++) {
+            lcHtml += '<span style="display:inline-block;background:#e8f0fe;color:#1e40af;border-radius:8px;padding:0 6px;margin-left:4px;font-size:10px;font-weight:700;">' + escapeHtml(lcKeys[lk2]) + ' ' + item.langCounts[lcKeys[lk2]] + '</span>';
+          }
+          html += '<div style="margin-top:3px;" title="פילוח כשלים לפי שפת המבחן — ריכוז בשפה אחת עשוי להעיד על בעיית תרגום">' + lcHtml + '</div>';
+        }
+      }
       html += '</td>';
       // Bar + count cell
       html += '<td style="padding:6px 8px;vertical-align:middle;">';
@@ -6389,7 +6495,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     var keys = Object.keys(section);
     if (keys.length === 0) { document.getElementById('cmdBreakdownContent').innerHTML = '<p style="color:#94a3b8;">אין נתונים</p>'; return; }
 
-    var tabLabels = { byExaminer: 'בוחן', bySite: 'אתר', byLicense: 'דרגה', byPopulation: 'אוכלוסיה', byLanguage: 'שפה', byAttempt: 'ניסיון' };
+    var tabLabels = { byExaminer: 'בוחן', bySite: 'אתר', byLicense: 'דרגה', byPopulation: 'אוכלוסיה', byLanguage: 'שפה', byAttempt: 'ניסיון', byDevice: 'מכשיר' };
     var dims = SUB_DIMS[tab] || [];
     var tabChar = tab.charAt(2);
     var html = '<table class="cmd-table"><thead><tr>';
@@ -6436,6 +6542,12 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       }
     }
     html += '</tbody></table>';
+    // Device tab gets a compact audio-vs-regular companion table — answers
+    // "do audio exams pass less?" without a tab of its own.
+    if (tab === 'byDevice' && data.byAudio && Object.keys(data.byAudio).length > 0) {
+      html += '<div style="margin-top:14px;font-weight:700;font-size:13px;color:#334155;">🔊 מבחני שמע מול רגיל</div>';
+      html += buildSubTable(data.byAudio, 'מצב');
+    }
     document.getElementById('cmdBreakdownContent').innerHTML = html;
   }
 
