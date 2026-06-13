@@ -1862,6 +1862,101 @@
   // (mirrors resultsSearchTerm). Search matches against name and full idNumber.
   var pendingSearchTerm = '';
 
+  // Modal: examiner adds time to a running exam (evacuation / technical / medical).
+  // Amount = a quick preset OR a typed value; a reason is mandatory (saved server-side
+  // to the 'הארכות זמן' audit sheet). On success the examinee's deadline extends
+  // within one poll (~6s) and a badge shows on the dashboard.
+  function openAddTimeModal(item) {
+    var ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100000;display:flex;align-items:center;justify-content:center;direction:rtl;padding:12px;';
+    ov.innerHTML =
+      '<div style="background:#fff;border-radius:14px;padding:22px;max-width:430px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,.3);max-height:92vh;overflow:auto;">' +
+        '<h3 style="margin:0 0 4px;font-size:1.15em;">הוספת זמן לנבחן</h3>' +
+        '<div style="color:#475569;font-size:.9em;margin-bottom:16px;">' + escHtml(item.name) + ' · ת.ז. ....' + String(item.idNumber).slice(-4) + '</div>' +
+        '<div style="font-weight:700;margin-bottom:6px;">כמה דקות להוסיף?</div>' +
+        '<div id="atPresets" style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap;">' +
+          '<button type="button" class="at-preset" data-m="5">+5</button>' +
+          '<button type="button" class="at-preset" data-m="10">+10</button>' +
+          '<button type="button" class="at-preset" data-m="15">+15</button>' +
+          '<button type="button" class="at-preset" data-m="20">+20</button>' +
+        '</div>' +
+        '<input id="atCustom" type="number" min="1" max="180" inputmode="numeric" placeholder="או הקלד מספר דקות" style="width:100%;padding:9px;border:1px solid #cbd5e1;border-radius:8px;font-size:1em;margin-bottom:16px;box-sizing:border-box;">' +
+        '<div style="font-weight:700;margin-bottom:6px;">סיבה (חובה)</div>' +
+        '<div id="atReasons" style="display:flex;flex-direction:column;gap:7px;margin-bottom:8px;">' +
+          '<label style="cursor:pointer;"><input type="radio" name="atReason" value="פינוי למרחב מוגן"> פינוי למרחב מוגן</label>' +
+          '<label style="cursor:pointer;"><input type="radio" name="atReason" value="תקלה טכנית"> תקלה טכנית</label>' +
+          '<label style="cursor:pointer;"><input type="radio" name="atReason" value="צורך רפואי"> צורך רפואי</label>' +
+          '<label style="cursor:pointer;"><input type="radio" name="atReason" value="אחר"> אחר</label>' +
+        '</div>' +
+        '<input id="atReasonOther" type="text" maxlength="120" placeholder="פירוט הסיבה" style="display:none;width:100%;padding:9px;border:1px solid #cbd5e1;border-radius:8px;font-size:1em;margin-bottom:16px;box-sizing:border-box;">' +
+        '<div id="atError" style="color:#dc2626;font-size:.85em;margin:0 0 10px;display:none;"></div>' +
+        '<div style="display:flex;gap:8px;justify-content:flex-end;">' +
+          '<button type="button" id="atCancel" style="padding:9px 16px;border:1px solid #cbd5e1;background:#fff;border-radius:8px;cursor:pointer;">ביטול</button>' +
+          '<button type="button" id="atConfirm" style="padding:9px 18px;border:none;background:#16a34a;color:#fff;border-radius:8px;cursor:pointer;font-weight:800;">הוסף זמן</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(ov);
+
+    var selectedMinutes = 0;
+    var customEl = ov.querySelector('#atCustom');
+    var presetBtns = ov.querySelectorAll('.at-preset');
+    function clearPresetHighlight() {
+      for (var k = 0; k < presetBtns.length; k++) { presetBtns[k].style.borderColor = '#cbd5e1'; presetBtns[k].style.background = '#fff'; }
+    }
+    for (var b = 0; b < presetBtns.length; b++) {
+      presetBtns[b].style.cssText = 'flex:1;min-width:62px;padding:11px;border:2px solid #cbd5e1;background:#fff;border-radius:8px;cursor:pointer;font-weight:700;font-size:1.05em;';
+      presetBtns[b].addEventListener('click', function() {
+        selectedMinutes = Number(this.getAttribute('data-m'));
+        customEl.value = '';
+        clearPresetHighlight();
+        this.style.borderColor = '#16a34a'; this.style.background = '#dcfce7';
+      });
+    }
+    customEl.addEventListener('input', function() { selectedMinutes = 0; clearPresetHighlight(); });
+
+    var otherEl = ov.querySelector('#atReasonOther');
+    var reasonRadios = ov.querySelectorAll('input[name="atReason"]');
+    for (var r = 0; r < reasonRadios.length; r++) {
+      reasonRadios[r].addEventListener('change', function() {
+        var isOther = (this.value === 'אחר');
+        otherEl.style.display = isOther ? 'block' : 'none';
+        if (isOther) otherEl.focus();
+      });
+    }
+
+    function close() { if (ov.parentNode) ov.parentNode.removeChild(ov); }
+    ov.querySelector('#atCancel').addEventListener('click', close);
+    ov.addEventListener('click', function(e) { if (e.target === ov) close(); });
+
+    ov.querySelector('#atConfirm').addEventListener('click', function() {
+      var errEl = ov.querySelector('#atError');
+      var minutes = selectedMinutes || Number(customEl.value) || 0;
+      if (!(minutes > 0) || minutes > 180) { errEl.textContent = 'בחר או הקלד מספר דקות תקין (1–180).'; errEl.style.display = 'block'; return; }
+      var checked = ov.querySelector('input[name="atReason"]:checked');
+      if (!checked) { errEl.textContent = 'יש לבחור סיבה.'; errEl.style.display = 'block'; return; }
+      var reason = checked.value;
+      if (reason === 'אחר') {
+        reason = (otherEl.value || '').trim();
+        if (!reason) { errEl.textContent = 'יש לפרט את הסיבה.'; errEl.style.display = 'block'; return; }
+      }
+      var confirmBtn = this;
+      confirmBtn.disabled = true; confirmBtn.textContent = 'מוסיף…';
+      apiGet({ action: 'addExamTime', sessionCode: sessionCode, idNumber: item.idNumber, minutes: minutes, reason: reason }).then(function(data) {
+        if (data && data.status === 'ok') {
+          close();
+          alert('נוספו ' + data.addedMinutes + ' דקות ל' + item.name + '.\nסך תוספת הזמן: ' + data.totalExtraMinutes + ' דקות.');
+          pollDashboard();
+        } else {
+          errEl.textContent = 'שגיאה: ' + ((data && data.message) || 'לא ידוע'); errEl.style.display = 'block';
+          confirmBtn.disabled = false; confirmBtn.textContent = 'הוסף זמן';
+        }
+      }).catch(function() {
+        errEl.textContent = 'שגיאת תקשורת — נסה שוב.'; errEl.style.display = 'block';
+        confirmBtn.disabled = false; confirmBtn.textContent = 'הוסף זמן';
+      });
+    });
+  }
+
   function updatePendingList(pending) {
     var list = document.getElementById('pendingList');
     var badge = document.getElementById('pendingBadge');
@@ -2149,6 +2244,7 @@
           var examSec = 2400; // default 40 minutes
           if (item.timeExtension === '1.25') examSec = 3000; // 50 min
           else if (item.timeExtension === '1.5') examSec = 3600; // 60 min
+          examSec += (Number(item.extraMinutes) || 0) * 60; // mid-exam grants pushed the deadline out
           isOvertime = diff > examSec;
         }
         var langBadge = '';
@@ -2190,6 +2286,10 @@
         } else if (item.timeExtension === '1.5') {
           timeBadge = ' <span style="background:#ede9fe;color:#6d28d9;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">⏱ +50%</span>';
         }
+        var extraTimeBadge = '';
+        if (item.extraMinutes && item.extraMinutes > 0) {
+          extraTimeBadge = ' <span style="background:#dcfce7;color:#166534;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:700;" title="זמן שנוסף תוך כדי המבחן">⏱ +' + item.extraMinutes + ' דק׳ (תוך־כדי)</span>';
+        }
         var overtimeWarning = '';
         var elapsedStyle = '';
         if (isOvertime) {
@@ -2220,7 +2320,7 @@
           warnBadge = ' <span' + warnTitle + ' style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:700;">⚠ ' + item.warnings + ' אזהרות</span>';
         }
         li.innerHTML =
-          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + dqCountBadge + warnBadge + timeBadge + langBadge + popBadge + (item.site && item.site !== currentSite ? ' <span style="background:#dbeafe;color:#1e40af;padding:1px 7px;border-radius:8px;font-size:0.8em;font-weight:700;">📍 ' + escHtml(item.site) + '</span>' : '') + licBadge + audioBadge + extScreenBadgeActive + '</div>' +
+          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + dqCountBadge + warnBadge + timeBadge + extraTimeBadge + langBadge + popBadge + (item.site && item.site !== currentSite ? ' <span style="background:#dbeafe;color:#1e40af;padding:1px 7px;border-radius:8px;font-size:0.8em;font-weight:700;">📍 ' + escHtml(item.site) + '</span>' : '') + licBadge + audioBadge + extScreenBadgeActive + '</div>' +
           '<div class="person-meta">ת.ז. ....' + id4 + (elapsed ? ' | <span style="' + elapsedStyle + '">זמן: ' + elapsed + '</span>' : '') + overtimeWarning + '</div>' +
           dqBanner + '</div>' +
           '<div class="person-actions"></div>';
@@ -2295,6 +2395,13 @@
           });
           actions.appendChild(forceBtn);
         }
+
+        var addTimeBtn = document.createElement('button');
+        addTimeBtn.style.cssText = 'background:#16a34a;color:#fff;border:none;border-radius:8px;padding:6px 12px;cursor:pointer;font-size:0.85em;margin-left:6px;font-weight:700;';
+        addTimeBtn.textContent = '➕ זמן';
+        addTimeBtn.title = 'הוסף זמן לנבחן (פינוי למרחב מוגן / תקלה / רפואי)';
+        addTimeBtn.addEventListener('click', function() { openAddTimeModal(item); });
+        actions.appendChild(addTimeBtn);
 
         var dqBtn = document.createElement('button');
         dqBtn.className = 'btn-disqualify';

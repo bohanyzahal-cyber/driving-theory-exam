@@ -967,7 +967,8 @@
         examStartTime: examStartTime,
         autoReadEnabled: autoReadEnabled,
         examTimeMinutes: examTimeMinutes,
-        currentDQEventId: currentDQEventId
+        currentDQEventId: currentDQEventId,
+        appliedExtraMinutes: appliedExtraMinutes
       }));
     } catch(e) {}
   }
@@ -2858,10 +2859,13 @@
       apiGet({ action: 'getExamStatus', sessionCode: sessionCode, idNumber: examineeData.idNumber, examineeToken: examineeToken })
         .then(function(data) {
           if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
-          if (data && data.status === 'ok' && (data.examStatus === 'disqualified' || data.examStatus === 'dq_confirmed')) {
-            tabSwitchDQConfirmed = true;
-            try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
-            showDQScreen();
+          if (data && data.status === 'ok') {
+            if (typeof data.extraMinutes === 'number') applyExtraMinutes(data.extraMinutes);
+            if (data.examStatus === 'disqualified' || data.examStatus === 'dq_confirmed') {
+              tabSwitchDQConfirmed = true;
+              try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+              showDQScreen();
+            }
           }
         })
         .catch(function() {});
@@ -3417,7 +3421,7 @@
       updateTimerDisplay();
       if (timeRemaining <= 0) {
         clearInterval(timerInterval); timerInterval = null;
-        stopSpeaking(); renderExamDone();
+        onTimerExpired();
       }
     }, 1000);
 
@@ -3433,8 +3437,71 @@
     updateTimerDisplay();
     if (timeRemaining <= 0) {
       clearInterval(timerInterval); timerInterval = null;
-      stopSpeaking(); renderExamDone();
+      onTimerExpired();
     }
+  }
+
+  // ===== Examiner-granted extra time (mid-exam) =====
+  // The examiner can add minutes to a RUNNING exam (evacuation to a protected space,
+  // technical/medical need). getExamStatus returns the CUMULATIVE granted minutes;
+  // recompute the deadline from the fixed start so this is idempotent and refresh-
+  // safe, and only ever EXTEND (never shrink) the deadline.
+  var appliedExtraMinutes = 0;
+  function applyExtraMinutes(totalExtra) {
+    totalExtra = Number(totalExtra) || 0;
+    if (totalExtra <= appliedExtraMinutes) return;        // nothing new granted
+    var delta = totalExtra - appliedExtraMinutes;
+    appliedExtraMinutes = totalExtra;
+    if (examStartTime) {
+      var target = examStartTime + (examTimeMinutes + totalExtra) * 60 * 1000;
+      if (target > examDeadline) examDeadline = target;   // only ever extend
+    } else {
+      examDeadline = (examDeadline || Date.now()) + delta * 60 * 1000;
+    }
+    timeRemaining = Math.max(0, Math.ceil((examDeadline - Date.now()) / 1000));
+    updateTimerDisplay();
+    try { saveActiveExam(); } catch (e) {}                // persist the extended deadline
+    showExtraTimeNotice(delta, totalExtra);
+  }
+
+  // Green banner confirming the examinee received more time (auto-hides).
+  function showExtraTimeNotice(delta, total) {
+    try {
+      var el = document.getElementById('extraTimeNotice');
+      if (!el) {
+        if (!document.body) return;
+        el = document.createElement('div');
+        el.id = 'extraTimeNotice';
+        el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99998;background:#16a34a;color:#fff;font-size:15px;font-weight:800;text-align:center;padding:10px 12px;box-shadow:0 2px 8px rgba(0,0,0,.25);direction:rtl;';
+        document.body.appendChild(el);
+      }
+      el.textContent = '⏱ הבוחן הוסיף ' + delta + ' דקות. סך תוספת הזמן: ' + total + ' דקות.';
+      el.style.display = 'block';
+      if (window._extraTimeHideT) clearTimeout(window._extraTimeHideT);
+      window._extraTimeHideT = setTimeout(function() { if (el) el.style.display = 'none'; }, 12000);
+    } catch (e) {}
+  }
+
+  // Timer hit zero. Before auto-submitting, do ONE final check for examiner-granted
+  // extra time — an evacuation extension may have been issued while the device was
+  // backgrounded (poll throttled) and the alarm sounded near the end. If extra time
+  // now pushes the deadline out, resume; otherwise submit (offline → submit too,
+  // since the result is saved locally and retried).
+  var timerExpiryChecking = false;
+  function onTimerExpired() {
+    if (timerExpiryChecking || examSubmitted) return;
+    timerExpiryChecking = true;
+    apiGet({ action: 'getExamStatus', sessionCode: sessionCode, idNumber: examineeData.idNumber, examineeToken: examineeToken })
+      .then(function(data) {
+        if (data && data.status === 'ok' && typeof data.extraMinutes === 'number') applyExtraMinutes(data.extraMinutes);
+      })
+      .catch(function() {})
+      .then(function() {
+        timerExpiryChecking = false;
+        if (examSubmitted) return;
+        if (examDeadline && Date.now() < examDeadline) startResumedTimer();  // extra time granted — keep going
+        else { stopSpeaking(); renderExamDone(); }
+      });
   }
 
   function updateTimerDisplay() {
@@ -4494,6 +4561,7 @@
         shuffledOrders = activeExam.shuffledOrders;
         examDeadline = activeExam.examDeadline;
         examStartTime = activeExam.examStartTime;
+        appliedExtraMinutes = activeExam.appliedExtraMinutes || 0;
         autoReadEnabled = activeExam.autoReadEnabled || false;
         if (activeExam.examTimeMinutes) examTimeMinutes = activeExam.examTimeMinutes;
         if (activeExam.currentDQEventId) currentDQEventId = activeExam.currentDQEventId;

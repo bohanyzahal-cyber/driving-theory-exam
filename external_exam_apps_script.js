@@ -14,6 +14,7 @@ var SHEET_HEADERS = {
   'סשנים': ['קוד', 'בוחן ת.ז.', 'שם בוחן', 'אתר', 'כיתה', 'דרגה', 'שפה', 'מצב שמע', 'זמן יצירה', 'תקף עד', 'פעיל', 'כמויות JSON', 'מאושרים JSON', 'בוחן אחראי'],
   'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה', 'דרגה', 'שמע', 'הארכת זמן', 'התחלת מבחן', 'טוקן נבחן', 'ספירת DQ', 'מסך נוסף'],
   'תוצאות': ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר', 'כיתה', 'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ', 'אוכלוסיה', 'תוקן?', 'שמע', 'מאומת', 'חשוד', 'dqEventId', 'תוקן ע"י', 'סיבת תיקון', 'תאריך תיקון', 'מסלול שפות', 'מכשיר'],
+  'הארכות זמן': ['תאריך', 'קוד סשן', 'ת.ז.', 'שם', 'דקות', 'סיבה', 'בוחן'],
   'מורים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד'],
   'כיתות': ['קוד כיתה', 'שם כיתה', 'מורה ת.ז.', 'שם מורה', 'דרגה', 'תאריך יצירה', 'פעיל'],
   'תלמידי כיתות': ['קוד כיתה', 'שם תלמיד', 'מזהה תלמיד', 'תאריך הצטרפות'],
@@ -452,6 +453,9 @@ function doGet(e) {
 
       case 'getExamStatus':
         return handleGetExamStatus(p);
+
+      case 'addExamTime':
+        return handleAddExamTime(p);
 
       case 'cancelDisqualify':
         return handleCancelDisqualify(p);
@@ -1718,6 +1722,18 @@ function handleExaminerDashboard(p) {
   var pending = [];
   var active = [];
 
+  // Sum of mid-exam time grants per examinee (minutes) — extends the stale/timeout
+  // threshold below and is shown as a badge in the active list. One read, by id.
+  var extraMinById = {};
+  try {
+    var extData = getSheet('הארכות זמן').getDataRange().getValues();
+    for (var exr = 1; exr < extData.length; exr++) {
+      if (String(extData[exr][1]).trim() !== code) continue;
+      var exk = normalizeId(extData[exr][2]);
+      extraMinById[exk] = (extraMinById[exk] || 0) + (Number(extData[exr][4]) || 0);
+    }
+  } catch (e) {}
+
   // Auto-cleanup: detect stale in_exam entries that already have a result or are way past exam time
   var now = new Date();
   var BASE_EXAM_MS = 40 * 60 * 1000;
@@ -1737,7 +1753,7 @@ function handleExaminerDashboard(p) {
     // Dynamic stale threshold: exam time (based on extension) + buffer
     var ciExt = parseFloat(pendData[ci][10]) || 1;
     if (ciExt !== 1.25 && ciExt !== 1.5) ciExt = 1;
-    var maxMs = Math.round(BASE_EXAM_MS * ciExt) + STALE_BUFFER_MS;
+    var maxMs = Math.round(BASE_EXAM_MS * ciExt) + STALE_BUFFER_MS + ((extraMinById[normalizeId(ciId)] || 0) * 60 * 1000);
     var isStale = regTime && (now.getTime() - regTime.getTime() > maxMs);
     // Only someone who actually STARTED (in_exam) can time out into a fail. A
     // stale 'approved' never started → never fabricate a 0/30 fail for it; it is
@@ -1842,7 +1858,7 @@ function handleExaminerDashboard(p) {
     var warnCount = (pendData[i].length > 15) ? (Number(pendData[i][15]) || 0) : 0;
     var lastWarn = (pendData[i].length > 16) ? String(pendData[i][16] || '') : '';
     var idNorm = normalizeId(pendData[i][1]);
-    var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], examStartTime: pendData[i][11] || '', status: s, language: pendData[i][6] || '', population: pendData[i][7] || '', site: (pendData[i].length > 17) ? (pendData[i][17] || '') : '', license: pendData[i][8] || '', audioMode: pendData[i][9] || 'off', timeExtension: String(pendData[i][10] || ''), dqCount: dqCount, warnings: warnCount, lastWarning: lastWarn, attemptsToday: attemptsTodayById[idNorm] || 0, hasExtendedScreen: hasExtScreen };
+    var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], examStartTime: pendData[i][11] || '', status: s, language: pendData[i][6] || '', population: pendData[i][7] || '', site: (pendData[i].length > 17) ? (pendData[i][17] || '') : '', license: pendData[i][8] || '', audioMode: pendData[i][9] || 'off', timeExtension: String(pendData[i][10] || ''), dqCount: dqCount, warnings: warnCount, lastWarning: lastWarn, attemptsToday: attemptsTodayById[idNorm] || 0, hasExtendedScreen: hasExtScreen, extraMinutes: extraMinById[idNorm] || 0 };
     if (s === 'waiting' || s === 'approved') {
       pendingById[idNorm] = item; // ascending loop → latest row wins
     } else {
@@ -2002,10 +2018,72 @@ function handleGetExamStatus(p) {
       if (storedToken && p.examineeToken && String(p.examineeToken).trim() !== storedToken) {
         return jsonResponse({ status: 'error', examineeTokenError: 'mismatch' });
       }
-      return jsonResponse({ status: 'ok', examStatus: String(data[i][5] || '').trim() });
+      return jsonResponse({ status: 'ok', examStatus: String(data[i][5] || '').trim(), extraMinutes: sumExtraMinutes(p.sessionCode, p.idNumber) });
     }
   }
   return jsonResponse({ status: 'ok', examStatus: 'not_found' });
+}
+
+// ===== Mid-exam time addition (security evacuation / technical / medical) =====
+// The examiner grants extra minutes to a RUNNING exam. Every grant is appended to
+// the 'הארכות זמן' audit sheet with a mandatory reason, so the record is preserved.
+// getExamStatus + the dashboard read the SUM of grants per examinee:
+//   - the examinee extends examDeadline (idempotently: start + base + sum)
+//   - the dashboard pushes back the stale/timeout-fail threshold by the same sum
+// Examiner-authenticated only (mirrors handleDisqualify path A).
+function sumExtraMinutes(sessionCode, idNumber) {
+  try {
+    var d = getSheet('הארכות זמן').getDataRange().getValues();
+    var total = 0;
+    for (var i = 1; i < d.length; i++) {
+      if (String(d[i][1]).trim() === String(sessionCode).trim() && normalizeId(d[i][2]) === normalizeId(idNumber)) {
+        total += Number(d[i][4]) || 0;
+      }
+    }
+    return total;
+  } catch (e) { return 0; }
+}
+
+function handleAddExamTime(p) {
+  if (!p.sessionCode || !p.idNumber) return jsonResponse({ status: 'error', message: 'חסר מזהה' });
+  // Examiner auth — must hold a valid token AND own the session (same as DQ).
+  if (!verifyToken(p.examinerId, p.token)) {
+    return jsonResponse({ status: 'error', message: 'טוקן בוחן לא תקין', tokenExpired: true });
+  }
+  if (!verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+    return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
+  }
+  var minutes = Math.round(Number(p.minutes) || 0);
+  if (!(minutes > 0) || minutes > 180) {
+    return jsonResponse({ status: 'error', message: 'מספר דקות לא תקין' });
+  }
+  var reason = String(p.reason || '').trim();
+  if (!reason) return jsonResponse({ status: 'error', message: 'חובה לציין סיבה' });
+
+  // Confirm the examinee exists in this session and grab their name for the audit row.
+  var pendData = getSheet('ממתינים').getDataRange().getValues();
+  var name = '', found = false;
+  for (var j = pendData.length - 1; j >= 1; j--) {
+    if (String(pendData[j][0]).trim() === String(p.sessionCode).trim() && normalizeId(pendData[j][1]) === normalizeId(p.idNumber)) {
+      name = pendData[j][2] || '';
+      found = true;
+      break;
+    }
+  }
+  if (!found) return jsonResponse({ status: 'error', message: 'נבחן לא נמצא בסשן' });
+
+  // Examiner display name for the audit row.
+  var examinerName = '';
+  try {
+    var sData = getSheet('סשנים').getDataRange().getValues();
+    for (var s = 1; s < sData.length; s++) {
+      if (String(sData[s][0]).trim() === String(p.sessionCode).trim()) { examinerName = sData[s][2] || ''; break; }
+    }
+  } catch (e) {}
+
+  getSheet('הארכות זמן').appendRow([new Date(), p.sessionCode, p.idNumber, name, minutes, reason, examinerName]);
+
+  return jsonResponse({ status: 'ok', addedMinutes: minutes, totalExtraMinutes: sumExtraMinutes(p.sessionCode, p.idNumber) });
 }
 
 function handleDisqualify(p) {
