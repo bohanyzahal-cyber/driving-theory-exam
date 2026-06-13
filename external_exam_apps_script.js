@@ -22,6 +22,15 @@ var SHEET_HEADERS = {
   'התקדמות תלמידים': ['שם תלמיד', 'קוד כיתה', 'מפתח', 'streak', 'wrong_qs', 'history', 'עדכון אחרון']
 };
 
+// Sites used ONLY for system testing by examiners (not real exams). Their rows are
+// EXCLUDED from the commander dashboard statistics so test data doesn't pollute the
+// real numbers. They are NOT filtered from the live examiner dashboard — a tester
+// still needs to see their own test session. Add more names here if needed.
+var TEST_SITES = ['בדיקת נתונים'];
+function isTestSite(site) {
+  return TEST_SITES.indexOf(String(site || '').trim()) !== -1;
+}
+
 function getSheet(name) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName(name);
@@ -4602,6 +4611,7 @@ function handleCommanderDashboard(p) {
 
     var examinerName = String(resData[r][9] || '');
     var siteName = String(resData[r][10] || '');
+    if (isTestSite(siteName)) continue;   // system-test site — exclude from ALL commander stats (current + previous window)
     var license = String(resData[r][4] || '');
     var population = String(resData[r][19] || '');
     var passedStr = String(resData[r][7] || '');
