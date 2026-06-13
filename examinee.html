@@ -1819,6 +1819,9 @@
   // Second half of doStartExam — runs after we have the questions from server.
   function _finishStartingExam(exam, license, language) {
     activeQuestions = exam;
+    // Warm the offline image cache now, while we're definitely online (questions
+    // just arrived from the server). Non-blocking — the exam start proceeds.
+    prefetchExamImages(activeQuestions);
     currentIndex = 0;
     userAnswers = new Array(TOTAL_QUESTIONS);
     for (var ui = 0; ui < TOTAL_QUESTIONS; ui++) userAnswers[ui] = null;
@@ -3553,6 +3556,35 @@
       if (u.hostname !== 'www.gov.il' && u.hostname !== 'gov.il') return originalUrl;
       return IMAGE_PROXY_BASE.replace(/\/$/, '') + '/img' + u.pathname;
     } catch(e) { return originalUrl; }
+  }
+
+  // Prefetch all question images into the Cache API at exam start (while online)
+  // so they still render if the connection drops mid-exam (risk #5: an image
+  // question you can't see while the clock keeps running). Fire-and-forget,
+  // non-blocking, best-effort. The SW (sw-examinee.js) serves these from cache
+  // when the network is unavailable. Caches BOTH URLs buildResilientImage may
+  // request (proxy first, then direct) so whichever the <img> uses resolves.
+  function prefetchExamImages(questions) {
+    if (!questions || !('caches' in window)) return;
+    try {
+      caches.open('exam-images-v1').then(function(cache) {
+        for (var i = 0; i < questions.length; i++) {
+          var iu = questions[i] && questions[i].imageUrl;
+          if (!iu || !iu.trim()) continue;
+          var urls = [toProxyUrl(iu), iu];
+          for (var u = 0; u < urls.length; u++) {
+            if (u === 1 && urls[1] === urls[0]) continue; // de-dupe (non-gov URL)
+            (function(url) {
+              // no-cors so cross-origin gov.il/proxy works; opaque responses are
+              // cacheable via Cache.put and serveable to <img>.
+              fetch(url, { mode: 'no-cors', cache: 'no-store' })
+                .then(function(resp) { if (resp) cache.put(url, resp); })
+                .catch(function() {});
+            })(urls[u]);
+          }
+        }
+      }).catch(function() {});
+    } catch(e) {}
   }
 
   function buildResilientImage(originalUrl) {
