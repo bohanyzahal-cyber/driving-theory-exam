@@ -1088,7 +1088,25 @@
     return true;
   }
 
-  function apiGet(params) {
+  // ===== Bounded fetch (risk #3) =====
+  // Plain fetch() has no timeout — on a "soft" failure (captive portal, half-open
+  // connection, a stuck server) it can hang for the browser default (up to ~2 min),
+  // freezing the two calls that matter most: loading the exam and submitting the
+  // result. Cap every API call so it fails fast and hands off to the existing
+  // retry / "try again" paths. 30s is generous enough that a slow-but-real Apps
+  // Script response (cold starts included) is never aborted — only true hangs are.
+  var API_TIMEOUT_MS = 30000;
+  function fetchWithTimeout(url, opts, timeoutMs) {
+    opts = opts || {};
+    if (typeof AbortController === 'undefined') return fetch(url, opts); // very old browser
+    var ctrl = new AbortController();
+    opts.signal = ctrl.signal;
+    var timer = setTimeout(function() { try { ctrl.abort(); } catch(e) {} }, timeoutMs || API_TIMEOUT_MS);
+    function clear() { clearTimeout(timer); }
+    return fetch(url, opts).then(function(r) { clear(); return r; }, function(err) { clear(); throw err; });
+  }
+
+  function apiGet(params, timeoutMs) {
     var qs = ['origin=' + encodeURIComponent(API_ORIGIN)];
     if (shouldAttachExamineeToken(params && params.action) && !params.examineeToken) {
       params.examineeToken = examineeToken;
@@ -1097,7 +1115,7 @@
       if (params.hasOwnProperty(k)) qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
     }
     qs.push('_t=' + Date.now());
-    return fetch(API_URL + '?' + qs.join('&'), { cache: 'no-store' }).then(function(r) {
+    return fetchWithTimeout(API_URL + '?' + qs.join('&'), { cache: 'no-store' }, timeoutMs).then(function(r) {
       return r.text().then(function(txt) {
         try {
           return JSON.parse(txt);
@@ -1115,7 +1133,7 @@
     if (shouldAttachExamineeToken(payload.action) && !payload.examineeToken) {
       payload.examineeToken = examineeToken;
     }
-    return fetch(API_URL, {
+    return fetchWithTimeout(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify(payload)
@@ -1770,7 +1788,7 @@
       language: language,
       license: license,
       includeTranslations: 'true'  // pre-fetch all 7 languages so switches are instant
-    }).then(function(resp) {
+    }, 45000).then(function(resp) {
       hideLoadingOverlay();
       // Cache translations for instant mid-exam language switching
       if (resp && resp.translations) window._examTranslations = resp.translations;
@@ -4127,6 +4145,10 @@
       }
     } catch(e2) {}
 
+    // Result is persisted locally but NOT yet on the server — arm the survival
+    // guard so closing the tab before confirmation warns + fires a last-gasp send.
+    armPendingResultGuard();
+
     showSubmitStatus('sending');
     submitWithRetry(payload, 3, wrongData);
 
@@ -4203,6 +4225,100 @@
     }
   }
 
+  // ========== Pending-result survival guard (risk #1: trapped result) ==========
+  // A result that finished while offline lives ONLY in localStorage on this device
+  // until it reaches the server. If the examinee closes the tab before the network
+  // returns, it is stranded — and lost if the device is reused/wiped. Three best-
+  // effort, idempotent nets (the server dedups submitResult, so a double-send is
+  // harmless — far better than a lost result):
+  //   1. beforeunload confirmation dialog while a result is still unsent.
+  //   2. last-gasp sendBeacon of the REAL result on close/pagehide.
+  //   3. an 'online' listener that flushes the instant connectivity returns.
+  function hasAnyPendingResult() {
+    try {
+      for (var i = 0; i < localStorage.length; i++) {
+        var k = localStorage.key(i);
+        if (k && k.indexOf('pendingResult_') === 0) return true;
+      }
+    } catch(e) {}
+    return false;
+  }
+
+  // sendBeacon every locally-stored unsent result. Each payload self-authenticates
+  // (it carries its own baked examineeToken), so a leftover result from a previous
+  // examinee on a shared device is rescued too.
+  function beaconAllPendingResults() {
+    try {
+      if (!navigator.sendBeacon) return;
+      for (var i = 0; i < localStorage.length; i++) {
+        var k = localStorage.key(i);
+        if (!k || k.indexOf('pendingResult_') !== 0) continue;
+        var raw = localStorage.getItem(k);
+        if (!raw) continue;
+        try { navigator.sendBeacon(API_URL, new Blob([raw], { type: 'application/json' })); } catch(ex) {}
+      }
+    } catch(e) {}
+  }
+
+  // Flush over a normal fetch the moment the OS reports the network is back —
+  // much faster than the 15s slow-retry loop, shrinking the danger window.
+  window.addEventListener('online', function() {
+    try { resendAllPendingResults(); } catch(e) {}
+  });
+
+  // pagehide is the reliable "page is really going away" event (fires on mobile /
+  // bfcache where beforeunload is suppressed). Always attempt the last-gasp beacon.
+  window.addEventListener('pagehide', function() {
+    if (hasAnyPendingResult()) beaconAllPendingResults();
+  });
+
+  // beforeunload confirmation — armed only on the done screen while a result is
+  // unsent, so it never nags during normal pre-exam navigation.
+  var pendingResultGuardArmed = false;
+  function pendingResultBeforeUnload(e) {
+    if (!hasAnyPendingResult()) return;       // already delivered — let them leave
+    beaconAllPendingResults();                // one more send as the tab closes
+    e.preventDefault();
+    e.returnValue = 'התוצאה עדיין נשלחת לשרת. אם תסגור עכשיו היא עלולה לא להישמר — המתן לאישור הירוק או קרא לבוחן.';
+    return e.returnValue;
+  }
+  function armPendingResultGuard() {
+    if (pendingResultGuardArmed) return;
+    pendingResultGuardArmed = true;
+    window.addEventListener('beforeunload', pendingResultBeforeUnload);
+  }
+  function disarmPendingResultGuard() {
+    if (!pendingResultGuardArmed) return;
+    pendingResultGuardArmed = false;
+    try { window.removeEventListener('beforeunload', pendingResultBeforeUnload); } catch(e) {}
+  }
+
+  // ===== Examinee offline indicator (risk #4) =====
+  // The examiner dashboard already shows an offline banner after failed polls; the
+  // examinee had nothing — a dropped connection looked like an unexplained stall
+  // before the exam and a silent risk during it. Purely informational: the exam
+  // runs locally and keeps working offline, so the wording reassures and, above
+  // all, tells the examinee NOT to close the page (the one thing that strands a
+  // result). Toggled by the OS online/offline events.
+  var _offlineBannerEl = null;
+  function showExamineeOffline() {
+    if (!document.body) { document.addEventListener('DOMContentLoaded', showExamineeOffline); return; }
+    if (!_offlineBannerEl) {
+      _offlineBannerEl = document.createElement('div');
+      _offlineBannerEl.id = 'examineeOfflineBanner';
+      _offlineBannerEl.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#b91c1c;color:#fff;font-size:14px;font-weight:700;text-align:center;padding:8px 12px;box-shadow:0 2px 8px rgba(0,0,0,.25);direction:rtl;';
+      _offlineBannerEl.textContent = '⚠️ אין חיבור לאינטרנט — אפשר להמשיך, הנתונים יישלחו אוטומטית כשהחיבור יחזור. אל תסגור את הדף.';
+      document.body.appendChild(_offlineBannerEl);
+    }
+    _offlineBannerEl.style.display = 'block';
+  }
+  function hideExamineeOffline() {
+    if (_offlineBannerEl) _offlineBannerEl.style.display = 'none';
+  }
+  window.addEventListener('offline', showExamineeOffline);
+  window.addEventListener('online', hideExamineeOffline);
+  if (!navigator.onLine) showExamineeOffline();
+
   // Guards the SAME pending result from being sent twice CONCURRENTLY. On page
   // load two recovery paths (resendAllPendingResults + the auto-retry IIFE below)
   // can both call submitWithRetry for the same id within milliseconds → two
@@ -4230,6 +4346,8 @@
           localStorage.removeItem('pendingResult_' + payload.idNumber);
           localStorage.removeItem('pendingWrongAnswers_' + payload.idNumber);
         } catch(e3) {}
+        // Confirmed on the server — drop the close guard if nothing else is pending.
+        if (!hasAnyPendingResult()) disarmPendingResultGuard();
         // Wrong-answers are now written WITH the result (sent in the payload),
         // so no separate submitWrongAnswers call is needed. (sendWrongAnswers
         // kept for backward-compat / manual recovery only.)
@@ -4242,6 +4360,7 @@
           localStorage.removeItem('pendingResult_' + payload.idNumber);
           localStorage.removeItem('pendingWrongAnswers_' + payload.idNumber);
         } catch(e5) {}
+        if (!hasAnyPendingResult()) disarmPendingResultGuard();
         clearSubmitFailureBanner();
         console.log('[SUBMIT] Stale result for a superseded attempt — discarded (token mismatch).');
       } else {
