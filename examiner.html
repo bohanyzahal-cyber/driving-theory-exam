@@ -626,7 +626,7 @@
         <div class="cmd-kpi cmd-kpi-rate"><div class="cmd-kpi-val" id="cmdPassRate">0%</div><div class="cmd-kpi-lbl">אחוז הצלחה</div><div id="cmdPassRateDelta" style="font-size:10px;margin-top:2px;min-height:12px;font-weight:700;"></div></div>
         <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdStayAvg">--:--</div><div class="cmd-kpi-lbl">זמן ממוצע</div></div>
         <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdStayMedian">--:--</div><div class="cmd-kpi-lbl">חציון זמן</div></div>
-        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdReattemptRate">0%</div><div class="cmd-kpi-lbl">ניסיון חוזר</div></div>
+        <div class="cmd-kpi"><div class="cmd-kpi-val" id="cmdReattemptRate">0%</div><div class="cmd-kpi-lbl">ניסיון חוזר</div><div id="cmdReattemptDelta" style="font-size:10px;margin-top:2px;min-height:12px;font-weight:700;"></div></div>
       </div>
       <div id="cmdStayBar" style="margin-top:12px;"></div>
       <div id="cmdOverallPie" style="margin-top:10px;"></div>
@@ -5983,6 +5983,20 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     pEl.textContent = dP === 0 ? '= ללא שינוי מול תקופה קודמת' : ((dP > 0 ? '▲ +' : '▼ ') + dP + ' נק׳ מול תקופה קודמת');
     pEl.style.color = dP > 0 ? '#16a34a' : (dP < 0 ? '#dc2626' : '#94a3b8');
     pEl.title = 'תקופה קודמת: ' + (prev.passRate || 0) + '% הצלחה';
+
+    // Re-attempt rate trend. LOWER is better (the goal is fewer repeats), so
+    // the color is inverted vs pass-rate: a drop is green, a rise is red. The
+    // arrow still follows the metric's actual direction.
+    var rEl = document.getElementById('cmdReattemptDelta');
+    if (rEl) {
+      rEl.textContent = ''; rEl.title = '';
+      if (typeof prev.reattemptRate !== 'undefined') {
+        var dR = (o.reattemptRate || 0) - (prev.reattemptRate || 0);
+        rEl.textContent = dR === 0 ? '= ללא שינוי מול תקופה קודמת' : ((dR > 0 ? '▲ +' : '▼ ') + dR + ' נק׳ מול תקופה קודמת');
+        rEl.style.color = dR < 0 ? '#16a34a' : (dR > 0 ? '#dc2626' : '#94a3b8');
+        rEl.title = 'תקופה קודמת: ' + (prev.reattemptRate || 0) + '% ניסיון חוזר · ירידה = שיפור';
+      }
+    }
   }
 
   // Integrity panel: hidden on old servers (no integrity payload); a slim

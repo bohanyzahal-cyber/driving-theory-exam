@@ -4385,7 +4385,7 @@ function handleCommanderDashboard(p) {
   var overall = { total: 0, passed: 0, failed: 0, disqualified: 0, stayTimes: [], reattempts: 0 };
   // Previous period of identical length, ending right before dateFrom —
   // powers the ▲▼ trend badges on the KPI cards (this period vs the last one).
-  var prevOverall = { total: 0, passed: 0, failed: 0, disqualified: 0 };
+  var prevOverall = { total: 0, passed: 0, failed: 0, disqualified: 0, reattempts: 0 };
   var prevWindowMs = dateTo.getTime() - dateFrom.getTime();
   var prevFrom = new Date(dateFrom.getTime() - prevWindowMs - 1);
   // Integrity flags (current window only). Definitions mirror the per-row
@@ -4503,6 +4503,7 @@ function handleCommanderDashboard(p) {
       if (isDQ) prevOverall.disqualified++;
       else if (isPassed) prevOverall.passed++;
       else prevOverall.failed++;
+      if ((Number(resData[r][14]) || 1) > 1) prevOverall.reattempts++;
       continue;
     }
 
@@ -4841,6 +4842,7 @@ function handleCommanderDashboard(p) {
   // Previous-period rates for the KPI trend badges.
   prevOverall.passRate = prevOverall.total > 0 ? Math.round((prevOverall.passed / prevOverall.total) * 100) : 0;
   prevOverall.dqRate = prevOverall.total > 0 ? Math.round((prevOverall.disqualified / prevOverall.total) * 100) : 0;
+  prevOverall.reattemptRate = prevOverall.total > 0 ? Math.round((prevOverall.reattempts / prevOverall.total) * 100) : 0;
 
   // ===== Weak topics: resolve pending wrong-blocks to topics =====
   // id is language-independent (all language files carry the Hebrew category),
