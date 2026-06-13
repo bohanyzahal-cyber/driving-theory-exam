@@ -42,23 +42,29 @@ function normalizeNameKey(s) {
   return tokens.join(' ');
 }
 
-// Set of examiner names (normalized) from the בוחנים sheet. Used to exclude examiners
-// who registered as EXAMINEES to test the system, so their results don't pollute the
-// commander dashboard / manager report statistics.
-function getExaminerNameSet() {
-  var set = {};
+// Examiner identity sets (names + IDs) from the בוחנים sheet, for excluding examiners
+// who registered as EXAMINEES to test the system. ID match is exact (no false positives,
+// since a ת.ז. is unique to the examiner); name match is fuzzy (normalizeNameKey) and can
+// rarely catch a real same-named candidate. Read once per report.
+function getExaminerExclusion() {
+  var names = {}, ids = {};
   try {
     var d = getSheet('בוחנים').getDataRange().getValues();
     for (var i = 1; i < d.length; i++) {
-      var k = normalizeNameKey(d[i][0]);  // col 0 = שם
-      if (k) set[k] = true;
+      var nk = normalizeNameKey(d[i][0]);   // col 0 = שם
+      if (nk) names[nk] = true;
+      var ik = normalizeId(d[i][1]);         // col 1 = ת.ז.
+      if (ik) ids[ik] = true;
     }
   } catch (e) {}
-  return set;
+  return { names: names, ids: ids };
 }
-function isExaminerName(name, examinerNameSet) {
-  var k = normalizeNameKey(name);
-  return !!(k && examinerNameSet[k]);
+function isExaminerSelfTest(name, id, excl) {
+  if (!excl) return false;
+  var ik = normalizeId(id);
+  if (ik && excl.ids[ik]) return true;       // ת.ז. match — precise
+  var nk = normalizeNameKey(name);
+  return !!(nk && excl.names[nk]);           // name match — fuzzy fallback
 }
 
 function getSheet(name) {
@@ -912,7 +918,7 @@ function handleCenterManagerReport(p) {
   // Per-examinee details — needed to render the same rich report style as
   // the site-manager report (KPIs + pie + weak topics + per-examinee table).
   var results = [];
-  var examinerNameSet = getExaminerNameSet();   // exclude examiners who self-tested as examinees
+  var examinerExcl = getExaminerExclusion();   // exclude examiners who self-tested as examinees (name or ת.ז.)
   for (var ri = 1; ri < rows.length; ri++) {
     var r = rows[ri];
     dbg.totalRows++;
@@ -931,7 +937,7 @@ function handleCenterManagerReport(p) {
     if (status === 'בוטל') { dbg.statusCancelled++; continue; }
     var rowSite = String(r[10] || '').trim();
     if (isTestSite(rowSite)) continue;   // system-test site — exclude from the manager report stats
-    if (isExaminerName(r[2], examinerNameSet)) continue;   // examiner self-testing as an examinee — exclude
+    if (isExaminerSelfTest(r[2], r[1], examinerExcl)) continue;   // examiner self-testing (name or ת.ז.) — exclude
     // Track every distinct site we see in range so the commander can see
     // exactly what site names appear in the sheet vs what they configured.
     if (rowSite) dbg.distinctSitesSeenInRange[rowSite] = (dbg.distinctSitesSeenInRange[rowSite] || 0) + 1;
@@ -4637,8 +4643,8 @@ function handleCommanderDashboard(p) {
   // instead of silently treating unmatched as "didn't practice".
   var piCoverage = { eligible: 0, matched: 0, byPhone: 0, byNameSite: 0, byName: 0 };
 
-  // Examiners who registered as examinees to test the system — exclude from stats.
-  var examinerNameSet = getExaminerNameSet();
+  // Examiners who registered as examinees to test the system — exclude from stats (by name OR ת.ז.).
+  var examinerExcl = getExaminerExclusion();
 
   for (var r = 1; r < resData.length; r++) {
     var rowDate = parseSheetDate(resData[r][0]);
@@ -4649,7 +4655,7 @@ function handleCommanderDashboard(p) {
     var examinerName = String(resData[r][9] || '');
     var siteName = String(resData[r][10] || '');
     if (isTestSite(siteName)) continue;   // system-test site — exclude from ALL commander stats (current + previous window)
-    if (isExaminerName(resData[r][2], examinerNameSet)) continue;   // examiner self-testing as an examinee — exclude
+    if (isExaminerSelfTest(resData[r][2], resData[r][1], examinerExcl)) continue;   // examiner self-testing (name or ת.ז.) — exclude
     var license = String(resData[r][4] || '');
     var population = String(resData[r][19] || '');
     var passedStr = String(resData[r][7] || '');
