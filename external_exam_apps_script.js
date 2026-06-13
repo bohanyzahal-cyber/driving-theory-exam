@@ -899,6 +899,7 @@ function handleCenterManagerReport(p) {
     dbg.inDateRange++;
     if (status === 'בוטל') { dbg.statusCancelled++; continue; }
     var rowSite = String(r[10] || '').trim();
+    if (isTestSite(rowSite)) continue;   // system-test site — exclude from the manager report stats
     // Track every distinct site we see in range so the commander can see
     // exactly what site names appear in the sheet vs what they configured.
     if (rowSite) dbg.distinctSitesSeenInRange[rowSite] = (dbg.distinctSitesSeenInRange[rowSite] || 0) + 1;
@@ -957,6 +958,7 @@ function handleCenterManagerReport(p) {
   // commander can spot missing data instead of being confused by absence.
   for (var ms = 0; ms < managedSites.length; ms++) {
     var name = managedSites[ms];
+    if (isTestSite(name)) continue;   // never surface the system-test site, even as a zero row
     if (!bySite[name]) bySite[name] = { site: name, total: 0, passed: 0, failed: 0, dq: 0 };
   }
 
