@@ -6282,8 +6282,24 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     // Honest disclaimer about the matching limitation — name-only join
     // can't separate "didn't practice" from "practiced under a different
     // spelling". Surface this once below the headline numbers.
+    // Match-coverage line — how many exam-takers we could link to a practice
+    // record, and by which key. Makes the confidence explicit and shows the
+    // phone-match share growing over time. Hidden against an older server.
+    var cov = pi.coverage;
+    if (cov && cov.eligible > 0) {
+      var covPct = Math.round((cov.matched / cov.eligible) * 100);
+      var covColor = covPct >= 60 ? '#16a34a' : (covPct >= 30 ? '#d97706' : '#dc2626');
+      html += '<div style="text-align:center;margin:-4px 0 10px;font-size:12px;color:#475569;">';
+      html += 'התאמה למאגר התרגול: <strong style="color:' + covColor + ';font-size:14px;">' + covPct + '%</strong> מהנבחנים (' + cov.matched + '/' + cov.eligible + ')';
+      var covParts = [];
+      if (cov.byPhone) covParts.push('📞 ' + cov.byPhone + ' לפי טלפון');
+      if (cov.byNameSite) covParts.push('📍 ' + cov.byNameSite + ' לפי שם+אתר');
+      if (cov.byName) covParts.push('👤 ' + cov.byName + ' לפי שם');
+      if (covParts.length) html += '<div style="font-size:11px;color:#94a3b8;margin-top:2px;">' + covParts.join(' · ') + '</div>';
+      html += '</div>';
+    }
     html += '<p style="margin:-6px 0 14px;font-size:11px;color:#94a3b8;text-align:center;line-height:1.4;">';
-    html += '"אין רישום" כולל גם תלמידים שתרגלו אבל הקלידו שם בכתיב שונה מהמבחן, או תרגלו עם ספר/אפליקציה אחרת.';
+    html += '"אין רישום" כולל גם תלמידים שתרגלו אך לא זוהו (כתיב שם שונה / בלי טלפון). ככל שיותר מתרגלים מזינים טלפון — ההתאמה מדויקת יותר.';
     html += '</p>';
 
     // Bottom panel: bucket table

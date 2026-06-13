@@ -17,7 +17,7 @@ var SHEET_HEADERS = {
   'מורים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד'],
   'כיתות': ['קוד כיתה', 'שם כיתה', 'מורה ת.ז.', 'שם מורה', 'דרגה', 'תאריך יצירה', 'פעיל'],
   'תלמידי כיתות': ['קוד כיתה', 'שם תלמיד', 'מזהה תלמיד', 'תאריך הצטרפות'],
-  'תוצאות תרגול': ['תאריך', 'מזהה תלמיד', 'שם תלמיד', 'קוד כיתה', 'מצב', 'דרגה', 'ציון', 'סה"כ', 'אחוז', 'עבר/נכשל', 'זמן', 'נושא', 'שפה', 'פירוט שגויות', 'פירוט לפי נושא'],
+  'תוצאות תרגול': ['תאריך', 'מזהה תלמיד', 'שם תלמיד', 'קוד כיתה', 'מצב', 'דרגה', 'ציון', 'סה"כ', 'אחוז', 'עבר/נכשל', 'זמן', 'נושא', 'שפה', 'פירוט שגויות', 'פירוט לפי נושא', 'טלפון'],
   'התקדמות תלמידים': ['שם תלמיד', 'קוד כיתה', 'מפתח', 'streak', 'wrong_qs', 'history', 'עדכון אחרון']
 };
 
@@ -4334,6 +4334,22 @@ function handleCommanderDashboard(p) {
   var practiceSheet = getSheet('תוצאות תרגול');
   var practiceData = practiceSheet.getDataRange().getValues();
 
+  // Class → site map (from כיתות) — practice rows store the class code, not the
+  // site, so this lets the name+site fallback match scope by base.
+  var pClassSiteMap = {};
+  try {
+    var pClassData = getSheet('כיתות').getDataRange().getValues();
+    for (var pcs = 1; pcs < pClassData.length; pcs++) {
+      pClassSiteMap[String(pClassData[pcs][0]).trim()] = String(pClassData[pcs][7] || '').trim();
+    }
+  } catch (ePCS) { /* no כיתות sheet → name+site index stays empty, name fallback still works */ }
+  // Phone normaliser: digits only, last 9 (so "050-1234567", "0501234567" and
+  // "972501234567" all collapse to the same key on both practice and exam sides).
+  function normPhoneCmd(v) {
+    var d = String(v || '').replace(/\D/g, '');
+    return d.length >= 9 ? d.slice(-9) : '';
+  }
+
   // Parse a stay-time string from the 'זמן' column into seconds. The examinee
   // client writes Hebrew-formatted strings like "32 דק' 14 שנ'" (see
   // getElapsedTimeStr in examinee.html). Older rows or other clients may use
@@ -4452,7 +4468,9 @@ function handleCommanderDashboard(p) {
     if (isNaN(n)) return -1;
     return n <= 1 ? n * 100 : n;
   }
-  var practiceIndex = {};
+  var practiceIndex = {};         // name|license → [{date, percent}]
+  var practicePhoneIndex = {};    // last-9-digits phone → [...]  (exact join, fwd-only)
+  var practiceNameSiteIndex = {}; // name|license|site → [...]   (collision-safe fallback)
   for (var pi = 1; pi < practiceData.length; pi++) {
     var pName = normalizeFullName(practiceData[pi][2]);
     if (!pName) continue;
@@ -4461,14 +4479,27 @@ function handleCommanderDashboard(p) {
     if (pDate && !(pDate instanceof Date)) pDate = new Date(pDate);
     if (!pDate || isNaN(pDate.getTime())) continue;
     var pPct = parsePercentValue(practiceData[pi][8]);
+    var pRec = { date: pDate, percent: pPct };
     var pKey = pName + '|' + pLic;
     if (!practiceIndex[pKey]) practiceIndex[pKey] = [];
-    practiceIndex[pKey].push({ date: pDate, percent: pPct });
+    practiceIndex[pKey].push(pRec);
+    var pPhone = (practiceData[pi].length > 15) ? normPhoneCmd(practiceData[pi][15]) : '';
+    if (pPhone) {
+      if (!practicePhoneIndex[pPhone]) practicePhoneIndex[pPhone] = [];
+      practicePhoneIndex[pPhone].push(pRec);
+    }
+    var pSite = pClassSiteMap[String(practiceData[pi][3] || '').trim()] || '';
+    if (pSite) {
+      var pnsKey = pName + '|' + pLic + '|' + pSite;
+      if (!practiceNameSiteIndex[pnsKey]) practiceNameSiteIndex[pnsKey] = [];
+      practiceNameSiteIndex[pnsKey].push(pRec);
+    }
   }
-  // Sort each list newest-first for fast "latest before X" linear scan
-  for (var pk in practiceIndex) {
-    practiceIndex[pk].sort(function(a, b) { return b.date - a.date; });
-  }
+  // Sort each list newest-first for the "latest before X" linear scan.
+  function sortPracticeLists(idx) { for (var k in idx) idx[k].sort(function(a, b) { return b.date - a.date; }); }
+  sortPracticeLists(practiceIndex);
+  sortPracticeLists(practicePhoneIndex);
+  sortPracticeLists(practiceNameSiteIndex);
 
   // Practice-impact accumulators. 4 buckets — 'none' (no practice in window),
   // 'low' (<70%), 'mid' (70-85.99%), 'high' (≥86%, the pass threshold).
@@ -4480,6 +4511,10 @@ function handleCommanderDashboard(p) {
     withAny: { total: 0, passed: 0 }, // sum of low+mid+high — pre-computed for the simple card
     unparseable: 0 // practice found but % couldn't be parsed; counted under withAny but not bucketed
   };
+  // Match-coverage: of the eligible (non-DQ) exam-takers, how many were matched
+  // to a practice record and by which key. Lets the UI show honest coverage
+  // instead of silently treating unmatched as "didn't practice".
+  var piCoverage = { eligible: 0, matched: 0, byPhone: 0, byNameSite: 0, byName: 0 };
 
   for (var r = 1; r < resData.length; r++) {
     var rowDate = parseSheetDate(resData[r][0]);
@@ -4552,7 +4587,22 @@ function handleCommanderDashboard(p) {
       if (examineeName && realDate && !isNaN(realDate.getTime())) {
         var thirtyBefore = new Date(realDate);
         thirtyBefore.setDate(thirtyBefore.getDate() - 30);
-        var lookupList = practiceIndex[examineeName + '|' + realLic] || [];
+        piCoverage.eligible++;
+        // Match priority: exact phone → name+license+site → name+license.
+        var examPhone = normPhoneCmd(resData[r][3]);
+        var examSite = String(resData[r][10] || '').trim();
+        var lookupList = null, matchType = '';
+        if (examPhone && practicePhoneIndex[examPhone]) {
+          lookupList = practicePhoneIndex[examPhone]; matchType = 'byPhone';
+        }
+        if (!lookupList && examSite && practiceNameSiteIndex[examineeName + '|' + realLic + '|' + examSite]) {
+          lookupList = practiceNameSiteIndex[examineeName + '|' + realLic + '|' + examSite]; matchType = 'byNameSite';
+        }
+        if (!lookupList) {
+          lookupList = practiceIndex[examineeName + '|' + realLic] || null;
+          if (lookupList) matchType = 'byName';
+        }
+        lookupList = lookupList || [];
         var matchedPractice = null;
         for (var ml = 0; ml < lookupList.length; ml++) {
           var item = lookupList[ml];
@@ -4565,6 +4615,8 @@ function handleCommanderDashboard(p) {
           practiceImpact.none.total++;
           if (isPassed) practiceImpact.none.passed++;
         } else {
+          piCoverage.matched++;
+          if (matchType && typeof piCoverage[matchType] === 'number') piCoverage[matchType]++;
           practiceImpact.withAny.total++;
           if (isPassed) practiceImpact.withAny.passed++;
           var pct = matchedPractice.percent;
@@ -5060,7 +5112,8 @@ function handleCommanderDashboard(p) {
     mid:         finalizePI(practiceImpact.mid),
     high:        finalizePI(practiceImpact.high),
     unparseable: practiceImpact.unparseable,
-    lookbackDays: 30
+    lookbackDays: 30,
+    coverage: piCoverage
   };
 
   var result = {
@@ -6109,7 +6162,7 @@ function handleSubmitPracticeResult(p) {
   var categoryBreakdown = '';
   try { categoryBreakdown = typeof p.categoryBreakdown === 'string' ? p.categoryBreakdown : JSON.stringify(p.categoryBreakdown || ''); } catch(e) {}
 
-  sheet.appendRow([todayStr(), studentId, String(p.studentName || ''), classCode, mode, license, score, total, percent, passed, time, category, language, wrongDetails, categoryBreakdown]);
+  sheet.appendRow([todayStr(), studentId, String(p.studentName || ''), classCode, mode, license, score, total, percent, passed, time, category, language, wrongDetails, categoryBreakdown, String(p.phone || '')]);
   return jsonResponse({ status: 'ok' });
 }
 
