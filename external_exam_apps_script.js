@@ -26,7 +26,7 @@ var SHEET_HEADERS = {
 // EXCLUDED from the commander dashboard statistics so test data doesn't pollute the
 // real numbers. They are NOT filtered from the live examiner dashboard — a tester
 // still needs to see their own test session. Add more names here if needed.
-var TEST_SITES = ['בדיקת נתונים'];
+var TEST_SITES = ['בדיקת נתונים', 'דימונה דוגית 35'];
 function isTestSite(site) {
   return TEST_SITES.indexOf(String(site || '').trim()) !== -1;
 }
