@@ -31,6 +31,36 @@ function isTestSite(site) {
   return TEST_SITES.indexOf(String(site || '').trim()) !== -1;
 }
 
+// Person-name normalizer for fuzzy matching: strip punctuation, collapse spaces,
+// lowercase, token-sort (so "ויטלי גיטלמן" and "גיטלמן ויטלי" hash the same).
+function normalizeNameKey(s) {
+  if (!s) return '';
+  var t = String(s).replace(/[׳״'".\-]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!t) return '';
+  var tokens = t.split(' ').filter(function(x) { return x; });
+  tokens.sort();
+  return tokens.join(' ');
+}
+
+// Set of examiner names (normalized) from the בוחנים sheet. Used to exclude examiners
+// who registered as EXAMINEES to test the system, so their results don't pollute the
+// commander dashboard / manager report statistics.
+function getExaminerNameSet() {
+  var set = {};
+  try {
+    var d = getSheet('בוחנים').getDataRange().getValues();
+    for (var i = 1; i < d.length; i++) {
+      var k = normalizeNameKey(d[i][0]);  // col 0 = שם
+      if (k) set[k] = true;
+    }
+  } catch (e) {}
+  return set;
+}
+function isExaminerName(name, examinerNameSet) {
+  var k = normalizeNameKey(name);
+  return !!(k && examinerNameSet[k]);
+}
+
 function getSheet(name) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName(name);
@@ -882,6 +912,7 @@ function handleCenterManagerReport(p) {
   // Per-examinee details — needed to render the same rich report style as
   // the site-manager report (KPIs + pie + weak topics + per-examinee table).
   var results = [];
+  var examinerNameSet = getExaminerNameSet();   // exclude examiners who self-tested as examinees
   for (var ri = 1; ri < rows.length; ri++) {
     var r = rows[ri];
     dbg.totalRows++;
@@ -900,6 +931,7 @@ function handleCenterManagerReport(p) {
     if (status === 'בוטל') { dbg.statusCancelled++; continue; }
     var rowSite = String(r[10] || '').trim();
     if (isTestSite(rowSite)) continue;   // system-test site — exclude from the manager report stats
+    if (isExaminerName(r[2], examinerNameSet)) continue;   // examiner self-testing as an examinee — exclude
     // Track every distinct site we see in range so the commander can see
     // exactly what site names appear in the sheet vs what they configured.
     if (rowSite) dbg.distinctSitesSeenInRange[rowSite] = (dbg.distinctSitesSeenInRange[rowSite] || 0) + 1;
@@ -4605,6 +4637,9 @@ function handleCommanderDashboard(p) {
   // instead of silently treating unmatched as "didn't practice".
   var piCoverage = { eligible: 0, matched: 0, byPhone: 0, byNameSite: 0, byName: 0 };
 
+  // Examiners who registered as examinees to test the system — exclude from stats.
+  var examinerNameSet = getExaminerNameSet();
+
   for (var r = 1; r < resData.length; r++) {
     var rowDate = parseSheetDate(resData[r][0]);
     if (!rowDate) continue;
@@ -4614,6 +4649,7 @@ function handleCommanderDashboard(p) {
     var examinerName = String(resData[r][9] || '');
     var siteName = String(resData[r][10] || '');
     if (isTestSite(siteName)) continue;   // system-test site — exclude from ALL commander stats (current + previous window)
+    if (isExaminerName(resData[r][2], examinerNameSet)) continue;   // examiner self-testing as an examinee — exclude
     var license = String(resData[r][4] || '');
     var population = String(resData[r][19] || '');
     var passedStr = String(resData[r][7] || '');
