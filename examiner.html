@@ -5822,7 +5822,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     H.push('<div class="section">');
     H.push('<div class="section-title"><span style="font-size:20px;">👥</span> פירוט לפי נבחן</div>');
     H.push('<div class="tw"><table><thead><tr>');
-    H.push('<th>#</th><th>אתר</th><th>שם</th><th>דרגה</th><th>שפה</th><th>ציון</th><th>אחוז</th><th>תוצאה</th><th>בוחן</th>');
+    H.push('<th>#</th><th>אתר</th><th>שם</th><th>מס׳ ניסיון</th><th>דרגה</th><th>שפה</th><th>ציון</th><th>אחוז</th><th>תוצאה</th><th>בוחן</th>');
     H.push('</tr></thead><tbody>');
     var sortedResults = results.slice().sort(function(a, b) {
       // Sort by site, then by name
@@ -5842,6 +5842,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       H.push('<td>' + (ti + 1) + '</td>');
       H.push('<td style="font-weight:600;text-align:right;">' + escHtml(tr.site || '') + '</td>');
       H.push('<td style="font-weight:700;text-align:right;">' + escHtml(tr.name) + '</td>');
+      H.push('<td style="font-weight:700;">' + (tr.attempt || 1) + '</td>');
       H.push('<td>' + escHtml(tr.license || '') + '</td>');
       H.push('<td>' + flag + ' ' + escHtml(tr.language || '') + '</td>');
       H.push('<td>' + escHtml(String(tr.score || '')) + '</td>');
