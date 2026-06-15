@@ -4248,6 +4248,16 @@
     // guard so closing the tab before confirmation warns + fires a last-gasp send.
     armPendingResultGuard();
 
+    // Tell the examiner "the device finished" via a tiny keepalive ping — separate from
+    // the heavier (retried) result POST. On a weak connection this often lands even while
+    // the full result is still syncing, so the examinee shows "סיים — מסנכרן" instead of
+    // looking like they're still testing (which led an examiner to force a needless redo).
+    try {
+      var _mfBody = JSON.stringify({ action: 'markFinished', sessionCode: sessionCode, idNumber: examineeData.idNumber, examineeToken: examineeToken, origin: API_ORIGIN });
+      if (navigator.sendBeacon) navigator.sendBeacon(API_URL, new Blob([_mfBody], { type: 'application/json' }));
+      else apiPostNoWait({ action: 'markFinished', sessionCode: sessionCode, idNumber: examineeData.idNumber, examineeToken: examineeToken });
+    } catch(e) {}
+
     showSubmitStatus('sending');
     submitWithRetry(payload, 3, wrongData);
 

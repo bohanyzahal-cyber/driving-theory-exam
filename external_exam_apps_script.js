@@ -502,6 +502,9 @@ function doGet(e) {
       case 'addExamTime':
         return handleAddExamTime(p);
 
+      case 'markFinished':
+        return handleMarkFinished(p);
+
       case 'cancelDisqualify':
         return handleCancelDisqualify(p);
 
@@ -1907,7 +1910,7 @@ function handleExaminerDashboard(p) {
     var warnCount = (pendData[i].length > 15) ? (Number(pendData[i][15]) || 0) : 0;
     var lastWarn = (pendData[i].length > 16) ? String(pendData[i][16] || '') : '';
     var idNorm = normalizeId(pendData[i][1]);
-    var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], examStartTime: pendData[i][11] || '', status: s, language: pendData[i][6] || '', population: pendData[i][7] || '', site: (pendData[i].length > 17) ? (pendData[i][17] || '') : '', license: pendData[i][8] || '', audioMode: pendData[i][9] || 'off', timeExtension: String(pendData[i][10] || ''), dqCount: dqCount, warnings: warnCount, lastWarning: lastWarn, attemptsToday: attemptsTodayById[idNorm] || 0, hasExtendedScreen: hasExtScreen, extraMinutes: extraMinById[idNorm] || 0 };
+    var item = { idNumber: pendData[i][1], name: pendData[i][2], phone: pendData[i][3], time: pendData[i][4], examStartTime: pendData[i][11] || '', status: s, language: pendData[i][6] || '', population: pendData[i][7] || '', site: (pendData[i].length > 17) ? (pendData[i][17] || '') : '', license: pendData[i][8] || '', audioMode: pendData[i][9] || 'off', timeExtension: String(pendData[i][10] || ''), dqCount: dqCount, warnings: warnCount, lastWarning: lastWarn, attemptsToday: attemptsTodayById[idNorm] || 0, hasExtendedScreen: hasExtScreen, extraMinutes: extraMinById[idNorm] || 0, finishedOnDevice: (pendData[i].length > 18 ? !!pendData[i][18] : false) };
     if (s === 'waiting' || s === 'approved') {
       pendingById[idNorm] = item; // ascending loop → latest row wins
     } else {
@@ -2133,6 +2136,34 @@ function handleAddExamTime(p) {
   getSheet('הארכות זמן').appendRow([new Date(), p.sessionCode, p.idNumber, name, minutes, reason, examinerName]);
 
   return jsonResponse({ status: 'ok', addedMinutes: minutes, totalExtraMinutes: sumExtraMinutes(p.sessionCode, p.idNumber) });
+}
+
+// The examinee's device reports it FINISHED the exam — a tiny keepalive ping fired at
+// submit time, separate from the heavier (retried) result POST. On a weak connection the
+// ping often lands even when the full result is still syncing, so the examiner sees
+// "finished — syncing result" instead of mistaking a finished examinee for one who is
+// still testing and forcing a needless redo. Stamps the in_exam row (col 19 = סיים במכשיר);
+// the row IS the attempt, so the flag is naturally scoped to this attempt (a retake is a
+// new row) and becomes irrelevant once the result lands (the row flips to completed).
+function handleMarkFinished(p) {
+  if (!p.sessionCode || !p.idNumber) return jsonResponse({ status: 'error', message: 'חסר מזהה' });
+  var pendSheet = getSheet('ממתינים');
+  var data = pendSheet.getDataRange().getValues();
+  for (var i = data.length - 1; i >= 1; i--) {
+    if (String(data[i][0]).trim() === String(p.sessionCode).trim() && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
+      var storedToken = String((data[i].length > 12 ? data[i][12] : '') || '').trim();
+      if (storedToken && p.examineeToken && String(p.examineeToken).trim() !== storedToken) {
+        return jsonResponse({ status: 'error', examineeTokenError: 'mismatch' });
+      }
+      if (String(data[i][5]).trim() === 'in_exam') {
+        if (pendSheet.getMaxColumns() < 19) pendSheet.insertColumnsAfter(pendSheet.getMaxColumns(), 19 - pendSheet.getMaxColumns());
+        if (!String(pendSheet.getRange(1, 19).getValue() || '').trim()) pendSheet.getRange(1, 19).setValue('סיים במכשיר');
+        pendSheet.getRange(i + 1, 19).setValue(nowISO());
+      }
+      return jsonResponse({ status: 'ok' });
+    }
+  }
+  return jsonResponse({ status: 'ok' });  // no matching row — harmless no-op
 }
 
 function handleDisqualify(p) {

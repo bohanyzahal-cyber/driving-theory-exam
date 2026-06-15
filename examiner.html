@@ -2042,7 +2042,7 @@
           // Examiners asked for a more prominent alert because the previous small badge
           // was easy to miss in a busy session.
           repeatBadge = ' <div style="background:linear-gradient(90deg,#dc2626,#991b1b);color:#fff;padding:8px 12px;border-radius:8px;font-size:0.95em;font-weight:800;margin-top:6px;border:2px solid #fca5a5;box-shadow:0 0 0 3px #fee2e2;">\u26A0\uFE0F \u05E0\u05D9\u05E1\u05D9\u05D5\u05DF ' + (item.todayExams.length + 1) + ' \u05D4\u05D9\u05D5\u05DD! &nbsp;|&nbsp; \u05E7\u05D5\u05D3\u05DD: ' + escHtml(details) + '</div>';
-          repeatWarning = '\u26A0\uFE0F \u05E0\u05D1\u05D7\u05DF \u05D6\u05D4 \u05DB\u05D1\u05E8 \u05E2\u05E9\u05D4 \u05DE\u05D1\u05D7\u05DF \u05D4\u05D9\u05D5\u05DD (' + details + ').\n\u05DC\u05D0\u05E9\u05E8 \u05D7\u05E8\u05D9\u05D2?';
+          repeatWarning = '\u26A0\uFE0F \u05E0\u05D1\u05D7\u05DF \u05D6\u05D4 \u05DB\u05D1\u05E8 \u05E2\u05E9\u05D4 \u05DE\u05D1\u05D7\u05DF \u05D4\u05D9\u05D5\u05DD (' + details + ').\n\n\u05E9\u05D9\u05DD \u05DC\u05D1: \u05D0\u05DD \u05D6\u05D4 "\u05DE\u05D1\u05D7\u05DF \u05D7\u05D5\u05D6\u05E8" \u05D1\u05D2\u05DC\u05DC \u05EA\u05E7\u05DC\u05D4 \u2014 \u05D9\u05D9\u05EA\u05DB\u05DF \u05E9\u05D4\u05EA\u05D5\u05E6\u05D0\u05D4 \u05D4\u05E7\u05D5\u05D3\u05DE\u05EA \u05E8\u05E7 \u05E0\u05E7\u05DC\u05D8\u05D4 \u05D1\u05D0\u05D9\u05D7\u05D5\u05E8 \u05D5\u05D4\u05D9\u05D0 \u05EA\u05E7\u05E4\u05D4.\n\n\u05DC\u05D0\u05E9\u05E8 \u05DE\u05D1\u05D7\u05DF \u05D7\u05D5\u05D6\u05E8 \u05D1\u05DB\u05DC \u05D6\u05D0\u05EA?';
         }
         var isApproved = item.status === 'approved';
         var statusBadge = isApproved ? ' <span style="background:#dcfce7;color:#166534;padding:2px 8px;border-radius:8px;font-size:0.8em;font-weight:600;">✓ מאושר</span>' : '';
@@ -2302,6 +2302,13 @@
         if (item.dqPending) {
           dqBanner = '<div style="background:#fee2e2;color:#991b1b;padding:6px 10px;border-radius:6px;margin-top:4px;font-size:0.9em;font-weight:700;">⚠️ פסילה אוטומטית — דורש החלטה</div>';
         }
+        // The examinee's device reported it finished but the full result hasn't landed
+        // yet (weak connection). Tell the examiner to WAIT, not force a redo — a result
+        // synced late is still valid, and a forced redo can overwrite a real pass.
+        var finishedBanner = '';
+        if (item.finishedOnDevice && !item.dqPending) {
+          finishedBanner = '<div style="background:#dcfce7;color:#166534;padding:6px 10px;border-radius:6px;margin-top:4px;font-size:0.9em;font-weight:700;border:1px solid #86efac;">✓ הנבחן סיים — מסנכרן תוצאה. אל תורה על מבחן חוזר; התוצאה בדרך.</div>';
+        }
         // DQ-count badge: shown when examinee had prior DQ events (even if auto-cancelled
         // during grace period — examiner should know about repeated cheat attempts).
         var dqCountBadge = '';
@@ -2322,7 +2329,7 @@
         li.innerHTML =
           '<div class="person-info"><div class="person-name">' + escHtml(item.name) + dqCountBadge + warnBadge + timeBadge + extraTimeBadge + langBadge + popBadge + (item.site && item.site !== currentSite ? ' <span style="background:#dbeafe;color:#1e40af;padding:1px 7px;border-radius:8px;font-size:0.8em;font-weight:700;">📍 ' + escHtml(item.site) + '</span>' : '') + licBadge + audioBadge + extScreenBadgeActive + '</div>' +
           '<div class="person-meta">ת.ז. ....' + id4 + (elapsed ? ' | <span style="' + elapsedStyle + '">זמן: ' + elapsed + '</span>' : '') + overtimeWarning + '</div>' +
-          dqBanner + '</div>' +
+          dqBanner + finishedBanner + '</div>' +
           '<div class="person-actions"></div>';
         if (item.dqPending) {
           li.style.borderColor = '#dc2626';
