@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<!-- © 2026 Vitaly Gitelman. All Rights Reserved. Unauthorized copying, modification or distribution is prohibited. -->
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>לוח התמרורים — מצגת לכיתה</title>
+<style>
+  :root{
+    --accent:#1463b8;
+    --bg1:#eef1f5; --bg2:#dfe4ec;
+    --ink:#1d2330; --muted:#5b6678;
+    --card:#ffffff;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{height:100%;margin:0;}
+  body{
+    font-family:"Segoe UI","Arial","Rubik","Assistant",sans-serif;
+    background:linear-gradient(135deg,var(--bg1),var(--bg2));
+    color:var(--ink); overflow:hidden; user-select:none;
+  }
+  .hidden{display:none !important;}
+
+  /* ---------- HOME ---------- */
+  #home{position:fixed; inset:0; display:flex; flex-direction:column;
+        padding:clamp(14px,3vw,40px); overflow:auto;}
+  #home h1{font-size:clamp(1.7rem,4.5vw,3.4rem); margin:0 0 4px; font-weight:800;}
+  #home .sub{color:var(--muted); font-size:clamp(.95rem,2vw,1.4rem); margin-bottom:clamp(12px,2.5vw,26px);}
+  .grid{display:grid; gap:clamp(10px,1.6vw,18px);
+        grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); flex:1;}
+  .gcard{border:0; cursor:pointer; color:#fff; border-radius:18px;
+        padding:clamp(14px,2vw,26px); text-align:right; position:relative;
+        box-shadow:0 6px 18px rgba(0,0,0,.16); transition:transform .12s, box-shadow .12s;
+        display:flex; flex-direction:column; justify-content:space-between; min-height:118px;}
+  .gcard:hover{transform:translateY(-3px); box-shadow:0 12px 26px rgba(0,0,0,.24);}
+  .gcard .gn{font-size:clamp(1.15rem,2.2vw,1.8rem); font-weight:800; line-height:1.15;}
+  .gcard .gc{font-size:1rem; opacity:.92; margin-top:8px;}
+  .gcard .gnum{position:absolute; top:10px; left:14px; font-size:2.4rem; font-weight:900; opacity:.28;}
+  .homebar{display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:clamp(12px,2.5vw,22px);}
+  .bigbtn{border:0; cursor:pointer; border-radius:14px; font-weight:800;
+        padding:14px 26px; font-size:clamp(1rem,2vw,1.3rem); background:var(--accent); color:#fff;
+        box-shadow:0 6px 16px rgba(0,0,0,.18);}
+  .ghostbtn{background:#fff; color:var(--ink); border:2px solid #cdd5e1;}
+  .hint{color:var(--muted); font-size:.95rem; margin-top:14px; line-height:1.7;}
+  .hint kbd{background:#fff;border:1px solid #c3ccd9;border-bottom-width:2px;border-radius:6px;
+        padding:1px 8px;font-family:inherit;font-size:.9em;margin:0 2px;}
+
+  /* ---------- SHOW ---------- */
+  #show{position:fixed; inset:0; display:flex; flex-direction:column;}
+  #topbar{display:flex; align-items:center; justify-content:space-between;
+        padding:clamp(8px,1.6vw,18px) clamp(14px,2.5vw,30px);
+        background:var(--accent); color:#fff; box-shadow:0 2px 10px rgba(0,0,0,.15); z-index:5;}
+  #secName{font-size:clamp(1.2rem,3.3vw,2.6rem); font-weight:800;}
+  #pos{font-size:clamp(1rem,2.2vw,1.7rem); font-weight:700; opacity:.95; letter-spacing:.5px;}
+  #pos .apdot{color:#ffe27a; margin-inline-start:10px; font-size:.85em;}
+
+  #stage{flex:1; position:relative; display:flex; flex-direction:column;
+        align-items:center; justify-content:center; padding:clamp(8px,2vw,26px);
+        padding-bottom:clamp(96px,14vh,140px); min-height:0;}
+  #card{position:relative; background:var(--card); border-radius:26px;
+        box-shadow:0 14px 40px rgba(20,30,60,.18); padding:clamp(12px,2vw,28px);
+        display:flex; align-items:center; justify-content:center;
+        max-width:92vw; flex:none;}
+  #signImg{height:50vh; width:auto; max-width:86vw; object-fit:contain; flex:none; display:block;
+        transition:opacity .16s ease; image-rendering:auto;}
+  #badge{position:absolute; top:-22px; right:-14px; background:var(--accent); color:#fff;
+        font-weight:900; border-radius:999px; padding:.18em .62em;
+        font-size:clamp(1.5rem,4vw,3.4rem); box-shadow:0 6px 16px rgba(0,0,0,.25);
+        border:4px solid #fff; direction:ltr; min-width:1.6em; text-align:center;}
+  #meaning{margin-top:clamp(8px,1.6vw,16px); max-width:84vw; text-align:center;
+        font-size:clamp(1.2rem,2.7vw,2.15rem); font-weight:800; line-height:1.28; color:var(--ink);
+        background:#fff; border-radius:14px; padding:8px 22px; box-shadow:0 4px 14px rgba(0,0,0,.10);
+        border-inline-start:8px solid var(--accent); flex:none;}
+  #meaning.empty{background:transparent; box-shadow:none; border:0; color:var(--muted); font-style:italic;}
+
+  /* progress */
+  #prog{height:7px; background:rgba(0,0,0,.10);}
+  #progFill{height:100%; width:0%; background:var(--accent);}
+  #progFill.run{transition:width linear;}
+
+  /* controls */
+  #ctrls{position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
+        display:flex; gap:8px; align-items:center; background:rgba(28,34,48,.92);
+        padding:8px 12px; border-radius:16px; box-shadow:0 8px 24px rgba(0,0,0,.3); z-index:20;
+        transition:opacity .3s; backdrop-filter:blur(4px);}
+  #ctrls.fade{opacity:0; pointer-events:none;}
+  .cbtn{border:0; cursor:pointer; color:#fff; background:#39435a;
+        width:clamp(44px,6vw,58px); height:clamp(44px,6vw,58px); border-radius:12px;
+        font-size:clamp(1.1rem,2.4vw,1.5rem); display:flex; align-items:center; justify-content:center;}
+  .cbtn:hover{background:#4a566f;}
+  .cbtn.on{background:var(--accent);}
+  .cbtn.wide{width:auto; padding:0 14px; gap:8px; font-weight:700; font-size:1rem;}
+  #spd{color:#fff; font-weight:700; min-width:42px; text-align:center; font-size:1rem;}
+
+  /* blank + help */
+  #blank{position:fixed; inset:0; background:#000; z-index:60;}
+  #help{position:fixed; inset:0; background:rgba(15,20,32,.92); color:#fff; z-index:70;
+        display:flex; align-items:center; justify-content:center; padding:24px;}
+  #help .box{background:#1f2738; border-radius:20px; padding:clamp(20px,3vw,40px); max-width:680px; width:100%;
+        box-shadow:0 20px 60px rgba(0,0,0,.5);}
+  #help h2{margin:0 0 16px; font-size:clamp(1.4rem,3vw,2rem);}
+  #help table{width:100%; border-collapse:collapse; font-size:clamp(1rem,2vw,1.25rem);}
+  #help td{padding:9px 6px; border-bottom:1px solid #33405a; vertical-align:top;}
+  #help td:first-child{white-space:nowrap; width:42%;}
+  #help kbd{background:#2c374e;border:1px solid #45526e;border-bottom-width:2px;border-radius:6px;
+        padding:2px 9px;margin:0 2px;font-family:inherit;}
+  #help .close{margin-top:18px; text-align:center; color:#9fb0cb;}
+</style>
+</head>
+<body>
+
+<!-- ===================== HOME ===================== -->
+<section id="home">
+  <h1>לוח התמרורים — מצגת לכיתה</h1>
+  <div class="sub">בחרו קבוצת תמרורים כדי להתחיל, או הציגו את כל התמרורים ברצף. מתאים לשלט מצגות ולתצוגה אוטומטית.</div>
+  <div class="homebar">
+    <button class="bigbtn" id="startAll">▶ הצג הכול מההתחלה</button>
+    <button class="bigbtn ghostbtn" id="fsBtn">⛶ מסך מלא</button>
+    <button class="bigbtn ghostbtn" id="helpBtn">? מקשים ושלט</button>
+  </div>
+  <div class="grid" id="grid"></div>
+  <div class="hint">
+    שלט מצגות / מקלדת:
+    <kbd>→</kbd><kbd>Page Down</kbd><kbd>רווח</kbd> לתמרור הבא ·
+    <kbd>←</kbd><kbd>Page Up</kbd> לקודם ·
+    <kbd>P</kbd> ניגון אוטומטי ·
+    <kbd>H</kbd> הצגת/הסתרת השם ·
+    <kbd>B</kbd> מסך שחור ·
+    <kbd>F</kbd> מסך מלא ·
+    <kbd>Esc</kbd> חזרה לתפריט
+  </div>
+</section>
+
+<!-- ===================== SHOW ===================== -->
+<section id="show" class="hidden">
+  <div id="topbar">
+    <div id="secName">—</div>
+    <div id="pos">—</div>
+  </div>
+  <div id="stage">
+    <div id="card">
+      <div id="badge">—</div>
+      <img id="signImg" alt="תמרור">
+    </div>
+    <div id="meaning"></div>
+  </div>
+  <div id="prog"><div id="progFill"></div></div>
+
+  <div id="ctrls">
+    <button class="cbtn" id="cPrev" title="הקודם (←)">⏮</button>
+    <button class="cbtn" id="cPlay" title="ניגון אוטומטי (P)">▶</button>
+    <button class="cbtn" id="cNext" title="הבא (→)">⏭</button>
+    <button class="cbtn" id="cSlow" title="איטי יותר (−)">−</button>
+    <div id="spd">5ש׳</div>
+    <button class="cbtn" id="cFast" title="מהיר יותר (+)">+</button>
+    <button class="cbtn" id="cMean" title="הצגת/הסתרת השם (H)">שם</button>
+    <button class="cbtn" id="cBlank" title="מסך שחור (B)">⬛</button>
+    <button class="cbtn" id="cFull" title="מסך מלא (F)">⛶</button>
+    <button class="cbtn" id="cHome" title="תפריט (Esc)">☰</button>
+  </div>
+</section>
+
+<div id="blank" class="hidden"></div>
+
+<!-- ===================== HELP ===================== -->
+<div id="help" class="hidden">
+  <div class="box">
+    <h2>מקשים ושלט מצגות</h2>
+    <table>
+      <tr><td><kbd>→</kbd> <kbd>Page Down</kbd> <kbd>רווח</kbd></td><td>תמרור הבא</td></tr>
+      <tr><td><kbd>←</kbd> <kbd>Page Up</kbd></td><td>תמרור קודם</td></tr>
+      <tr><td><kbd>P</kbd></td><td>ניגון אוטומטי — הפעלה / עצירה</td></tr>
+      <tr><td><kbd>+</kbd> / <kbd>−</kbd></td><td>מהירות הניגון האוטומטי</td></tr>
+      <tr><td><kbd>H</kbd></td><td>הצגת / הסתרת שם התמרור</td></tr>
+      <tr><td><kbd>B</kbd> או <kbd>.</kbd></td><td>מסך שחור (להפניית תשומת לב)</td></tr>
+      <tr><td><kbd>F</kbd></td><td>מסך מלא</td></tr>
+      <tr><td><kbd>1</kbd>–<kbd>9</kbd></td><td>מעבר ישיר לקבוצת תמרורים</td></tr>
+      <tr><td><kbd>Home</kbd> / <kbd>End</kbd></td><td>תחילת / סוף הקבוצה</td></tr>
+      <tr><td><kbd>Esc</kbd></td><td>חזרה לתפריט הראשי</td></tr>
+    </table>
+    <div class="close">לחצו במקום כלשהו לסגירה</div>
+  </div>
+</div>
+
+<script src="signs_data.js"></script>
+<script>
+(function(){
+  "use strict";
+  var D = window.SIGNS_DATA || [];
+  // flatten
+  var FLAT=[], SEC_START=[];
+  D.forEach(function(sec,si){
+    SEC_START.push(FLAT.length);
+    sec.signs.forEach(function(s,ii){
+      FLAT.push({n:s.n, m:s.m||"", img:s.img, secIdx:si, secName:sec.name, color:sec.color, inSec:ii, secCount:sec.signs.length});
+    });
+  });
+
+  var cur=0, autoplay=false, apTimer=null, apMs=5000, showMeaning=true, blanked=false;
+  var $=function(id){return document.getElementById(id);};
+  var home=$("home"), show=$("show"), img=$("signImg"), badge=$("badge"),
+      secName=$("secName"), pos=$("pos"), meaning=$("meaning"),
+      progFill=$("progFill"), ctrls=$("ctrls"), spd=$("spd"),
+      blank=$("blank"), help=$("help");
+
+  // ---- build home grid ----
+  var grid=$("grid");
+  D.forEach(function(sec,si){
+    var b=document.createElement("button");
+    b.className="gcard"; b.style.background=sec.color;
+    b.innerHTML='<div class="gnum">'+(si+1)+'</div><div class="gn">'+sec.name+'</div>'+
+                '<div class="gc">'+sec.signs.length+(sec.id===10?' סמלים':' תמרורים')+'</div>';
+    b.addEventListener("click",function(){ startAt(SEC_START[si]); });
+    grid.appendChild(b);
+  });
+
+  // ---- render ----
+  function render(){
+    var s=FLAT[cur];
+    document.documentElement.style.setProperty("--accent", s.color);
+    img.style.opacity=0;
+    var tmp=new Image();
+    tmp.onload=function(){ img.src=s.img; img.style.opacity=1; };
+    tmp.src=s.img;
+    if(tmp.complete){ img.src=s.img; img.style.opacity=1; }
+    badge.textContent=s.n;
+    secName.textContent=(s.secIdx+1)+". "+s.secName;
+    pos.innerHTML="תמרור "+(s.inSec+1)+" / "+s.secCount+(autoplay? " <span class='apdot'>●</span>":"");
+    $("cMean").classList.toggle("on",showMeaning);
+    if(showMeaning){
+      if(s.m){ meaning.textContent=s.m; meaning.classList.remove("empty"); }
+      else { meaning.textContent="(ללא שם)"; meaning.classList.add("empty"); }
+      meaning.classList.remove("hidden");
+    } else {
+      meaning.classList.add("hidden");
+    }
+    restartProg();
+  }
+
+  function startAt(i){
+    cur=i; show.classList.remove("hidden"); home.classList.add("hidden");
+    render(); flashCtrls();
+  }
+  function goHome(){
+    stopAutoplay(); show.classList.add("hidden"); home.classList.remove("hidden");
+    unblank();
+  }
+  function next(){ cur=(cur+1)%FLAT.length; render(); }
+  function prev(){ cur=(cur-1+FLAT.length)%FLAT.length; render(); }
+  function sectionHome(end){
+    var s=FLAT[cur]; var start=SEC_START[s.secIdx];
+    cur = end ? start+s.secCount-1 : start; render();
+  }
+  function jumpSection(si){ if(si>=0 && si<D.length){ cur=SEC_START[si]; render(); flashCtrls(); } }
+
+  // ---- autoplay ----
+  function tick(){ next(); }
+  function startAutoplay(){
+    autoplay=true; $("cPlay").textContent="⏸"; $("cPlay").classList.add("on");
+    clearInterval(apTimer); apTimer=setInterval(tick, apMs); render();
+  }
+  function stopAutoplay(){
+    autoplay=false; $("cPlay").textContent="▶"; $("cPlay").classList.remove("on");
+    clearInterval(apTimer); apTimer=null; restartProg();
+    if(!show.classList.contains("hidden")) render();
+  }
+  function toggleAutoplay(){ autoplay?stopAutoplay():startAutoplay(); }
+  function setSpeed(d){
+    apMs=Math.min(20000, Math.max(1000, apMs+d*1000));
+    spd.textContent=(apMs/1000)+"ש׳";
+    if(autoplay){ clearInterval(apTimer); apTimer=setInterval(tick, apMs); restartProg(); }
+  }
+  function restartProg(){
+    progFill.classList.remove("run"); progFill.style.width="0%";
+    void progFill.offsetWidth;
+    if(autoplay){ progFill.classList.add("run"); progFill.style.transitionDuration=apMs+"ms"; progFill.style.width="100%"; }
+    else { progFill.style.width="0%"; }
+  }
+
+  // ---- toggles ----
+  function toggleMeaning(){ showMeaning=!showMeaning; $("cMean").classList.toggle("on",showMeaning); render(); }
+  function toggleBlank(){ blanked?unblank():blankOn(); }
+  function blankOn(){ blanked=true; blank.classList.remove("hidden"); }
+  function unblank(){ blanked=false; blank.classList.add("hidden"); }
+  function toggleFull(){
+    if(!document.fullscreenElement){ (document.documentElement.requestFullscreen||function(){}).call(document.documentElement); }
+    else { (document.exitFullscreen||function(){}).call(document); }
+  }
+  function toggleHelp(){ help.classList.toggle("hidden"); }
+
+  // ---- controls auto-hide ----
+  var hideT=null;
+  function flashCtrls(){
+    ctrls.classList.remove("fade");
+    clearTimeout(hideT);
+    hideT=setTimeout(function(){ ctrls.classList.add("fade"); }, 3500);
+  }
+  ["mousemove","mousedown","touchstart","keydown"].forEach(function(e){
+    document.addEventListener(e, function(){ if(!show.classList.contains("hidden")) flashCtrls(); });
+  });
+
+  // ---- wire buttons ----
+  $("startAll").addEventListener("click",function(){ startAt(0); });
+  $("fsBtn").addEventListener("click",toggleFull);
+  $("helpBtn").addEventListener("click",toggleHelp);
+  $("cPrev").addEventListener("click",function(e){e.stopPropagation();prev();});
+  $("cNext").addEventListener("click",function(e){e.stopPropagation();next();});
+  $("cPlay").addEventListener("click",function(e){e.stopPropagation();toggleAutoplay();});
+  $("cSlow").addEventListener("click",function(e){e.stopPropagation();setSpeed(-1);});
+  $("cFast").addEventListener("click",function(e){e.stopPropagation();setSpeed(1);});
+  $("cMean").addEventListener("click",function(e){e.stopPropagation();toggleMeaning();});
+  $("cBlank").addEventListener("click",function(e){e.stopPropagation();toggleBlank();});
+  $("cFull").addEventListener("click",function(e){e.stopPropagation();toggleFull();});
+  $("cHome").addEventListener("click",function(e){e.stopPropagation();goHome();});
+  help.addEventListener("click",function(){ help.classList.add("hidden"); });
+
+  // click on stage area = next (but not on controls)
+  $("stage").addEventListener("click",function(){ next(); });
+
+  // ---- keyboard / remote ----
+  document.addEventListener("keydown",function(e){
+    if(!help.classList.contains("hidden")){ help.classList.add("hidden"); e.preventDefault(); return; }
+    if(blanked && e.key!=="Escape"){ unblank(); e.preventDefault(); return; }
+    var onShow=!show.classList.contains("hidden");
+    var k=e.key;
+    if(k==="?"){ toggleHelp(); e.preventDefault(); return; }
+    if(k==="Escape"){ if(onShow) goHome(); e.preventDefault(); return; }
+    if(!onShow){
+      if(k==="Enter"||k===" "){ startAt(0); e.preventDefault(); }
+      return;
+    }
+    switch(k){
+      case "ArrowRight": case "PageDown": case " ": case "Enter": case "ArrowDown":
+        next(); e.preventDefault(); break;
+      case "ArrowLeft": case "PageUp": case "Backspace": case "ArrowUp":
+        prev(); e.preventDefault(); break;
+      case "p": case "P": case "k": case "K":
+        toggleAutoplay(); e.preventDefault(); break;
+      case "h": case "H":
+        toggleMeaning(); e.preventDefault(); break;
+      case "b": case "B": case ".":
+        toggleBlank(); e.preventDefault(); break;
+      case "f": case "F":
+        toggleFull(); e.preventDefault(); break;
+      case "+": case "=":
+        setSpeed(1); e.preventDefault(); break;
+      case "-": case "_":
+        setSpeed(-1); e.preventDefault(); break;
+      case "Home": sectionHome(false); e.preventDefault(); break;
+      case "End": sectionHome(true); e.preventDefault(); break;
+      default:
+        if(k>="1" && k<="9"){ jumpSection(parseInt(k,10)-1); e.preventDefault(); }
+        else if(k==="0"){ jumpSection(9); e.preventDefault(); }
+    }
+  });
+
+  // guard: empty data
+  if(FLAT.length===0){
+    document.body.innerHTML='<div style="padding:40px;font-size:1.4rem">לא נטענו נתוני תמרורים. ודאו שהקובץ signs_data.js נמצא לצד index.html.</div>';
+  }
+})();
+</script>
+</body>
+</html>

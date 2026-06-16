@@ -224,6 +224,8 @@
     .intro-disclaimer strong { color:#fbbf24; }
     .intro-enter-btn { background:linear-gradient(135deg,#a78bfa,#7c3aed); color:white; border:none; padding:14px 48px; font-size:1.1em; font-weight:700; border-radius:12px; cursor:pointer; box-shadow:0 4px 15px rgba(124,58,237,0.4); transition:transform 0.2s, box-shadow 0.2s; }
     .intro-enter-btn:hover { transform:translateY(-2px); box-shadow:0 6px 20px rgba(124,58,237,0.5); }
+    .intro-signs-btn { margin-top:14px; background:rgba(255,255,255,0.12); color:#fff; border:1.5px solid rgba(255,255,255,0.45); padding:11px 32px; font-size:0.95em; font-weight:600; border-radius:12px; cursor:pointer; transition:background 0.2s; }
+    .intro-signs-btn:hover { background:rgba(255,255,255,0.22); }
     .intro-version { margin-top:16px; font-size:0.7em; opacity:0.4; }
     @media(max-width:480px) { .intro-title { font-size:1.4em; } .intro-features { gap:16px; } .intro-logo { width:90px; height:90px; } }
 </style>
@@ -248,6 +250,7 @@
     כל הזכויות שמורות.
   </div>
   <button class="intro-enter-btn" id="btnEnterApp">כניסה למערכת &larr;</button>
+  <button class="intro-signs-btn" onclick="openSigns()">🚦 לימוד תמרורים</button>
   <div class="intro-version">גרסה 2.0 | מערכת מורים &copy; 2026</div>
 </div>
 
@@ -258,6 +261,7 @@
     <div class="sub" id="topbarTeacherName"></div>
   </div>
   <div class="topbar-actions">
+    <button id="btnSigns" title="לימוד תמרורים" onclick="openSigns()">🚦 תמרורים</button>
     <button id="btnRefresh" title="רענן">🔄</button>
     <button id="btnLogout">יציאה</button>
   </div>
@@ -499,6 +503,8 @@ function isKdtzRole(r) {
 }
 
 // ===== Utility =====
+window.openSigns = function() { window.open('signs.html', '_blank', 'noopener'); };
+
 function showScreen(id) {
   var screens = document.querySelectorAll('.screen');
   for (var i = 0; i < screens.length; i++) screens[i].classList.remove('active');
