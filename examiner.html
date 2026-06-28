@@ -2842,8 +2842,8 @@
     H.push('.btn-print{background:linear-gradient(135deg,#1a5276,#2980b9)}');
     H.push('.btn-wa{background:linear-gradient(135deg,#16a34a,#22c55e)}');
     H.push('.btn-share{background:linear-gradient(135deg,#475569,#64748b)}');
-    H.push('@page{size:A4;margin:8mm 10mm}');
-    H.push('@media print{body{background:#fff;padding:0}.container{box-shadow:none;max-width:100%}.no-print{display:none!important}thead th,.summary-item,.pop-table th{-webkit-print-color-adjust:exact;print-color-adjust:exact}tbody tr{-webkit-print-color-adjust:exact;print-color-adjust:exact}}');
+    H.push('@page{size:A4 landscape;margin:8mm}');
+    H.push('@media print{body{background:#fff;padding:0;width:100%;max-width:100%}.container{box-shadow:none;max-width:100%;width:100%;border-radius:0}.no-print{display:none!important}.tw{overflow:visible!important}table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-wrap:break-word;overflow:hidden}thead th{white-space:normal!important;font-size:9px;padding:4px 2px;line-height:1.15}tbody td{font-size:9px;padding:4px 2px}.pop-table{table-layout:auto;width:auto}.pop-table th,.pop-table td{font-size:11px;padding:6px 12px}thead th,.summary-item,.pop-table th{-webkit-print-color-adjust:exact;print-color-adjust:exact}tbody tr{-webkit-print-color-adjust:exact;print-color-adjust:exact}}');
     H.push('</style></head><body>');
     H.push('<div class="toolbar no-print">');
     H.push('<button class="btn-print" onclick="__printReport()">🖨️ הדפס / שמור PDF</button>');
@@ -4490,7 +4490,7 @@
     H.push('.exec-val.z{color:#94a3b8;background:#f8f9fa}');
     H.push('@page{size:A4;margin:8mm 10mm}');
 H.push('@media print{body{background:#fff;padding:0;width:100%;max-width:100%}.container{box-shadow:none;max-width:100%;width:100%}.no-print{display:none!important}');
-H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-wrap:break-word;overflow:hidden}');
+H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-wrap:break-word;overflow:hidden}thead th{white-space:normal!important;font-size:9px;padding:4px 2px;line-height:1.15}tbody td{font-size:9px;padding:4px 2px}.pop-table{table-layout:auto;width:auto}');
     H.push('thead th,.summary-item,.pop-table th{-webkit-print-color-adjust:exact;print-color-adjust:exact}');
     H.push('tbody tr{-webkit-print-color-adjust:exact;print-color-adjust:exact}}');
     H.push('@media(max-width:600px){body{padding:8px}.section{padding:14px 16px}}');
