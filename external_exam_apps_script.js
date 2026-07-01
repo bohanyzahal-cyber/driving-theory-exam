@@ -1372,15 +1372,13 @@ function parseAndValidateQuotas(raw) {
       return { error: 'דרגה "' + lic + '" מופיעה יותר מפעם אחת' + (site ? ' לאתר "' + site + '"' : '') };
     }
     seen[_qkey] = true;
-    if (!isFinite(req) || req < 1) {
-      return { error: 'כמות מבוקשת חייבת להיות לפחות 1 (דרגה ' + lic + ')' };
-    }
-    if (!isFinite(appr) || appr < 0) {
-      return { error: 'כמות מאושרת חסרה (דרגה ' + lic + ')' };
-    }
-    if (appr > req) {
-      return { error: 'כמות מאושרת גדולה מהמבוקשת (דרגה ' + lic + ')' };
-    }
+    // Quantity is OPTIONAL (mirrors the client redesign e0708f2, which removed the
+    // requested/approved fields from session opening). A missing/blank/0 quantity
+    // defaults to 0 instead of blocking session creation — the examiner no longer
+    // has to type a number to open an exam.
+    if (!isFinite(req) || req < 0) req = 0;
+    if (!isFinite(appr) || appr < 0) appr = 0;
+    if (appr > req) appr = req;
     clean.push({ site: site, license: lic, requested: req, approved: appr });
   }
   return { rows: clean };
