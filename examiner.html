@@ -382,6 +382,7 @@
           <thead>
             <tr style="font-size:12px; color:#64748b;">
               <th style="text-align:right; padding:4px 6px; font-weight:600;">דרגה</th>
+              <th style="text-align:center; padding:4px 6px; font-weight:600; width:110px;">כמות</th>
               <th style="width:36px;"></th>
             </tr>
           </thead>
@@ -1493,7 +1494,7 @@
     var tbody = document.getElementById('quotasTableBody');
     if (!tbody) return;
     if (setupQuotas.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="2" style="text-align:center;color:#94a3b8;padding:10px;font-size:13px;">לחץ "+ הוסף שורה" כדי להוסיף דרגה</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="3" style="text-align:center;color:#94a3b8;padding:10px;font-size:13px;">לחץ "+ הוסף שורה" כדי להוסיף דרגה</td></tr>';
       return;
     }
     var rows = '';
@@ -1503,6 +1504,7 @@
       var apprVal = (q.approved === '' || q.approved == null) ? '' : String(q.approved);
       rows += '<tr>' +
         '<td style="padding:4px;">' + quotaLicenseSelectHtml(q.license, i) + '</td>' +
+        '<td style="padding:4px;text-align:center;"><input type="number" min="0" inputmode="numeric" value="' + reqVal + '" oninput="updateQuotaCell(' + i + ',\'requested\',this.value)" placeholder="—" style="width:80px;text-align:center;background:#fff;border:1px solid #cbd5e1;border-radius:6px;padding:5px 6px;font-size:13px;" /></td>' +
         '<td style="padding:4px;text-align:center;"><button type="button" onclick="removeQuotaRow(' + i + ')" style="background:#c0392b;color:#fff;border:none;border-radius:6px;padding:4px 8px;font-size:12px;cursor:pointer;" title="הסר שורה">✕</button></td>' +
         '</tr>';
     }
