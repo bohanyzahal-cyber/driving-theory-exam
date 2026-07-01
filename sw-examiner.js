@@ -1,4 +1,9 @@
 // Service Worker for Examiner PWA
+//
+// ⚠️ תזכורת קריטית: בכל שינוי גלוי ב-examiner.html — חובה להעלות את המספר כאן (v38 → v39 ...)
+// אחרת הבוחנים ימשיכו לקבל מהמטמון את הגרסה הישנה ולא יראו את השינוי (מקרה e0708f2, יולי 2026).
+// ⚠️ CRITICAL: bump this number on EVERY user-facing examiner.html change, or the fleet
+//    keeps serving the stale cached build and never sees your fix.
 var CACHE_NAME = 'examiner-v38';
 
 // Install — cache the examiner page shell
