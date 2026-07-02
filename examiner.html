@@ -374,23 +374,9 @@
       </label>
     </div>
 
-    <!-- Quotas table: one row per license type, like the plan table in the examiner report. -->
-    <div style="margin: 14px 0;">
-      <div style="font-size:14px; font-weight:600; margin-bottom:6px;">דרגות בבחינה</div>
-      <div style="background:#f8fafc; border:1px solid #cbd5e1; border-radius:10px; padding:10px;">
-        <table style="width:100%; border-collapse:collapse; font-size:14px;">
-          <thead>
-            <tr style="font-size:12px; color:#64748b;">
-              <th style="text-align:right; padding:4px 6px; font-weight:600;">דרגה</th>
-              <th style="text-align:center; padding:4px 6px; font-weight:600; width:110px;">כמות</th>
-              <th style="width:36px;"></th>
-            </tr>
-          </thead>
-          <tbody id="quotasTableBody"></tbody>
-        </table>
-        <button type="button" id="addQuotaRowBtn" style="margin-top:8px; padding:6px 14px; background:#27ae60; font-size:13px; font-weight:600;">+ הוסף שורה</button>
-      </div>
-    </div>
+    <!-- Grade/quantity table removed: the session's grade comes from the
+         "דרגת רישיון" (licenseSetup) dropdown above; the quota row is derived
+         from it automatically at session open (no manual grade/quantity entry). -->
 
     <!-- Optional guest site: a second base joining this exam, with its own quotas. -->
     <div style="margin: 14px 0;">
@@ -829,9 +815,15 @@
 <!-- Correct examinee site/population (examiner) — for when the examinee picked wrong -->
 <div class="modal-overlay" id="correctMetaModal">
   <div class="modal-box" style="max-width:420px;">
-    <h3>תיקון אתר / אוכלוסיה</h3>
+    <h3>תיקון פרטי נבחן</h3>
     <p class="muted" id="correctMetaExamineeInfo" style="margin:4px 0 14px;"></p>
     <div style="display:grid; gap:14px; margin:14px 0;">
+      <label>ת.ז.
+        <input id="correctMetaId" type="text" inputmode="numeric" autocomplete="off" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-family:inherit;" />
+      </label>
+      <label>טלפון
+        <input id="correctMetaPhone" type="tel" inputmode="tel" placeholder="05X-XXXXXXX" autocomplete="off" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-family:inherit;" />
+      </label>
       <label>אתר
         <select id="correctMetaSite" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-family:inherit;"></select>
       </label>
@@ -1619,9 +1611,10 @@
     });
   })();
 
-  // Wire up the "+ הוסף שורה" button + keep first row in sync with the primary
-  // license dropdown as long as the user hasn't typed values yet.
-  document.getElementById('addQuotaRowBtn').addEventListener('click', function() {
+  // Wire up the "+ הוסף שורה" button (the host grade/quantity table was removed
+  // from the UI — guard so init doesn't crash when the button is absent).
+  var _addQuotaBtn = document.getElementById('addQuotaRowBtn');
+  if (_addQuotaBtn) _addQuotaBtn.addEventListener('click', function() {
     var primary = document.getElementById('licenseSetup').value || 'B';
     // Pick a license not yet used, if possible — saves the examiner a click.
     var used = {};
@@ -1670,28 +1663,11 @@
     if (!site) { errEl.textContent = 'בחר אתר'; errEl.style.display = 'block'; return; }
     if (!classroom) { errEl.textContent = 'בחר כיתה'; errEl.style.display = 'block'; return; }
 
-    // Collect quotas from the table. Validate each row + ensure at least one
-    // row exists. Duplicates of the same license type are caught too — the
-    // examiner should consolidate, otherwise the report gets confusing.
-    var quotas = [];
-    var seenLicenses = {};
-    for (var qi = 0; qi < setupQuotas.length; qi++) {
-      var q = setupQuotas[qi];
-      var qLic = String(q.license || '').trim();
-      var qReq = parseInt(q.requested, 10);
-      var qAppr = parseInt(q.approved, 10);
-      if (!qLic) {
-        errEl.textContent = 'בחר דרגה בכל שורה של כמויות'; errEl.style.display = 'block'; return;
-      }
-      if (seenLicenses[qLic]) {
-        errEl.textContent = 'דרגה "' + qLic + '" מופיעה יותר מפעם אחת — מזג לשורה אחת'; errEl.style.display = 'block'; return;
-      }
-      seenLicenses[qLic] = true;
-      quotas.push({ site: site, license: qLic, requested: (isFinite(qReq) ? qReq : 0), approved: (isFinite(qAppr) ? qAppr : 0) });
-    }
-    if (quotas.length === 0) {
-      errEl.textContent = 'הוסף לפחות שורת כמויות אחת'; errEl.style.display = 'block'; return;
-    }
+    // Grade/quantity table removed — derive a single quota row from the primary
+    // license (the "דרגת רישיון" dropdown). Quantity defaults to 0 (the server
+    // accepts 0), so the examiner opens an exam without any grade/quantity entry.
+    // The server still requires >=1 quota row, which this satisfies.
+    var quotas = [{ site: site, license: license, requested: 0, approved: 0 }];
 
     // Optional guest site: a second base with its own quota rows, tagged with the
     // guest site name so the examinee's picker and the report can split host/guest.
@@ -2571,7 +2547,6 @@
           // HIDDEN (pending approval): direct WA + direct SMS per examinee. Share button exposes both.
           (false ? '<a href="' + waUrl + '" target="_blank" class="wa-btn" onclick="markSentWA(' + i + ')" style="margin-left:3px;" title="\u05E9\u05DC\u05D7 \u05D1\u05D5\u05D5\u05D0\u05D8\u05E1\u05D0\u05E4">\u{1F4F1}WA</a>' : '') +
           (false ? '<a href="' + smsUrl + '" class="wa-btn" style="background:#2563eb;margin-left:3px;" title="\u05E9\u05DC\u05D7 \u05D1-SMS">SMS</a>' : '') +
-          '<button class="wa-btn" style="background:#64748b;margin-left:3px;" onclick="editPhone(' + i + ')" title="\u05E2\u05E8\u05D5\u05DA \u05D8\u05DC\u05E4\u05D5\u05DF">\u270E</button>' +
           '<button class="wa-btn" style="background:#0ea5e9;margin-left:3px;" onclick="openCorrectMetaModal(' + i + ')" title="\u05EA\u05E7\u05DF \u05D0\u05EA\u05E8/\u05D0\u05D5\u05DB\u05DC\u05D5\u05E1\u05D9\u05D4">\u{1F4CD}</button>' +
           (!isDQ ? ' <button class="btn-disqualify" onclick="disqualifyResult(' + i + ')" title="\u05E4\u05E1\u05D5\u05DC \u05E0\u05D1\u05D7\u05DF">\u26D4</button>' : ' <button style="background:#16a34a;color:white;padding:4px 8px;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;margin-left:3px;" onclick="overturnDQ(' + i + ')" title="\u05D1\u05D9\u05D8\u05D5\u05DC \u05E4\u05E1\u05D9\u05DC\u05D4">\u21A9 \u05D1\u05D8\u05DC</button> <button style="background:#dc2626;color:white;padding:4px 8px;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;margin-left:3px;" onclick="confirmDQ(' + i + ')" title="\u05D0\u05D9\u05E9\u05D5\u05E8 \u05E4\u05E1\u05D9\u05DC\u05D4">\u2714 \u05D0\u05E9\u05E8</button>') +
           (canCorrect ? ' <button style="background:#f59e0b;color:white;padding:4px 8px;border:none;border-radius:8px;font-size:11px;font-weight:700;cursor:pointer;margin-left:3px;" onclick="correctToPass(' + i + ')" title="\u05EA\u05E7\u05DF \u05DC\u05E2\u05D5\u05D1\u05E8">\u05EA\u05E7\u05DF</button>' : '') +
@@ -3098,6 +3073,9 @@
       if (!found) { var po = document.createElement('option'); po.value = r.population; po.textContent = r.population; popSel.appendChild(po); }
       popSel.value = r.population;
     }
+    // Prefill the editable identity fields (ת.ז. + phone).
+    document.getElementById('correctMetaId').value = r.idNumber || '';
+    document.getElementById('correctMetaPhone').value = r.phone || '';
     document.getElementById('correctMetaError').style.display = 'none';
     document.getElementById('correctMetaExamineeInfo').textContent = r.name + '  |  ת.ז. ' + r.idNumber;
     document.getElementById('correctMetaModal').classList.add('show');
@@ -3114,10 +3092,22 @@
     if (correctMetaEditingIdx < 0) { errEl.textContent = 'אין שורה נבחרת'; errEl.style.display = 'block'; return; }
     var r = completedResults[correctMetaEditingIdx];
     if (!r) { errEl.textContent = 'תוצאה לא נמצאה'; errEl.style.display = 'block'; return; }
+
+    var newId = String(document.getElementById('correctMetaId').value || '').trim();
+    var newPhone = String(document.getElementById('correctMetaPhone').value || '').trim();
+    var oldId = String(r.idNumber || '').trim();
+    if (!newId) { errEl.textContent = 'ת.ז. לא יכולה להיות ריקה'; errEl.style.display = 'block'; return; }
+    if (!/^\d{5,10}$/.test(newId)) { errEl.textContent = 'ת.ז. חייבת להיות ספרות בלבד'; errEl.style.display = 'block'; return; }
+    // Changing ת.ז. is sensitive (it's the row-matching key) — confirm first.
+    var idChanged = newId.replace(/^0+/, '') !== oldId.replace(/^0+/, '');
+    if (idChanged && !confirm('לשנות ת.ז. מ-' + oldId + ' ל-' + newId + '?\nהפעולה מעדכנת את שורת התוצאה. תעודה שכבר הופקה לא תשתנה.')) { return; }
+
     apiPost({
       action: 'correctExamineeMeta',
       sessionCode: r.sessionCode || sessionCode,
-      idNumber: r.idNumber,
+      idNumber: oldId,              // match the row by the OLD id
+      newIdNumber: newId,           // corrected id (server writes it to col B)
+      phone: newPhone,              // corrected phone (server writes it to col D)
       site: document.getElementById('correctMetaSite').value,
       population: document.getElementById('correctMetaPopulation').value
     }).then(function(data) {

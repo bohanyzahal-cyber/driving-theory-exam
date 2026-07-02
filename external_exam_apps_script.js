@@ -2708,14 +2708,28 @@ function handleCorrectExamineeMeta(p) {
   }
   var newSite = (typeof p.site !== 'undefined' && p.site !== null) ? String(p.site).trim() : '';
   var newPop = (typeof p.population !== 'undefined' && p.population !== null) ? String(p.population).trim() : '';
-  if (!newSite && !newPop) {
-    return jsonResponse({ status: 'error', message: 'לא הוזן אתר או אוכלוסיה לעדכון' });
+  var newPhone = (typeof p.phone !== 'undefined' && p.phone !== null) ? String(p.phone).trim() : null;  // null = "not sent" → don't touch
+  var newId = (typeof p.newIdNumber !== 'undefined' && p.newIdNumber !== null) ? String(p.newIdNumber).trim() : '';
+  // Only apply an id change when it's a valid digit string AND actually different.
+  var applyId = (newId && /^\d{5,10}$/.test(newId) && normalizeId(newId) !== normalizeId(p.idNumber));
+  if (!newSite && !newPop && newPhone === null && !applyId) {
+    return jsonResponse({ status: 'error', message: 'לא הוזנו שדות לעדכון' });
   }
   var sheet = getSheet('תוצאות');
   var rows = sheet.getDataRange().getValues();
   for (var i = rows.length - 1; i >= 1; i--) {
     if (String(rows[i][13]) === String(p.sessionCode) && normalizeId(rows[i][1]) === normalizeId(p.idNumber)) {
       var rowIdx = i + 1;
+      if (applyId) {
+        var idCell = sheet.getRange(rowIdx, 2);   // B (idx 1) = ת.ז.
+        idCell.setNumberFormat('@');              // store as text — preserve leading zeros / avoid number formatting
+        idCell.setValue(newId);
+      }
+      if (newPhone !== null) {
+        var phoneCell = sheet.getRange(rowIdx, 4); // D (idx 3) = טלפון
+        phoneCell.setNumberFormat('@');
+        phoneCell.setValue(newPhone);
+      }
       if (newSite) sheet.getRange(rowIdx, 11).setValue(newSite);   // K (idx 10) = אתר
       if (newPop) sheet.getRange(rowIdx, 20).setValue(newPop);     // T (idx 19) = אוכלוסיה
       SpreadsheetApp.flush();
