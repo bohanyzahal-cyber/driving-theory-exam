@@ -1990,20 +1990,26 @@
           }
         }
         var licBadge = '';
-        if (item.license && item.license !== currentLicense) {
-          // Per-license color scheme (examiner request): make the badge instantly
-          // recognizable so the examiner spots a mismatch at a glance.
-          // B=green, 1=orange, C1=blue, C=white with black border, D=yellow.
-          var licStyle = 'padding:2px 8px;border-radius:8px;font-size:0.8em;font-weight:700;';
-          switch (String(item.license)) {
-            case 'B':  licStyle += 'background:#16a34a;color:#fff;'; break;
-            case '1':  licStyle += 'background:#f97316;color:#fff;'; break;
-            case 'C1': licStyle += 'background:#1d4ed8;color:#fff;'; break;
-            case 'C':  licStyle += 'background:#ffffff;color:#000;border:2px solid #000;'; break;
-            case 'D':  licStyle += 'background:#facc15;color:#000;'; break;
-            default:   licStyle += 'background:#dcfce7;color:#166534;'; break;
+        if (item.license) {
+          if (item.license !== currentLicense) {
+            // Different grade from the session default — prominent per-license
+            // color so the examiner spots the mismatch at a glance.
+            // B=green, 1=orange, C1=blue, C=white with black border, D=yellow.
+            var licStyle = 'padding:2px 8px;border-radius:8px;font-size:0.8em;font-weight:700;';
+            switch (String(item.license)) {
+              case 'B':  licStyle += 'background:#16a34a;color:#fff;'; break;
+              case '1':  licStyle += 'background:#f97316;color:#fff;'; break;
+              case 'C1': licStyle += 'background:#1d4ed8;color:#fff;'; break;
+              case 'C':  licStyle += 'background:#ffffff;color:#000;border:2px solid #000;'; break;
+              case 'D':  licStyle += 'background:#facc15;color:#000;'; break;
+              default:   licStyle += 'background:#dcfce7;color:#166534;'; break;
+            }
+            licBadge = ' <span style="' + licStyle + '">' + escHtml(LICENSE_LABELS[item.license] || item.license) + '</span>';
+          } else {
+            // Matching grade — subtle neutral badge so the examiner still sees the
+            // grade for EVERY examinee, not only the exceptions.
+            licBadge = ' <span style="background:#f1f5f9;color:#475569;padding:2px 8px;border-radius:8px;font-size:0.8em;font-weight:600;border:1px solid #e2e8f0;">' + escHtml(LICENSE_LABELS[item.license] || item.license) + '</span>';
           }
-          licBadge = ' <span style="' + licStyle + '">' + escHtml(LICENSE_LABELS[item.license] || item.license) + '</span>';
         }
         var audioBadge = '';
         if (item.audioMode === 'on') {
@@ -2245,20 +2251,26 @@
           }
         }
         var licBadge = '';
-        if (item.license && item.license !== currentLicense) {
-          // Per-license color scheme (examiner request): make the badge instantly
-          // recognizable so the examiner spots a mismatch at a glance.
-          // B=green, 1=orange, C1=blue, C=white with black border, D=yellow.
-          var licStyle = 'padding:2px 8px;border-radius:8px;font-size:0.8em;font-weight:700;';
-          switch (String(item.license)) {
-            case 'B':  licStyle += 'background:#16a34a;color:#fff;'; break;
-            case '1':  licStyle += 'background:#f97316;color:#fff;'; break;
-            case 'C1': licStyle += 'background:#1d4ed8;color:#fff;'; break;
-            case 'C':  licStyle += 'background:#ffffff;color:#000;border:2px solid #000;'; break;
-            case 'D':  licStyle += 'background:#facc15;color:#000;'; break;
-            default:   licStyle += 'background:#dcfce7;color:#166534;'; break;
+        if (item.license) {
+          if (item.license !== currentLicense) {
+            // Different grade from the session default — prominent per-license
+            // color so the examiner spots the mismatch at a glance.
+            // B=green, 1=orange, C1=blue, C=white with black border, D=yellow.
+            var licStyle = 'padding:2px 8px;border-radius:8px;font-size:0.8em;font-weight:700;';
+            switch (String(item.license)) {
+              case 'B':  licStyle += 'background:#16a34a;color:#fff;'; break;
+              case '1':  licStyle += 'background:#f97316;color:#fff;'; break;
+              case 'C1': licStyle += 'background:#1d4ed8;color:#fff;'; break;
+              case 'C':  licStyle += 'background:#ffffff;color:#000;border:2px solid #000;'; break;
+              case 'D':  licStyle += 'background:#facc15;color:#000;'; break;
+              default:   licStyle += 'background:#dcfce7;color:#166534;'; break;
+            }
+            licBadge = ' <span style="' + licStyle + '">' + escHtml(LICENSE_LABELS[item.license] || item.license) + '</span>';
+          } else {
+            // Matching grade — subtle neutral badge so the examiner still sees the
+            // grade for EVERY examinee, not only the exceptions.
+            licBadge = ' <span style="background:#f1f5f9;color:#475569;padding:2px 8px;border-radius:8px;font-size:0.8em;font-weight:600;border:1px solid #e2e8f0;">' + escHtml(LICENSE_LABELS[item.license] || item.license) + '</span>';
           }
-          licBadge = ' <span style="' + licStyle + '">' + escHtml(LICENSE_LABELS[item.license] || item.license) + '</span>';
         }
         var audioBadge = '';
         if (item.audioMode === 'on') {
