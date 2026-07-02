@@ -346,6 +346,16 @@
         </select>
       </label>
       <label>
+        <span>אוכלוסיה (ברירת מחדל)</span>
+        <select id="defaultPopulationSetup">
+          <option value="">— ללא (הנבחן יבחר) —</option>
+          <option value="צבא">צבא</option>
+          <option value="קד״ץ">קד״ץ</option>
+          <option value="וואוצ׳ר">וואוצ׳ר</option>
+          <option value="עיוני בלבד">עיוני בלבד</option>
+        </select>
+      </label>
+      <label>
         <span>שפת המבחן</span>
         <select id="languageSetup">
           <option value="he">עברית</option>
@@ -960,6 +970,10 @@
   var currentLicense = '';
   var currentLanguage = '';
   var currentAudioMode = '';
+  // Default population set by the examiner at session open. Used to flag
+  // examinees who picked a DIFFERENT population (prominent badge in the
+  // waiting list) so the examiner notices and can correct it if needed.
+  var currentDefaultPopulation = '';
   // Senior/responsible examiner on the work order (פקודת עבודה). Empty when
   // the session opener is solo or the responsible person. Surfaces on the
   // dashboard header, in the PDF report, and in the WhatsApp share link.
@@ -1012,6 +1026,7 @@
         currentLicense: currentLicense,
         currentLanguage: currentLanguage,
         currentAudioMode: currentAudioMode,
+        currentDefaultPopulation: currentDefaultPopulation,
         currentQuotas: currentQuotas,
         currentResponsibleExaminer: currentResponsibleExaminer,
         reportSharedThisSession: reportSharedThisSession
@@ -1035,6 +1050,7 @@
       currentLicense = state.currentLicense || '';
       currentLanguage = state.currentLanguage || '';
       currentAudioMode = state.currentAudioMode || '';
+      currentDefaultPopulation = state.currentDefaultPopulation || '';
       currentQuotas = Array.isArray(state.currentQuotas) ? state.currentQuotas : [];
       currentResponsibleExaminer = state.currentResponsibleExaminer || '';
       // Legacy state from before reportSharedThisSession existed has no such
@@ -1336,6 +1352,7 @@
     currentSiteManagerPhone = sess.managerPhone || '';
     currentQuotas = Array.isArray(sess.quotas) ? sess.quotas : [];
     currentResponsibleExaminer = sess.responsibleExaminer || '';
+    currentDefaultPopulation = sess.defaultPopulation || '';
     // Resuming a session from the server (vs. local refresh) — we have no way
     // to know whether the previous browser already shared the report. Force
     // the examiner to share again before they can close, to guarantee fresh
@@ -1710,7 +1727,8 @@
       site: site, classroom: classroom,
       license: license, language: language, audioMode: audioMode,
       quotas: JSON.stringify(quotas),
-      responsibleExaminer: respVal
+      responsibleExaminer: respVal,
+      defaultPopulation: document.getElementById('defaultPopulationSetup').value
     }).then(function(data) {
       btn.disabled = false; btn.textContent = 'פתח בחינה';
       if (data.status === 'ok') {
@@ -1721,6 +1739,7 @@
         currentLicense = license;
         currentLanguage = language;
         currentAudioMode = audioMode;
+        currentDefaultPopulation = document.getElementById('defaultPopulationSetup').value;
         currentQuotas = quotas;
         currentResponsibleExaminer = respVal;
         // Fresh session — examiner hasn't shared a report yet for this one
@@ -1962,7 +1981,13 @@
         }
         var popBadge = '';
         if (item.population) {
-          popBadge = ' <span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">' + escHtml(item.population) + '</span>';
+          // If the examiner set a default population and this examinee picked a
+          // DIFFERENT one, flag it prominently (red + ⚠️) so it stands out.
+          if (currentDefaultPopulation && String(item.population).trim() !== String(currentDefaultPopulation).trim()) {
+            popBadge = ' <span style="background:#dc2626;color:#fff;padding:2px 8px;border-radius:8px;font-size:0.85em;font-weight:800;border:2px solid #fca5a5;" title="אוכלוסיה שונה מברירת המחדל של הבחינה (' + escHtml(currentDefaultPopulation) + ')">⚠️ ' + escHtml(item.population) + '</span>';
+          } else {
+            popBadge = ' <span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">' + escHtml(item.population) + '</span>';
+          }
         }
         var licBadge = '';
         if (item.license && item.license !== currentLicense) {
@@ -2211,7 +2236,13 @@
         }
         var popBadge = '';
         if (item.population) {
-          popBadge = ' <span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">' + escHtml(item.population) + '</span>';
+          // If the examiner set a default population and this examinee picked a
+          // DIFFERENT one, flag it prominently (red + ⚠️) so it stands out.
+          if (currentDefaultPopulation && String(item.population).trim() !== String(currentDefaultPopulation).trim()) {
+            popBadge = ' <span style="background:#dc2626;color:#fff;padding:2px 8px;border-radius:8px;font-size:0.85em;font-weight:800;border:2px solid #fca5a5;" title="אוכלוסיה שונה מברירת המחדל של הבחינה (' + escHtml(currentDefaultPopulation) + ')">⚠️ ' + escHtml(item.population) + '</span>';
+          } else {
+            popBadge = ' <span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">' + escHtml(item.population) + '</span>';
+          }
         }
         var licBadge = '';
         if (item.license && item.license !== currentLicense) {

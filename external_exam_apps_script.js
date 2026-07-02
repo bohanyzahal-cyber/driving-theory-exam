@@ -848,6 +848,7 @@ function handleListSessions(p) {
         quotas: decodeSessionQuotas(data[i][11], data[i][12], data[i][5]),
         // Defensive read — see handleGetSessionInfo comment.
         responsibleExaminer: String((data[i].length > 13 ? data[i][13] : '') || ''),
+        defaultPopulation: String((data[i].length > 14 ? data[i][14] : '') || ''),
         managerPhone: sitesMap[siteName] ? sitesMap[siteName].managerPhone : ''
       });
     }
@@ -1147,7 +1148,8 @@ function handleCreateSession(p) {
     true,
     JSON.stringify(quotas.rows),
     '',
-    responsibleExaminer
+    responsibleExaminer,
+    String(p.defaultPopulation || '').trim()   // O (idx 14) = default population for the session
   ]);
 
   return jsonResponse({
@@ -1547,7 +1549,10 @@ function handleGetSessionInfo(p) {
           // Column N (13) may be missing on rows created before this feature
           // shipped — defensive read returns '' for those, treating them as
           // sessions without a designated responsible examiner.
-          responsibleExaminer: String((data[i].length > 13 ? data[i][13] : '') || '')
+          responsibleExaminer: String((data[i].length > 13 ? data[i][13] : '') || ''),
+          // Default population set by the examiner at session open (col O, idx 14).
+          // The examinee's form pre-selects it but can change it. '' on old rows.
+          defaultPopulation: String((data[i].length > 14 ? data[i][14] : '') || '')
         }
       });
     }

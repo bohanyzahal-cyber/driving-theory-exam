@@ -1036,9 +1036,10 @@
     // Reset language dropdown to session default
     var langSel = document.getElementById('langSelect');
     if (langSel) langSel.value = sessionData.language || 'he';
-    // Reset population dropdown
+    // Reset population dropdown to the session default (set by the examiner),
+    // falling back to \u05E6\u05D1\u05D0 when no default was configured.
     var popSel = document.getElementById('populationSelect');
-    if (popSel) popSel.value = '\u05E6\u05D1\u05D0';
+    if (popSel) popSel.value = (sessionData && sessionData.defaultPopulation) || '\u05E6\u05D1\u05D0';
     // Reset license dropdown to session default
     var licSel = document.getElementById('licenseSelect');
     if (licSel) licSel.value = sessionData.license || 'B';
@@ -1360,6 +1361,18 @@
         // Set license dropdown default to session license
         var licSel = document.getElementById('licenseSelect');
         if (licSel) licSel.value = sessionData.license || 'B';
+        // Pre-select the population to the examiner's session default. The
+        // examinee can still change it if they belong to a different population.
+        (function() {
+          var popSel = document.getElementById('populationSelect');
+          var dp = sessionData.defaultPopulation;
+          if (popSel && dp) {
+            var found = false;
+            for (var _pi = 0; _pi < popSel.options.length; _pi++) { if (popSel.options[_pi].value === dp) { found = true; break; } }
+            if (!found) { var _o = document.createElement('option'); _o.value = dp; _o.textContent = dp; popSel.appendChild(_o); }
+            popSel.value = dp;
+          }
+        })();
         document.getElementById('topbarSub').textContent = sessionData.site + ' | ' + (LICENSE_LABELS[sessionData.license] || sessionData.license);
         // Multi-site: if the session declares more than one site (host + guest),
         // let the examinee pick theirs. Single-site sessions keep it hidden.

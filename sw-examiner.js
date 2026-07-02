@@ -4,7 +4,7 @@
 // אחרת הבוחנים ימשיכו לקבל מהמטמון את הגרסה הישנה ולא יראו את השינוי (מקרה e0708f2, יולי 2026).
 // ⚠️ CRITICAL: bump this number on EVERY user-facing examiner.html change, or the fleet
 //    keeps serving the stale cached build and never sees your fix.
-var CACHE_NAME = 'examiner-v39';
+var CACHE_NAME = 'examiner-v40';
 
 // Install — cache the examiner page shell
 self.addEventListener('install', function(e) {
