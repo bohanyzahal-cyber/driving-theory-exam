@@ -3792,75 +3792,106 @@ function loadQuestionsForLanguageServer(lang) {
 
   var cache = CacheService.getScriptCache();
   var metaKey = 'qdata_' + safeLang + '_meta';
-  var meta = cache.get(metaKey);
 
-  if (meta) {
+  // Reassemble the cached chunks into the questions array, or return null on a
+  // miss / partial / empty-poisoned cache. Factored out so both the initial
+  // read AND the stampede-waiters below can re-check without duplicating logic.
+  function readFromCache() {
+    var meta = cache.get(metaKey);
+    if (!meta) return null;
     var numChunks = parseInt(meta, 10);
     var keys = [];
     for (var i = 0; i < numChunks; i++) keys.push('qdata_' + safeLang + '_part_' + i);
     var chunks = cache.getAll(keys);
     var json = '';
-    var allPresent = true;
     for (var k = 0; k < numChunks; k++) {
       var c = chunks['qdata_' + safeLang + '_part_' + k];
-      if (c === null || c === undefined) { allPresent = false; break; }
+      if (c === null || c === undefined) return null;  // partial → treat as miss
       json += c;
     }
-    if (allPresent) {
-      try {
-        var cached = JSON.parse(json);
-        // Cache-poisoning guard: empty array means a previous write captured a
-        // partial/empty file (real exam-day incident: Hebrew was cached as []
-        // after a race with the warmup trigger). Treat empty as a miss and
-        // re-read from Drive so we recover automatically instead of serving
-        // "0 questions" until the next 4-hour warmup.
-        if (Array.isArray(cached) && cached.length > 0) return cached;
-        Logger.log('[CACHE] empty cached result for ' + safeLang + ' — ignoring and re-reading from Drive');
-      } catch (e) { /* fall through to Drive */ }
+    try {
+      var cached = JSON.parse(json);
+      // Cache-poisoning guard: empty array means a previous write captured a
+      // partial/empty file (real exam-day incident: Hebrew was cached as []
+      // after a race). Treat empty as a miss and re-read from Drive.
+      if (Array.isArray(cached) && cached.length > 0) return cached;
+      Logger.log('[CACHE] empty cached result for ' + safeLang + ' — ignoring and re-reading from Drive');
+    } catch (e) { /* fall through to Drive */ }
+    return null;
+  }
+
+  var hit = readFromCache();
+  if (hit) return hit;
+
+  // ===== Stampede protection (fixes the ~13:00 daily outage) =====
+  // The question cache has a 6h TTL. When it expires, a whole exam-start wave
+  // hits a COLD cache at the same instant. Without this guard, EVERY request
+  // reads the big Drive file simultaneously — each taking tens of seconds —
+  // which saturates Apps Script's ~30 execution slots. That is exactly what
+  // froze exam-start + result-submit + examiner sync for ~15 min until one
+  // read finally re-warmed the cache. Fix: only ONE execution reads Drive; the
+  // rest wait briefly and reuse the freshly-warmed cache. A cold-cache moment
+  // becomes a ~3s blip for one call instead of a 15-min outage for everyone.
+  var lockKey = 'qload_lock_' + safeLang;
+  var haveLock = false;
+  if (!cache.get(lockKey)) {
+    cache.put(lockKey, '1', 60);   // hold the loader lock up to 60s
+    haveLock = true;
+  }
+  if (!haveLock) {
+    // Another execution is already loading — wait for it to warm the cache
+    // instead of stampeding Drive ourselves.
+    for (var w = 0; w < 10; w++) {
+      Utilities.sleep(1000);
+      var warmed = readFromCache();
+      if (warmed) return warmed;
+      if (!cache.get(lockKey)) break;  // loader finished/failed — load it ourselves
     }
+    // Timed out or the loader vanished: fall through and read Drive as a fallback.
   }
 
-  // Cache miss → read from Drive
-  var folderId = PropertiesService.getScriptProperties().getProperty('QUESTIONS_DRIVE_FOLDER_ID');
-  if (!folderId) {
-    throw new Error('QUESTIONS_DRIVE_FOLDER_ID not configured in ScriptProperties');
-  }
-  var folder;
-  try { folder = DriveApp.getFolderById(folderId); }
-  catch (e) { throw new Error('Cannot access Drive folder: ' + e.message); }
-
-  var fileName = 'questions_' + safeLang + '.json';
-  var files = folder.getFilesByName(fileName);
-  if (!files.hasNext()) throw new Error(fileName + ' not found in Drive folder');
-  var file = files.next();
-
-  var jsonStr = file.getBlob().getDataAsString('UTF-8');
-
-  // Parse FIRST, then decide whether to cache. We never cache an empty result
-  // — that's how Hebrew got stuck at 0 questions for hours after a race.
-  // If the Drive file itself is genuinely empty (or only contains "[]"),
-  // returning the empty array is the honest answer for this call, but
-  // poisoning the cache with it would punish every subsequent caller.
-  var parsed;
-  try { parsed = JSON.parse(jsonStr); }
-  catch (e) { throw new Error('Failed to parse ' + fileName + ' from Drive: ' + e.message); }
-
-  if (Array.isArray(parsed) && parsed.length > 0) {
-    // Write back to cache in chunks (CacheService cap: 100 KB per key)
-    var CHUNK_SIZE = 90000;
-    var totalChunks = Math.ceil(jsonStr.length / CHUNK_SIZE);
-    var putMap = {};
-    for (var pi = 0; pi < totalChunks; pi++) {
-      putMap['qdata_' + safeLang + '_part_' + pi] = jsonStr.substr(pi * CHUNK_SIZE, CHUNK_SIZE);
+  try {
+    // Cache miss → read from Drive
+    var folderId = PropertiesService.getScriptProperties().getProperty('QUESTIONS_DRIVE_FOLDER_ID');
+    if (!folderId) {
+      throw new Error('QUESTIONS_DRIVE_FOLDER_ID not configured in ScriptProperties');
     }
-    putMap[metaKey] = String(totalChunks);
-    try { cache.putAll(putMap, 21600); } catch (e) { /* cache full or unavailable — proceed without */ }
-  } else {
-    // Don't poison the cache. Log so we can spot a corrupted source file.
-    Logger.log('[DRIVE] ' + fileName + ' parsed to empty/non-array — NOT caching. Check the source file.');
-  }
+    var folder;
+    try { folder = DriveApp.getFolderById(folderId); }
+    catch (e) { throw new Error('Cannot access Drive folder: ' + e.message); }
 
-  return parsed;
+    var fileName = 'questions_' + safeLang + '.json';
+    var files = folder.getFilesByName(fileName);
+    if (!files.hasNext()) throw new Error(fileName + ' not found in Drive folder');
+    var file = files.next();
+
+    var jsonStr = file.getBlob().getDataAsString('UTF-8');
+
+    // Parse FIRST, then decide whether to cache. We never cache an empty result
+    // — that's how Hebrew got stuck at 0 questions for hours after a race.
+    var parsed;
+    try { parsed = JSON.parse(jsonStr); }
+    catch (e) { throw new Error('Failed to parse ' + fileName + ' from Drive: ' + e.message); }
+
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      // Write back to cache in chunks (CacheService cap: 100 KB per key)
+      var CHUNK_SIZE = 90000;
+      var totalChunks = Math.ceil(jsonStr.length / CHUNK_SIZE);
+      var putMap = {};
+      for (var pi = 0; pi < totalChunks; pi++) {
+        putMap['qdata_' + safeLang + '_part_' + pi] = jsonStr.substr(pi * CHUNK_SIZE, CHUNK_SIZE);
+      }
+      putMap[metaKey] = String(totalChunks);
+      try { cache.putAll(putMap, 21600); } catch (e) { /* cache full or unavailable — proceed without */ }
+    } else {
+      // Don't poison the cache. Log so we can spot a corrupted source file.
+      Logger.log('[DRIVE] ' + fileName + ' parsed to empty/non-array — NOT caching. Check the source file.');
+    }
+
+    return parsed;
+  } finally {
+    if (haveLock) cache.remove(lockKey);
+  }
 }
 
 // Pick 30 questions per the license blueprint, return them WITHOUT the
