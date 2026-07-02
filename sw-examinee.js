@@ -3,7 +3,7 @@
 // fallback). Was cache-first, which left devices running a STALE examinee.html
 // after every deploy until a manual cache bump — a real source of "old code on
 // some devices". Mirrors sw-examiner.js (already network-first).
-var CACHE = 'examinee-v5';
+var CACHE = 'examinee-v6';
 var IMG_CACHE = 'exam-images-v1';   // question images, warmed by the page at exam start, served offline
 
 self.addEventListener('install', function(e) {

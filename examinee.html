@@ -359,7 +359,7 @@
         <p id="approvalDebug" style="font-size:11px; color:#94a3b8; margin-top:8px;"></p>
         <p id="approvalDebugResponse" style="font-size:11px; color:#94a3b8; margin:2px 0 0; direction:ltr;"></p>
         <div id="approvalError" class="info-banner error" style="display:none; margin-top:12px;"></div>
-        <a href="#" id="changeSelectionWaiting" style="display:inline-block; margin-top:18px; font-size:13px; color:#64748b; text-decoration:underline; cursor:pointer;">טעיתי בבחירה? לחץ כאן לשנות שפה/דרגה</a>
+        <a href="#" id="changeSelectionWaiting" style="display:inline-block; margin-top:18px; font-size:13px; color:#64748b; text-decoration:underline; cursor:pointer;">טעיתי? לחזרה ולתיקון הפרטים</a>
       </div>
     </div>
     <!-- Phase B: instructions -->
@@ -390,7 +390,7 @@
       </label>
       <button class="btn-start-exam" id="startExamBtn" disabled style="opacity:0.5;">התחל מבחן</button>
       <div style="text-align:center; margin-top:12px;">
-        <a href="#" id="changeSelectionInstructions" style="font-size:13px; color:#64748b; text-decoration:underline; cursor:pointer;">טעיתי בבחירה? שנה שפה/דרגה</a>
+        <a href="#" id="changeSelectionInstructions" style="font-size:13px; color:#64748b; text-decoration:underline; cursor:pointer;">טעיתי? לחזרה ולתיקון הפרטים</a>
       </div>
     </div>
     <div class="info-banner error" id="rejectedMsg" style="display:none;">הבוחן דחה את הכניסה שלך. פנה לבוחן.</div>
@@ -590,14 +590,14 @@
       silentCheck: '\uD83D\uDD15 השתקתי את הטלפון',
       silentCheckPC: '\uD83D\uDDA5\uFE0F הבנתי, אשאר במסך מלא לאורך כל המבחן',
       startExam: 'התחל מבחן',
-      changeSelection: 'טעיתי בבחירה? שנה שפה/דרגה',
+      changeSelection: 'טעיתי? לחזרה ולתיקון הפרטים',
       doneTitle: 'המבחן הסתיים',
       doneThank: 'תודה,',
       doneResults: 'התוצאות יימסרו לך ע"י הבוחן.',
       doneLeave: 'ניתן לפנות את המקום.',
       nextExaminee: 'נבחן הבא \u2190',
       rejected: 'הבוחן דחה את הכניסה שלך. פנה לבוחן.',
-      changeConfirm: 'לחזור לטופס הרישום כדי לשנות שפה או דרגה?\nהבוחן יצטרך לאשר אותך שוב.'
+      changeConfirm: 'לחזור לטופס הרישום כדי לתקן את הפרטים?\nהבוחן יצטרך לאשר אותך שוב.'
     },
     'ru': {
       instrTitle: 'Инструкции перед экзаменом',
@@ -616,14 +616,14 @@
       silentCheck: '\uD83D\uDD15 Я выключил звук телефона',
       silentCheckPC: '\uD83D\uDDA5\uFE0F Понял, останусь в полноэкранном режиме',
       startExam: 'Начать экзамен',
-      changeSelection: 'Ошиблись? Сменить язык/категорию',
+      changeSelection: 'Ошиблись? Исправить данные',
       doneTitle: 'Экзамен завершён',
       doneThank: 'Спасибо,',
       doneResults: 'Результаты вам сообщит экзаменатор.',
       doneLeave: 'Можете освободить место.',
       nextExaminee: 'Следующий \u2190',
       rejected: 'Экзаменатор отклонил ваш вход. Обратитесь к экзаменатору.',
-      changeConfirm: 'Вернуться к форме регистрации, чтобы изменить язык или категорию?\nЭкзаменатор должен будет одобрить вас снова.'
+      changeConfirm: 'Вернуться к форме регистрации, чтобы исправить данные?\nЭкзаменатор должен будет одобрить вас снова.'
     },
     'en': {
       instrTitle: 'Instructions Before the Exam',
@@ -642,14 +642,14 @@
       silentCheck: '\uD83D\uDD15 I silenced my phone',
       silentCheckPC: '\uD83D\uDDA5\uFE0F I understand, I will stay in fullscreen',
       startExam: 'Start Exam',
-      changeSelection: 'Wrong selection? Change language/license',
+      changeSelection: 'Wrong details? Go back to fix them',
       doneTitle: 'Exam Completed',
       doneThank: 'Thank you,',
       doneResults: 'Results will be given to you by the examiner.',
       doneLeave: 'You may leave your seat.',
       nextExaminee: 'Next examinee \u2190',
       rejected: 'The examiner rejected your entry. Contact the examiner.',
-      changeConfirm: 'Go back to the registration form to change language or license type?\nThe examiner will need to approve you again.'
+      changeConfirm: 'Go back to the registration form to fix your details?\nThe examiner will need to approve you again.'
     },
     'ar': {
       instrTitle: '\u062A\u0639\u0644\u064A\u0645\u0627\u062A \u0642\u0628\u0644 \u0627\u0644\u0627\u0645\u062A\u062D\u0627\u0646',
@@ -668,14 +668,14 @@
       silentCheck: '\uD83D\uDD15 \u0623\u0633\u0643\u062A\u0651 \u0647\u0627\u062A\u0641\u064A',
       silentCheckPC: '\uD83D\uDDA5\uFE0F \u0641\u0647\u0645\u062A\u060C \u0633\u0623\u0628\u0642\u0649 \u0641\u064A \u0645\u0644\u0621 \u0627\u0644\u0634\u0627\u0634\u0629',
       startExam: '\u0627\u0628\u062F\u0623 \u0627\u0644\u0627\u0645\u062A\u062D\u0627\u0646',
-      changeSelection: '\u0627\u062E\u062A\u064A\u0627\u0631 \u062E\u0627\u0637\u0626\u061F \u063A\u064A\u0651\u0631 \u0627\u0644\u0644\u063A\u0629/\u0627\u0644\u0631\u062E\u0635\u0629',
+      changeSelection: '\u0628\u064A\u0627\u0646\u0627\u062A \u062E\u0627\u0637\u0626\u0629\u061F \u0627\u0631\u062C\u0639 \u0644\u062A\u0635\u062D\u064A\u062D\u0647\u0627',
       doneTitle: '\u0627\u0646\u062A\u0647\u0649 \u0627\u0644\u0627\u0645\u062A\u062D\u0627\u0646',
       doneThank: '\u0634\u0643\u0631\u0627\u064B\u060C',
       doneResults: '\u0627\u0644\u0646\u062A\u0627\u0626\u062C \u0633\u064A\u0628\u0644\u063A\u0643 \u0628\u0647\u0627 \u0627\u0644\u0641\u0627\u062D\u0635.',
       doneLeave: '\u064A\u0645\u0643\u0646\u0643 \u0625\u062E\u0644\u0627\u0621 \u0645\u0643\u0627\u0646\u0643.',
       nextExaminee: '\u0627\u0644\u062A\u0627\u0644\u064A \u2190',
       rejected: '\u0631\u0641\u0636 \u0627\u0644\u0641\u0627\u062D\u0635 \u062F\u062E\u0648\u0644\u0643. \u062A\u0648\u0627\u0635\u0644 \u0645\u0639 \u0627\u0644\u0641\u0627\u062D\u0635.',
-      changeConfirm: '\u0627\u0644\u0639\u0648\u062F\u0629 \u0644\u0646\u0645\u0648\u0630\u062C \u0627\u0644\u062A\u0633\u062C\u064A\u0644 \u0644\u062A\u063A\u064A\u064A\u0631 \u0627\u0644\u0644\u063A\u0629 \u0623\u0648 \u0627\u0644\u0631\u062E\u0635\u0629\u061F\n\u0627\u0644\u0641\u0627\u062D\u0635 \u0633\u064A\u062D\u062A\u0627\u062C \u0644\u0644\u0645\u0648\u0627\u0641\u0642\u0629 \u0639\u0644\u064A\u0643 \u0645\u062C\u062F\u062F\u0627\u064B.'
+      changeConfirm: '\u0627\u0644\u0639\u0648\u062F\u0629 \u0644\u0646\u0645\u0648\u0630\u062C \u0627\u0644\u062A\u0633\u062C\u064A\u0644 \u0644\u062A\u0635\u062D\u064A\u062D \u0628\u064A\u0627\u0646\u0627\u062A\u0643\u061F\n\u0627\u0644\u0641\u0627\u062D\u0635 \u0633\u064A\u062D\u062A\u0627\u062C \u0644\u0644\u0645\u0648\u0627\u0641\u0642\u0629 \u0639\u0644\u064A\u0643 \u0645\u062C\u062F\u062F\u0627\u064B.'
     },
     'fr': {
       instrTitle: 'Instructions avant l\'examen',
@@ -694,14 +694,14 @@
       silentCheck: '\uD83D\uDD15 J\'ai mis mon t\u00E9l\u00E9phone en silencieux',
       silentCheckPC: '\uD83D\uDDA5\uFE0F J\'ai compris, je resterai en plein \u00E9cran',
       startExam: 'Commencer l\'examen',
-      changeSelection: 'Erreur ? Changer la langue/cat\u00E9gorie',
+      changeSelection: 'Erreur ? Corriger vos informations',
       doneTitle: 'Examen termin\u00E9',
       doneThank: 'Merci,',
       doneResults: 'Les r\u00E9sultats vous seront communiqu\u00E9s par l\'examinateur.',
       doneLeave: 'Vous pouvez lib\u00E9rer votre place.',
       nextExaminee: 'Suivant \u2190',
       rejected: 'L\'examinateur a refus\u00E9 votre entr\u00E9e. Contactez l\'examinateur.',
-      changeConfirm: 'Revenir au formulaire d\'inscription pour changer la langue ou la cat\u00E9gorie ?\nL\'examinateur devra vous approuver \u00E0 nouveau.'
+      changeConfirm: 'Revenir au formulaire d\'inscription pour corriger vos informations ?\nL\'examinateur devra vous approuver \u00E0 nouveau.'
     },
     'es': {
       instrTitle: 'Instrucciones antes del examen',
@@ -720,14 +720,14 @@
       silentCheck: '\uD83D\uDD15 He silenciado mi tel\u00E9fono',
       silentCheckPC: '\uD83D\uDDA5\uFE0F Entendido, permanecer\u00E9 en pantalla completa',
       startExam: 'Iniciar examen',
-      changeSelection: '\u00BFSelecci\u00F3n incorrecta? Cambiar idioma/licencia',
+      changeSelection: '\u00BFDatos incorrectos? Corregirlos',
       doneTitle: 'Examen finalizado',
       doneThank: 'Gracias,',
       doneResults: 'Los resultados te los dar\u00E1 el examinador.',
       doneLeave: 'Puedes dejar tu lugar.',
       nextExaminee: 'Siguiente \u2190',
       rejected: 'El examinador rechaz\u00F3 tu entrada. Contacta al examinador.',
-      changeConfirm: '\u00BFVolver al formulario de registro para cambiar idioma o tipo de licencia?\nEl examinador deber\u00E1 aprobarte nuevamente.'
+      changeConfirm: '\u00BFVolver al formulario de registro para corregir tus datos?\nEl examinador deber\u00E1 aprobarte nuevamente.'
     },
     'am': {
       instrTitle: '\u12A8\u1348\u1270\u1293 \u1260\u134A\u1275 \u1218\u1218\u122A\u12EB\u12CE\u127D',
@@ -746,14 +746,14 @@
       silentCheck: '\uD83D\uDD15 \u1235\u120D\u12AB\u1294\u1295 \u12A0\u12DD\u121D\u1274\u12EB\u1208\u1201',
       silentCheckPC: '\uD83D\uDDA5\uFE0F \u1270\u1228\u12F5\u1274\u12EB\u1208\u1201\u1363 \u1260\u1219\u120B \u121B\u12E8\u130D \u1270\u1218\u120D\u12AD\u1276 \u12A5\u1240\u12EB\u120D\u1201',
       startExam: '\u1348\u1270\u1293 \u1320\u1218\u122D',
-      changeSelection: '\u1235\u1205\u1270\u1275 \u1290\u12CD? \u1245\u134D/\u12F0\u1228\u1303 \u1240\u12ED\u122D',
+      changeSelection: '\u1235\u1205\u1270\u1275? \u1270\u1218\u120D\u1230\u12CD \u1218\u1228\u1303 \u12EB\u1235\u1270\u12AB\u12AD\u1209',
       doneTitle: '\u1348\u1270\u1293\u12CD \u1270\u1320\u1293\u1240\u1240',
       doneThank: '\u12A0\u1218\u1230\u130D\u1293\u1208\u1201\u1363',
       doneResults: '\u12CD\u1324\u1276\u127D \u1260\u1260\u1254\u129D \u12ED\u1290\u130D\u122E\u1275\u1362',
       doneLeave: '\u1245\u121B\u12CE\u1295 \u1218\u120D\u1240\u1235 \u12ED\u127B\u120B\u120D\u1362',
       nextExaminee: '\u1240\u1323\u12ED \u1270\u1348\u1273\u129D \u2190',
       rejected: '\u1348\u1273\u129D\u12CD \u1218\u130D\u1262\u12EB\u12CE\u1295 \u12A0\u120D\u1270\u1240\u1260\u1209\u121D\u1362 \u12A8\u1348\u1273\u129D \u130B\u122D \u12ED\u130E\u12A9\u1362',
-      changeConfirm: '\u1245\u134D \u12C8\u12ED\u121D \u12F0\u1228\u1303 \u1208\u1218\u1240\u12E8\u122D \u12C8\u12F0 \u121D\u12DD\u1308\u1263 \u1240\u133D \u1218\u1218\u1208\u1235 \u12ED\u1348\u120D\u130B\u1209?\n\u1348\u1273\u129D\u12CD \u12A5\u1295\u12F0\u1308\u1293 \u121B\u133D\u12F0\u1245 \u12ED\u1308\u1263\u12CD\u1362'
+      changeConfirm: '\u1218\u1228\u1303\u12CE\u1295 \u1208\u121B\u1235\u1270\u12AB\u12A8\u120D \u12C8\u12F0 \u121D\u12DD\u1308\u1263 \u1240\u133D \u1218\u1218\u1208\u1235 \u12ED\u1348\u120D\u130B\u1209?\n\u1348\u1273\u1299 \u12A5\u1295\u12F0\u1308\u1293 \u121B\u133D\u12F0\u1245 \u12ED\u1308\u1263\u12C9\u1362'
     }
   };
 
