@@ -395,6 +395,12 @@
       <div><h2 style="margin:0;display:inline;">הכיתות שלי</h2><button id="btnBackToCommander" class="btn btn-secondary" style="display:none;margin-right:12px;font-size:0.85em;" onclick="switchToCommander()">← חזרה למפקד</button></div>
       <button class="btn btn-primary" id="btnNewClass">+ כיתה חדשה</button>
     </div>
+    <div class="card" id="dashAtRiskCard" style="display:none;">
+      <h3 style="margin:0 0 6px;font-size:15px;color:#334155;">🎯 התלמידים שלך בסיכון (לפני המבחן)</h3>
+      <p style="margin:0 0 10px;font-size:11px;color:#94a3b8;line-height:1.4;">חיזוי סיכוי מעבר לכל תלמיד שלך שתרגל לאחרונה ועדיין לא עבר את מבחן האמת. הנמוכים ביותר מומלצים לתרגול נוסף לפני שיבוץ. החיזוי סטטיסטי — כלי עזר, לא ודאות.</p>
+      <div id="dashAtRiskSummary" style="margin-bottom:10px;"></div>
+      <div id="dashAtRisk" style="overflow-x:auto;"></div>
+    </div>
     <div id="classesList"></div>
   </div>
 </div>
@@ -637,6 +643,7 @@ function loadDashboard() {
   showScreen('screenDashboard');
   var list = document.getElementById('classesList');
   list.innerHTML = '<div class="loading">טוען כיתות...</div>';
+  loadAtRiskList('dash');   // teacher's own at-risk students (scoped server-side)
 
   apiGet({ action: 'teacherGetClasses', teacherId: teacher.id, token: teacher.token })
   .then(function(d) {
@@ -1297,24 +1304,26 @@ function renderRepeatFailures(list) {
 // Fetched separately from the main dashboard because the server rebuilds the
 // full pass-probability model — heavier than the descriptive aggregates. Fails
 // silently against an older server that doesn't know the action.
-function loadAtRiskList() {
-  var card = document.getElementById('cmdAtRiskCard');
-  var host = document.getElementById('cmdAtRisk');
-  var sumEl = document.getElementById('cmdAtRiskSummary');
+function loadAtRiskList(prefix) {
+  prefix = prefix || 'cmd';
+  var card = document.getElementById(prefix + 'AtRiskCard');
+  var host = document.getElementById(prefix + 'AtRisk');
+  var sumEl = document.getElementById(prefix + 'AtRiskSummary');
   if (!card || !host) return;
   card.style.display = '';
   if (sumEl) sumEl.innerHTML = '';
-  host.innerHTML = '<p style="color:#94a3b8;font-size:12px;">מחשב חיזוי... (עשוי לקחת כמה שניות)</p>';
+  host.innerHTML = '<p style="color:#94a3b8;font-size:12px;">טוען חיזוי...</p>';
   apiGet({ action: 'teacherAtRiskList', teacherId: teacher.id, token: teacher.token }).then(function(resp) {
     if (!resp || resp.status !== 'ok') { card.style.display = 'none'; return; }
-    renderAtRisk(resp.data);
+    renderAtRisk(resp.data, prefix);
   }).catch(function() { card.style.display = 'none'; });
 }
 
-function renderAtRisk(data) {
-  var card = document.getElementById('cmdAtRiskCard');
-  var host = document.getElementById('cmdAtRisk');
-  var sumEl = document.getElementById('cmdAtRiskSummary');
+function renderAtRisk(data, prefix) {
+  prefix = prefix || 'cmd';
+  var card = document.getElementById(prefix + 'AtRiskCard');
+  var host = document.getElementById(prefix + 'AtRisk');
+  var sumEl = document.getElementById(prefix + 'AtRiskSummary');
   if (!card || !host) return;
   function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
   var fresh = (data && data.computedAt) ? ('<div style="font-size:11px;color:#64748b;margin-bottom:8px;">📅 מעודכן נכון ל: <strong>' + esc(data.computedAt) + '</strong> · מחושב אוטומטית פעם ביום בלילה' + (data.scope ? ' · היקף: ' + esc(data.scope) : '') + '</div>') : '';

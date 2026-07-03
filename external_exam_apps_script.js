@@ -6393,11 +6393,49 @@ function computeAtRiskAll(opts) {
     var lic = String(practiceData[r][5] || cInfo.license || '').trim();
     var phone = (practiceData[r].length > 15) ? ppNormPhone(practiceData[r][15]) : '';
     var studentId = String(practiceData[r][1] || '');
+    var rowResolved = !cInfo.unresolved;   // class code mapped to a real (active/deleted) class
     var key = phone ? ('p:' + phone) : (studentId ? ('s:' + studentId) : ('n:' + ppNormName(name) + '|' + lic));
-    if (!students[key]) students[key] = { name: name, license: lic, phone: phone, classCode: classCode, teacherId: cInfo.teacherId || '', className: cInfo.className, teacherName: cInfo.teacherName, site: cInfo.site || '', recs: [] };
+    if (!students[key]) {
+      students[key] = { name: name, license: lic, phone: phone, studentId: studentId, classCode: classCode, teacherId: cInfo.teacherId || '', className: cInfo.className, teacherName: cInfo.teacherName, site: cInfo.site || '', resolved: rowResolved, recs: [] };
+    } else if (!students[key].resolved && rowResolved) {
+      // Upgrade to a resolved class if an earlier row had a blank/unknown code.
+      students[key].classCode = classCode; students[key].teacherId = cInfo.teacherId || '';
+      students[key].className = cInfo.className; students[key].teacherName = cInfo.teacherName;
+      students[key].site = cInfo.site || ''; students[key].resolved = true;
+    }
     students[key].recs.push({ date: pDate, pct: pct });
     if (name) students[key].name = name;
     if (lic) students[key].license = lic;
+    if (studentId && !students[key].studentId) students[key].studentId = studentId;
+  }
+
+  // Roster fallback — many students practice WITHOUT a class code (it's optional)
+  // so their rows show "קוד לא מזוהה" and can't be attributed to a teacher. Recover
+  // the attribution from the class rosters (תלמידי כיתות: code, name, studentId):
+  // match by student id first, then by normalized name. Best-effort — a name that
+  // appears in two classes maps to whichever was seen first.
+  var rosterById = {}, rosterByName = {};
+  try {
+    var rosterData = getSheet('תלמידי כיתות').getDataRange().getValues();
+    for (var rs = 1; rs < rosterData.length; rs++) {
+      var rCode = String(rosterData[rs][0] || '').trim();
+      if (!rCode) continue;
+      var rSid = String(rosterData[rs][2] || '').trim();
+      var rNk = ppNormName(rosterData[rs][1]);
+      if (rSid && !rosterById[rSid]) rosterById[rSid] = rCode;
+      if (rNk && !rosterByName[rNk]) rosterByName[rNk] = rCode;
+    }
+  } catch (eRoster) { /* no roster sheet → fallback simply does nothing */ }
+  for (var uk in students) {
+    var us = students[uk];
+    if (us.resolved) continue;
+    var rc = (us.studentId && rosterById[us.studentId]) || rosterByName[ppNormName(us.name)] || '';
+    if (!rc) continue;
+    var rci = resolveClassInfo(rc, classMap, deletedClassMap);
+    if (rci.unresolved) continue;
+    us.classCode = rc; us.teacherId = rci.teacherId || '';
+    us.className = rci.className; us.teacherName = rci.teacherName;
+    us.site = rci.site || ''; us.resolved = true; us.attributedViaRoster = true;
   }
 
   // Junk-name filter — drops shared/demo entries (a "." with 100+ sessions, a
