@@ -1326,6 +1326,7 @@ function renderAtRisk(data) {
     sh += chip('🟠 ' + (s.medium || 0) + ' בינוני', '#fef3c7', '#92400e');
     sh += chip('🟢 ' + (s.low || 0) + ' סביר', '#dcfce7', '#166534');
     if (s.alreadyPassed) sh += chip('✅ ' + s.alreadyPassed + ' כבר עברו (לא מוצגים)', '#e0e7ff', '#3730a3');
+    if (s.junk) sh += chip('🚫 ' + s.junk + ' סוננו (שם לא תקין)', '#f1f5f9', '#64748b');
     sumEl.innerHTML = sh;
   }
   if (!students.length) {

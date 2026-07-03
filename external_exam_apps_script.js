@@ -17,6 +17,7 @@ var SHEET_HEADERS = {
   'הארכות זמן': ['תאריך', 'קוד סשן', 'ת.ז.', 'שם', 'דקות', 'סיבה', 'בוחן'],
   'מורים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד'],
   'כיתות': ['קוד כיתה', 'שם כיתה', 'מורה ת.ז.', 'שם מורה', 'דרגה', 'תאריך יצירה', 'פעיל'],
+  'כיתות שנמחקו': ['קוד כיתה', 'שם כיתה', 'מורה ת.ז.', 'שם מורה', 'דרגה', 'אתר', 'תאריך מחיקה'],
   'תלמידי כיתות': ['קוד כיתה', 'שם תלמיד', 'מזהה תלמיד', 'תאריך הצטרפות'],
   'תוצאות תרגול': ['תאריך', 'מזהה תלמיד', 'שם תלמיד', 'קוד כיתה', 'מצב', 'דרגה', 'ציון', 'סה"כ', 'אחוז', 'עבר/נכשל', 'זמן', 'נושא', 'שפה', 'פירוט שגויות', 'פירוט לפי נושא', 'טלפון'],
   'התקדמות תלמידים': ['שם תלמיד', 'קוד כיתה', 'מפתח', 'streak', 'wrong_qs', 'history', 'עדכון אחרון']
@@ -5589,8 +5590,49 @@ function buildPassProbabilityModel(opts) {
   for (var sk in bySessions) bySessions[sk].rate = rate(bySessions[sk]);
   for (var tk in byTrend) byTrend[tk].rate = rate(byTrend[tk]);
 
+  // ---- Monotonic (isotonic) enforcement across the score bins ----
+  // A higher practice score must never predict a LOWER pass probability. Raw
+  // shrunk cell rates violate this in sparse low bins (e.g. C1 60-69 observed
+  // 6% while 0-49 observed 11% — pure small-sample noise), which would float
+  // mid-scorers above low-scorers in the at-risk ranking. We pool-adjacent-
+  // violators (PAV, weighted by cell support) the shrunk probabilities per
+  // (license, attempt) so predictions are non-decreasing in the score bin.
+  var K = 12;
+  function pav(values, weights) {
+    var blocks = [];
+    for (var j = 0; j < values.length; j++) {
+      blocks.push({ v: values[j], w: weights[j], len: 1 });
+      while (blocks.length > 1 && blocks[blocks.length - 2].v > blocks[blocks.length - 1].v) {
+        var b2 = blocks.pop(), b1 = blocks.pop();
+        var w = b1.w + b2.w;
+        blocks.push({ v: (b1.v * b1.w + b2.v * b2.w) / (w || 1), w: w, len: b1.len + b2.len });
+      }
+    }
+    var out = [];
+    for (var q = 0; q < blocks.length; q++) for (var t = 0; t < blocks[q].len; t++) out.push(blocks[q].v);
+    return out;
+  }
+  var monoCells = {};
+  var attList = ['1', '2', '3+'];
+  for (var lic2 in byLic) {
+    var licRate2 = ppShrink(byLic[lic2].passed, byLic[lic2].n, base.rate, K);
+    for (var ai = 0; ai < attList.length; ai++) {
+      var att2 = attList[ai];
+      var la = byLicAtt[lic2 + '|' + att2];
+      var laRate2 = ppShrink(la ? la.passed : 0, la ? la.n : 0, licRate2, K);
+      var vals = [], wts = [];
+      for (var bi2 = 0; bi2 < PP_BINS.length; bi2++) {
+        var cc = cells[lic2 + '|' + att2 + '|' + PP_BINS[bi2]];
+        vals.push(ppShrink(cc ? cc.passed : 0, cc ? cc.n : 0, laRate2, K));
+        wts.push(cc ? Math.max(cc.n, 1) : 1);
+      }
+      var mono = pav(vals, wts);
+      for (var bi3 = 0; bi3 < PP_BINS.length; bi3++) monoCells[lic2 + '|' + att2 + '|' + PP_BINS[bi3]] = mono[bi3];
+    }
+  }
+
   return {
-    version: 2,
+    version: 3,
     k: 12,
     lookbackDays: lookbackDays,
     bins: PP_BINS,
@@ -5598,6 +5640,7 @@ function buildPassProbabilityModel(opts) {
     byLicense: byLic,
     byLicAtt: byLicAtt,
     cells: cells,
+    monoCells: monoCells,
     noPractice: noPractice,
     byAttempt: byAttempt,
     bySessions: bySessions,
@@ -5638,7 +5681,15 @@ function predictPassProbability(model, features) {
   } else {
     var bin = ppBin(features.lastPct);
     var cell = bin ? model.cells[licAtt + '|' + bin] : null;
-    prob = ppShrink(cell ? cell.passed : 0, cell ? cell.n : 0, laRate, k);
+    // Prefer the monotonic (isotonic) probability so a higher practice score
+    // never predicts a lower pass chance; fall back to the raw shrunk rate on
+    // older models that predate monoCells.
+    var monoKey = licAtt + '|' + bin;
+    if (bin && model.monoCells && model.monoCells[monoKey] != null) {
+      prob = model.monoCells[monoKey];
+    } else {
+      prob = ppShrink(cell ? cell.passed : 0, cell ? cell.n : 0, laRate, k);
+    }
     n = cell ? cell.n : 0;
     basis = (cell && cell.n >= k) ? 'cell' : (laNode && laNode.n >= k ? 'licenseAttempt' : (licNode ? 'license' : 'base'));
   }
@@ -5764,6 +5815,51 @@ function generateClassCode() {
     for (var c = 0; c < 6; c++) code += chars.charAt(Math.floor(Math.random() * chars.length));
   } while (existing[code]);
   return code;
+}
+
+// Read-only lookup of classes that were deleted (archived by handleTeacherDeleteClass).
+// Uses getSheetByName (NOT getSheet) so a report read never auto-creates the sheet.
+// Returns {} if the archive doesn't exist yet (no class has ever been deleted).
+function getDeletedClassMap() {
+  var map = {};
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('כיתות שנמחקו');
+    if (!sheet) return map;
+    var data = sheet.getDataRange().getValues();
+    for (var i = 1; i < data.length; i++) {
+      var cc = String(data[i][0] || '').trim();
+      if (!cc) continue;
+      map[cc] = {
+        teacherName: String(data[i][3] || ''),
+        className: String(data[i][1] || ''),
+        license: String(data[i][4] || ''),
+        site: String(data[i][5] || ''),
+        deleted: true
+      };
+    }
+  } catch (e) { /* archive missing/unreadable → treat as empty */ }
+  return map;
+}
+
+// Resolve a practice-result class code to display info for the commander reports.
+// Precedence: active class → deleted class (real teacher + "(כיתה שנמחקה)" tag) →
+// truly unrecognized code ("קוד לא מזוהה"). This is what lets the dashboard tell a
+// legitimate deleted class apart from a forged/never-existed code, instead of
+// lumping both under "לא ידוע".
+function resolveClassInfo(classCode, classMap, deletedMap) {
+  if (classMap && classMap[classCode]) return classMap[classCode];
+  if (deletedMap && deletedMap[classCode]) {
+    var d = deletedMap[classCode];
+    return {
+      teacherName: d.teacherName || 'לא ידוע',
+      teacherId: '',
+      className: (d.className || classCode) + ' (כיתה שנמחקה)',
+      license: d.license || '',
+      site: d.site || '',
+      deleted: true
+    };
+  }
+  return { teacherName: 'קוד לא מזוהה', teacherId: '', className: classCode, license: '', site: '', unresolved: true };
 }
 
 function handleTeacherLogin(p) {
@@ -5900,6 +5996,7 @@ function handleTeacherCommanderDashboard(p) {
       site: String(classData[c][7] || '')
     };
   }
+  var deletedClassMap = getDeletedClassMap();
 
   // Read practice results
   var resSheet = getSheet('תוצאות תרגול');
@@ -5927,7 +6024,7 @@ function handleTeacherCommanderDashboard(p) {
     var classCode = String(resData[r][3] || '').trim();
     if (!classCode) continue;
 
-    var cInfo = classMap[classCode] || { teacherName: 'לא ידוע', className: classCode, license: '', site: '' };
+    var cInfo = resolveClassInfo(classCode, classMap, deletedClassMap);
     var classSite = cInfo.site || '';
 
     // Site filtering for local + multi-site commanders
@@ -6265,6 +6362,7 @@ function handleTeacherAtRiskList(p) {
       site: String(classData[c][7] || '')
     };
   }
+  var deletedClassMap = getDeletedClassMap();
 
   // Exam-history index → upcoming attempt number + everPassed (to drop soldiers
   // who already passed). Keyed by phone AND name|license, mirroring the model join.
@@ -6298,7 +6396,7 @@ function handleTeacherAtRiskList(p) {
     var pDate = parseSheetDate(practiceData[r][0]);
     if (!pDate || pDate < windowStart) continue;
     var classCode = String(practiceData[r][3] || '').trim();
-    var cInfo = classMap[classCode] || { teacherName: 'לא ידוע', className: classCode, license: '', site: '' };
+    var cInfo = resolveClassInfo(classCode, classMap, deletedClassMap);
     var site = cInfo.site || '';
     if (isLocal && userSite && site !== userSite) continue;
     if (isMultiSite && managedSites.indexOf(site) === -1) continue;
@@ -6315,11 +6413,20 @@ function handleTeacherAtRiskList(p) {
     if (lic) students[key].license = lic;
   }
 
-  // Score every student.
+  // Score every student. A junk-name filter drops shared/demo entries — a "."
+  // with 100+ sessions, a cycle name ("מחזור 76") typed into the name field,
+  // punctuation/number-only names — that would otherwise dominate the ranking.
+  function looksLikeName(s) {
+    var t = String(s || '').trim();
+    if (t.length < 2) return false;
+    var letters = t.replace(/[^A-Za-z֐-׿]/g, '');
+    return letters.length >= 2;
+  }
   var out = [];
-  var summary = { high: 0, medium: 0, low: 0, alreadyPassed: 0, total: 0 };
+  var summary = { high: 0, medium: 0, low: 0, alreadyPassed: 0, junk: 0, total: 0 };
   for (var k in students) {
     var st = students[k];
+    if (!looksLikeName(st.name)) { summary.junk++; continue; }
     st.recs.sort(function(a, b) { return b.date - a.date; });
     var latest = st.recs[0];
     var oldest = st.recs[st.recs.length - 1];
@@ -6342,7 +6449,14 @@ function handleTeacherAtRiskList(p) {
       matchedByPhone: !!st.phone
     });
   }
-  out.sort(function(a, b) { return (a.prob == null ? 999 : a.prob) - (b.prob == null ? 999 : b.prob); });
+  // Worst odds first; ties broken by lower practice score (more at risk), then
+  // by more practice sessions (invested effort but still stuck → act on first).
+  out.sort(function(a, b) {
+    var pa = a.prob == null ? 999 : a.prob, pb = b.prob == null ? 999 : b.prob;
+    if (pa !== pb) return pa - pb;
+    if (a.lastPct !== b.lastPct) return a.lastPct - b.lastPct;
+    return b.sessions - a.sessions;
+  });
 
   return jsonResponse({ status: 'ok', data: {
     lookbackDays: lookbackDays,
@@ -6388,6 +6502,7 @@ function handleAdminDashboard(p) {
       site: String(classData[c][7] || '')
     };
   }
+  var deletedClassMap = getDeletedClassMap();
 
   // Read practice results - INCLUDING rows without classCode
   var resSheet = getSheet('תוצאות תרגול');
@@ -6460,7 +6575,7 @@ function handleAdminDashboard(p) {
     var classCode = String(resData[r][3] || '').trim();
     var isIndependent = !classCode;
     var enrollmentStatus = isIndependent ? 'עצמאי' : 'כיתה';
-    var cInfo = classCode ? (classMap[classCode] || { teacherName: 'לא ידוע', className: classCode, license: '', site: '' }) : null;
+    var cInfo = classCode ? resolveClassInfo(classCode, classMap, deletedClassMap) : null;
 
     var license = String(resData[r][5] || (cInfo ? cInfo.license : '') || 'לא צוין');
     var mode = String(resData[r][4] || 'לא צוין');
@@ -6586,6 +6701,25 @@ function handleTeacherDeleteClass(p) {
   if (String(classData[classRowIdx][6]).trim() === 'כן') {
     return jsonResponse({ status: 'error', message: 'יש לסגור את הכיתה לפני מחיקה' });
   }
+
+  // Archive the class metadata BEFORE deleting the row. Practice results in
+  // 'תוצאות תרגול' are preserved for history (see NOTE below), and once the class
+  // row is gone the reports can no longer resolve its teacher/name → they showed
+  // "לא ידוע". This archive lets the commander dashboard still attribute those
+  // orphaned rows to the real teacher and tag them "(כיתה שנמחקה)", so a genuine
+  // deletion is distinguishable from a truly unrecognized/forged class code.
+  try {
+    var cRow = classData[classRowIdx];
+    getSheet('כיתות שנמחקו').appendRow([
+      String(cRow[0] || '').trim(), // קוד כיתה
+      String(cRow[1] || ''),        // שם כיתה
+      normalizeId(cRow[2]),         // מורה ת.ז.
+      String(cRow[3] || ''),        // שם מורה
+      String(cRow[4] || ''),        // דרגה
+      String(cRow[7] || ''),        // אתר
+      nowISO()                      // תאריך מחיקה
+    ]);
+  } catch (archiveErr) { /* non-fatal: deletion proceeds even if archiving fails */ }
 
   // Delete the class row
   classSheet.deleteRow(classRowIdx + 1);
