@@ -409,7 +409,8 @@ function doGet(e) {
     var examinerActions = ['getSites','listSessions','listAllSessions','createSession','updateSession','closeSession',
       'approveExaminee','rejectExaminee','examinerDashboard','resetExaminee',
       'correctToPass','overturnDQ','confirmDQ','forceComplete','markSent','commanderDashboard',
-      'commanderCorrectResult','correctExamineeMeta','getResultUploadToken','centerManagerReport'];
+      'commanderCorrectResult','correctExamineeMeta','getResultUploadToken','centerManagerReport',
+      'predictiveModelPreview'];
     // Note: 'disqualify' is NOT in this list because it can be sent by the examinee client (no token)
     // — auth is enforced inside handleDisqualify itself (examiner token OR active pending row).
     if (examinerActions.indexOf(action) !== -1) {
@@ -420,7 +421,7 @@ function doGet(e) {
     // Actions that require teacher token authentication
     var teacherActions = ['teacherDashboard','teacherCreateClass','teacherCloseClass','teacherDeleteClass',
       'teacherRemoveStudent','teacherGetClasses','teacherClassDetails','teacherExportData',
-      'teacherCommanderDashboard','adminDashboard'];
+      'teacherCommanderDashboard','teacherAtRiskList','adminDashboard'];
     if (teacherActions.indexOf(action) !== -1) {
       var tErr = requireTeacherToken(p);
       if (tErr) return tErr;
@@ -532,6 +533,9 @@ function doGet(e) {
       case 'commanderDashboard':
         return handleCommanderDashboard(p);
 
+      case 'predictiveModelPreview':
+        return handlePredictiveModelPreview(p);
+
       case 'submitResult':
         // Decode wrongAnswers from JSON string parameter
         var resultData = {
@@ -636,6 +640,9 @@ function doGet(e) {
 
       case 'teacherCommanderDashboard':
         return handleTeacherCommanderDashboard(p);
+
+      case 'teacherAtRiskList':
+        return handleTeacherAtRiskList(p);
 
       case 'adminDashboard':
         return handleAdminDashboard(p);
@@ -5350,6 +5357,374 @@ function handleCommanderDashboard(p) {
   return jsonResponse({ status: 'ok', data: result });
 }
 
+// ============================================================================
+// ========== Pass-probability calibration engine (predictive BI) ==========
+// ============================================================================
+// STEP 1 of the predictive layer. Learns, from HISTORICAL real-exam outcomes
+// joined to each examinee's practice history, how a practice profile maps to
+// the probability of PASSING the real theory exam.
+//
+// This is the SINGLE SOURCE OF TRUTH that both commander dashboards will use:
+//   - teacher-commander  → per-soldier PREVENTIVE risk score (before the exam)
+//   - examiner-commander → cohort pass-rate FORECAST (exam-day planning)
+//
+// Method: hierarchical shrinkage (empirical-Bayes style). We deliberately do
+// NOT train a heavy ML model — with a few thousand rows that would over-fit and
+// be impossible to explain to a commander. Instead we compute the observed pass
+// rate per (license, last-practice-score bin) cell, and shrink each cell toward
+// its license base rate, then toward the global base rate, by sample size.
+// Sparse cells fall back gracefully; rich cells keep their specific signal.
+// Every estimate ships with its support (n) so the UI can be honest about
+// confidence. Same join logic as handleCommanderDashboard (phone → name+site →
+// name, latest practice within a lookback window before the exam).
+
+// Ordered score bins for the last practice attempt before the exam. Finer than
+// the 3 practice-impact buckets so the probability curve has resolution near
+// the pass threshold (~86% in practice terms).
+var PP_BINS = ['0-49', '50-59', '60-69', '70-79', '80-85', '86-92', '93-100'];
+function ppBin(pct) {
+  if (pct == null || pct < 0) return null;   // unparseable / no score
+  if (pct < 50) return '0-49';
+  if (pct < 60) return '50-59';
+  if (pct < 70) return '60-69';
+  if (pct < 80) return '70-79';
+  if (pct < 86) return '80-85';
+  if (pct < 93) return '86-92';
+  return '93-100';
+}
+
+// Empirical-Bayes shrinkage: blend the cell's observed rate with a prior
+// (parent) rate, weighted by K "virtual" observations of the prior. Returns a
+// probability in [0,1]. K controls how much support a cell needs before it
+// out-weighs its parent — K=12 means a cell needs ~12 samples to carry half the
+// weight. priorRate is already a probability in [0,1].
+function ppShrink(passed, n, priorRate, k) {
+  return (passed + k * priorRate) / (n + k);
+}
+
+// Local, self-contained copies of the join/normalization helpers (the versions
+// inside handleCommanderDashboard are private to that function). Kept identical
+// on purpose so the model's join matches the dashboard's practice-impact join.
+function ppNormName(s) {
+  if (!s) return '';
+  var t = String(s).trim();
+  if (!t) return '';
+  t = t.replace(/[׳״'".\-]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+  var tokens = t.split(' ').filter(function(x) { return x; });
+  tokens.sort();
+  return tokens.join(' ');
+}
+function ppNormPhone(v) {
+  var d = String(v || '').replace(/\D/g, '');
+  return d.length >= 9 ? d.slice(-9) : '';
+}
+function ppParsePct(v) {
+  if (typeof v === 'number') return v <= 1 ? v * 100 : v;
+  var s = String(v || '').replace('%', '').trim();
+  if (!s) return -1;
+  var n = parseFloat(s);
+  if (isNaN(n)) return -1;
+  return n <= 1 ? n * 100 : n;
+}
+
+// Given the list of practice records (each {date, percent}) that fall in the
+// lookback window before an exam, derive the feature vector the model keys on.
+// list must be sorted newest-first. Returns null when there's no usable
+// practice (the "no practice" branch is modelled separately).
+function ppExtractFeatures(list, examDate, lookbackDays) {
+  if (!list || !list.length) return null;
+  var windowStart = new Date(examDate.getTime() - lookbackDays * 86400000);
+  var inWin = [];
+  for (var i = 0; i < list.length; i++) {
+    var rec = list[i];
+    if (rec.date <= examDate && rec.date >= windowStart && rec.percent >= 0) inWin.push(rec);
+  }
+  if (!inWin.length) return null;
+  // inWin is newest-first. Latest = the attempt closest to the exam.
+  var latest = inWin[0];
+  var oldest = inWin[inWin.length - 1];
+  var best = -1;
+  for (var j = 0; j < inWin.length; j++) if (inWin[j].percent > best) best = inWin[j].percent;
+  var daysSince = Math.round((examDate.getTime() - latest.date.getTime()) / 86400000);
+  // Trend across the window: newest minus oldest. >3pt = improving, <-3 = declining.
+  var trendPts = inWin.length > 1 ? (latest.percent - oldest.percent) : 0;
+  return {
+    lastPct: latest.percent,
+    bestPct: best,
+    sessions: inWin.length,
+    daysSince: daysSince,
+    trendPts: trendPts,
+    trend: inWin.length < 2 ? 'single' : (trendPts > 3 ? 'up' : (trendPts < -3 ? 'down' : 'flat'))
+  };
+}
+
+// Build the calibration model from the full history. Reads תוצאות + תוצאות תרגול
+// directly so it's independent of handleCommanderDashboard. opts:
+//   lookbackDays (default 30) — practice window before each exam
+//   sinceDate    (optional Date) — ignore exams before this (bound the history)
+function buildPassProbabilityModel(opts) {
+  opts = opts || {};
+  var lookbackDays = opts.lookbackDays || 30;
+  var sinceDate = opts.sinceDate || null;
+
+  var resData = getSheet('תוצאות').getDataRange().getValues();
+  var practiceData = getSheet('תוצאות תרגול').getDataRange().getValues();
+
+  // Class → site map (practice rows store the class code, not the site).
+  var classSiteMap = {};
+  try {
+    var classData = getSheet('כיתות').getDataRange().getValues();
+    for (var c = 1; c < classData.length; c++) {
+      classSiteMap[String(classData[c][0]).trim()] = String(classData[c][7] || '').trim();
+    }
+  } catch (eC) { /* no כיתות → name+site fallback stays empty */ }
+
+  // Practice indexes (same three keys as the dashboard).
+  var byName = {}, byPhone = {}, byNameSite = {};
+  for (var pi = 1; pi < practiceData.length; pi++) {
+    var pName = ppNormName(practiceData[pi][2]);
+    if (!pName) continue;
+    var pLic = String(practiceData[pi][5] || '').trim();
+    var pDate = practiceData[pi][0];
+    if (pDate && !(pDate instanceof Date)) pDate = new Date(pDate);
+    if (!pDate || isNaN(pDate.getTime())) continue;
+    var rec = { date: pDate, percent: ppParsePct(practiceData[pi][8]) };
+    var nk = pName + '|' + pLic;
+    (byName[nk] = byName[nk] || []).push(rec);
+    var ph = (practiceData[pi].length > 15) ? ppNormPhone(practiceData[pi][15]) : '';
+    if (ph) (byPhone[ph] = byPhone[ph] || []).push(rec);
+    var site = classSiteMap[String(practiceData[pi][3] || '').trim()] || '';
+    if (site) { var nsk = pName + '|' + pLic + '|' + site; (byNameSite[nsk] = byNameSite[nsk] || []).push(rec); }
+  }
+  function sortDesc(idx) { for (var k in idx) idx[k].sort(function(a, b) { return b.date - a.date; }); }
+  sortDesc(byName); sortDesc(byPhone); sortDesc(byNameSite);
+
+  var examinerExcl = getExaminerExclusion();
+
+  // Accumulators. The model keys cells on license × attempt × score-bin — real
+  // data shows attempt number is as strong a predictor as license (attempt 1
+  // ~45% pass, 2 ~36%, 3+ ~19%) and it's known before the exam, so it's a
+  // first-class axis, not just a marginal. Hierarchy for shrinkage:
+  // cell(lic|att|bin) → lic|att → lic → base.
+  var base = { n: 0, passed: 0 };
+  var byLic = {};                 // license → {n, passed}
+  var byLicAtt = {};              // 'license|attempt' → {n, passed}  (shrinkage prior)
+  var cells = {};                 // 'license|attempt|bin' → {n, passed}
+  var noPractice = { _all: { n: 0, passed: 0 } };   // 'license|attempt' → {n,passed}, plus _all
+  var byAttempt = {};             // '1' / '2' / '3+' → {n, passed} (marginal diagnostic)
+  var bySessions = {};            // '1' / '2' / '3+' → {n, passed} (marginal diagnostic)
+  var byTrend = {};               // up/flat/down/single → {n, passed} (marginal diagnostic)
+  var coverage = { eligible: 0, matched: 0, byPhone: 0, byNameSite: 0, byName: 0 };
+
+  // Attempt number → bucket. Col 14 holds the attempt index (1,2,3...).
+  function attBucket(v) { var n = Number(v) || 1; return n >= 3 ? '3+' : String(n); }
+
+  function bump(obj, key, passed) {
+    if (!obj[key]) obj[key] = { n: 0, passed: 0 };
+    obj[key].n++; if (passed) obj[key].passed++;
+  }
+
+  for (var r = 1; r < resData.length; r++) {
+    var rowDate = parseSheetDate(resData[r][0]);
+    if (!rowDate) continue;
+    if (sinceDate && rowDate < sinceDate) continue;
+
+    var siteName = String(resData[r][10] || '');
+    if (isTestSite(siteName)) continue;
+    if (isExaminerSelfTest(resData[r][2], resData[r][1], examinerExcl)) continue;
+
+    var passedStr = String(resData[r][7] || '');
+    if (passedStr === 'בוטל') continue;
+    var isDQ = resData[r][17] === true || String(resData[r][17]).toUpperCase() === 'TRUE' || passedStr === 'פסול';
+    if (isDQ) continue;   // DQ ≠ knowledge; excluded from the pass model (matches practice-impact)
+    var isPassed = (passedStr === 'עבר') ? 1 : 0;
+
+    var license = String(resData[r][4] || '').trim() || 'לא צוין';
+    var att = attBucket(resData[r][14]);
+    var licAtt = license + '|' + att;
+    base.n++; if (isPassed) base.passed++;
+    bump(byLic, license, isPassed);
+    bump(byLicAtt, licAtt, isPassed);
+    bump(byAttempt, att, isPassed);
+
+    // Join to practice history (phone → name+site → name), same priority as the
+    // dashboard. examDate must be a real Date for the window math.
+    var examName = ppNormName(resData[r][2]);
+    var examDate = resData[r][0];
+    if (examDate && !(examDate instanceof Date)) examDate = new Date(examDate);
+    if (!examName || !examDate || isNaN(examDate.getTime())) { bump(noPractice, licAtt, isPassed); noPractice._all.n++; if (isPassed) noPractice._all.passed++; continue; }
+
+    coverage.eligible++;
+    var examPhone = ppNormPhone(resData[r][3]);
+    var examSite = siteName.trim();
+    var list = null, matchType = '';
+    if (examPhone && byPhone[examPhone]) { list = byPhone[examPhone]; matchType = 'byPhone'; }
+    if (!list && examSite && byNameSite[examName + '|' + license + '|' + examSite]) { list = byNameSite[examName + '|' + license + '|' + examSite]; matchType = 'byNameSite'; }
+    if (!list && byName[examName + '|' + license]) { list = byName[examName + '|' + license]; matchType = 'byName'; }
+
+    var feat = list ? ppExtractFeatures(list, examDate, lookbackDays) : null;
+    if (!feat) {
+      bump(noPractice, licAtt, isPassed);
+      noPractice._all.n++; if (isPassed) noPractice._all.passed++;
+      continue;
+    }
+    coverage.matched++;
+    if (coverage[matchType] != null) coverage[matchType]++;
+
+    var bin = ppBin(feat.lastPct);
+    if (bin) bump(cells, licAtt + '|' + bin, isPassed);
+    var sessKey = feat.sessions >= 3 ? '3+' : String(feat.sessions);
+    bump(bySessions, sessKey, isPassed);
+    bump(byTrend, feat.trend, isPassed);
+  }
+
+  // Finalize rates (probability in [0,1]) for every accumulator.
+  function rate(o) { return o && o.n > 0 ? o.passed / o.n : 0; }
+  base.rate = rate(base);
+  for (var lk in byLic) byLic[lk].rate = rate(byLic[lk]);
+  for (var lak in byLicAtt) byLicAtt[lak].rate = rate(byLicAtt[lak]);
+  for (var ck in cells) cells[ck].rate = rate(cells[ck]);
+  for (var nk2 in noPractice) noPractice[nk2].rate = rate(noPractice[nk2]);
+  for (var ak in byAttempt) byAttempt[ak].rate = rate(byAttempt[ak]);
+  for (var sk in bySessions) bySessions[sk].rate = rate(bySessions[sk]);
+  for (var tk in byTrend) byTrend[tk].rate = rate(byTrend[tk]);
+
+  return {
+    version: 2,
+    k: 12,
+    lookbackDays: lookbackDays,
+    bins: PP_BINS,
+    base: base,
+    byLicense: byLic,
+    byLicAtt: byLicAtt,
+    cells: cells,
+    noPractice: noPractice,
+    byAttempt: byAttempt,
+    bySessions: bySessions,
+    byTrend: byTrend,
+    coverage: coverage
+  };
+}
+
+// Predict pass probability for one examinee profile from a built model.
+// features: { license, attempt (1/2/3+ — the UPCOMING attempt number; default 1),
+//             lastPct (number, or null/undefined if no practice) }
+// Shrinkage chain: cell(lic|att|bin) → lic|att → lic → base. Returns
+//   { prob (0-100 int), n (support of the most specific cell used),
+//     basis ('cell'|'licenseAttempt'|'license'|'base'|'noPractice'), confidence }.
+function predictPassProbability(model, features) {
+  if (!model || !model.base) return null;
+  var k = model.k || 12;
+  var license = (features && features.license) ? String(features.license).trim() : '';
+  var attNum = features && features.attempt != null ? (Number(features.attempt) || 1) : 1;
+  var att = attNum >= 3 ? '3+' : String(attNum);
+  var licAtt = license + '|' + att;
+
+  var licNode = license && model.byLicense[license] ? model.byLicense[license] : null;
+  // License rate shrunk toward the global base.
+  var licRate = ppShrink(licNode ? licNode.passed : 0, licNode ? licNode.n : 0, model.base.rate, k);
+  // License+attempt rate shrunk toward the license rate — the working prior.
+  var laNode = model.byLicAtt && model.byLicAtt[licAtt] ? model.byLicAtt[licAtt] : null;
+  var laRate = ppShrink(laNode ? laNode.passed : 0, laNode ? laNode.n : 0, licRate, k);
+
+  var hasPractice = features && features.lastPct != null && features.lastPct >= 0;
+  var prob, n, basis;
+  if (!hasPractice) {
+    var npLA = model.noPractice[licAtt] || null;
+    // no-practice(lic|att) shrunk toward the lic|att overall rate.
+    prob = ppShrink(npLA ? npLA.passed : 0, npLA ? npLA.n : 0, laRate, k);
+    n = npLA ? npLA.n : 0;
+    basis = 'noPractice';
+  } else {
+    var bin = ppBin(features.lastPct);
+    var cell = bin ? model.cells[licAtt + '|' + bin] : null;
+    prob = ppShrink(cell ? cell.passed : 0, cell ? cell.n : 0, laRate, k);
+    n = cell ? cell.n : 0;
+    basis = (cell && cell.n >= k) ? 'cell' : (laNode && laNode.n >= k ? 'licenseAttempt' : (licNode ? 'license' : 'base'));
+  }
+  // Confidence from the support behind the estimate.
+  var confidence = n >= 40 ? 'high' : (n >= 12 ? 'medium' : 'low');
+  return { prob: Math.round(prob * 100), n: n, basis: basis, confidence: confidence, licenseBaseRate: Math.round(licRate * 100), licenseAttemptRate: Math.round(laRate * 100) };
+}
+
+// Diagnostic endpoint — builds the model and returns a human-readable summary so
+// we can eyeball whether the signal is real BEFORE wiring it into dashboards.
+// Role: מפקד only. Not yet used by any client screen.
+function handlePredictiveModelPreview(p) {
+  var exData = getSheet('בוחנים').getDataRange().getValues();
+  var role = '';
+  for (var i = 1; i < exData.length; i++) {
+    if (normalizeId(exData[i][1]) === normalizeId(p.examinerId)) { role = String(exData[i][5] || 'בוחן'); break; }
+  }
+  if (role !== 'מפקד') return jsonResponse({ status: 'error', message: 'אין הרשאת מפקד' });
+
+  var lookbackDays = Number(p.lookbackDays) || 30;
+  var model = buildPassProbabilityModel({ lookbackDays: lookbackDays });
+  var BIN_MID = { '0-49': 40, '50-59': 55, '60-69': 65, '70-79': 75, '80-85': 83, '86-92': 89, '93-100': 97 };
+
+  // Practice-curve table: for FIRST-time takers (attempt 1 — the cleanest curve,
+  // no repeat-failer confound), show observed vs smoothed predicted pass per
+  // score bin, per license. This is the plot that tells us if practice score
+  // predicts pass at all.
+  var licenses = Object.keys(model.byLicense).sort();
+  var table = [];
+  for (var li = 0; li < licenses.length; li++) {
+    var lic = licenses[li];
+    var licRow = { license: lic, n: model.byLicense[lic].n, baseRate: Math.round(model.byLicense[lic].rate * 100), bins: [] };
+    var lastProb = -1, monotone = true;
+    for (var bi = 0; bi < model.bins.length; bi++) {
+      var bin = model.bins[bi];
+      var cell = model.cells[lic + '|1|' + bin];   // attempt-1 cell
+      var pred = predictPassProbability(model, { license: lic, attempt: 1, lastPct: BIN_MID[bin] });
+      var observed = cell && cell.n > 0 ? Math.round(cell.rate * 100) : null;
+      licRow.bins.push({ bin: bin, n: cell ? cell.n : 0, observed: observed, predicted: pred.prob });
+      if (pred.prob < lastProb - 1) monotone = false;   // allow 1pt jitter
+      lastProb = pred.prob;
+    }
+    licRow.monotone = monotone;   // does higher practice score → higher predicted pass? sanity check
+    var npLic1 = model.noPractice[lic + '|1'];
+    licRow.noPracticeRate = npLic1 && npLic1.n > 0 ? Math.round(npLic1.rate * 100) : null;
+    licRow.noPracticeN = npLic1 ? npLic1.n : 0;
+    table.push(licRow);
+  }
+
+  // License × attempt observed pass rates — shows how much attempt number moves
+  // the base rate within each license (the second big axis).
+  var licAttTable = [];
+  for (var li2 = 0; li2 < licenses.length; li2++) {
+    var lic2 = licenses[li2];
+    var row = { license: lic2, attempts: {} };
+    ['1', '2', '3+'].forEach(function(a) {
+      var node = model.byLicAtt[lic2 + '|' + a];
+      row.attempts[a] = node && node.n > 0 ? { n: node.n, rate: Math.round(node.rate * 100) } : { n: 0, rate: null };
+    });
+    licAttTable.push(row);
+  }
+
+  // Marginal diagnostics (attempt / sessions / trend).
+  function marginal(obj) {
+    var out = {};
+    for (var kk in obj) out[kk] = { n: obj[kk].n, rate: Math.round(obj[kk].rate * 100) };
+    return out;
+  }
+
+  var cov = model.coverage;
+  return jsonResponse({ status: 'ok', data: {
+    builtAt: Utilities.formatDate(new Date(), 'Asia/Jerusalem', 'yyyy-MM-dd HH:mm'),
+    modelVersion: model.version,
+    lookbackDays: model.lookbackDays,
+    shrinkageK: model.k,
+    note: 'byLicenseBin is for attempt 1 only (cleanest practice curve). Model keys on license × attempt × score-bin.',
+    overall: { exams: model.base.n, baseRate: Math.round(model.base.rate * 100) },
+    coverage: { eligible: cov.eligible, matched: cov.matched, matchPct: cov.eligible > 0 ? Math.round(cov.matched / cov.eligible * 100) : 0, byPhone: cov.byPhone, byNameSite: cov.byNameSite, byName: cov.byName },
+    byLicenseBin: table,
+    byLicenseAttempt: licAttTable,
+    marginalByAttempt: marginal(model.byAttempt),
+    marginalBySessions: marginal(model.bySessions),
+    marginalByTrend: marginal(model.byTrend)
+  } });
+}
+
 // ========== מערכת מורים — Teacher System ==========
 
 function verifyTeacherToken(teacherId, token) {
@@ -5847,6 +6222,136 @@ function handleTeacherCommanderDashboard(p) {
   } catch (eRF) { result.repeatFailures = []; }
 
   return jsonResponse({ status: 'ok', data: result });
+}
+
+// ========== At-risk examinee list (PREVENTIVE — step 2 of predictive BI) ==========
+// The teacher-commander's preventive view: for every student who practiced in the
+// window and has NOT yet passed the real theory exam, predict their pass
+// probability from the calibration model (license × upcoming-attempt × last
+// practice score) and rank worst-first. Lets the training commander route
+// weak soldiers to more practice BEFORE they burn a real exam slot. Highest
+// value for C1 first-timers (huge volume, ~22% base pass, and practice score
+// cleanly separates ~10% from ~73%). Complements repeatFailures (which is
+// retrospective — already failed 2+); this catches them before the first fail.
+function handleTeacherAtRiskList(p) {
+  // ---- role + scope (mirrors handleTeacherCommanderDashboard) ----
+  var tData = getSheet('מורים').getDataRange().getValues();
+  var role = '', userSite = '';
+  for (var i = 1; i < tData.length; i++) {
+    if (normalizeId(tData[i][1]) === normalizeId(p.teacherId)) { role = String(tData[i][8] || 'מורה'); userSite = String(tData[i][9] || ''); break; }
+  }
+  if (role !== 'מפקד' && role !== 'מפקד מקומי' && role !== 'מפקד ראשי' && !isKdtzRole(role)) {
+    return jsonResponse({ status: 'error', message: 'אין הרשאת מפקד' });
+  }
+  var isLocal = (role === 'מפקד מקומי');
+  var isMultiSite = isKdtzRole(role);
+  var managedSites = [];
+  if (isMultiSite) {
+    managedSites = String(userSite || '').split(',').map(function(s) { return s.trim(); }).filter(function(s) { return s; });
+    if (!managedSites.length) return jsonResponse({ status: 'error', message: 'לא הוקצו אתרים למפקד' });
+  }
+
+  var lookbackDays = Number(p.lookbackDays) || 30;
+  var model = buildPassProbabilityModel({ lookbackDays: lookbackDays });
+
+  // Class map: code → {teacherName, className, license, site}.
+  var classData = getSheet('כיתות').getDataRange().getValues();
+  var classMap = {};
+  for (var c = 1; c < classData.length; c++) {
+    classMap[String(classData[c][0]).trim()] = {
+      teacherName: String(classData[c][3] || ''),
+      className: String(classData[c][1] || ''),
+      license: String(classData[c][4] || ''),
+      site: String(classData[c][7] || '')
+    };
+  }
+
+  // Exam-history index → upcoming attempt number + everPassed (to drop soldiers
+  // who already passed). Keyed by phone AND name|license, mirroring the model join.
+  var examData = getSheet('תוצאות').getDataRange().getValues();
+  var histByPhone = {}, histByName = {};
+  function histBump(idx, key, attempt, passed) {
+    if (!key) return;
+    if (!idx[key]) idx[key] = { attempts: 0, everPassed: false };
+    if (attempt > idx[key].attempts) idx[key].attempts = attempt;
+    if (passed) idx[key].everPassed = true;
+  }
+  for (var e = 1; e < examData.length; e++) {
+    var ePassedStr = String(examData[e][7] || '');
+    if (ePassedStr === 'בוטל') continue;
+    var eName = ppNormName(examData[e][2]);
+    var eLic = String(examData[e][4] || '').trim();
+    var ePhone = ppNormPhone(examData[e][3]);
+    var eAtt = Number(examData[e][14]) || 1;
+    var ePassed = (ePassedStr === 'עבר');
+    histBump(histByPhone, ePhone, eAtt, ePassed);
+    histBump(histByName, eName + '|' + eLic, eAtt, ePassed);
+  }
+
+  // Group practice rows by student within the window + commander scope.
+  var practiceData = getSheet('תוצאות תרגול').getDataRange().getValues();
+  var windowStart = new Date();
+  windowStart.setDate(windowStart.getDate() - lookbackDays);
+  var nowMs = new Date().getTime();
+  var students = {};
+  for (var r = 1; r < practiceData.length; r++) {
+    var pDate = parseSheetDate(practiceData[r][0]);
+    if (!pDate || pDate < windowStart) continue;
+    var classCode = String(practiceData[r][3] || '').trim();
+    var cInfo = classMap[classCode] || { teacherName: 'לא ידוע', className: classCode, license: '', site: '' };
+    var site = cInfo.site || '';
+    if (isLocal && userSite && site !== userSite) continue;
+    if (isMultiSite && managedSites.indexOf(site) === -1) continue;
+    var pct = ppParsePct(practiceData[r][8]);
+    if (pct < 0) continue;
+    var name = String(practiceData[r][2] || '');
+    var lic = String(practiceData[r][5] || cInfo.license || '').trim();
+    var phone = (practiceData[r].length > 15) ? ppNormPhone(practiceData[r][15]) : '';
+    var studentId = String(practiceData[r][1] || '');
+    var key = phone ? ('p:' + phone) : (studentId ? ('s:' + studentId) : ('n:' + ppNormName(name) + '|' + lic));
+    if (!students[key]) students[key] = { name: name, license: lic, phone: phone, className: cInfo.className, teacherName: cInfo.teacherName, site: site, recs: [] };
+    students[key].recs.push({ date: pDate, pct: pct });
+    if (name) students[key].name = name;
+    if (lic) students[key].license = lic;
+  }
+
+  // Score every student.
+  var out = [];
+  var summary = { high: 0, medium: 0, low: 0, alreadyPassed: 0, total: 0 };
+  for (var k in students) {
+    var st = students[k];
+    st.recs.sort(function(a, b) { return b.date - a.date; });
+    var latest = st.recs[0];
+    var oldest = st.recs[st.recs.length - 1];
+    var sessions = st.recs.length;
+    var trendPts = sessions > 1 ? (latest.pct - oldest.pct) : 0;
+    var trend = sessions < 2 ? 'single' : (trendPts > 3 ? 'up' : (trendPts < -3 ? 'down' : 'flat'));
+    var hist = (st.phone && histByPhone[st.phone]) || histByName[ppNormName(st.name) + '|' + st.license] || null;
+    if (hist && hist.everPassed) { summary.alreadyPassed++; continue; }   // already passed → not at risk
+    var upcomingAttempt = (hist ? hist.attempts : 0) + 1;
+    var pred = predictPassProbability(model, { license: st.license, attempt: upcomingAttempt, lastPct: latest.pct });
+    var prob = pred ? pred.prob : null;
+    var tier = prob == null ? 'low' : (prob < 40 ? 'high' : (prob < 65 ? 'medium' : 'low'));
+    summary[tier]++; summary.total++;
+    out.push({
+      name: st.name, license: st.license, className: st.className, teacherName: st.teacherName, site: st.site,
+      lastPct: Math.round(latest.pct), sessions: sessions, trend: trend,
+      attempt: upcomingAttempt, everTested: !!hist,
+      prob: prob, confidence: pred ? pred.confidence : 'low', tier: tier,
+      daysSincePractice: Math.round((nowMs - latest.date.getTime()) / 86400000),
+      matchedByPhone: !!st.phone
+    });
+  }
+  out.sort(function(a, b) { return (a.prob == null ? 999 : a.prob) - (b.prob == null ? 999 : b.prob); });
+
+  return jsonResponse({ status: 'ok', data: {
+    lookbackDays: lookbackDays,
+    modelBaseRate: Math.round(model.base.rate * 100),
+    coverageNote: 'תלמיד מזוהה לפי טלפון אם הוזן, אחרת לפי שם+דרגה. ניסיון = מספר הניסיון הצפוי במבחן האמיתי.',
+    summary: summary,
+    truncated: out.length > 200,
+    students: out.slice(0, 200)
+  } });
 }
 
 function handleAdminDashboard(p) {

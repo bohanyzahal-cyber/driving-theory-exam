@@ -346,6 +346,13 @@
       <div id="cmdTopWrong"></div>
     </div>
 
+    <div class="card" id="cmdAtRiskCard" style="display:none;">
+      <h3 style="margin:0 0 6px;font-size:15px;color:#334155;">🎯 חיזוי — נבחנים בסיכון (לפני המבחן)</h3>
+      <p style="margin:0 0 10px;font-size:11px;color:#94a3b8;line-height:1.4;">חיזוי סיכוי מעבר לכל תלמיד שתרגל לאחרונה ועדיין לא עבר את מבחן האמת — לפי דרגה × מספר ניסיון צפוי × ציון התרגול האחרון. הנמוכים ביותר מומלצים לתרגול נוסף לפני שיבוץ למבחן. החיזוי סטטיסטי ומבוסס נתונים היסטוריים — כלי עזר, לא ודאות.</p>
+      <div id="cmdAtRiskSummary" style="margin-bottom:10px;"></div>
+      <div id="cmdAtRisk" style="overflow-x:auto;"></div>
+    </div>
+
     <div class="card" id="cmdRepeatFailCard" style="display:none;">
       <h3 style="margin:0 0 6px;font-size:15px;color:#334155;">🔁 נכשלים חוזרים — מבחן התאוריה החיצוני</h3>
       <p style="margin:0 0 10px;font-size:11px;color:#94a3b8;line-height:1.4;">חיילים שנכשלו במבחן האמת פעמיים או יותר בטווח שנבחר — מועמדים לתרגול ממוקד לפני שיבוץ למבחן נוסף.</p>
@@ -1207,6 +1214,8 @@ window.fetchCommanderData = function(period) {
   document.getElementById('cmdTopWrongCard').style.display = 'none';
   var rfCard = document.getElementById('cmdRepeatFailCard');
   if (rfCard) rfCard.style.display = 'none';
+  var arCard = document.getElementById('cmdAtRiskCard');
+  if (arCard) arCard.style.display = 'none';
   document.getElementById('cmdBreakdowns').style.display = 'none';
   document.getElementById('cmdActions').style.display = 'none';
 
@@ -1224,6 +1233,7 @@ window.fetchCommanderData = function(period) {
       renderHourly(cmdData.hourly || []);
       renderTopWrong(cmdData.topWrong || []);
       renderRepeatFailures(cmdData.repeatFailures || []);
+      loadAtRiskList();
       renderBreakdownTable(cmdData, cmdCurrentTab);
       renderActiveClasses(cmdData.activeClasses || []);
       document.getElementById('cmdKPIs').style.display = '';
@@ -1281,6 +1291,85 @@ function renderRepeatFailures(list) {
   h += '</tbody></table>';
   card.style.display = '';
   host.innerHTML = h;
+}
+
+// ===== At-risk examinee list (predictive / preventive) =====
+// Fetched separately from the main dashboard because the server rebuilds the
+// full pass-probability model — heavier than the descriptive aggregates. Fails
+// silently against an older server that doesn't know the action.
+function loadAtRiskList() {
+  var card = document.getElementById('cmdAtRiskCard');
+  var host = document.getElementById('cmdAtRisk');
+  var sumEl = document.getElementById('cmdAtRiskSummary');
+  if (!card || !host) return;
+  card.style.display = '';
+  if (sumEl) sumEl.innerHTML = '';
+  host.innerHTML = '<p style="color:#94a3b8;font-size:12px;">מחשב חיזוי... (עשוי לקחת כמה שניות)</p>';
+  apiGet({ action: 'teacherAtRiskList', teacherId: teacher.id, token: teacher.token }).then(function(resp) {
+    if (!resp || resp.status !== 'ok') { card.style.display = 'none'; return; }
+    renderAtRisk(resp.data);
+  }).catch(function() { card.style.display = 'none'; });
+}
+
+function renderAtRisk(data) {
+  var card = document.getElementById('cmdAtRiskCard');
+  var host = document.getElementById('cmdAtRisk');
+  var sumEl = document.getElementById('cmdAtRiskSummary');
+  if (!card || !host) return;
+  function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  var students = (data && data.students) || [];
+  var s = (data && data.summary) || { high: 0, medium: 0, low: 0, alreadyPassed: 0, total: 0 };
+  if (sumEl) {
+    function chip(txt, bg, clr) { return '<span style="display:inline-block;background:' + bg + ';color:' + clr + ';border-radius:10px;padding:3px 10px;font-size:12px;font-weight:700;margin-left:6px;margin-bottom:4px;">' + txt + '</span>'; }
+    var sh = '';
+    sh += chip('🔴 ' + (s.high || 0) + ' סיכון גבוה', '#fee2e2', '#991b1b');
+    sh += chip('🟠 ' + (s.medium || 0) + ' בינוני', '#fef3c7', '#92400e');
+    sh += chip('🟢 ' + (s.low || 0) + ' סביר', '#dcfce7', '#166534');
+    if (s.alreadyPassed) sh += chip('✅ ' + s.alreadyPassed + ' כבר עברו (לא מוצגים)', '#e0e7ff', '#3730a3');
+    sumEl.innerHTML = sh;
+  }
+  if (!students.length) {
+    host.innerHTML = '<p style="color:#94a3b8;font-size:12px;">אין תלמידים תואמים — אף אחד לא תרגל ב-30 הימים האחרונים, או שכולם כבר עברו את מבחן האמת.</p>';
+    return;
+  }
+  var LIMIT = 60;
+  var trendIcon = { up: '<span style="color:#16a34a;">▲ משתפר</span>', down: '<span style="color:#dc2626;">▼ יורד</span>', flat: '<span style="color:#94a3b8;">— יציב</span>', single: '<span style="color:#94a3b8;">תרגול יחיד</span>' };
+  var h = '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+  h += '<thead><tr style="background:#f1f5f9;">';
+  h += '<th style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;">#</th>';
+  h += '<th style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;">שם</th>';
+  h += '<th style="padding:6px 8px;font-size:11px;color:#64748b;">דרגה</th>';
+  h += '<th style="padding:6px 8px;font-size:11px;color:#64748b;">כיתה / מורה</th>';
+  h += '<th style="padding:6px 8px;font-size:11px;color:#64748b;">ניסיון צפוי</th>';
+  h += '<th style="padding:6px 8px;font-size:11px;color:#64748b;">תרגול אחרון</th>';
+  h += '<th style="padding:6px 8px;font-size:11px;color:#64748b;">מגמה</th>';
+  h += '<th style="padding:6px 8px;font-size:11px;color:#64748b;">סיכוי מעבר</th>';
+  h += '</tr></thead><tbody>';
+  var n = Math.min(students.length, LIMIT);
+  for (var i = 0; i < n; i++) {
+    var st = students[i];
+    var tierBg = st.tier === 'high' ? '#fee2e2' : (st.tier === 'medium' ? '#fef3c7' : '#dcfce7');
+    var tierClr = st.tier === 'high' ? '#991b1b' : (st.tier === 'medium' ? '#92400e' : '#166534');
+    var rowBg = st.tier === 'high' ? 'background:#fff5f5;' : '';
+    var attLbl = st.attempt >= 3 ? '3+' : String(st.attempt);
+    var attBadge = st.everTested ? ' <span title="כבר ניגש למבחן האמת" style="color:#dc2626;">⚠</span>' : '';
+    var lowConf = st.confidence === 'low' ? ' <span title="מדגם קטן — חיזוי פחות ודאי" style="font-size:10px;color:#94a3b8;">·מדגם קטן</span>' : '';
+    h += '<tr style="border-bottom:1px solid #e2e8f0;' + rowBg + '">';
+    h += '<td style="padding:6px 8px;color:#94a3b8;font-weight:600;">' + (i + 1) + '</td>';
+    h += '<td style="padding:6px 8px;text-align:right;font-weight:600;color:#1e293b;">' + esc(st.name) + '</td>';
+    h += '<td style="padding:6px 8px;text-align:center;"><span dir="ltr">' + esc(st.license) + '</span></td>';
+    h += '<td style="padding:6px 8px;text-align:center;font-size:11px;color:#64748b;">' + esc(st.className || '') + (st.teacherName ? '<br>' + esc(st.teacherName) : '') + '</td>';
+    h += '<td style="padding:6px 8px;text-align:center;">' + attLbl + attBadge + '</td>';
+    h += '<td style="padding:6px 8px;text-align:center;font-weight:600;">' + st.lastPct + '%<br><span style="font-size:10px;color:#94a3b8;">' + st.sessions + ' תרגולים</span></td>';
+    h += '<td style="padding:6px 8px;text-align:center;font-size:11px;">' + (trendIcon[st.trend] || '') + '</td>';
+    h += '<td style="padding:6px 8px;text-align:center;"><span style="background:' + tierBg + ';color:' + tierClr + ';border-radius:10px;padding:2px 10px;font-weight:800;font-size:14px;">' + (st.prob == null ? '—' : st.prob + '%') + '</span>' + lowConf + '</td>';
+    h += '</tr>';
+  }
+  h += '</tbody></table>';
+  if (students.length > LIMIT) h += '<div style="font-size:11px;color:#94a3b8;margin-top:6px;">מוצגים ' + LIMIT + ' הנבחנים בסיכון הגבוה ביותר מתוך ' + students.length + '.</div>';
+  h += '<div style="font-size:10px;color:#94a3b8;margin-top:6px;line-height:1.5;">⚠ = כבר ניגש למבחן האמת בעבר. "ניסיון צפוי" = מספר הניסיון הבא. החיזוי מבוסס דרגה × ניסיון × ציון תרגול על פני ' + (data.lookbackDays || 30) + ' ימים. אחוז מעבר בסיס כללי: ' + (data.modelBaseRate == null ? '?' : data.modelBaseRate + '%') + '.</div>';
+  host.innerHTML = h;
+  card.style.display = '';
 }
 
 function buildPieChart(passed, failed, size) {
