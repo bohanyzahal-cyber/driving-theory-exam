@@ -6625,6 +6625,7 @@ function handleExaminerForecast(p) {
   // Cache columns: 1 name, 2 license, 7 site, 8 lastPct, 11 attempt, 13 prob, 14 tier, 17 phone.
   var byPhone = {}, byName = {};
   var cohortByLic = {};
+  var cohortBySite = {};
   var cohortAll = { n: 0, sumProb: 0, high: 0, medium: 0, low: 0 };
   function cohortBump(o, prob, tier) {
     o.n++; if (prob != null) o.sumProb += prob;
@@ -6643,26 +6644,39 @@ function handleExaminerForecast(p) {
     if (!cohortByLic[lic]) cohortByLic[lic] = { n: 0, sumProb: 0, high: 0, medium: 0, low: 0 };
     cohortBump(cohortByLic[lic], prob, tier);
     cohortBump(cohortAll, prob, tier);
+    var cSite = String(row[7] || '') || 'לא צוין';
+    if (!cohortBySite[cSite]) cohortBySite[cSite] = { n: 0, sumProb: 0, high: 0, medium: 0, low: 0 };
+    cohortBump(cohortBySite[cSite], prob, tier);
   }
   function finalizeCohort(o) {
     return { n: o.n, expectedPassRate: o.n ? Math.round(o.sumProb / o.n) : 0, expectedPasses: Math.round(o.sumProb / 100), high: o.high, medium: o.medium, low: o.low };
   }
-  var cohortForecast = { overall: finalizeCohort(cohortAll), byLicense: {} };
+  var cohortForecast = { overall: finalizeCohort(cohortAll), byLicense: {}, bySite: {} };
   for (var lk in cohortByLic) cohortForecast.byLicense[lk] = finalizeCohort(cohortByLic[lk]);
+  for (var csk in cohortBySite) cohortForecast.bySite[csk] = finalizeCohort(cohortBySite[csk]);
 
-  // A' — live registrants in ACTIVE sessions only.
-  var activeSessions = {};
+  // A' — live registrants in ACTIVE sessions only. Track each session's site so
+  // the forecast can be split per site (examiner-allocation planning).
+  var activeSessions = {}, sessionSite = {};
   try {
     var sess = getSheet('סשנים').getDataRange().getValues();
     var nowT = new Date().getTime();
     for (var s = 1; s < sess.length; s++) {
       var active = sess[s][10] === true || String(sess[s][10]).toUpperCase() === 'TRUE';
       var validUntil = sess[s][9] ? new Date(sess[s][9]).getTime() : 0;
-      if (active && (!validUntil || validUntil > nowT)) activeSessions[String(sess[s][0] || '').trim()] = true;
+      if (active && (!validUntil || validUntil > nowT)) {
+        var scode = String(sess[s][0] || '').trim();
+        activeSessions[scode] = true;
+        sessionSite[scode] = String(sess[s][3] || '');   // אתר
+      }
     }
   } catch (eS) { /* no sessions → examDay stays empty */ }
 
-  var examDay = { registered: 0, matched: 0, noRecord: 0, expectedPasses: 0, expectedFails: 0, high: 0, medium: 0, low: 0, atRisk: [] };
+  var examDay = { registered: 0, matched: 0, noRecord: 0, expectedPasses: 0, expectedFails: 0, high: 0, medium: 0, low: 0, atRisk: [], bySite: {} };
+  function edSite(site) {
+    if (!examDay.bySite[site]) examDay.bySite[site] = { registered: 0, matched: 0, noRecord: 0, expectedPasses: 0, expectedFails: 0, high: 0, medium: 0, low: 0 };
+    return examDay.bySite[site];
+  }
   try {
     var wait = getSheet('ממתינים').getDataRange().getValues();
     for (var w = 1; w < wait.length; w++) {
@@ -6670,20 +6684,27 @@ function handleExaminerForecast(p) {
       if (!activeSessions[code]) continue;
       var status = String(wait[w][5] || '');
       if (status === 'הושלם' || status === 'פסול' || status === 'בוטל' || status === 'נדחה') continue;   // already resolved
-      examDay.registered++;
+      var siteA = sessionSite[code] || 'לא צוין';
+      var bs = edSite(siteA);
+      examDay.registered++; bs.registered++;
       var wPhone = ppNormPhone(wait[w][3]);
       var wLic = String(wait[w][8] || '');
       var wName = String(wait[w][2] || '');
       var hit = (wPhone && byPhone[wPhone]) || byName[ppNormName(wName) + '|' + wLic] || null;
-      if (!hit || hit.prob == null) { examDay.noRecord++; continue; }
-      examDay.matched++;
-      examDay.expectedPasses += hit.prob / 100;
-      if (hit.tier === 'high') examDay.high++; else if (hit.tier === 'medium') examDay.medium++; else examDay.low++;
-      if (hit.tier === 'high' || hit.tier === 'medium') examDay.atRisk.push({ name: wName, license: wLic, prob: hit.prob, tier: hit.tier, lastPct: hit.lastPct, attempt: hit.attempt });
+      if (!hit || hit.prob == null) { examDay.noRecord++; bs.noRecord++; continue; }
+      examDay.matched++; bs.matched++;
+      examDay.expectedPasses += hit.prob / 100; bs.expectedPasses += hit.prob / 100;
+      if (hit.tier === 'high') { examDay.high++; bs.high++; } else if (hit.tier === 'medium') { examDay.medium++; bs.medium++; } else { examDay.low++; bs.low++; }
+      if (hit.tier === 'high' || hit.tier === 'medium') examDay.atRisk.push({ name: wName, license: wLic, site: siteA, prob: hit.prob, tier: hit.tier, lastPct: hit.lastPct, attempt: hit.attempt });
     }
   } catch (eW) { /* no waiting sheet */ }
   examDay.expectedPasses = Math.round(examDay.expectedPasses);
   examDay.expectedFails = Math.max(0, examDay.matched - examDay.expectedPasses);
+  for (var bsk in examDay.bySite) {
+    var b2 = examDay.bySite[bsk];
+    b2.expectedPasses = Math.round(b2.expectedPasses);
+    b2.expectedFails = Math.max(0, b2.matched - b2.expectedPasses);
+  }
   examDay.atRisk.sort(function(a, b) { return a.prob - b.prob; });
   examDay.atRisk = examDay.atRisk.slice(0, 50);
 
