@@ -1317,6 +1317,13 @@ function renderAtRisk(data) {
   var sumEl = document.getElementById('cmdAtRiskSummary');
   if (!card || !host) return;
   function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  var fresh = (data && data.computedAt) ? ('<div style="font-size:11px;color:#64748b;margin-bottom:8px;">📅 מעודכן נכון ל: <strong>' + esc(data.computedAt) + '</strong> · מחושב אוטומטית פעם ביום בלילה' + (data.scope ? ' · היקף: ' + esc(data.scope) : '') + '</div>') : '';
+  if (data && data.notComputed) {
+    if (sumEl) sumEl.innerHTML = '';
+    host.innerHTML = '<p style="color:#94a3b8;font-size:13px;line-height:1.6;">⏳ החיזוי עדיין לא חושב. הוא מחושב אוטומטית פעם ביום בשעות הלילה (~03:00) כדי לא להעמיס על המערכת בשעות הפעילות. ' + (data.computedAt ? 'עדכון אחרון: ' + esc(data.computedAt) + '.' : 'יופיע לאחר הריצה הלילית הראשונה.') + '</p>';
+    card.style.display = '';
+    return;
+  }
   var students = (data && data.students) || [];
   var s = (data && data.summary) || { high: 0, medium: 0, low: 0, alreadyPassed: 0, total: 0 };
   if (sumEl) {
@@ -1330,12 +1337,12 @@ function renderAtRisk(data) {
     sumEl.innerHTML = sh;
   }
   if (!students.length) {
-    host.innerHTML = '<p style="color:#94a3b8;font-size:12px;">אין תלמידים תואמים — אף אחד לא תרגל ב-30 הימים האחרונים, או שכולם כבר עברו את מבחן האמת.</p>';
+    host.innerHTML = fresh + '<p style="color:#94a3b8;font-size:12px;">אין תלמידים תואמים בהיקף שלך — אף אחד לא תרגל ב-30 הימים האחרונים, או שכולם כבר עברו את מבחן האמת.</p>';
     return;
   }
   var LIMIT = 60;
   var trendIcon = { up: '<span style="color:#16a34a;">▲ משתפר</span>', down: '<span style="color:#dc2626;">▼ יורד</span>', flat: '<span style="color:#94a3b8;">— יציב</span>', single: '<span style="color:#94a3b8;">תרגול יחיד</span>' };
-  var h = '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
+  var h = fresh + '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
   h += '<thead><tr style="background:#f1f5f9;">';
   h += '<th style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;">#</th>';
   h += '<th style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;">שם</th>';

@@ -20,7 +20,8 @@ var SHEET_HEADERS = {
   'כיתות שנמחקו': ['קוד כיתה', 'שם כיתה', 'מורה ת.ז.', 'שם מורה', 'דרגה', 'אתר', 'תאריך מחיקה'],
   'תלמידי כיתות': ['קוד כיתה', 'שם תלמיד', 'מזהה תלמיד', 'תאריך הצטרפות'],
   'תוצאות תרגול': ['תאריך', 'מזהה תלמיד', 'שם תלמיד', 'קוד כיתה', 'מצב', 'דרגה', 'ציון', 'סה"כ', 'אחוז', 'עבר/נכשל', 'זמן', 'נושא', 'שפה', 'פירוט שגויות', 'פירוט לפי נושא', 'טלפון'],
-  'התקדמות תלמידים': ['שם תלמיד', 'קוד כיתה', 'מפתח', 'streak', 'wrong_qs', 'history', 'עדכון אחרון']
+  'התקדמות תלמידים': ['שם תלמיד', 'קוד כיתה', 'מפתח', 'streak', 'wrong_qs', 'history', 'עדכון אחרון'],
+  'חיזוי סיכון': ['חושב בתאריך', 'שם', 'דרגה', 'קוד כיתה', 'מורה ת.ז.', 'שם מורה', 'שם כיתה', 'אתר', 'ציון תרגול', 'תרגולים', 'מגמה', 'ניסיון צפוי', 'ניגש בעבר', 'סיכוי מעבר', 'רמת סיכון', 'ביטחון', 'זוהה בטלפון']
 };
 
 // Sites used ONLY for system testing by examiners (not real exams). Their rows are
@@ -6330,32 +6331,21 @@ function handleTeacherCommanderDashboard(p) {
 // value for C1 first-timers (huge volume, ~22% base pass, and practice score
 // cleanly separates ~10% from ~73%). Complements repeatFailures (which is
 // retrospective — already failed 2+); this catches them before the first fail.
-function handleTeacherAtRiskList(p) {
-  // ---- role + scope (mirrors handleTeacherCommanderDashboard) ----
-  var tData = getSheet('מורים').getDataRange().getValues();
-  var role = '', userSite = '';
-  for (var i = 1; i < tData.length; i++) {
-    if (normalizeId(tData[i][1]) === normalizeId(p.teacherId)) { role = String(tData[i][8] || 'מורה'); userSite = String(tData[i][9] || ''); break; }
-  }
-  if (role !== 'מפקד' && role !== 'מפקד מקומי' && role !== 'מפקד ראשי' && !isKdtzRole(role)) {
-    return jsonResponse({ status: 'error', message: 'אין הרשאת מפקד' });
-  }
-  var isLocal = (role === 'מפקד מקומי');
-  var isMultiSite = isKdtzRole(role);
-  var managedSites = [];
-  if (isMultiSite) {
-    managedSites = String(userSite || '').split(',').map(function(s) { return s.trim(); }).filter(function(s) { return s; });
-    if (!managedSites.length) return jsonResponse({ status: 'error', message: 'לא הוקצו אתרים למפקד' });
-  }
-
-  var lookbackDays = Number(p.lookbackDays) || 30;
+// Heavy computation for the WHOLE fleet — builds the model once and scores every
+// recently-practiced student (no scope filter). Called ONLY by the nightly cache
+// rebuild, never on a dashboard request. Returns the full ranked list + build
+// summary + computedAt so the cache can be scope-filtered cheaply on read.
+function computeAtRiskAll(opts) {
+  opts = opts || {};
+  var lookbackDays = opts.lookbackDays || 30;
   var model = buildPassProbabilityModel({ lookbackDays: lookbackDays });
 
-  // Class map: code → {teacherName, className, license, site}.
+  // Class map: code → {teacherId, teacherName, className, license, site}.
   var classData = getSheet('כיתות').getDataRange().getValues();
   var classMap = {};
   for (var c = 1; c < classData.length; c++) {
     classMap[String(classData[c][0]).trim()] = {
+      teacherId: normalizeId(classData[c][2]),
       teacherName: String(classData[c][3] || ''),
       className: String(classData[c][1] || ''),
       license: String(classData[c][4] || ''),
@@ -6364,8 +6354,8 @@ function handleTeacherAtRiskList(p) {
   }
   var deletedClassMap = getDeletedClassMap();
 
-  // Exam-history index → upcoming attempt number + everPassed (to drop soldiers
-  // who already passed). Keyed by phone AND name|license, mirroring the model join.
+  // Exam-history index → upcoming attempt number + everPassed. Keyed by phone AND
+  // name|license, mirroring the model join.
   var examData = getSheet('תוצאות').getDataRange().getValues();
   var histByPhone = {}, histByName = {};
   function histBump(idx, key, attempt, passed) {
@@ -6386,20 +6376,17 @@ function handleTeacherAtRiskList(p) {
     histBump(histByName, eName + '|' + eLic, eAtt, ePassed);
   }
 
-  // Group practice rows by student within the window + commander scope.
+  // Group practice rows by student within the window — no scope filter here (the
+  // cache holds everyone; the read handler filters by caller scope).
   var practiceData = getSheet('תוצאות תרגול').getDataRange().getValues();
   var windowStart = new Date();
   windowStart.setDate(windowStart.getDate() - lookbackDays);
-  var nowMs = new Date().getTime();
   var students = {};
   for (var r = 1; r < practiceData.length; r++) {
     var pDate = parseSheetDate(practiceData[r][0]);
     if (!pDate || pDate < windowStart) continue;
     var classCode = String(practiceData[r][3] || '').trim();
     var cInfo = resolveClassInfo(classCode, classMap, deletedClassMap);
-    var site = cInfo.site || '';
-    if (isLocal && userSite && site !== userSite) continue;
-    if (isMultiSite && managedSites.indexOf(site) === -1) continue;
     var pct = ppParsePct(practiceData[r][8]);
     if (pct < 0) continue;
     var name = String(practiceData[r][2] || '');
@@ -6407,15 +6394,14 @@ function handleTeacherAtRiskList(p) {
     var phone = (practiceData[r].length > 15) ? ppNormPhone(practiceData[r][15]) : '';
     var studentId = String(practiceData[r][1] || '');
     var key = phone ? ('p:' + phone) : (studentId ? ('s:' + studentId) : ('n:' + ppNormName(name) + '|' + lic));
-    if (!students[key]) students[key] = { name: name, license: lic, phone: phone, className: cInfo.className, teacherName: cInfo.teacherName, site: site, recs: [] };
+    if (!students[key]) students[key] = { name: name, license: lic, phone: phone, classCode: classCode, teacherId: cInfo.teacherId || '', className: cInfo.className, teacherName: cInfo.teacherName, site: cInfo.site || '', recs: [] };
     students[key].recs.push({ date: pDate, pct: pct });
     if (name) students[key].name = name;
     if (lic) students[key].license = lic;
   }
 
-  // Score every student. A junk-name filter drops shared/demo entries — a "."
-  // with 100+ sessions, a cycle name ("מחזור 76") typed into the name field,
-  // punctuation/number-only names — that would otherwise dominate the ranking.
+  // Junk-name filter — drops shared/demo entries (a "." with 100+ sessions, a
+  // cycle name typed into the name field, punctuation/number-only names).
   function looksLikeName(s) {
     var t = String(s || '').trim();
     if (t.length < 2) return false;
@@ -6434,23 +6420,124 @@ function handleTeacherAtRiskList(p) {
     var trendPts = sessions > 1 ? (latest.pct - oldest.pct) : 0;
     var trend = sessions < 2 ? 'single' : (trendPts > 3 ? 'up' : (trendPts < -3 ? 'down' : 'flat'));
     var hist = (st.phone && histByPhone[st.phone]) || histByName[ppNormName(st.name) + '|' + st.license] || null;
-    if (hist && hist.everPassed) { summary.alreadyPassed++; continue; }   // already passed → not at risk
+    if (hist && hist.everPassed) { summary.alreadyPassed++; continue; }
     var upcomingAttempt = (hist ? hist.attempts : 0) + 1;
     var pred = predictPassProbability(model, { license: st.license, attempt: upcomingAttempt, lastPct: latest.pct });
     var prob = pred ? pred.prob : null;
     var tier = prob == null ? 'low' : (prob < 40 ? 'high' : (prob < 65 ? 'medium' : 'low'));
     summary[tier]++; summary.total++;
     out.push({
-      name: st.name, license: st.license, className: st.className, teacherName: st.teacherName, site: st.site,
+      name: st.name, license: st.license, classCode: st.classCode, teacherId: st.teacherId,
+      teacherName: st.teacherName, className: st.className, site: st.site,
       lastPct: Math.round(latest.pct), sessions: sessions, trend: trend,
       attempt: upcomingAttempt, everTested: !!hist,
-      prob: prob, confidence: pred ? pred.confidence : 'low', tier: tier,
-      daysSincePractice: Math.round((nowMs - latest.date.getTime()) / 86400000),
-      matchedByPhone: !!st.phone
+      prob: prob, tier: tier, confidence: pred ? pred.confidence : 'low', matchedByPhone: !!st.phone
     });
   }
-  // Worst odds first; ties broken by lower practice score (more at risk), then
-  // by more practice sessions (invested effort but still stuck → act on first).
+  out.sort(function(a, b) {
+    var pa = a.prob == null ? 999 : a.prob, pb = b.prob == null ? 999 : b.prob;
+    if (pa !== pb) return pa - pb;
+    if (a.lastPct !== b.lastPct) return a.lastPct - b.lastPct;
+    return b.sessions - a.sessions;
+  });
+  return { computedAtMs: new Date().getTime(), students: out, summary: summary, modelBaseRate: Math.round(model.base.rate * 100) };
+}
+
+// Nightly job — recompute the whole at-risk list and persist it to the
+// 'חיזוי סיכון' sheet + script properties (timestamp, summary, base rate). Run
+// by a time-based trigger (see installAtRiskTrigger) at ~03:00 so the heavy
+// model build never lands during exam/practice hours. Dashboards then READ this
+// cache instead of rebuilding — no per-request model build, no midday load.
+function rebuildAtRiskCache() {
+  var res = computeAtRiskAll({ lookbackDays: 30 });
+  var sheet = getSheet('חיזוי סיכון');
+  var lastRow = sheet.getLastRow();
+  if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).clearContent();
+  var computedAtStr = Utilities.formatDate(new Date(res.computedAtMs), 'Asia/Jerusalem', 'yyyy-MM-dd HH:mm');
+  var rows = res.students.map(function(s) {
+    return [computedAtStr, s.name, s.license, s.classCode, s.teacherId, s.teacherName, s.className, s.site,
+      s.lastPct, s.sessions, s.trend, s.attempt, s.everTested, (s.prob == null ? '' : s.prob), s.tier, s.confidence, s.matchedByPhone];
+  });
+  if (rows.length) sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
+  var props = PropertiesService.getScriptProperties();
+  props.setProperty('atRisk_computedAt', computedAtStr);
+  props.setProperty('atRisk_summary', JSON.stringify(res.summary));
+  props.setProperty('atRisk_modelBaseRate', String(res.modelBaseRate));
+  return { computed: res.students.length, computedAt: computedAtStr };
+}
+
+// One-time setup — installs the nightly trigger. Run once from the Apps Script
+// editor (Run → installAtRiskTrigger). Idempotent: removes any prior copy first.
+function installAtRiskTrigger() {
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'rebuildAtRiskCache') ScriptApp.deleteTrigger(triggers[i]);
+  }
+  ScriptApp.newTrigger('rebuildAtRiskCache').timeBased().atHour(3).everyDays(1).inTimezone('Asia/Jerusalem').create();
+  return 'Nightly at-risk trigger installed (~03:00 Asia/Jerusalem).';
+}
+
+// Dashboard read — fast. Reads the pre-computed cache and filters by the caller's
+// scope: commanders see by level (global / their site / their managed sites),
+// a regular teacher sees ONLY their own classes (by teacher ת.ז.). No model
+// build, no big-sheet scan of תוצאות/תוצאות תרגול on the request path.
+function handleTeacherAtRiskList(p) {
+  var tData = getSheet('מורים').getDataRange().getValues();
+  var role = '', userSite = '', myId = normalizeId(p.teacherId), found = false;
+  for (var i = 1; i < tData.length; i++) {
+    if (normalizeId(tData[i][1]) === myId) { role = String(tData[i][8] || 'מורה'); userSite = String(tData[i][9] || ''); found = true; break; }
+  }
+  if (!found) return jsonResponse({ status: 'error', message: 'מורה לא נמצא' });
+
+  var isGlobal = (role === 'מפקד' || role === 'מפקד ראשי' || role === 'אדמין');
+  var isLocal = (role === 'מפקד מקומי');
+  var isMultiSite = isKdtzRole(role);
+  var isCommander = isGlobal || isLocal || isMultiSite;
+  var managedSites = [];
+  if (isMultiSite) {
+    managedSites = String(userSite || '').split(',').map(function(s) { return s.trim(); }).filter(function(s) { return s; });
+  }
+
+  var props = PropertiesService.getScriptProperties();
+  var computedAt = props.getProperty('atRisk_computedAt') || null;
+  var modelBaseRate = Number(props.getProperty('atRisk_modelBaseRate') || 0);
+  var buildSummary = null;
+  try { buildSummary = JSON.parse(props.getProperty('atRisk_summary') || 'null'); } catch (eBS) { buildSummary = null; }
+
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('חיזוי סיכון');
+  if (!sheet || sheet.getLastRow() < 2) {
+    return jsonResponse({ status: 'ok', data: {
+      computedAt: computedAt, notComputed: true,
+      summary: { high: 0, medium: 0, low: 0, total: 0 }, students: []
+    } });
+  }
+  var rows = sheet.getDataRange().getValues();
+  var out = [];
+  var summary = { high: 0, medium: 0, low: 0, total: 0 };
+  for (var r2 = 1; r2 < rows.length; r2++) {
+    var row = rows[r2];
+    var site = String(row[7] || '');
+    var teacherId = normalizeId(row[4]);
+    if (isCommander) {
+      if (isLocal && userSite && site !== userSite) continue;
+      if (isMultiSite && managedSites.indexOf(site) === -1) continue;
+      // isGlobal → no filter
+    } else {
+      if (!teacherId || teacherId !== myId) continue;   // regular teacher → own classes only
+    }
+    var tier = String(row[14] || 'low');
+    if (tier === 'high') summary.high++; else if (tier === 'medium') summary.medium++; else summary.low++;
+    summary.total++;
+    out.push({
+      name: String(row[1] || ''), license: String(row[2] || ''), className: String(row[6] || ''),
+      teacherName: String(row[5] || ''), site: site,
+      lastPct: Number(row[8]) || 0, sessions: Number(row[9]) || 0, trend: String(row[10] || ''),
+      attempt: Number(row[11]) || 1, everTested: (row[12] === true || String(row[12]).toUpperCase() === 'TRUE'),
+      prob: (row[13] === '' || row[13] == null) ? null : Number(row[13]),
+      tier: tier, confidence: String(row[15] || 'low'),
+      matchedByPhone: (row[16] === true || String(row[16]).toUpperCase() === 'TRUE')
+    });
+  }
   out.sort(function(a, b) {
     var pa = a.prob == null ? 999 : a.prob, pb = b.prob == null ? 999 : b.prob;
     if (pa !== pb) return pa - pb;
@@ -6459,8 +6546,10 @@ function handleTeacherAtRiskList(p) {
   });
 
   return jsonResponse({ status: 'ok', data: {
-    lookbackDays: lookbackDays,
-    modelBaseRate: Math.round(model.base.rate * 100),
+    computedAt: computedAt,
+    modelBaseRate: modelBaseRate,
+    scope: isCommander ? (isGlobal ? 'כל האתרים' : (isLocal ? userSite : managedSites.join(', '))) : 'הכיתות שלי',
+    buildSummary: buildSummary,
     coverageNote: 'תלמיד מזוהה לפי טלפון אם הוזן, אחרת לפי שם+דרגה. ניסיון = מספר הניסיון הצפוי במבחן האמיתי.',
     summary: summary,
     truncated: out.length > 200,
