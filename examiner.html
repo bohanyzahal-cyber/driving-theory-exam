@@ -6396,6 +6396,21 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
         }
         h += '</tbody></table></div>';
       }
+      var aSL = a.bySiteLicense || [];
+      var aCnt = {}, aShow = false;
+      for (var p1 = 0; p1 < aSL.length; p1++) { var aN = aSL[p1].site; aCnt[aN] = (aCnt[aN] || 0) + 1; if (aCnt[aN] > 1) aShow = true; }
+      if (aShow) {
+        h += '<div style="margin-top:12px;overflow-x:auto;"><div style="font-size:12px;font-weight:700;color:#1e40af;margin-bottom:4px;">פילוח לפי אתר × דרגה:</div>';
+        h += '<table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr style="background:#dbeafe;">';
+        h += '<th style="padding:5px 8px;text-align:right;font-size:11px;color:#1e40af;">אתר</th><th style="padding:5px;font-size:11px;color:#1e40af;">דרגה</th><th style="padding:5px;font-size:11px;color:#1e40af;">נרשמו</th><th style="padding:5px;font-size:11px;color:#1e40af;">~עוברים</th><th style="padding:5px;font-size:11px;color:#1e40af;">~נכשלים</th><th style="padding:5px;font-size:11px;color:#1e40af;">🔴</th></tr></thead><tbody>';
+        var aPrev = '';
+        for (var p2 = 0; p2 < aSL.length; p2++) {
+          var ai = aSL[p2];
+          var aShowS = ai.site !== aPrev; aPrev = ai.site;
+          h += '<tr style="border-bottom:1px solid #e2e8f0;' + (aShowS ? 'border-top:2px solid #bfdbfe;' : '') + '"><td style="padding:5px 8px;text-align:right;font-weight:600;">' + (aShowS ? esc(ai.site) : '') + '</td><td style="padding:5px;text-align:center;"><span dir="ltr">' + esc(ai.license) + '</span></td><td style="padding:5px;text-align:center;font-weight:700;">' + ai.registered + '</td><td style="padding:5px;text-align:center;color:#16a34a;font-weight:700;">~' + ai.expectedPasses + '</td><td style="padding:5px;text-align:center;color:#dc2626;font-weight:700;">~' + ai.expectedFails + '</td><td style="padding:5px;text-align:center;">' + ai.high + '</td></tr>';
+        }
+        h += '</tbody></table></div>';
+      }
       if (a.atRisk && a.atRisk.length) {
         h += '<div style="margin-top:10px;overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr style="background:#f1f5f9;">';
         h += '<th style="padding:5px 8px;text-align:right;font-size:11px;color:#64748b;">שם</th><th style="padding:5px;font-size:11px;color:#64748b;">דרגה</th><th style="padding:5px;font-size:11px;color:#64748b;">ניסיון</th><th style="padding:5px;font-size:11px;color:#64748b;">תרגול</th><th style="padding:5px;font-size:11px;color:#64748b;">סיכוי</th></tr></thead><tbody>';
@@ -6434,6 +6449,22 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
           var cb = cf.bySite[cfSites[csi]];
           var crc = cb.expectedPassRate >= 60 ? '#16a34a' : (cb.expectedPassRate < 40 ? '#dc2626' : '#d97706');
           h += '<tr style="border-bottom:1px solid #e2e8f0;"><td style="padding:6px 8px;text-align:right;font-weight:600;">' + esc(cfSites[csi]) + '</td><td style="padding:6px;text-align:center;">' + cb.n + '</td><td style="padding:6px;text-align:center;font-weight:800;color:' + crc + ';">' + cb.expectedPassRate + '%</td><td style="padding:6px;text-align:center;">' + cb.high + '</td><td style="padding:6px;text-align:center;">' + cb.medium + '</td><td style="padding:6px;text-align:center;">' + cb.low + '</td></tr>';
+        }
+        h += '</tbody></table></div>';
+      }
+      var cfSL = cf.bySiteLicense || [];
+      var cfCnt = {}, cfShow = false;
+      for (var q1 = 0; q1 < cfSL.length; q1++) { var sN = cfSL[q1].site; cfCnt[sN] = (cfCnt[sN] || 0) + 1; if (cfCnt[sN] > 1) cfShow = true; }
+      if (cfShow) {
+        h += '<h4 style="margin:14px 0 8px;font-size:14px;color:#334155;">📈 תחזית מחזור לפי אתר × דרגה</h4>';
+        h += '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr style="background:#f1f5f9;">';
+        h += '<th style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;">אתר</th><th style="padding:6px;font-size:11px;color:#64748b;">דרגה</th><th style="padding:6px;font-size:11px;color:#64748b;">מתרגלים</th><th style="padding:6px;font-size:11px;color:#64748b;">% מעבר צפוי</th><th style="padding:6px;font-size:11px;color:#64748b;">🔴</th><th style="padding:6px;font-size:11px;color:#64748b;">🟠</th><th style="padding:6px;font-size:11px;color:#64748b;">🟢</th></tr></thead><tbody>';
+        var cfPrev = '';
+        for (var q2 = 0; q2 < cfSL.length; q2++) {
+          var it = cfSL[q2];
+          var irc = it.expectedPassRate >= 60 ? '#16a34a' : (it.expectedPassRate < 40 ? '#dc2626' : '#d97706');
+          var showS = it.site !== cfPrev; cfPrev = it.site;
+          h += '<tr style="border-bottom:1px solid #e2e8f0;' + (showS ? 'border-top:2px solid #cbd5e1;' : '') + '"><td style="padding:6px 8px;text-align:right;font-weight:600;">' + (showS ? esc(it.site) : '') + '</td><td style="padding:6px;text-align:center;"><span dir="ltr">' + esc(it.license) + '</span></td><td style="padding:6px;text-align:center;">' + it.n + '</td><td style="padding:6px;text-align:center;font-weight:800;color:' + irc + ';">' + it.expectedPassRate + '%</td><td style="padding:6px;text-align:center;">' + it.high + '</td><td style="padding:6px;text-align:center;">' + it.medium + '</td><td style="padding:6px;text-align:center;">' + it.low + '</td></tr>';
         }
         h += '</tbody></table></div>';
       }
