@@ -625,6 +625,15 @@
       <div id="cmdOverallPie" style="margin-top:10px;"></div>
     </div>
 
+    <!-- Predictive forecast (planning) — exam-day forecast for live registrants +
+         period cohort forecast. Both derive from the nightly at-risk cache.
+         Hidden until the (newer) server returns forecast data. -->
+    <div class="card" id="cmdForecastCard" style="display:none;">
+      <h3 style="margin:0 0 4px;font-size:15px;color:#334155;">🔮 תחזית מעבר (תכנון)</h3>
+      <p style="margin:0 0 10px;font-size:11px;color:#94a3b8;line-height:1.4;">חיזוי מבוסס תרגול — כלי תכנון, לא ודאות. מחושב אוטומטית פעם ביום בלילה.</p>
+      <div id="cmdForecast"></div>
+    </div>
+
     <!-- Integrity panel — green one-liner when clean, compact table when not.
          Hidden entirely until the server sends integrity data. -->
     <div class="card" id="cmdIntegrityCard" style="display:none;">
@@ -6155,6 +6164,8 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     document.getElementById('cmdTopWrongCard').style.display = 'none';
     var integCard = document.getElementById('cmdIntegrityCard');
     if (integCard) integCard.style.display = 'none';
+    var fcCard = document.getElementById('cmdForecastCard');
+    if (fcCard) fcCard.style.display = 'none';
     var wtCard = document.getElementById('cmdWeakTopicsCard');
     if (wtCard) wtCard.style.display = 'none';
     var waitCard = document.getElementById('cmdWaitCard');
@@ -6177,6 +6188,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
         cmdData = resp.data;
         renderCommanderKPIs(cmdData.overall);
         renderKpiDeltas(cmdData.overall, cmdData.prevOverall);
+        loadExaminerForecast();
         renderIntegrity(cmdData.integrity);
         renderWeakTopics(cmdData.weakTopics);
         renderWaitTimes(cmdData.waitTimes);
@@ -6333,6 +6345,78 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
   // green "all clear" line when the period is clean; otherwise 3 mini-KPIs +
   // a compact per-examiner table of flagged rows only (top 8). Definitions
   // mirror the per-row badges in the results table.
+  // Predictive forecast (planning). Reads the examinerForecast action (nightly
+  // at-risk cache). Fails silently on an older server that lacks the action.
+  function loadExaminerForecast() {
+    var card = document.getElementById('cmdForecastCard');
+    var host = document.getElementById('cmdForecast');
+    if (!card || !host) return;
+    card.style.display = '';
+    host.innerHTML = '<p style="color:#94a3b8;font-size:12px;">טוען תחזית...</p>';
+    apiGet({ action: 'examinerForecast', examinerId: examinerData.id }).then(function(resp) {
+      if (!resp || resp.status !== 'ok') { card.style.display = 'none'; return; }
+      renderExaminerForecast(resp.data);
+    }).catch(function() { card.style.display = 'none'; });
+  }
+
+  function renderExaminerForecast(d) {
+    var card = document.getElementById('cmdForecastCard');
+    var host = document.getElementById('cmdForecast');
+    if (!card || !host) return;
+    if (!d) { card.style.display = 'none'; return; }
+    function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+    if (d.notComputed) {
+      host.innerHTML = '<p style="color:#94a3b8;font-size:13px;line-height:1.6;">⏳ התחזית עדיין לא חושבה. היא מחושבת אוטומטית פעם ביום בלילה.</p>';
+      card.style.display = ''; return;
+    }
+    var h = d.computedAt ? '<div style="font-size:11px;color:#64748b;margin-bottom:10px;">📅 מבוסס חיזוי מ: <strong>' + esc(d.computedAt) + '</strong></div>' : '';
+
+    var a = d.examDayForecast;
+    if (a && a.registered > 0) {
+      h += '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:14px;margin-bottom:14px;">';
+      h += '<h4 style="margin:0 0 10px;font-size:14px;color:#1e40af;">📋 תחזית ליום המבחן — נרשמים כעת בסשנים פעילים</h4>';
+      h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;">';
+      function kpi(v, l, clr) { return '<div style="flex:1;min-width:88px;text-align:center;background:#fff;border-radius:10px;padding:10px;"><div style="font-size:22px;font-weight:900;color:' + clr + ';">' + v + '</div><div style="font-size:11px;color:#64748b;">' + l + '</div></div>'; }
+      h += kpi(a.registered, 'נרשמו', '#1e40af');
+      h += kpi('~' + a.expectedPasses, 'צפויים לעבור', '#16a34a');
+      h += kpi('~' + a.expectedFails, 'צפויים להיכשל', '#dc2626');
+      h += kpi(a.high, 'בסיכון גבוה', '#dc2626');
+      if (a.noRecord) h += kpi(a.noRecord, 'ללא נתוני תרגול', '#94a3b8');
+      h += '</div>';
+      if (a.expectedFails > 0) h += '<div style="font-size:12px;color:#92400e;background:#fef3c7;border-radius:8px;padding:8px 10px;">💡 היערך ל-~' + a.expectedFails + ' מבחנים חוזרים.</div>';
+      if (a.atRisk && a.atRisk.length) {
+        h += '<div style="margin-top:10px;overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr style="background:#f1f5f9;">';
+        h += '<th style="padding:5px 8px;text-align:right;font-size:11px;color:#64748b;">שם</th><th style="padding:5px;font-size:11px;color:#64748b;">דרגה</th><th style="padding:5px;font-size:11px;color:#64748b;">ניסיון</th><th style="padding:5px;font-size:11px;color:#64748b;">תרגול</th><th style="padding:5px;font-size:11px;color:#64748b;">סיכוי</th></tr></thead><tbody>';
+        for (var i = 0; i < a.atRisk.length; i++) {
+          var sr = a.atRisk[i];
+          var bg = sr.tier === 'high' ? '#fee2e2' : '#fef3c7', clr = sr.tier === 'high' ? '#991b1b' : '#92400e';
+          h += '<tr style="border-bottom:1px solid #e2e8f0;"><td style="padding:5px 8px;text-align:right;font-weight:600;">' + esc(sr.name) + '</td><td style="padding:5px;text-align:center;"><span dir="ltr">' + esc(sr.license) + '</span></td><td style="padding:5px;text-align:center;">' + (sr.attempt >= 3 ? '3+' : sr.attempt) + '</td><td style="padding:5px;text-align:center;">' + sr.lastPct + '%</td><td style="padding:5px;text-align:center;"><span style="background:' + bg + ';color:' + clr + ';border-radius:8px;padding:1px 8px;font-weight:800;">' + sr.prob + '%</span></td></tr>';
+        }
+        h += '</tbody></table></div>';
+      }
+      h += '</div>';
+    } else {
+      h += '<div style="font-size:12px;color:#94a3b8;margin-bottom:14px;">אין כרגע נרשמים בסשנים פעילים — תחזית יום המבחן תופיע כשייפתחו סשנים ונבחנים יירשמו.</div>';
+    }
+
+    var cf = d.cohortForecast;
+    if (cf && cf.overall && cf.overall.n > 0) {
+      h += '<h4 style="margin:0 0 8px;font-size:14px;color:#334155;">📈 תחזית מחזור — מאגר המתרגלים הנוכחי (שעדיין לא עברו)</h4>';
+      h += '<p style="margin:0 0 8px;font-size:11px;color:#94a3b8;">מתוך ' + cf.overall.n + ' תלמידים שתרגלו לאחרונה, צפויים ~' + cf.overall.expectedPasses + ' לעבור (' + cf.overall.expectedPassRate + '%).</p>';
+      h += '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:13px;"><thead><tr style="background:#f1f5f9;">';
+      h += '<th style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;">דרגה</th><th style="padding:6px;font-size:11px;color:#64748b;">מתרגלים</th><th style="padding:6px;font-size:11px;color:#64748b;">% מעבר צפוי</th><th style="padding:6px;font-size:11px;color:#64748b;">🔴</th><th style="padding:6px;font-size:11px;color:#64748b;">🟠</th><th style="padding:6px;font-size:11px;color:#64748b;">🟢</th></tr></thead><tbody>';
+      var lics = Object.keys(cf.byLicense).sort();
+      for (var li = 0; li < lics.length; li++) {
+        var lic = lics[li], b = cf.byLicense[lic];
+        var rc = b.expectedPassRate >= 60 ? '#16a34a' : (b.expectedPassRate < 40 ? '#dc2626' : '#d97706');
+        h += '<tr style="border-bottom:1px solid #e2e8f0;"><td style="padding:6px 8px;text-align:right;font-weight:600;"><span dir="ltr">' + esc(lic) + '</span></td><td style="padding:6px;text-align:center;">' + b.n + '</td><td style="padding:6px;text-align:center;font-weight:800;color:' + rc + ';">' + b.expectedPassRate + '%</td><td style="padding:6px;text-align:center;">' + b.high + '</td><td style="padding:6px;text-align:center;">' + b.medium + '</td><td style="padding:6px;text-align:center;">' + b.low + '</td></tr>';
+      }
+      h += '</tbody></table></div>';
+    }
+    host.innerHTML = h;
+    card.style.display = '';
+  }
+
   function renderIntegrity(integ) {
     var card = document.getElementById('cmdIntegrityCard');
     var host = document.getElementById('cmdIntegrity');

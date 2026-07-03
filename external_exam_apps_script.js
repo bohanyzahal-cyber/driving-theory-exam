@@ -21,7 +21,7 @@ var SHEET_HEADERS = {
   'תלמידי כיתות': ['קוד כיתה', 'שם תלמיד', 'מזהה תלמיד', 'תאריך הצטרפות'],
   'תוצאות תרגול': ['תאריך', 'מזהה תלמיד', 'שם תלמיד', 'קוד כיתה', 'מצב', 'דרגה', 'ציון', 'סה"כ', 'אחוז', 'עבר/נכשל', 'זמן', 'נושא', 'שפה', 'פירוט שגויות', 'פירוט לפי נושא', 'טלפון'],
   'התקדמות תלמידים': ['שם תלמיד', 'קוד כיתה', 'מפתח', 'streak', 'wrong_qs', 'history', 'עדכון אחרון'],
-  'חיזוי סיכון': ['חושב בתאריך', 'שם', 'דרגה', 'קוד כיתה', 'מורה ת.ז.', 'שם מורה', 'שם כיתה', 'אתר', 'ציון תרגול', 'תרגולים', 'מגמה', 'ניסיון צפוי', 'ניגש בעבר', 'סיכוי מעבר', 'רמת סיכון', 'ביטחון', 'זוהה בטלפון']
+  'חיזוי סיכון': ['חושב בתאריך', 'שם', 'דרגה', 'קוד כיתה', 'מורה ת.ז.', 'שם מורה', 'שם כיתה', 'אתר', 'ציון תרגול', 'תרגולים', 'מגמה', 'ניסיון צפוי', 'ניגש בעבר', 'סיכוי מעבר', 'רמת סיכון', 'ביטחון', 'זוהה בטלפון', 'טלפון']
 };
 
 // Sites used ONLY for system testing by examiners (not real exams). Their rows are
@@ -412,7 +412,7 @@ function doGet(e) {
       'approveExaminee','rejectExaminee','examinerDashboard','resetExaminee',
       'correctToPass','overturnDQ','confirmDQ','forceComplete','markSent','commanderDashboard',
       'commanderCorrectResult','correctExamineeMeta','getResultUploadToken','centerManagerReport',
-      'predictiveModelPreview'];
+      'predictiveModelPreview','examinerForecast'];
     // Note: 'disqualify' is NOT in this list because it can be sent by the examinee client (no token)
     // — auth is enforced inside handleDisqualify itself (examiner token OR active pending row).
     if (examinerActions.indexOf(action) !== -1) {
@@ -537,6 +537,9 @@ function doGet(e) {
 
       case 'predictiveModelPreview':
         return handlePredictiveModelPreview(p);
+
+      case 'examinerForecast':
+        return handleExaminerForecast(p);
 
       case 'submitResult':
         // Decode wrongAnswers from JSON string parameter
@@ -6469,7 +6472,7 @@ function computeAtRiskAll(opts) {
       teacherName: st.teacherName, className: st.className, site: st.site,
       lastPct: Math.round(latest.pct), sessions: sessions, trend: trend,
       attempt: upcomingAttempt, everTested: !!hist,
-      prob: prob, tier: tier, confidence: pred ? pred.confidence : 'low', matchedByPhone: !!st.phone
+      prob: prob, tier: tier, confidence: pred ? pred.confidence : 'low', matchedByPhone: !!st.phone, phone: st.phone || ''
     });
   }
   out.sort(function(a, b) {
@@ -6494,7 +6497,7 @@ function rebuildAtRiskCache() {
   var computedAtStr = Utilities.formatDate(new Date(res.computedAtMs), 'Asia/Jerusalem', 'yyyy-MM-dd HH:mm');
   var rows = res.students.map(function(s) {
     return [computedAtStr, s.name, s.license, s.classCode, s.teacherId, s.teacherName, s.className, s.site,
-      s.lastPct, s.sessions, s.trend, s.attempt, s.everTested, (s.prob == null ? '' : s.prob), s.tier, s.confidence, s.matchedByPhone];
+      s.lastPct, s.sessions, s.trend, s.attempt, s.everTested, (s.prob == null ? '' : s.prob), s.tier, s.confidence, s.matchedByPhone, (s.phone || '')];
   });
   if (rows.length) sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
   var props = PropertiesService.getScriptProperties();
@@ -6592,6 +6595,102 @@ function handleTeacherAtRiskList(p) {
     summary: summary,
     truncated: out.length > 200,
     students: out.slice(0, 200)
+  } });
+}
+
+// ========== Examiner-commander forecast (predictive PLANNING view) ==========
+// Reads the nightly at-risk cache (NO model build on request) and produces two
+// forecasts for the examiner-commander:
+//   cohortForecast (B') — aggregate expected pass rate of the current practicing
+//     pool, by license + overall ("a typical upcoming C1 cohort → ~X% pass").
+//   examDayForecast (A') — joins the LIVE registrants (ממתינים in active sessions)
+//     to their nightly prediction → "of N registered now, ~X expected to pass,
+//     Y at risk → prepare re-exam slots". No-practice-record registrants are
+//     counted separately, never silently assumed pass/fail.
+function handleExaminerForecast(p) {
+  var exData = getSheet('בוחנים').getDataRange().getValues();
+  var role = '';
+  for (var i = 1; i < exData.length; i++) {
+    if (normalizeId(exData[i][1]) === normalizeId(p.examinerId)) { role = String(exData[i][5] || 'בוחן'); break; }
+  }
+  if (role !== 'מפקד') return jsonResponse({ status: 'error', message: 'אין הרשאת מפקד' });
+
+  var props = PropertiesService.getScriptProperties();
+  var computedAt = props.getProperty('atRisk_computedAt') || null;
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('חיזוי סיכון');
+  if (!sheet || sheet.getLastRow() < 2) {
+    return jsonResponse({ status: 'ok', data: { computedAt: computedAt, notComputed: true, cohortForecast: null, examDayForecast: null } });
+  }
+  var rows = sheet.getDataRange().getValues();
+  // Cache columns: 1 name, 2 license, 7 site, 8 lastPct, 11 attempt, 13 prob, 14 tier, 17 phone.
+  var byPhone = {}, byName = {};
+  var cohortByLic = {};
+  var cohortAll = { n: 0, sumProb: 0, high: 0, medium: 0, low: 0 };
+  function cohortBump(o, prob, tier) {
+    o.n++; if (prob != null) o.sumProb += prob;
+    if (tier === 'high') o.high++; else if (tier === 'medium') o.medium++; else o.low++;
+  }
+  for (var r = 1; r < rows.length; r++) {
+    var row = rows[r];
+    var lic = String(row[2] || '');
+    var prob = (row[13] === '' || row[13] == null) ? null : Number(row[13]);
+    var tier = String(row[14] || 'low');
+    var phone = String(row[17] || '');
+    var rec = { name: String(row[1] || ''), license: lic, lastPct: Number(row[8]) || 0, attempt: Number(row[11]) || 1, prob: prob, tier: tier, site: String(row[7] || '') };
+    if (phone) byPhone[phone] = rec;
+    var nk = ppNormName(row[1]) + '|' + lic;
+    if (!byName[nk]) byName[nk] = rec;
+    if (!cohortByLic[lic]) cohortByLic[lic] = { n: 0, sumProb: 0, high: 0, medium: 0, low: 0 };
+    cohortBump(cohortByLic[lic], prob, tier);
+    cohortBump(cohortAll, prob, tier);
+  }
+  function finalizeCohort(o) {
+    return { n: o.n, expectedPassRate: o.n ? Math.round(o.sumProb / o.n) : 0, expectedPasses: Math.round(o.sumProb / 100), high: o.high, medium: o.medium, low: o.low };
+  }
+  var cohortForecast = { overall: finalizeCohort(cohortAll), byLicense: {} };
+  for (var lk in cohortByLic) cohortForecast.byLicense[lk] = finalizeCohort(cohortByLic[lk]);
+
+  // A' — live registrants in ACTIVE sessions only.
+  var activeSessions = {};
+  try {
+    var sess = getSheet('סשנים').getDataRange().getValues();
+    var nowT = new Date().getTime();
+    for (var s = 1; s < sess.length; s++) {
+      var active = sess[s][10] === true || String(sess[s][10]).toUpperCase() === 'TRUE';
+      var validUntil = sess[s][9] ? new Date(sess[s][9]).getTime() : 0;
+      if (active && (!validUntil || validUntil > nowT)) activeSessions[String(sess[s][0] || '').trim()] = true;
+    }
+  } catch (eS) { /* no sessions → examDay stays empty */ }
+
+  var examDay = { registered: 0, matched: 0, noRecord: 0, expectedPasses: 0, expectedFails: 0, high: 0, medium: 0, low: 0, atRisk: [] };
+  try {
+    var wait = getSheet('ממתינים').getDataRange().getValues();
+    for (var w = 1; w < wait.length; w++) {
+      var code = String(wait[w][0] || '').trim();
+      if (!activeSessions[code]) continue;
+      var status = String(wait[w][5] || '');
+      if (status === 'הושלם' || status === 'פסול' || status === 'בוטל' || status === 'נדחה') continue;   // already resolved
+      examDay.registered++;
+      var wPhone = ppNormPhone(wait[w][3]);
+      var wLic = String(wait[w][8] || '');
+      var wName = String(wait[w][2] || '');
+      var hit = (wPhone && byPhone[wPhone]) || byName[ppNormName(wName) + '|' + wLic] || null;
+      if (!hit || hit.prob == null) { examDay.noRecord++; continue; }
+      examDay.matched++;
+      examDay.expectedPasses += hit.prob / 100;
+      if (hit.tier === 'high') examDay.high++; else if (hit.tier === 'medium') examDay.medium++; else examDay.low++;
+      if (hit.tier === 'high' || hit.tier === 'medium') examDay.atRisk.push({ name: wName, license: wLic, prob: hit.prob, tier: hit.tier, lastPct: hit.lastPct, attempt: hit.attempt });
+    }
+  } catch (eW) { /* no waiting sheet */ }
+  examDay.expectedPasses = Math.round(examDay.expectedPasses);
+  examDay.expectedFails = Math.max(0, examDay.matched - examDay.expectedPasses);
+  examDay.atRisk.sort(function(a, b) { return a.prob - b.prob; });
+  examDay.atRisk = examDay.atRisk.slice(0, 50);
+
+  return jsonResponse({ status: 'ok', data: {
+    computedAt: computedAt,
+    cohortForecast: cohortForecast,
+    examDayForecast: examDay
   } });
 }
 
