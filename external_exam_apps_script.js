@@ -3737,6 +3737,15 @@ function warmupQuestionCaches() {
       summary.push(LANGS[i] + ': ERROR - ' + (e && e.message ? e.message : e));
     }
   }
+  // Build the per-id translation index off the freshly-warmed banks, so exam-start
+  // reads 30 small entries instead of parsing 6 extra full banks (the main cost).
+  try {
+    var tx = buildTranslationIndexCache();
+    summary.push('translation-index: ' + tx.count + ' questions, langs=' + tx.langs.join(','));
+  } catch (eTx) {
+    summary.push('translation-index: ERROR - ' + (eTx && eTx.message ? eTx.message : eTx));
+  }
+
   Logger.log('warmupQuestionCaches complete:\n' + summary.join('\n'));
   return summary;
 }
@@ -3964,6 +3973,130 @@ function loadQuestionsForLanguageServer(lang) {
   }
 }
 
+// ========== Per-id translation index (perf) ==========
+// Exam-start used to load+parse ALL 7 full language banks (~25MB, ~43k questions)
+// on every request just to extract the translations of the 30 selected questions
+// — the single biggest per-request cost (cold cache: 80-176s), which held an
+// execution slot long enough to saturate them during the morning start-wave.
+// This index is built ONCE (by the warmup trigger) into small per-question cache
+// entries, so exam-start reads only the 30 it needs instead of parsing 6 extra
+// banks. The examinee RESPONSE is unchanged (still all 30 × 7 languages), so
+// offline mid-exam language switching keeps working exactly as before.
+//   tx_<id>  -> { he:{t,a}, ru:{t,a}, ... }   (only langs where the id exists)
+//   tx_meta  -> { langs:[...], count, builtAt } (readiness flag + available langs)
+// `ci` (correct-answer index; non-examinee only) is NOT stored — it is layered at
+// request time via lookupCorrectIndex, identical to the old bank path.
+var TX_LANGS = ['he', 'ru', 'en', 'ar', 'fr', 'es', 'am'];
+
+function buildTranslationIndexCache() {
+  var cache = CacheService.getScriptCache();
+  var availLangs = [];
+  var byId = {};
+  for (var li = 0; li < TX_LANGS.length; li++) {
+    var lang = TX_LANGS[li];
+    var data;
+    try { data = loadQuestionsForLanguageServer(lang); }
+    catch (e) { Logger.log('[TX] skip ' + lang + ': ' + (e && e.message)); continue; }
+    if (!data || !data.length) { Logger.log('[TX] empty ' + lang + ' — skipping'); continue; }
+    availLangs.push(lang);
+    for (var qi = 0; qi < data.length; qi++) {
+      var q = data[qi];
+      if (!q || q.id === undefined || q.id === null) continue;
+      var e2 = byId[q.id] || (byId[q.id] = {});
+      e2[lang] = { t: q.text, a: q.answers };
+    }
+  }
+  var ids = Object.keys(byId);
+  var BATCH = 100, put = {};
+  for (var i = 0; i < ids.length; i++) {
+    put['tx_' + ids[i]] = JSON.stringify(byId[ids[i]]);
+    if ((i + 1) % BATCH === 0) { try { cache.putAll(put, 21600); } catch (eP) {} put = {}; }
+  }
+  if (Object.keys(put).length) { try { cache.putAll(put, 21600); } catch (eP2) {} }
+  try { cache.put('tx_meta', JSON.stringify({ langs: availLangs, count: ids.length, builtAt: Date.now() }), 21600); } catch (eM) {}
+  Logger.log('[TX] index built: ' + ids.length + ' questions, langs=' + availLangs.join(','));
+  return { count: ids.length, langs: availLangs };
+}
+
+// Assemble translations for the selected questions from the per-id index. Returns
+// the SAME { lang: { id: {t,a[,ci]} } } shape as the bank path, or null to signal
+// "index not ready / incomplete → caller should fall back to the banks".
+function tryTranslationsFromIndex(idList, includeCi) {
+  var cache = CacheService.getScriptCache();
+  var metaRaw = cache.get('tx_meta');
+  if (!metaRaw) return null;                       // never built → fall back
+  var meta; try { meta = JSON.parse(metaRaw); } catch (eJ) { return null; }
+  var langs = (meta && meta.langs) || [];
+  if (!langs.length) return null;
+  var keys = [];
+  for (var i = 0; i < idList.length; i++) keys.push('tx_' + idList[i]);
+  var got = cache.getAll(keys);
+  var byId = {};
+  for (var j = 0; j < idList.length; j++) {
+    var raw = got['tx_' + idList[j]];
+    if (raw === null || raw === undefined) return null;   // any selected id missing → fall back
+    try { byId[idList[j]] = JSON.parse(raw); } catch (eJ2) { return null; }
+  }
+  var translations = {};
+  for (var li = 0; li < langs.length; li++) {
+    var lang = langs[li];
+    var altMap = {};
+    for (var k = 0; k < idList.length; k++) {
+      var id = idList[k];
+      var per = byId[id];
+      if (!per || !per[lang]) continue;             // id absent in this lang → skip (matches banks)
+      var entry = { t: per[lang].t, a: per[lang].a };
+      if (includeCi && typeof lookupCorrectIndex === 'function') {
+        var cc = lookupCorrectIndex(Number(id), lang);
+        if (cc !== null && cc !== undefined) entry.ci = cc ^ (id % 256);
+      }
+      altMap[id] = entry;
+    }
+    translations[lang] = altMap;
+  }
+  return translations;
+}
+
+// FALLBACK — verbatim of the original per-request logic: load each full language
+// bank and pull out the selected ids. Used only when the index isn't ready, so
+// behavior is never worse than before the index existed.
+function buildTranslationsFromBanks(selected, includeCi) {
+  var translations = {};
+  var idSet = {};
+  for (var ix = 0; ix < selected.length; ix++) idSet[selected[ix].id] = true;
+  for (var li = 0; li < TX_LANGS.length; li++) {
+    var altLang = TX_LANGS[li];
+    try {
+      var altData = loadQuestionsForLanguageServer(altLang);
+      var altMap = {};
+      for (var ai = 0; ai < altData.length; ai++) {
+        var aq = altData[ai];
+        if (aq && idSet[aq.id]) {
+          var entry = { t: aq.text, a: aq.answers };
+          if (includeCi && typeof lookupCorrectIndex === 'function') {
+            var altCorrect = lookupCorrectIndex(Number(aq.id), altLang);
+            if (altCorrect !== null && altCorrect !== undefined) {
+              entry.ci = altCorrect ^ (aq.id % 256);
+            }
+          }
+          altMap[aq.id] = entry;
+        }
+      }
+      translations[altLang] = altMap;
+    } catch (e) { /* language file missing — skip */ }
+  }
+  return translations;
+}
+
+// Fast path first; fall back to the banks if the index isn't ready/complete.
+function buildExamTranslations(selected, includeCi) {
+  var idList = [];
+  for (var i = 0; i < selected.length; i++) idList.push(selected[i].id);
+  var fast = tryTranslationsFromIndex(idList, includeCi);
+  if (fast !== null) return fast;
+  return buildTranslationsFromBanks(selected, includeCi);
+}
+
 // Pick 30 questions per the license blueprint, return them WITHOUT the
 // correct-answer index. Authenticated clients only — falls back to a
 // rate-limited guest path for the standalone exam.html flow.
@@ -4109,34 +4242,15 @@ function handleGetExamQuestions(p) {
   var includeCiInTranslations = (auth !== 'examinee');
   var translations = null;
   if (p.includeTranslations === 'true' || p.includeTranslations === '1') {
-    translations = {};
-    var SUPPORTED_LANGS = ['he', 'ru', 'en', 'ar', 'fr', 'es', 'am'];
-    var idSet = {};
-    for (var ix = 0; ix < selected.length; ix++) idSet[selected[ix].id] = true;
-    for (var li = 0; li < SUPPORTED_LANGS.length; li++) {
-      var altLang = SUPPORTED_LANGS[li];
-      try {
-        var altData = loadQuestionsForLanguageServer(altLang);
-        var altMap = {};
-        for (var ai = 0; ai < altData.length; ai++) {
-          var aq = altData[ai];
-          if (aq && idSet[aq.id]) {
-            var entry = { t: aq.text, a: aq.answers };
-            // Source JSONs don't carry `ci` — look it up per-language from the
-            // answer key so a mid-exam language switch can rewire the correct
-            // index to whatever order the translator put answers in.
-            if (includeCiInTranslations && typeof lookupCorrectIndex === 'function') {
-              var altCorrect = lookupCorrectIndex(Number(aq.id), altLang);
-              if (altCorrect !== null && altCorrect !== undefined) {
-                entry.ci = altCorrect ^ (aq.id % 256);
-              }
-            }
-            altMap[aq.id] = entry;
-          }
-        }
-        translations[altLang] = altMap;
-      } catch (e) { /* language file missing — skip */ }
-    }
+    // Fast path: assemble from the pre-built per-id translation index (built by
+    // the warmup trigger) so we DON'T parse 6 extra full language banks on every
+    // exam-start — the main per-request cost that saturated execution slots in
+    // the morning start-wave. Falls back to loading the banks when the index
+    // isn't ready (e.g. first request after a cache clear), so behavior is never
+    // worse than before. Response shape is identical → offline mid-exam language
+    // switching unchanged. See buildExamTranslations / buildTranslationIndexCache.
+    // `ci` (non-examinee only) is still layered per-language from the answer key.
+    translations = buildExamTranslations(selected, includeCiInTranslations);
   }
 
   var responseBody = { status: 'ok', auth: auth, count: selected.length, questions: selected };
