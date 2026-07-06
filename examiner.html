@@ -2506,7 +2506,7 @@
     document.getElementById('resultsSearchBar').style.display = 'block';
 
     var html = '<div style="overflow-x:auto;"><table class="results-table"><thead><tr>' +
-      '<th>#</th><th>שם</th><th>ת.ז.</th><th>אתר</th><th>אוכלוסיה</th><th>ניסיון</th><th>ציון</th><th>תוצאה</th><th>זמן</th><th>פעולות</th>' +
+      '<th>#</th><th>שם</th><th>ת.ז.</th><th>אתר</th><th>אוכלוסיה</th><th>דרגה</th><th>ניסיון</th><th>ציון</th><th>תוצאה</th><th>זמן</th><th>פעולות</th>' +
       '</tr></thead><tbody>';
 
     // First pass: tally global stats (independent of filter so user always sees the full picture).
@@ -2589,6 +2589,7 @@
         '<td>....' + id4 + '</td>' +
         '<td>' + escHtml(r.site || '') + '</td>' +
         '<td>' + escHtml(r.population || '') + '</td>' +
+        '<td><span dir="ltr" style="display:inline-block;background:#eff6ff;color:#1e40af;border:1px solid #bfdbfe;border-radius:6px;padding:1px 7px;font-weight:800;font-size:0.9em;">' + escHtml(String(r.license || '')) + '</span></td>' +
         '<td>' + (r.attempt || 1) + '</td>' +
         '<td>' + escHtml(String(r.score || '')) + flagHtml + '</td>' +
         '<td><span class="' + badgeClass + '">' + badgeText + '</span></td>' +
