@@ -1801,6 +1801,41 @@ function handleExaminerDashboard(p) {
     }
   } catch (e) {}
 
+  // ---- Pre-built indexes (perf) ----------------------------------------------
+  // handleExaminerDashboard runs every 5s per examiner. The old code re-scanned
+  // the WHOLE תוצאות/ממתינים sheets inside per-examinee loops, making it
+  // O(examinees × תוצאות) — which silently degraded as תוצאות grew each day and
+  // spiked during the morning registration rush. These indexes reproduce EXACTLY
+  // what those inner scans computed, but build once → O(1) lookups.
+  //   resBySessId[id]  = { dqResults, otherResults }  (this session, non-בוטל)
+  //   pendTermBySessId[id] = { dqTerminals, otherTerminals } (this session)
+  function buildResBySessId(rows) {
+    var idx = {};
+    for (var r = 1; r < rows.length; r++) {
+      if (String(rows[r][13]) !== code) continue;
+      if (String(rows[r][7] || '') === 'בוטל') continue;
+      var k = normalizeId(rows[r][1]);
+      if (!idx[k]) idx[k] = { dqResults: 0, otherResults: 0 };
+      if (String(rows[r][7] || '').trim() === 'פסול') idx[k].dqResults++;
+      else idx[k].otherResults++;
+    }
+    return idx;
+  }
+  function buildPendTermBySessId(rows) {
+    var idx = {};
+    for (var r = 1; r < rows.length; r++) {
+      if (String(rows[r][0]) !== code) continue;
+      var k = normalizeId(rows[r][1]);
+      if (!idx[k]) idx[k] = { dqTerminals: 0, otherTerminals: 0 };
+      var st = String(rows[r][5]).trim();
+      if (st === 'disqualified' || st === 'dq_confirmed') idx[k].dqTerminals++;
+      else if (st === 'completed') idx[k].otherTerminals++;
+    }
+    return idx;
+  }
+  var resBySessId = buildResBySessId(resData);
+  var pendTermBySessId = buildPendTermBySessId(pendData);
+
   // Auto-cleanup: detect stale in_exam entries that already have a result or are way past exam time
   var now = new Date();
   var BASE_EXAM_MS = 40 * 60 * 1000;
@@ -1827,23 +1862,14 @@ function handleExaminerDashboard(p) {
     // only reconciled when a real result already exists.
     var effectiveStale = isStale && _startedExam;
 
-    // Count results by type for this examinee in this session
-    var dqResults = 0, otherResults = 0;
-    for (var ri = 1; ri < resData.length; ri++) {
-      if (String(resData[ri][13]) === code && normalizeId(resData[ri][1]) === normalizeId(ciId)) {
-        if (String(resData[ri][7] || '') === 'בוטל') continue;
-        if (String(resData[ri][7] || '').trim() === 'פסול') dqResults++;
-        else otherResults++;
-      }
-    }
-    // Count terminal entries by type in pending sheet for this examinee
-    var dqTerminals = 0, otherTerminals = 0;
-    for (var cc = 1; cc < pendData.length; cc++) {
-      if (String(pendData[cc][0]) !== code || normalizeId(pendData[cc][1]) !== normalizeId(ciId)) continue;
-      var ccStatus = String(pendData[cc][5]).trim();
-      if (ccStatus === 'disqualified' || ccStatus === 'dq_confirmed') dqTerminals++;
-      else if (ccStatus === 'completed') otherTerminals++;
-    }
+    // Count results by type for this examinee in this session (indexed lookup —
+    // was a full scan of תוצאות per examinee).
+    var _rc = resBySessId[normalizeId(ciId)] || { dqResults: 0, otherResults: 0 };
+    var dqResults = _rc.dqResults, otherResults = _rc.otherResults;
+    // Count terminal entries by type in pending sheet for this examinee (indexed —
+    // was a full scan of ממתינים per examinee).
+    var _pt = pendTermBySessId[normalizeId(ciId)] || { dqTerminals: 0, otherTerminals: 0 };
+    var dqTerminals = _pt.dqTerminals, otherTerminals = _pt.otherTerminals;
     // Cap DQ results to DQ terminals — handles duplicate פסול rows from page refreshes
     var effectiveResults = Math.min(dqResults, dqTerminals) + otherResults;
     var totalTerminals = dqTerminals + otherTerminals;
@@ -1853,6 +1879,11 @@ function handleExaminerDashboard(p) {
       // Fix dangling status — mark as completed
       pendSheet.getRange(ci + 1, 6).setValue('completed');
       pendData[ci][5] = 'completed'; // update local copy
+      // Keep pendTermBySessId in sync: this row was in_exam/approved (loop guard
+      // above) → now a 'completed' terminal, so a fresh rescan would count it here.
+      var _mk = normalizeId(ciId);
+      if (!pendTermBySessId[_mk]) pendTermBySessId[_mk] = { dqTerminals: 0, otherTerminals: 0 };
+      pendTermBySessId[_mk].otherTerminals++;
       if (effectiveStale && !hasUnmatchedResult) {
         // Create a timeout fail result
         var sesData2 = getSheet('סשנים').getDataRange().getValues();
@@ -1874,8 +1905,11 @@ function handleExaminerDashboard(p) {
           attemptNum2, 'ניתוק/טיימאאוט — הנבחן לא סיים את המבחן', false, false, '',
           pendData[ci][7] || '', false, pendData[ci][9] || 'off'
         ]);
-        // Refresh resData after append
+        // Refresh resData after append, and rebuild the results index so later
+        // iterations' counts include the row just appended (behavior-identical to
+        // the old per-iteration rescan of the freshly re-read sheet).
         resData = resSheet.getDataRange().getValues();
+        resBySessId = buildResBySessId(resData);
       }
     }
   }
@@ -2004,35 +2038,40 @@ function handleExaminerDashboard(p) {
   var todayMM = ('0' + (now.getMonth() + 1)).slice(-2);
   var todayYYYY = now.getFullYear();
   var todayDate = todayDD + '/' + todayMM + '/' + todayYYYY; // "DD/MM/YYYY"
+  // Index today's non-בוטל results by examinee id (any session), then attach —
+  // was a full scan of תוצאות per pending examinee.
+  var todayExamsById = {};
+  for (var ti = 1; ti < resData.length; ti++) {
+    if (String(resData[ti][7] || '') === 'בוטל') continue;
+    // Handle both Date objects and string dates from Sheets
+    var _cd = resData[ti][0];
+    var _ds = '';
+    if (_cd instanceof Date) {
+      _ds = ('0' + _cd.getDate()).slice(-2) + '/' + ('0' + (_cd.getMonth() + 1)).slice(-2) + '/' + _cd.getFullYear();
+    } else {
+      _ds = String(_cd);
+    }
+    if (_ds.indexOf(todayDate) !== 0) continue;
+    var _tk = normalizeId(resData[ti][1]);
+    (todayExamsById[_tk] = todayExamsById[_tk] || []).push({ license: String(resData[ti][4]), score: String(resData[ti][5]), passed: String(resData[ti][7]), language: String(resData[ti][12] || '') });
+  }
   for (var pi = 0; pi < pending.length; pi++) {
-    var todayExams = [];
-    for (var ri = 1; ri < resData.length; ri++) {
-      if (normalizeId(resData[ri][1]) !== normalizeId(pending[pi].idNumber)) continue;
-      if (String(resData[ri][7] || '') === 'בוטל') continue;
-      // Handle both Date objects and string dates from Sheets
-      var cellDate = resData[ri][0];
-      var dateStr = '';
-      if (cellDate instanceof Date) {
-        dateStr = ('0' + cellDate.getDate()).slice(-2) + '/' + ('0' + (cellDate.getMonth() + 1)).slice(-2) + '/' + cellDate.getFullYear();
-      } else {
-        dateStr = String(cellDate);
-      }
-      if (dateStr.indexOf(todayDate) === 0) {
-        todayExams.push({ license: String(resData[ri][4]), score: String(resData[ri][5]), passed: String(resData[ri][7]), language: String(resData[ri][12] || '') });
-      }
-    }
-    if (todayExams.length > 0) {
-      pending[pi].todayExams = todayExams;
-    }
+    var _te = todayExamsById[normalizeId(pending[pi].idNumber)];
+    if (_te && _te.length > 0) pending[pi].todayExams = _te;
   }
 
-  // Cross-reference registration times from ממתינים for completed results
+  // Cross-reference registration times from ממתינים for completed results (indexed
+  // — was a reverse scan of ממתינים per completed examinee). Last matching row for
+  // (code, id) wins, exactly as the reverse-from-end + break did.
+  var pendRegTimeById = {};
+  for (var pr = 1; pr < pendData.length; pr++) {
+    if (String(pendData[pr][0]) !== code) continue;
+    pendRegTimeById[normalizeId(pendData[pr][1])] = pendData[pr][4];
+  }
   for (var c = 0; c < completed.length; c++) {
-    for (var p2 = pendData.length - 1; p2 >= 1; p2--) {
-      if (String(pendData[p2][0]) === code && normalizeId(pendData[p2][1]) === normalizeId(completed[c].idNumber)) {
-        completed[c].registrationTime = pendData[p2][4];
-        break;
-      }
+    var _rk = normalizeId(completed[c].idNumber);
+    if (Object.prototype.hasOwnProperty.call(pendRegTimeById, _rk)) {
+      completed[c].registrationTime = pendRegTimeById[_rk];
     }
   }
 
