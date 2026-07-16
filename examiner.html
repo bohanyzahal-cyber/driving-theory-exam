@@ -2580,7 +2580,7 @@
       var phone = formatPhone(r.phone);
       var passTextWA = isDQ ? '\u05E4\u05E1\u05D5\u05DC' : (isPassed ? '\u05E2\u05D1\u05E8' : '\u05E0\u05DB\u05E9\u05DC');
       var shortMsg = '\u05E9\u05DC\u05D5\u05DD ' + r.name + ', \u05EA\u05D5\u05E6\u05D0\u05EA \u05D4\u05DE\u05D1\u05D7\u05DF: ' + passTextWA + (isCorrected ? '' : ' (' + (r.score || '') + ')');
-      var waUrl = phone ? ('https://wa.me/' + phone + '?text=' + encodeURIComponent(shortMsg)) : '#';
+      var waUrl = phone ? buildWaUrl(phone, shortMsg) : '#';
       var smsUrl = phone ? ('sms:+' + phone + '?body=' + encodeURIComponent(shortMsg)) : '#';
 
       html += '<tr>' +
@@ -3010,9 +3010,10 @@
     // everywhere. The closing script tag is split to avoid terminating this
     // parent <script> when the source is parsed.
     H.push('<script>');
+    H.push(waHelperScriptSrc());
     H.push('var __summary=' + JSON.stringify(summaryText) + ';');
     H.push('function __printReport(){window.print();}');
-    H.push('function __shareWhatsApp(){window.open("https://wa.me/?text="+encodeURIComponent(__summary),"_blank");}');
+    H.push('function __shareWhatsApp(){window.open(buildWaUrl("",__summary),"_blank");}');
     H.push('function __copyFallback(){if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(__summary).then(function(){alert("הדו\\"ח הועתק. אפשר להדביק בכל אפליקציה.");},function(){window.prompt("העתק את הדו\\"ח:",__summary);});}else{window.prompt("העתק את הדו\\"ח:",__summary);}}');
     H.push('function __shareNative(){if(navigator.share){navigator.share({title:"דו\\"ח משותף לאתר",text:__summary}).catch(function(){});}else{__copyFallback();}}');
     H.push('if(navigator.share){var __b=document.getElementById("__shareBtn");if(__b)__b.style.display="";}');
@@ -3316,6 +3317,51 @@
     if (phone.charAt(0) === '0') phone = '972' + phone.substring(1);
     else if (phone.length === 9 && phone.charAt(0) === '5') phone = '972' + phone;
     return phone;
+  }
+
+  // ========== WhatsApp link builder ==========
+  // Examiner devices have both WhatsApp apps installed (personal + business),
+  // and messages must always leave from the business one. A plain wa.me link
+  // lets the OS choose, which is what breaks: on Android both apps claim
+  // wa.me, and on desktop both desktop apps claim the whatsapp:// protocol.
+  //   Android — an intent:// URL naming the WhatsApp Business package, which
+  //             Chrome routes to that app with no chooser. If it isn't
+  //             installed, browser_fallback_url lands on wa.me as before.
+  //   iOS     — cannot be steered at all: both apps register the same URL
+  //             scheme and iOS has no per-app targeting. It also has no usable
+  //             WhatsApp Web, so the desktop branch would break sending
+  //             outright. Keep wa.me and let the examiner pick the app.
+  //   Desktop — WhatsApp Web, bypassing both desktop apps. The sending account
+  //             is whichever is linked in that browser, so the business number
+  //             must be the one paired there (one-time QR scan).
+  // `phone` must already be through formatPhone(); this only strips leftover
+  // separators. An empty phone means "examiner picks the contact" — WhatsApp
+  // Web refuses that, so desktop keeps wa.me for that case alone and the app
+  // chooser can still appear there.
+  var WA_BUSINESS_PACKAGE = 'com.whatsapp.w4b';
+
+  function buildWaUrl(phone, text) {
+    var p = String(phone || '').replace(/[^0-9]/g, '');
+    var t = encodeURIComponent(String(text || ''));
+    var ua = navigator.userAgent || '';
+    if (/Android/i.test(ua)) {
+      return 'intent://send?' + (p ? 'phone=' + p + '&' : '') + 'text=' + t +
+        '#Intent;scheme=whatsapp;package=' + WA_BUSINESS_PACKAGE +
+        ';S.browser_fallback_url=' + encodeURIComponent('https://wa.me/' + p + '?text=' + t) + ';end';
+    }
+    // iPadOS 13+ reports itself as "Macintosh", so the touch check — not the UA
+    // string — is what actually catches iPads. Same trap as getDeviceClass()
+    // in examinee.html; without it an iPad would take the desktop branch.
+    var isIOS = /iPhone|iPad|iPod/i.test(ua) ||
+                (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    if (isIOS || !p) return 'https://wa.me/' + p + '?text=' + t;
+    return 'https://web.whatsapp.com/send?phone=' + p + '&text=' + t;
+  }
+
+  // Printable reports open as standalone documents, so they need their own
+  // copy of the builder. Serialising the live one keeps them from drifting.
+  function waHelperScriptSrc() {
+    return 'var WA_BUSINESS_PACKAGE=' + JSON.stringify(WA_BUSINESS_PACKAGE) + ';' + buildWaUrl.toString() + ';';
   }
 
   // Google Sheets returns dates as ISO strings like "2026-02-16T22:00:00.000Z"
@@ -3940,7 +3986,7 @@
       .replace('{result}', resultWithScore)
       .replace('{link}', link);
 
-    var waUrl = phone ? ('https://wa.me/' + phone + '?text=' + encodeURIComponent(msgText)) : '#';
+    var waUrl = phone ? buildWaUrl(phone, msgText) : '#';
     var smsUrl = phone ? ('sms:+' + phone + '?body=' + encodeURIComponent(msgText)) : '#';
 
     var content = '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px;margin:12px 0;word-break:break-all;font-size:13px;direction:ltr;text-align:left;">' + escHtml(link) + '</div>' +
@@ -4064,7 +4110,7 @@
     }
 
 
-    window.open('https://wa.me/' + phone + '?text=' + encodeURIComponent(msg), '_blank');
+    window.open(buildWaUrl(phone, msg), '_blank');
   };
 
   // ========== Bulk WhatsApp send queue ==========
@@ -4218,7 +4264,7 @@
         msg = bulkSendBuildMessage(r, link);
       }
       if (phone) {
-        var waUrl = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(msg);
+        var waUrl = buildWaUrl(phone, msg);
         window.open(waUrl, '_blank');
       }
       if (!r.sent) {
@@ -4473,7 +4519,7 @@ function buildExaminerReportHtml(D){
   H.push('<button class="btn btn-print" onclick="window.print()">הדפס / PDF</button>');
   H.push('</div></div>');
   H.push('<div style="text-align:center;font-size:11px;color:#94a3b8;padding:14px">הופק: '+escHtml(D.dateStr||'')+'</div>');
-  H.push('<script>var __WA='+JSON.stringify(waMsg)+';function __sendWa(){var p=(document.getElementById("rpPhone").value||"").replace(/[^0-9]/g,"");if(!p){alert("יש להזין מספר טלפון של מנהל האתר");return;}if(p.charAt(0)==="0")p="972"+p.substring(1);if(p.indexOf("972")!==0)p="972"+p;window.open("https://wa.me/"+p+"?text="+encodeURIComponent(__WA),"_blank");}<\/script>');
+  H.push('<script>'+waHelperScriptSrc()+'var __WA='+JSON.stringify(waMsg)+';function __sendWa(){var p=(document.getElementById("rpPhone").value||"").replace(/[^0-9]/g,"");if(!p){alert("יש להזין מספר טלפון של מנהל האתר");return;}if(p.charAt(0)==="0")p="972"+p.substring(1);if(p.indexOf("972")!==0)p="972"+p;window.open(buildWaUrl(p,__WA),"_blank");}<\/script>');
   H.push('</div></body></html>');
   return H.join('');
 }
@@ -4907,6 +4953,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
 
     // === Separate script block for WA sendReport (isolated from rendering) ===
     H.push('<script>');
+    H.push(waHelperScriptSrc());
     H.push('function sendReport(){');
     H.push('try{');
     H.push('var ph=document.getElementById("rpManagerPhone").value.trim();');
@@ -4935,7 +4982,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     H.push('msg+="\\u05E1\\u05D4\\"\\u05DB: ' + total + ' | \\u05E2\\u05D1\\u05E8\\u05D5: ' + passCount + ' | \\u05E0\\u05DB\\u05E9\\u05DC\\u05D5: ' + failTotalReport + (dqCount > 0 ? ' (' + dqCount + ' \\u05E4\\u05E1\\u05D5\\u05DC\\u05D9\\u05DD)' : '') + '\\n";');
     H.push('msg+="\\u05D0\\u05D7\\u05D5\\u05D6 \\u05D4\\u05E6\\u05DC\\u05D7\\u05D4: ' + rate + '%\\n";');
     H.push('msg+=\'' + waPopLines + '\';');
-    H.push('window.open("https://wa.me/"+p+"?text="+encodeURIComponent(msg),"_blank");');
+    H.push('window.open(buildWaUrl(p,msg),"_blank");');
     H.push('}catch(e){alert("\\u05E9\\u05D2\\u05D9\\u05D0\\u05D4 \\u05D1\\u05E9\\u05DC\\u05D9\\u05D7\\u05EA \\u05D3\\u05D5\\"\\u05D7: "+e.message);}');
     H.push('}');
 
@@ -5399,7 +5446,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       '📎 צפה בדו"ח המלא:\n' + link;
 
     var waPhone = formatPhone(EXAMINER_REPORT_WA_TARGET);
-    var waUrl = 'https://wa.me/' + waPhone + '?text=' + encodeURIComponent(msgText);
+    var waUrl = buildWaUrl(waPhone, msgText);
     var linkEsc = link.replace(/'/g, "\\'");
 
     var content = '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px;margin:12px 0;word-break:break-all;font-size:13px;direction:ltr;text-align:left;">' + escHtml(link) + '</div>' +
@@ -5464,7 +5511,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       '\u05EA\u05D0\u05E8\u05D9\u05DA: ' + dateStr + '\n\n' +
       '\uD83D\uDCCE \u05E6\u05E4\u05D4 \u05D1\u05D3\u05D5"\u05D7 \u05D4\u05DE\u05DC\u05D0:\n' + link;
 
-    var waUrl = phone ? ('https://wa.me/' + phone + '?text=' + encodeURIComponent(msgText)) : '#';
+    var waUrl = phone ? buildWaUrl(phone, msgText) : '#';
 
     var content = '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px;margin:12px 0;word-break:break-all;font-size:13px;direction:ltr;text-align:left;">' + escHtml(link) + '</div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:12px;">' +
@@ -6117,7 +6164,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
           'סה"כ: ' + d.overall.total + ' | עברו: ' + d.overall.passed +
           ' | אחוז הצלחה: ' + d.overall.passRate + '%\n\n' +
           '📎 דו"ח מלא:\n' + resp.link;
-        var waUrl = 'https://wa.me/?text=' + encodeURIComponent(msgText);
+        var waUrl = buildWaUrl('', msgText);
         var content = '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px;margin:12px 0;word-break:break-all;font-size:13px;direction:ltr;text-align:left;">' + escHtml(resp.link) + '</div>' +
           '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:12px;">' +
           '<a href="' + waUrl + '" target="_blank" style="flex:1;min-width:120px;padding:10px 12px;border-radius:10px;font-size:14px;font-weight:700;text-decoration:none;text-align:center;color:white;background:#25D366;">📱 WhatsApp</a>' +
@@ -7417,7 +7464,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       '\u05DE\u05E4\u05E7\u05D3: ' + (examinerData.name || '') + '\n\n' +
       '\uD83D\uDCCE \u05E6\u05E4\u05D4 \u05D1\u05D3\u05D5"\u05D7:\n' + link;
 
-    var waUrl = 'https://wa.me/?text=' + encodeURIComponent(msgText);
+    var waUrl = buildWaUrl('', msgText);
 
     var content = '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:10px;margin:12px 0;word-break:break-all;font-size:13px;direction:ltr;text-align:left;">' + escHtml(link) + '</div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:12px;">' +
