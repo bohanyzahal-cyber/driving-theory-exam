@@ -2073,6 +2073,23 @@
           if (timeExtOverrides[item.idNumber]) timeSelect.value = timeExtOverrides[item.idNumber];
           actions.appendChild(timeSelect);
 
+          // Per-examinee audio. Pre-checked when this examinee registered while
+          // session audio was on, so nobody loses audio they already had; the
+          // examiner can flip it either way up to the moment of approval,
+          // without touching session settings and without affecting anyone else.
+          // The value ships with the approve call and lands on the examinee's
+          // ממתינים row, which is what their device now reads.
+          var audioLabel = document.createElement('label');
+          audioLabel.style.cssText = 'display:inline-flex;align-items:center;gap:5px;padding:6px 10px;border-radius:8px;border:1px solid #d1d5db;background:#fff;font-size:0.85em;margin-left:6px;cursor:pointer;user-select:none;';
+          audioLabel.title = 'הקראה קולית לנבחן זה בלבד';
+          var audioCb = document.createElement('input');
+          audioCb.type = 'checkbox';
+          audioCb.style.cssText = 'width:16px;height:16px;margin:0;cursor:pointer;';
+          audioCb.checked = (item.audioMode === 'on');
+          audioLabel.appendChild(audioCb);
+          audioLabel.appendChild(document.createTextNode('🔊 שמע'));
+          actions.appendChild(audioLabel);
+
           var approveBtn = document.createElement('button');
           approveBtn.className = 'btn-approve';
           approveBtn.textContent = 'אשר';
@@ -2082,15 +2099,16 @@
             approveBtn.textContent = 'מאשר...';
             var params = { action: 'approveExaminee', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id };
             if (timeSelect.value) params.timeExtension = timeSelect.value;
+            params.audioMode = audioCb.checked ? 'on' : 'off';
             apiGet(params).then(function(data) {
               if (data.status === 'ok') {
                 approveBtn.textContent = '✓ אושר';
-                // Auto-disable audio after approving (examinee already captured it)
-                if (currentAudioMode === 'on') {
-                  apiGet({ action: 'updateSession', sessionCode: sessionCode, examinerId: examinerData.id, license: currentLicense, language: currentLanguage, audioMode: 'off' }).then(function(d) {
-                    if (d.status === 'ok') { currentAudioMode = 'off'; saveState(); renderDashboard(); }
-                  });
-                }
+                // The auto-disable of session audio after each approval was
+                // removed here. It existed to fake "audio for this one
+                // examinee" while the flag was session-global, but it silently
+                // turned audio off for everyone who typed the session code
+                // afterwards. Audio is per-examinee now (the checkbox above),
+                // so the session flag can stay on as a plain default.
                 pollDashboard();
               } else {
                 alert('שגיאה באישור: ' + (data.message || 'לא ידוע'));

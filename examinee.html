@@ -1028,6 +1028,10 @@
     // Restore session's default language and license (undo examinee's override)
     sessionData.language = sessionData._defaultLanguage || sessionData.language || 'he';
     sessionData.license = sessionData._defaultLicense || sessionData.license || 'B';
+    // Audio is per-examinee now, and the next one hasn't been approved yet —
+    // clear it so a shared tablet can't leak the previous examinee's setting.
+    // The approval poll sets the real value from the new examinee's own row.
+    sessionData.audioMode = 'off';
     // Clear form fields
     document.getElementById('idNumber').value = '';
     document.getElementById('firstName').value = '';
@@ -1544,6 +1548,15 @@
 
       if (data.status === 'ok') {
         updateApprovalDebug('בדיקה #' + pollNum + ' OK', 'תגובה: ' + data.approval);
+        // Per-examinee audio, straight off this examinee's ממתינים row. Applied
+        // on every poll, so an examiner who turns audio on while the examinee
+        // waits reaches them without a reload or a re-scan. Before this, the
+        // session-level flag was snapshotted at code-entry and never refreshed —
+        // audio enabled after registration silently never arrived.
+        // Absent field = older server: keep the snapshot (previous behavior).
+        if (data.audioMode === 'on' || data.audioMode === 'off') {
+          sessionData.audioMode = data.audioMode;
+        }
         if (data.approval === 'approved') {
           clearInterval(approvalInterval); approvalInterval = null;
           if (data.examMinutes && data.examMinutes > 0) {
@@ -1804,6 +1817,13 @@
       includeTranslations: 'true'  // pre-fetch all 7 languages so switches are instant
     }, 45000).then(function(resp) {
       hideLoadingOverlay();
+      // Last audio sync before the exam renders. Covers the gap the approval
+      // poll can't: examiner sets audio AFTER approving, when polling has
+      // already stopped but the examinee hasn't pressed "start" yet. Must stay
+      // ahead of _finishStartingExam — that's where initTTS() reads the flag.
+      if (resp && (resp.audioMode === 'on' || resp.audioMode === 'off')) {
+        sessionData.audioMode = resp.audioMode;
+      }
       // Cache translations for instant mid-exam language switching
       if (resp && resp.translations) window._examTranslations = resp.translations;
       if (!resp || resp.status !== 'ok' || !Array.isArray(resp.questions) || resp.questions.length < TOTAL_QUESTIONS) {

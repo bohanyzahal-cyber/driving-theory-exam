@@ -275,10 +275,14 @@ function verifyExamineeToken(sessionCode, idNumber, examineeToken) {
   var data = sheet.getDataRange().getValues();
   for (var i = data.length - 1; i >= 1; i--) {
     if (String(data[i][0]) === String(sessionCode) && normalizeId(data[i][1]) === normalizeId(idNumber)) {
+      // Per-examinee audio (column J) rides along on the row we already read, so
+      // callers get it without a second sheet scan — matters on getExamQuestions,
+      // which is the exam-start hot path.
+      var rowAudio = String(data[i][9] || '').trim() === 'on' ? 'on' : 'off';
       var storedToken = String((data[i].length > 12 ? data[i][12] : '') || '').trim();
-      if (!storedToken) return { valid: true, legacy: true };
+      if (!storedToken) return { valid: true, legacy: true, audioMode: rowAudio };
       if (!examineeToken) return { valid: false, reason: 'missing' };
-      if (String(examineeToken).trim() === storedToken) return { valid: true, legacy: false };
+      if (String(examineeToken).trim() === storedToken) return { valid: true, legacy: false, audioMode: rowAudio };
       return { valid: false, reason: 'mismatch' };
     }
   }
@@ -1694,6 +1698,11 @@ function handleCheckApproval(p) {
         return jsonResponse({ status: 'error', message: 'טוקן נבחן לא תקין', examineeTokenError: 'mismatch' });
       }
       var response = { status: 'ok', approval: approval };
+      // Per-examinee audio (column J). Returned on EVERY poll so the examinee's
+      // client stays in sync with what the examiner set on their row — the
+      // client used to freeze the session-level flag at code-entry time and had
+      // no refresh path at all.
+      response.audioMode = String(data[i][9] || '').trim() === 'on' ? 'on' : 'off';
       // When approved, compute and return authorized exam duration
       if (approval === 'approved' || approval === 'in_exam') {
         var ext = parseFloat(data[i][10]) || 1;
@@ -1715,12 +1724,21 @@ function handleApproveExaminee(p) {
   var timeExt = String(p.timeExtension || '');
   if (!validExt[timeExt]) timeExt = '';
 
+  // Per-examinee audio. The examiner decides this on the specific examinee's
+  // row, so it no longer depends on the session-level flag being on at the
+  // moment the examinee typed the session code (that snapshot was the bug:
+  // audio turned on after the examinee registered never reached them).
+  // Omitted param → leave column J as the examinee registered with it.
+  var audioMode = String(p.audioMode || '');
+  if (audioMode !== 'on' && audioMode !== 'off') audioMode = '';
+
   var sheet = getSheet('ממתינים');
   var data = sheet.getDataRange().getValues();
   for (var i = data.length - 1; i >= 1; i--) {
     if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber) && String(data[i][5]).trim() === 'waiting') {
       sheet.getRange(i + 1, 6).setValue('approved');
       if (timeExt) sheet.getRange(i + 1, 11).setValue(timeExt);  // column K = הארכת זמן
+      if (audioMode) sheet.getRange(i + 1, 10).setValue(audioMode);  // column J = שמע
       SpreadsheetApp.flush();
       return jsonResponse({ status: 'ok' });
     }
@@ -4103,12 +4121,18 @@ function buildExamTranslations(selected, includeCi) {
 function handleGetExamQuestions(p) {
   // Determine auth context
   var auth = 'guest';
+  var examineeAudioMode = null;
   if (p.sessionCode && p.idNumber && p.examineeToken) {
     var ev = verifyExamineeToken(p.sessionCode, p.idNumber, p.examineeToken);
     if (!ev.valid) {
       return jsonResponse({ status: 'error', message: 'Examinee token invalid', reason: ev.reason });
     }
     auth = 'examinee';
+    // Second capture point for per-examinee audio: covers an examiner who set
+    // it AFTER approving, when the client's approval polling has already
+    // stopped but the examinee hasn't pressed "start" yet. Free — the token
+    // check above already read the row.
+    examineeAudioMode = ev.audioMode || 'off';
   } else if (p.token && p.examinerId) {
     if (!verifyToken(p.examinerId, p.token)) {
       return jsonResponse({ status: 'error', message: 'Examiner token invalid', tokenExpired: true });
@@ -4254,6 +4278,7 @@ function handleGetExamQuestions(p) {
   }
 
   var responseBody = { status: 'ok', auth: auth, count: selected.length, questions: selected };
+  if (examineeAudioMode !== null) responseBody.audioMode = examineeAudioMode;
   if (translations) responseBody.translations = translations;
   return jsonResponse(responseBody);
 }
