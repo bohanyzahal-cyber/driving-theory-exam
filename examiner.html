@@ -1010,6 +1010,7 @@
   var completedResults = [];
   var phoneOverrides = {}; // idNumber → corrected phone
   var timeExtOverrides = {}; // idNumber → selected time extension value
+  var audioOverrides = {};   // idNumber → 'on'/'off' chosen by the examiner, not yet approved
   var userRole = 'בוחן';
   var cmdData = null; // cached commander dashboard data
   var cmdCurrentTab = 'byExaminer';
@@ -2086,6 +2087,16 @@
           audioCb.type = 'checkbox';
           audioCb.style.cssText = 'width:16px;height:16px;margin:0;cursor:pointer;';
           audioCb.checked = (item.audioMode === 'on');
+          // The dashboard re-renders every 5s off fresh server data, and column J
+          // only changes at approval — so without this the examiner's tick was
+          // wiped by the very next poll and the box "wouldn't stay checked".
+          // Same override pattern as the time-extension dropdown above.
+          if (audioOverrides.hasOwnProperty(item.idNumber)) {
+            audioCb.checked = (audioOverrides[item.idNumber] === 'on');
+          }
+          audioCb.addEventListener('change', function() {
+            audioOverrides[item.idNumber] = audioCb.checked ? 'on' : 'off';
+          });
           audioLabel.appendChild(audioCb);
           audioLabel.appendChild(document.createTextNode('🔊 שמע'));
           actions.appendChild(audioLabel);
@@ -2103,6 +2114,9 @@
             apiGet(params).then(function(data) {
               if (data.status === 'ok') {
                 approveBtn.textContent = '✓ אושר';
+                // Choice is now persisted in column J — drop the local override so
+                // a later re-registration (retake) doesn't inherit a stale tick.
+                delete audioOverrides[item.idNumber];
                 // The auto-disable of session audio after each approval was
                 // removed here. It existed to fake "audio for this one
                 // examinee" while the flag was session-global, but it silently
