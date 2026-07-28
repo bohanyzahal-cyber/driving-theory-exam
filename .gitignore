@@ -33,3 +33,10 @@ deployment/meeting-checklist.md
 # Tooling / build artifacts
 node_modules/
 .claude/
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+.env*
+!.env.example
