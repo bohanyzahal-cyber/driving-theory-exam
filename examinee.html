@@ -4849,6 +4849,14 @@
       probe(function(t) {
         if (!t || !baseTag || t === baseTag) return;   // unchanged / unknown
         if (examInProgress || examSubmitted) return;    // never disrupt an exam / pending submit
+        // Also never reload a REGISTERED examinee — waiting for approval, or
+        // approved and about to press start. The reload survived the exam but
+        // bounced these two states back through the restore path: registration
+        // form → "כבר רשום" → waiting, with a failed in-flight call showing as
+        // a communication error. Reported during the 2026-07-28 deploy.
+        // idNumber is empty on the code screen and after resetForNextExaminee,
+        // which are the genuinely idle moments a reload belongs in.
+        if (examineeData && examineeData.idNumber) return;
         location.reload();
       });
     }, 120000);  // check every 2 min
