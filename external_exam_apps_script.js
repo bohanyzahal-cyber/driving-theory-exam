@@ -34,7 +34,7 @@ function isTestSite(site) {
 }
 
 // Person-name normalizer for fuzzy matching: strip punctuation, collapse spaces,
-// lowercase, token-sort (so "ויטלי גיטלמן" and "גיטלמן ויטלי" hash the same).
+// lowercase, token-sort (so "ישראל ישראלי" and "ישראלי ישראל" hash the same).
 function normalizeNameKey(s) {
   if (!s) return '';
   var t = String(s).replace(/[׳״'".\-]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
@@ -4708,7 +4708,7 @@ function handleCommanderDashboard(p) {
     if (!t) return '';
     // Strip common punctuation and collapse internal whitespace
     t = t.replace(/[׳״'".\-]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
-    // Token-sort so "ויטלי גיטלמן" and "גיטלמן ויטלי" hash to the same key
+    // Token-sort so "ישראל ישראלי" and "ישראלי ישראל" hash to the same key
     var tokens = t.split(' ').filter(function(x) { return x; });
     tokens.sort();
     return tokens.join(' ');
