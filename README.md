@@ -17,6 +17,7 @@
 | [`docs/KNOWN_ISSUES.md`](docs/KNOWN_ISSUES.md) | מלכודות חוזרות ותקלות שכבר קרו, עם שורש הבעיה | כשמשהו מתנהג מוזר |
 | [`docs/TODO.md`](docs/TODO.md) | עבודה פתוחה, לפי סדר עדיפות | בתכנון הצעד הבא |
 | [`docs/REBUILD_BRIEF.md`](docs/REBUILD_BRIEF.md) | **לצוות שכותב את המערכת מחדש** — מה חייב לשרוד, מה לזרוק, מלכודות מיגרציה | לפני תכנון מערכת חדשה |
+| [`docs/ASSET_INVENTORY.md`](docs/ASSET_INVENTORY.md) | **מפת נכסים** — מה בגיט, מה רק במחשב, מה בענן, ורשימת תיוג למסירה | לפני העברת אחריות |
 | [`deployment/README.md`](deployment/README.md) | התקנת קיצורי דרך במחשבי כיתה | בפריסה לכיתה חדשה |
 
 ---
