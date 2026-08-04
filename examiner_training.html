@@ -176,8 +176,15 @@ a.demo-link{color:#fcd34d;text-decoration:underline;font-weight:600}
       <ul>
         <li>לחיצה על "🆕 פתח סשן חדש"</li>
         <li>בחירה: <strong>אתר</strong>, <strong>כיתה</strong>, <strong>דרגת רישיון</strong>, <strong>שפת ברירת מחדל</strong></li>
-        <li>קביעה: עם הקראה קולית או בלי</li>
+        <li><strong>אוכלוסייה</strong> — ברירת המחדל לנבחני הסשן. הנבחן יכול לשנות בעצמו אם הוא שייך לאחרת. מופיעה בדו"חות</li>
+        <li><strong>בוחן אחראי</strong> — מי הבוחן האחראי באתר היום. נדרש כדי להפיק דו"ח משותף לאתר</li>
+        <li>קביעה: הקראה קולית דלוקה או כבויה — <em>ברירת מחדל בלבד</em>, ניתן לשנות לכל נבחן בנפרד</li>
         <li>לחיצה "צור" → קוד 6 ספרות + QR מופיעים</li>
+      </ul>
+      <h3 style="margin-top:20px">שני בסיסים בסשן אחד</h3>
+      <ul>
+        <li>סמן <strong>"➕ הוסף אתר אורח"</strong> אם מגיעים נבחנים מבסיס נוסף</li>
+        <li>הנבחן בוחר את האתר שלו בעת ההרשמה, והדו"ח מפוצל לפי אתר</li>
       </ul>
     </div>
     <div class="mockup">
@@ -231,6 +238,9 @@ a.demo-link{color:#fcd34d;text-decoration:underline;font-weight:600}
   <div class="feature-row"><div class="icon">🚨</div><div class="text"><strong>פסילה אוטומטית.</strong> אם נבחן יוצא מהמסך / מחליף חלון / מקבל שיחה — המערכת תופסת ופוסלת אוטומטית. תקבל התראה.</div></div>
   <div class="feature-row"><div class="icon">⛔</div><div class="text"><strong>פסילה ידנית.</strong> אם ראית מישהו מעתיק/מתבונן בשני — לחיצה ⛔ פוסלת אותו מיד.</div></div>
   <div class="feature-row"><div class="icon">↩</div><div class="text"><strong>ביטול פסילה.</strong> אם הפסילה הייתה בטעות — לחיצה "↩ בטל" מחזירה את הנבחן <em>לאותה שאלה בדיוק</em> שבה היה.</div></div>
+  <div class="feature-row"><div class="icon">➕</div><div class="text"><strong>הוספת זמן באמצע מבחן.</strong> כפתור "➕ זמן" מוסיף דקות לנבחן שכבר בבחינה — לפינוי למרחב מוגן, תקלה טכנית או אירוע רפואי. <strong>חובה לרשום סיבה</strong> — היא נשמרת לביקורת. זה שונה מתוספת הזמן שנקבעת לפני האישור.</div></div>
+  <div class="feature-row"><div class="icon">✓</div><div class="text"><strong>"הנבחן סיים — מסנכרן תוצאה".</strong> באנר ירוק שאומר שהנבחן סיים והתוצאה בדרך. <strong>אל תורה על מבחן חוזר כשהוא מופיע</strong> — התוצאה בדרך, ומבחן חוזר מיותר עלול לדרוס תוצאה תקינה.</div></div>
+  <div class="feature-row"><div class="icon">🖥+</div><div class="text"><strong>מסך נוסף.</strong> תג חום מסמן נבחן שזוהה אצלו מסך חיצוני מחובר — סימן אזהרה, בדוק פיזית.</div></div>
   <div class="feature-row"><div class="icon">🔒</div><div class="text"><strong>בוחן רוצה לצאת רגע?</strong> אפשר לנעול מסך — הנתונים נשמרים בענן. החזרה — ממשיך בדיוק מהמקום.</div></div>
 </section>
 
@@ -258,8 +268,13 @@ a.demo-link{color:#fcd34d;text-decoration:underline;font-weight:600}
   <div class="cards">
     <div class="card"><div class="ic">📄</div><h3>PDF</h3><p>תעודת משוב להדפסה/שמירה</p></div>
     <div class="card"><div class="ic">📤</div><h3>שתף תוצאה</h3><p>פותח דיאלוג: WhatsApp / SMS / קישור</p></div>
-    <div class="card"><div class="ic">✎</div><h3>ערוך טלפון</h3><p>אם הנבחן טעה במספר</p></div>
+    <div class="card"><div class="ic">✎</div><h3>תיקון פרטי נבחן</h3><p>לא רק טלפון — <strong>ת.ז., טלפון, אתר ואוכלוסייה</strong>. לתיקון טעות הקלדה של הנבחן</p></div>
     <div class="card"><div class="ic">⛔ ↩ ✔</div><h3>פסילה / ביטול / אישור פסילה</h3><p>ניהול פסילות</p></div>
+  </div>
+  <h3 style="margin-top:18px">תגים בשורת התוצאה</h3>
+  <div class="cards">
+    <div class="card"><div class="ic">🛡</div><h3>לא מאומת</h3><p>התוצאה לא עברה את אימות השרת המלא — <strong>בדוק אותה, אל תתייחס אליה כמו לעבירה רגילה</strong></p></div>
+    <div class="card"><div class="ic">⚠</div><h3>חשוד</h3><p>המבחן נמשך פחות מ-3 דקות. מהיר מדי מכדי להיות אמיתי — בדוק</p></div>
   </div>
 </section>
 
@@ -283,8 +298,13 @@ a.demo-link{color:#fcd34d;text-decoration:underline;font-weight:600}
       <div class="ic">📨</div><h3>סיכום למנהל</h3>
       <p>הודעת WhatsApp קצרה עם המספרים העיקריים.</p>
     </div>
+    <div class="card">
+      <div class="ic">🏛</div><h3>דו"ח משותף לאתר</h3>
+      <p>כשכמה בוחנים עבדו באותו אתר באותו יום — דו"ח אחד מאוחד לכולם, מפוצל לפי בוחן ולפי דרגה. זמין ל<strong>בוחן האחראי</strong> ולמפקדים.</p>
+    </div>
   </div>
   <p style="margin-top:20px;color:#cbd5e1">💡 הדוחות נוצרים אוטומטית מהמבחנים שהיום — אין מה להזין ידנית.</p>
+  <p style="margin-top:8px;color:#fca5a5">⚠️ <strong>לא ניתן לסגור סשן לפני שיתוף דו"ח הבוחן</strong> — אם היו תוצאות. סשן ריק אפשר לסגור.</p>
 </section>
 
 <!-- ============ SLIDE 10: SCENARIO 1 ============ -->

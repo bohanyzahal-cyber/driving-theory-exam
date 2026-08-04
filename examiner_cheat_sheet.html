@@ -92,10 +92,12 @@ body{font-family:'Segoe UI','Heebo',Tahoma,sans-serif;background:#f1f5f9;color:#
           <ol>
             <li>לחץ "🆕 פתח בחינה" (היה "פתח סשן")</li>
             <li>בחר אתר, כיתה, דרגה, שפה, הקראה</li>
-            <li>מלא <strong>טבלת כמויות לפי דרגה</strong> (חדש!) — דרגה / מבוקשת / מאושרת.<br>כפתור <strong>"+ הוסף שורה"</strong> אם יש כמה דרגות באותו סשן</li>
+            <li>בחר <strong>אוכלוסייה (ברירת מחדל)</strong> ו<strong>בוחן אחראי</strong></li>
+            <li>מגיעים משני בסיסים? סמן <strong>"➕ הוסף אתר אורח"</strong></li>
             <li>הצג קוד 8 תווים / QR לנבחנים</li>
           </ol>
-          <p style="font-size:11px;margin-top:5px;color:#64748b">💡 הכמויות עוברות אוטומטית לטבלת "סידור עבודה" בדו"ח בוחן — לא צריך למלא ביד</p>
+          <p style="font-size:11px;margin-top:5px;color:#64748b">💡 טבלת הכמויות בוטלה — הדרגות נגזרות אוטומטית לטבלת "סידור עבודה" בדו"ח הבוחן</p>
+          <p style="font-size:11px;margin-top:3px;color:#64748b">💡 בוחן אחראי נדרש כדי להפיק <strong>דו"ח משותף לאתר</strong> בסוף היום</p>
         </div>
       </div>
     </div>
@@ -179,6 +181,9 @@ body{font-family:'Segoe UI','Heebo',Tahoma,sans-serif;background:#f1f5f9;color:#
             <li>פסילות אוטומטיות (כרטיסיה <strong>אדומה בולטת</strong>)</li>
             <li>ספירת אירועי פסילה לכל נבחן (גם כאלה שבוטלו אוטומטית בגרייס)</li>
             <li>🔔 צליל התראה על כל אירוע פסילה חדש</li>
+            <li>🖥+ תג <strong>"מסך נוסף"</strong> — זוהה מסך חיצוני. בדוק פיזית</li>
+            <li>✓ באנר ירוק <strong>"הנבחן סיים — מסנכרן תוצאה"</strong> → <strong style="color:#dc2626">אל תורה על מבחן חוזר!</strong> התוצאה בדרך</li>
+            <li>➕ כפתור <strong>"זמן"</strong> — מוסיף דקות לנבחן שכבר בבחינה (פינוי / תקלה / רפואי). <strong>חובה לרשום סיבה</strong></li>
           </ul>
         </div>
         <div class="box">
@@ -200,7 +205,11 @@ body{font-family:'Segoe UI','Heebo',Tahoma,sans-serif;background:#f1f5f9;color:#
         <div class="grid-3">
           <div><span class="btn btn-pdf">📄 PDF</span><p style="font-size:11px;margin-top:3px">תעודת משוב להדפסה</p></div>
           <div><span class="btn btn-share">📤 שתף</span><p style="font-size:11px;margin-top:3px">העלאת תעודה + קישור ל-WhatsApp/SMS</p></div>
-          <div><span class="btn btn-edit">✎ טלפון</span><p style="font-size:11px;margin-top:3px">תיקון מספר אם טעה</p></div>
+          <div><span class="btn btn-edit">✎ פרטים</span><p style="font-size:11px;margin-top:3px">תיקון <strong>ת.ז. / טלפון / אתר / אוכלוסייה</strong></p></div>
+          <div style="margin-top:6px"><strong style="font-size:12px">תגי אזהרה בשורה:</strong>
+            <p style="font-size:11px;margin-top:3px">🛡 <strong>לא מאומת</strong> — לא עבר אימות שרת מלא, בדוק לפני שמסתמכים</p>
+            <p style="font-size:11px;margin-top:2px">⚠ <strong>חשוד</strong> — המבחן נמשך פחות מ-3 דקות</p>
+          </div>
         </div>
       </div>
     </div>
@@ -259,6 +268,10 @@ body{font-family:'Segoe UI','Heebo',Tahoma,sans-serif;background:#f1f5f9;color:#
         <div class="box">
           <h3>📊 דו"ח מנהל אתר</h3>
           <p style="font-size:11px">סטטיסטיקות + מפת חום נושאים. גם זה משותף בקליק (📤 שתף דו"ח למנהל).</p>
+        </div>
+        <div class="box">
+          <h3>🏛 דו"ח משותף לאתר</h3>
+          <p style="font-size:11px">כמה בוחנים באותו אתר באותו יום → דו"ח אחד מאוחד, מפוצל לפי בוחן ולפי דרגה.<br>זמין ל<strong>בוחן האחראי</strong> ולמפקדים בלבד.</p>
         </div>
       </div>
 
