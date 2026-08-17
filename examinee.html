@@ -2645,6 +2645,21 @@
   // Tighter than that = jitter (Windows DPI rounding, browser internals).
   var ZOOM_DETECT_TOLERANCE = 0.05;
 
+  // Desktop window size in SCREEN-pixel units (same units as screen.availWidth).
+  // window.innerWidth is CSS pixels and SHRINKS under browser zoom — on classroom
+  // machines with a pre-set zoom (≥ ~112%) the 800ms split-screen check compared
+  // zoomed innerWidth against the un-zoomed screen baseline and instantly DQ'd
+  // every exam on that machine; overturning didn't help because resume re-ran the
+  // same check (incident 2026-08-02, worked around live with Ctrl+0).
+  // window.outerWidth is NOT affected by page zoom, and a genuinely snapped/split
+  // window still has a small outerWidth — so the cheat detection is preserved.
+  // detectZoomChange() can't cover this case: its DPR baseline is captured at
+  // exam start, when the pre-set zoom is already baked in.
+  // Mobile keeps innerWidth — its baseline is the viewport itself, and pinch zoom
+  // is handled separately via visualViewport.
+  function splitMeasuredW() { return isMobileDevice() ? window.innerWidth : (window.outerWidth || window.innerWidth); }
+  function splitMeasuredH() { return isMobileDevice() ? window.innerHeight : (window.outerHeight || window.innerHeight); }
+
   var splitScreenBound = false;
   function setupSplitScreenDetection() {
     if (isMobileDevice()) {
@@ -2658,8 +2673,8 @@
     } else {
       // Desktop: baseline = physical screen size. Prevents "register with small window" cheat.
       // Window MUST occupy >= 90% of the screen at all times.
-      splitScreenInitW = screen.availWidth || screen.width || window.innerWidth;
-      splitScreenInitH = screen.availHeight || screen.height || window.innerHeight;
+      splitScreenInitW = screen.availWidth || screen.width || splitMeasuredW();
+      splitScreenInitH = screen.availHeight || screen.height || splitMeasuredH();
     }
     // Capture initial zoom state — anything that deviates from this later
     // means the user actively zoomed (not a real window resize).
@@ -2723,8 +2738,10 @@
   // zoom-in is accepted, so subsequent split-screen detection runs against
   // the new "natural" viewport instead of the pre-zoom one.
   function rebaselineViewport() {
-    splitScreenInitW = window.innerWidth;
-    splitScreenInitH = window.innerHeight;
+    // Keep baseline units consistent with the measurement: screen px on desktop
+    // (outerWidth), viewport px on mobile — see splitMeasuredW.
+    splitScreenInitW = splitMeasuredW();
+    splitScreenInitH = splitMeasuredH();
     splitScreenInitDPR = window.devicePixelRatio || 1;
     splitScreenInitVVScale = (window.visualViewport && window.visualViewport.scale) || 1;
   }
@@ -2766,8 +2783,8 @@
     // fullscreen prompt so the split CANNOT persist: the examinee must enter
     // fullscreen (which covers the other window) or be disqualified after 15s.
     if (!isMobileDevice() && !isFullscreenActive()) {
-      var fsScreenW = screen.availWidth || screen.width || window.innerWidth;
-      if (fsScreenW > 0 && (window.innerWidth / fsScreenW) < SPLIT_RESIZE_RATIO) {
+      var fsScreenW = screen.availWidth || screen.width || splitMeasuredW();
+      if (fsScreenW > 0 && (splitMeasuredW() / fsScreenW) < SPLIT_RESIZE_RATIO) {
         showFullscreenResumePrompt();
       }
       return;
@@ -2777,8 +2794,8 @@
     var zoom = detectZoomChange();
     if (zoom === 'zoom-in') { rebaselineViewport(); return; }
     if (zoom === 'zoom-out') { dqForZoomOut(); return; }
-    var curW = window.innerWidth;
-    var curH = window.innerHeight;
+    var curW = splitMeasuredW();
+    var curH = splitMeasuredH();
     var wRatio = curW / splitScreenInitW;
     var hRatio = curH / splitScreenInitH;
     if (wRatio < SPLIT_RESIZE_RATIO || hRatio < SPLIT_RESIZE_RATIO) {
@@ -2921,8 +2938,8 @@
       // if the window is clearly small/split (not merely mid-transition) force the
       // fullscreen prompt so a side-by-side split can't persist (pre-split cheat).
       if (!isMobileDevice() && !isFullscreenActive()) {
-        var fsScreenW2 = screen.availWidth || screen.width || window.innerWidth;
-        if (fsScreenW2 > 0 && (window.innerWidth / fsScreenW2) < SPLIT_RESIZE_RATIO) {
+        var fsScreenW2 = screen.availWidth || screen.width || splitMeasuredW();
+        if (fsScreenW2 > 0 && (splitMeasuredW() / fsScreenW2) < SPLIT_RESIZE_RATIO) {
           showFullscreenResumePrompt();
         }
         return;
@@ -2939,8 +2956,8 @@
       if (zoom === 'zoom-in') { rebaselineViewport(); return; }
       if (zoom === 'zoom-out') { dqForZoomOut(); return; }
 
-      var curW = window.innerWidth;
-      var curH = window.innerHeight;
+      var curW = splitMeasuredW();
+      var curH = splitMeasuredH();
       var wRatio = curW / splitScreenInitW;
       var hRatio = curH / splitScreenInitH;
 
