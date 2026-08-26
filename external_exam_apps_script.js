@@ -3761,6 +3761,25 @@ function warmupQuestionCaches() {
     summary.push('translation-index: ERROR - ' + (eTx && eTx.message ? eTx.message : eTx));
   }
 
+  // Rebuild every per-license pool off the freshly-warmed banks (force — a
+  // pool cached before a bank refresh must not survive it). One summary line
+  // per language = the monitoring view: any ERROR or count of 0 here means
+  // exam-starts will pay the rebuild themselves and [POOL] MISS lines will
+  // show up in the executions log.
+  var poolLicenses = Object.keys(EXAM_STRUCTURE_SERVER);
+  for (var wl = 0; wl < LANGS.length; wl++) {
+    var lineParts = [];
+    for (var wc = 0; wc < poolLicenses.length; wc++) {
+      try {
+        var wp = loadLicensePoolServer(LANGS[wl], poolLicenses[wc], true);
+        lineParts.push(poolLicenses[wc] + '=' + wp.length + (wp.length === 0 ? '⚠️' : ''));
+      } catch (ePool) {
+        lineParts.push(poolLicenses[wc] + '=ERROR(' + (ePool && ePool.message ? ePool.message : ePool) + ')');
+      }
+    }
+    summary.push('pools ' + LANGS[wl] + ': ' + lineParts.join(' '));
+  }
+
   Logger.log('warmupQuestionCaches complete:\n' + summary.join('\n'));
   return summary;
 }
@@ -3794,6 +3813,9 @@ function emergencyClearAndRefreshCache() {
       report.push(lang + ': no cache to clear');
     }
   });
+  // Pools are DERIVED from the banks — clearing the banks without clearing the
+  // pools would keep serving stale questions for up to 6h. Always drop both.
+  report.push('pools: removed ' + clearAllLicensePools(cache, langs) + ' keys');
   report.push('');
   report.push('=== Step 2: refreshing from Drive ===');
   langs.forEach(function(lang) {
@@ -3806,6 +3828,21 @@ function emergencyClearAndRefreshCache() {
     } catch (e) {
       report.push(lang + ': ERROR - ' + (e && e.message ? e.message : e));
     }
+  });
+  report.push('');
+  report.push('=== Step 3: rebuilding per-license pools ===');
+  var eLicenses = Object.keys(EXAM_STRUCTURE_SERVER);
+  langs.forEach(function(lang) {
+    var parts = [];
+    for (var c = 0; c < eLicenses.length; c++) {
+      try {
+        var p = loadLicensePoolServer(lang, eLicenses[c], true);
+        parts.push(eLicenses[c] + '=' + p.length + (p.length === 0 ? '⚠️' : ''));
+      } catch (e2) {
+        parts.push(eLicenses[c] + '=ERROR(' + (e2 && e2.message ? e2.message : e2) + ')');
+      }
+    }
+    report.push('pools ' + lang + ': ' + parts.join(' '));
   });
   var out = report.join('\n');
   Logger.log(out);
@@ -3988,6 +4025,122 @@ function loadQuestionsForLanguageServer(lang) {
   }
 }
 
+// ========== Per-license question pools (perf) ==========
+// Exam-start used to reassemble + JSON.parse the FULL language bank (~3MB, 35
+// cache chunks) on EVERY request, just to filter it down to one license and
+// pick 30 questions — ~10-12s of slot time per exam start (measured live,
+// 2026-08-26). A classroom start-wave × 10s each, on top of the 5s polling,
+// saturated the ~30 concurrent execution slots: queuing on normal days
+// (clients time out → "שגיאת תקשורת"), hard 0-sec rejections on bad ones
+// (see the 2026-08-24 failures cluster).
+//
+// This layer stores the license-filtered, deduped, validity-checked pool as
+// its own (much smaller) chunked cache entry per (lang, license), built by
+// the warmup trigger. Exam-start then loads ~a third of the bytes and skips
+// filter+dedupe entirely.
+//
+// DESIGN RULE — single path, loud self-heal, no silent fallback:
+// there are NOT two ways to serve an exam. Every exam start goes through
+// this function. When the pool is absent (CacheService evicts at will —
+// that is the platform's contract, not a failure), the SAME code path
+// rebuilds it immediately, stores it back, and logs a loud [POOL] line —
+// so a miss is visible in the executions log, happens once per expiry
+// rather than repeatedly, and can never silently rot into "the old way".
+//
+// Order matters inside the build: filter by license BEFORE dedupe — the
+// source data repeats the same question id for multiple license types
+// (e.g. id 1276 as B and as C1); dedupe-first could keep the wrong row and
+// then lose the question to the license filter. (Moved verbatim from
+// handleGetExamQuestions — this is now the ONLY copy of that logic.)
+function loadLicensePoolServer(lang, license, forceRebuild) {
+  var safeLang = String(lang || 'he').toLowerCase();
+  if (!/^[a-z]{2}$/.test(safeLang)) throw new Error('Invalid language code');
+  var lic = String(license || '').trim();
+  if (!/^[A-Z0-9]{1,2}$/.test(lic)) throw new Error('Invalid license for pool: ' + lic);
+
+  var cache = CacheService.getScriptCache();
+  var metaKey = 'qpool_' + safeLang + '_' + lic + '_meta';
+
+  if (!forceRebuild) {
+    var meta = cache.get(metaKey);
+    if (meta) {
+      var numChunks = parseInt(meta, 10);
+      var keys = [];
+      for (var i = 0; i < numChunks; i++) keys.push('qpool_' + safeLang + '_' + lic + '_part_' + i);
+      var chunks = cache.getAll(keys);
+      var json = '';
+      var complete = true;
+      for (var k = 0; k < numChunks; k++) {
+        var c = chunks['qpool_' + safeLang + '_' + lic + '_part_' + k];
+        if (c === null || c === undefined) { complete = false; break; }  // partial → rebuild
+        json += c;
+      }
+      if (complete) {
+        try {
+          var cached = JSON.parse(json);
+          // Same poison guard as the bank cache: never trust an empty array.
+          if (Array.isArray(cached) && cached.length > 0) return cached;
+          Logger.log('[POOL] empty cached pool ' + safeLang + '/' + lic + ' — ignoring, rebuilding');
+        } catch (ePar) { /* corrupted → rebuild below */ }
+      }
+    }
+  }
+
+  // (Re)build — the same single path serves warmup, cache-miss and eviction.
+  var t0 = Date.now();
+  var allQuestions = loadQuestionsForLanguageServer(safeLang);  // stampede-locked + guarded
+  var filtered = filterByLicenseServer(allQuestions, lic);
+  var seen = {};
+  var pool = [];
+  for (var f = 0; f < filtered.length; f++) {
+    var q = filtered[f];
+    if (!q || !q.id || seen[q.id]) continue;
+    if (!Array.isArray(q.answers) || q.answers.length < 2) continue;
+    seen[q.id] = true;
+    pool.push(q);
+  }
+  Logger.log('[POOL] built ' + safeLang + '/' + lic + ': ' + pool.length + ' questions in ' +
+    (Date.now() - t0) + 'ms (' + (forceRebuild ? 'warmup rebuild' : 'MISS during live request') + ')');
+
+  if (pool.length > 0) {
+    var jsonStr = JSON.stringify(pool);
+    var CHUNK_SIZE = 90000;  // CacheService cap is 100KB/key
+    var totalChunks = Math.ceil(jsonStr.length / CHUNK_SIZE);
+    var putMap = {};
+    for (var pi = 0; pi < totalChunks; pi++) {
+      putMap['qpool_' + safeLang + '_' + lic + '_part_' + pi] = jsonStr.substr(pi * CHUNK_SIZE, CHUNK_SIZE);
+    }
+    putMap[metaKey] = String(totalChunks);
+    try { cache.putAll(putMap, 21600); }  // same 6h TTL as the bank
+    catch (ePut) { Logger.log('[POOL] cache write FAILED for ' + safeLang + '/' + lic + ': ' + (ePut && ePut.message ? ePut.message : ePut)); }
+  } else {
+    // Empty pool = a real content problem (bank/license mapping) — don't cache,
+    // let the handler surface its explicit "not enough questions" error.
+    Logger.log('[POOL] EMPTY pool for ' + safeLang + '/' + lic + ' — NOT caching; check the bank and license mapping');
+  }
+  return pool;
+}
+
+// Remove every cached pool chunk (all langs × all licenses). Used by the
+// emergency reset so a bank refresh can never serve stale pools.
+function clearAllLicensePools(cache, langs) {
+  var licenses = Object.keys(EXAM_STRUCTURE_SERVER);
+  var removed = 0;
+  for (var li = 0; li < langs.length; li++) {
+    for (var ci = 0; ci < licenses.length; ci++) {
+      var metaKey = 'qpool_' + langs[li] + '_' + licenses[ci] + '_meta';
+      var meta = cache.get(metaKey);
+      if (!meta) continue;
+      var n = parseInt(meta, 10) || 0;
+      var keys = [metaKey];
+      for (var i = 0; i < n; i++) keys.push('qpool_' + langs[li] + '_' + licenses[ci] + '_part_' + i);
+      cache.removeAll(keys);
+      removed += keys.length;
+    }
+  }
+  return removed;
+}
+
 // ========== Per-id translation index (perf) ==========
 // Exam-start used to load+parse ALL 7 full language banks (~25MB, ~43k questions)
 // on every request just to extract the translations of the 30 selected questions
@@ -4155,27 +4308,15 @@ function handleGetExamQuestions(p) {
     return jsonResponse({ status: 'error', message: 'Unknown license: ' + license });
   }
 
-  var allQuestions;
-  try { allQuestions = loadQuestionsForLanguageServer(lang); }
+  // Per-license pool: license-filtered + deduped, prebuilt by the warmup
+  // trigger and self-healing on miss (see loadLicensePoolServer — that is the
+  // only copy of the filter/dedupe logic now). Loads ~1/3 of the bytes the
+  // full bank did, which is what took exam-start from ~10s to ~2-3s.
+  var pool;
+  try { pool = loadLicensePoolServer(lang, license); }
   catch (e) {
-    Logger.log('loadQuestionsForLanguageServer(' + lang + ') failed: ' + (e && e.message));
+    Logger.log('loadLicensePoolServer(' + lang + ',' + license + ') failed: ' + (e && e.message));
     return jsonResponse({ status: 'error', message: 'שגיאה בטעינת שאלות. נסה שוב.' });
-  }
-
-  // Order matters: filter by license BEFORE dedupe. The source data has the
-  // same question id repeated for multiple license types (e.g. id 1276 appears
-  // once with licenseType=B and once with C1). If we dedupe first, we might
-  // keep the C1 row and then the license filter rejects it. Filter first so
-  // we only see rows that already match the license, then dedupe within that.
-  var filtered = filterByLicenseServer(allQuestions, license);
-  var seen = {};
-  var pool = [];
-  for (var i = 0; i < filtered.length; i++) {
-    var q = filtered[i];
-    if (!q || !q.id || seen[q.id]) continue;
-    if (!Array.isArray(q.answers) || q.answers.length < 2) continue;
-    seen[q.id] = true;
-    pool.push(q);
   }
 
   // Category-quiz mode (student.html practice by topic): return up to N

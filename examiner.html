@@ -1811,9 +1811,40 @@
     if (bcBtn) bcBtn.style.display = (examinerData && examinerData.role === 'מפקד') ? '' : 'none';
   }
 
+  // ===== Adaptive dashboard polling =====
+  // 2026-08-26 saturation: every open examiner dashboard hit the server each 5s
+  // all day. Base is 8s now; while the server answers slowly (queuing) or fails,
+  // the NEXT wait grows ×1.5 up to 20s so dashboards ease off instead of
+  // deepening the spiral; a fast healthy answer snaps back to 8s. Pacing only —
+  // pollDashboard itself, failedPolls and the offline banner are unchanged, and
+  // manual pollDashboard() calls (right after approve/reject etc.) still fire
+  // immediately without touching this chain. dashboardInterval now holds a
+  // setTimeout id; clearInterval() clears those too, so stopDashboardPolling
+  // keeps working unchanged.
+  var DASH_POLL_BASE_MS = 8000;
+  var DASH_POLL_MAX_MS = 20000;
+  var dashPollDelayMs = DASH_POLL_BASE_MS;
+  var dashPollGen = 0;  // stop/restart double-chain guard
+  function dashboardPollTick() {
+    var myGen = dashPollGen;
+    var t0 = Date.now();
+    var p = pollDashboard();
+    var reschedule = function() {
+      if (dashboardInterval === null || myGen !== dashPollGen) return;  // stopped/restarted meanwhile
+      var slow = (Date.now() - t0) > 6000;
+      dashPollDelayMs = (slow || failedPolls > 0)
+        ? Math.min(Math.round(dashPollDelayMs * 1.5), DASH_POLL_MAX_MS)
+        : DASH_POLL_BASE_MS;
+      dashboardInterval = setTimeout(dashboardPollTick, dashPollDelayMs);
+    };
+    if (p && typeof p.then === 'function') { p.then(reschedule, reschedule); } else { reschedule(); }
+  }
+
   function startDashboardPolling() {
     pollDashboard();
-    dashboardInterval = setInterval(pollDashboard, 5000);
+    dashPollGen++;
+    dashPollDelayMs = DASH_POLL_BASE_MS;
+    dashboardInterval = setTimeout(dashboardPollTick, dashPollDelayMs);
   }
 
   function stopDashboardPolling() {
@@ -1823,7 +1854,9 @@
 
   function pollDashboard() {
     console.log('[DASHBOARD] Polling session=' + sessionCode);
-    apiGet({ action: 'examinerDashboard', sessionCode: sessionCode }).then(function(data) {
+    // Returned so the adaptive scheduler (dashboardPollTick) can measure
+    // duration and pace the next poll. Handlers below are unchanged.
+    return apiGet({ action: 'examinerDashboard', sessionCode: sessionCode }).then(function(data) {
       failedPolls = 0;
       document.getElementById('offlineBanner').classList.remove('show');
       if (data.status === 'ok') {

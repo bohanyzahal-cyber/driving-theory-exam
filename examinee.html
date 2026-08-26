@@ -1530,7 +1530,9 @@
     var pollNum = approvalPollCount;
     var polledId = examineeData.idNumber; // capture at request time
     updateApprovalDebug('בדיקה #' + pollNum + ' | סשן: ' + sessionCode + ' | ת.ז.: ' + polledId);
-    apiGet({
+    // Returned so the adaptive scheduler (approvalPollTick) can measure duration
+    // and pace the next poll. All handlers below are unchanged.
+    return apiGet({
       action: 'checkApproval',
       sessionCode: sessionCode,
       idNumber: polledId
@@ -1674,15 +1676,51 @@
     document.title = '✅ אושרת! חזור למבחן';
   }
 
+  // ===== Adaptive approval polling =====
+  // 2026-08-26: dozens of waiting examinees polling every 5s were a large share
+  // of the request flood that saturated the server's ~30 execution slots on exam
+  // mornings (measured: ~5-7 req/s at 08:45, routine requests inflated to 7-9s).
+  // Base interval is 8s now, and when the server answers slowly (queuing) or the
+  // request fails, the NEXT wait grows ×1.5 up to 20s — waiting clients ease off
+  // a struggling server instead of deepening the spiral. A fast healthy answer
+  // snaps the pace back to 8s. This changes PACING ONLY: approvalFailCount, the
+  // error banners and every existing behavior of doCheckApproval are untouched.
+  // approvalInterval now holds a setTimeout id; clearInterval() clears those too,
+  // so every existing "clearInterval(approvalInterval); approvalInterval = null"
+  // stop-site keeps working unchanged.
+  var APPROVAL_POLL_BASE_MS = 8000;
+  var APPROVAL_POLL_MAX_MS = 20000;
+  var approvalPollDelayMs = APPROVAL_POLL_BASE_MS;
+  // Generation counter: a tick whose request was in flight while polling was
+  // stopped-and-restarted (reset → re-register) must NOT reschedule — that
+  // would run two chains side by side. Each start bumps the generation; a
+  // finalizer from an older generation is a no-op.
+  var approvalPollGen = 0;
+  function approvalPollTick() {
+    var myGen = approvalPollGen;
+    var t0 = Date.now();
+    var p = doCheckApproval();
+    var reschedule = function() {
+      if (approvalInterval === null || myGen !== approvalPollGen) return;  // stopped/restarted meanwhile
+      var slow = (Date.now() - t0) > 6000;
+      approvalPollDelayMs = (slow || approvalFailCount > 0)
+        ? Math.min(Math.round(approvalPollDelayMs * 1.5), APPROVAL_POLL_MAX_MS)
+        : APPROVAL_POLL_BASE_MS;
+      approvalInterval = setTimeout(approvalPollTick, approvalPollDelayMs);
+    };
+    if (p && typeof p.then === 'function') { p.then(reschedule, reschedule); } else { reschedule(); }
+  }
+
   function startApprovalPolling() {
     console.log('[APPROVAL] Starting polling for session=' + sessionCode + ' id=' + examineeData.idNumber);
     approvalFailCount = 0;
     approvalPollCount = 0;
+    approvalPollGen++;
     setupWaitingProtections(); // wake-lock + tab-title flash
-    // Immediate first check — don't wait 5 seconds
+    // Immediate first check — don't wait for the first tick
     doCheckApproval();
-    // Then poll every 5 seconds
-    approvalInterval = setInterval(doCheckApproval, 5000);
+    approvalPollDelayMs = APPROVAL_POLL_BASE_MS;
+    approvalInterval = setTimeout(approvalPollTick, approvalPollDelayMs);
   }
 
   // Translation files are no longer fetched from GitHub Pages — the server
@@ -2900,26 +2938,55 @@
   // status every 6s; if the examiner DQ'd (disqualified / dq_confirmed), stop the
   // exam and show the DQ screen (which also starts the overturn wait). No self-DQ
   // is sent — the server already DQ'd them.
+  // Adaptive like the approval poll (same 2026-08-26 saturation rationale):
+  // in-exam examinees are the MAJORITY of connected clients during an exam day,
+  // and each used to hit the server every 6s for the whole exam. Base is 10s
+  // (an examiner's mid-exam time extension or DQ still lands within ~10s),
+  // growing ×1.5 to 20s while the server is slow/failing, snapping back on a
+  // fast answer. Pacing only — the handler logic is byte-identical.
+  var EXAMSTATUS_POLL_BASE_MS = 10000;
+  var EXAMSTATUS_POLL_MAX_MS = 20000;
+  var examStatusDelayMs = EXAMSTATUS_POLL_BASE_MS;
   var examStatusInterval = null;
+  var examStatusGen = 0;  // same stop/restart double-chain guard as the approval poll
+  function examStatusPollTick() {
+    var myGen = examStatusGen;
+    if (examStatusInterval === null) return;  // stopped meanwhile
+    // Skipped tick (exam paused state) — keep the cadence alive like setInterval did.
+    if (!examInProgress || examSubmitted || tabSwitchDQConfirmed ||
+        !sessionCode || !examineeData || !examineeData.idNumber) {
+      examStatusInterval = setTimeout(examStatusPollTick, EXAMSTATUS_POLL_BASE_MS);
+      return;
+    }
+    var t0 = Date.now();
+    var failed = false;
+    apiGet({ action: 'getExamStatus', sessionCode: sessionCode, idNumber: examineeData.idNumber, examineeToken: examineeToken })
+      .then(function(data) {
+        if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
+        if (data && data.status === 'ok') {
+          if (typeof data.extraMinutes === 'number') applyExtraMinutes(data.extraMinutes);
+          if (data.examStatus === 'disqualified' || data.examStatus === 'dq_confirmed') {
+            tabSwitchDQConfirmed = true;
+            try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+            showDQScreen();
+          }
+        }
+      })
+      .catch(function() { failed = true; })
+      .then(function() {
+        if (examStatusInterval === null || myGen !== examStatusGen) return;
+        var slow = (Date.now() - t0) > 6000;
+        examStatusDelayMs = (slow || failed)
+          ? Math.min(Math.round(examStatusDelayMs * 1.5), EXAMSTATUS_POLL_MAX_MS)
+          : EXAMSTATUS_POLL_BASE_MS;
+        examStatusInterval = setTimeout(examStatusPollTick, examStatusDelayMs);
+      });
+  }
   function startExamStatusPoll() {
     if (examStatusInterval) return;
-    examStatusInterval = setInterval(function() {
-      if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
-      if (!sessionCode || !examineeData || !examineeData.idNumber) return;
-      apiGet({ action: 'getExamStatus', sessionCode: sessionCode, idNumber: examineeData.idNumber, examineeToken: examineeToken })
-        .then(function(data) {
-          if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
-          if (data && data.status === 'ok') {
-            if (typeof data.extraMinutes === 'number') applyExtraMinutes(data.extraMinutes);
-            if (data.examStatus === 'disqualified' || data.examStatus === 'dq_confirmed') {
-              tabSwitchDQConfirmed = true;
-              try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
-              showDQScreen();
-            }
-          }
-        })
-        .catch(function() {});
-    }, 6000);
+    examStatusGen++;
+    examStatusDelayMs = EXAMSTATUS_POLL_BASE_MS;
+    examStatusInterval = setTimeout(examStatusPollTick, examStatusDelayMs);
   }
   function stopExamStatusPoll() {
     if (examStatusInterval) { clearInterval(examStatusInterval); examStatusInterval = null; }
