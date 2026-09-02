@@ -763,6 +763,19 @@ function toProxyUrl(originalUrl){
     return IMAGE_PROXY_BASE.replace(/\/$/,'')+'/img'+u.pathname;
   }catch(e){return originalUrl;}
 }
+// Map a gov.il question image to OUR OWN same-origin copy (images/TQ_PIC_*.jpg,
+// committed to the Pages repo). This removes the runtime dependency on gov.il:
+// if the page loaded, the image loads — even if gov.il is down or under attack.
+// Returns null for anything not mirrored, so the proxy/gov.il fallback stays.
+function toLocalUrl(originalUrl){
+  try{
+    var u=new URL(originalUrl);
+    if(u.hostname!=='www.gov.il'&&u.hostname!=='gov.il')return null;
+    var base=u.pathname.split('/').pop();
+    if(!/^TQ_PIC_[A-Za-z0-9_]+\.jpg$/i.test(base))return null;
+    return 'images/'+base;
+  }catch(e){return null;}
+}
 function buildResilientImage(originalUrl,cssClass){
   var wrap=document.createElement('div');
   wrap.className='q-image-wrap';
@@ -778,8 +791,13 @@ function buildResilientImage(originalUrl,cssClass){
   img.alt='תמונה לשאלה';
   img.style.display='none';
   var attempt=0;
-  var sources=[toProxyUrl(originalUrl),originalUrl];
-  if(sources[0]===sources[1])sources=[sources[0]];
+  // Local copy first (same origin), then Cloudflare proxy, then direct gov.il.
+  var sources=[];
+  var localSrc=toLocalUrl(originalUrl);
+  if(localSrc)sources.push(localSrc);
+  sources.push(toProxyUrl(originalUrl));
+  sources.push(originalUrl);
+  sources=sources.filter(function(v,i){return v&&sources.indexOf(v)===i;});
   var maxRetriesPerSource=2;
   var retriesThisSource=0;
   function tryNext(){
