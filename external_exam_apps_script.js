@@ -4061,64 +4061,102 @@ function loadLicensePoolServer(lang, license, forceRebuild) {
   var cache = CacheService.getScriptCache();
   var metaKey = 'qpool_' + safeLang + '_' + lic + '_meta';
 
-  if (!forceRebuild) {
+  // Reassemble the cached pool chunks, or return null on miss / partial / empty.
+  // Factored out so the stampede-waiters below can re-check without duplicating.
+  function readPoolFromCache() {
     var meta = cache.get(metaKey);
-    if (meta) {
-      var numChunks = parseInt(meta, 10);
-      var keys = [];
-      for (var i = 0; i < numChunks; i++) keys.push('qpool_' + safeLang + '_' + lic + '_part_' + i);
-      var chunks = cache.getAll(keys);
-      var json = '';
-      var complete = true;
-      for (var k = 0; k < numChunks; k++) {
-        var c = chunks['qpool_' + safeLang + '_' + lic + '_part_' + k];
-        if (c === null || c === undefined) { complete = false; break; }  // partial → rebuild
-        json += c;
-      }
-      if (complete) {
-        try {
-          var cached = JSON.parse(json);
-          // Same poison guard as the bank cache: never trust an empty array.
-          if (Array.isArray(cached) && cached.length > 0) return cached;
-          Logger.log('[POOL] empty cached pool ' + safeLang + '/' + lic + ' — ignoring, rebuilding');
-        } catch (ePar) { /* corrupted → rebuild below */ }
-      }
+    if (!meta) return null;
+    var numChunks = parseInt(meta, 10);
+    var keys = [];
+    for (var i = 0; i < numChunks; i++) keys.push('qpool_' + safeLang + '_' + lic + '_part_' + i);
+    var chunks = cache.getAll(keys);
+    var json = '';
+    for (var k = 0; k < numChunks; k++) {
+      var c = chunks['qpool_' + safeLang + '_' + lic + '_part_' + k];
+      if (c === null || c === undefined) return null;  // partial → treat as miss
+      json += c;
     }
+    try {
+      var cached = JSON.parse(json);
+      // Same poison guard as the bank cache: never trust an empty array.
+      if (Array.isArray(cached) && cached.length > 0) return cached;
+      Logger.log('[POOL] empty cached pool ' + safeLang + '/' + lic + ' — ignoring, rebuilding');
+    } catch (ePar) { /* corrupted → rebuild */ }
+    return null;
   }
 
-  // (Re)build — the same single path serves warmup, cache-miss and eviction.
-  var t0 = Date.now();
-  var allQuestions = loadQuestionsForLanguageServer(safeLang);  // stampede-locked + guarded
-  var filtered = filterByLicenseServer(allQuestions, lic);
-  var seen = {};
-  var pool = [];
-  for (var f = 0; f < filtered.length; f++) {
-    var q = filtered[f];
-    if (!q || !q.id || seen[q.id]) continue;
-    if (!Array.isArray(q.answers) || q.answers.length < 2) continue;
-    seen[q.id] = true;
-    pool.push(q);
-  }
-  Logger.log('[POOL] built ' + safeLang + '/' + lic + ': ' + pool.length + ' questions in ' +
-    (Date.now() - t0) + 'ms (' + (forceRebuild ? 'warmup rebuild' : 'MISS during live request') + ')');
-
-  if (pool.length > 0) {
-    var jsonStr = JSON.stringify(pool);
-    var CHUNK_SIZE = 90000;  // CacheService cap is 100KB/key
-    var totalChunks = Math.ceil(jsonStr.length / CHUNK_SIZE);
-    var putMap = {};
-    for (var pi = 0; pi < totalChunks; pi++) {
-      putMap['qpool_' + safeLang + '_' + lic + '_part_' + pi] = jsonStr.substr(pi * CHUNK_SIZE, CHUNK_SIZE);
+  // (Re)build off the (bank-cached) questions and write the pool back to cache.
+  function buildAndCachePool() {
+    var t0 = Date.now();
+    var allQuestions = loadQuestionsForLanguageServer(safeLang);  // stampede-locked + guarded
+    var filtered = filterByLicenseServer(allQuestions, lic);
+    var seen = {};
+    var pool = [];
+    for (var f = 0; f < filtered.length; f++) {
+      var q = filtered[f];
+      if (!q || !q.id || seen[q.id]) continue;
+      if (!Array.isArray(q.answers) || q.answers.length < 2) continue;
+      seen[q.id] = true;
+      pool.push(q);
     }
-    putMap[metaKey] = String(totalChunks);
-    try { cache.putAll(putMap, 21600); }  // same 6h TTL as the bank
-    catch (ePut) { Logger.log('[POOL] cache write FAILED for ' + safeLang + '/' + lic + ': ' + (ePut && ePut.message ? ePut.message : ePut)); }
-  } else {
-    // Empty pool = a real content problem (bank/license mapping) — don't cache,
-    // let the handler surface its explicit "not enough questions" error.
-    Logger.log('[POOL] EMPTY pool for ' + safeLang + '/' + lic + ' — NOT caching; check the bank and license mapping');
+    Logger.log('[POOL] built ' + safeLang + '/' + lic + ': ' + pool.length + ' questions in ' +
+      (Date.now() - t0) + 'ms (' + (forceRebuild ? 'warmup rebuild' : 'MISS during live request') + ')');
+
+    if (pool.length > 0) {
+      var jsonStr = JSON.stringify(pool);
+      var CHUNK_SIZE = 90000;  // CacheService cap is 100KB/key
+      var totalChunks = Math.ceil(jsonStr.length / CHUNK_SIZE);
+      var putMap = {};
+      for (var pi = 0; pi < totalChunks; pi++) {
+        putMap['qpool_' + safeLang + '_' + lic + '_part_' + pi] = jsonStr.substr(pi * CHUNK_SIZE, CHUNK_SIZE);
+      }
+      putMap[metaKey] = String(totalChunks);
+      try { cache.putAll(putMap, 21600); }  // same 6h TTL as the bank
+      catch (ePut) { Logger.log('[POOL] cache write FAILED for ' + safeLang + '/' + lic + ': ' + (ePut && ePut.message ? ePut.message : ePut)); }
+    } else {
+      // Empty pool = a real content problem (bank/license mapping) — don't cache,
+      // let the handler surface its explicit "not enough questions" error.
+      Logger.log('[POOL] EMPTY pool for ' + safeLang + '/' + lic + ' — NOT caching; check the bank and license mapping');
+    }
+    return pool;
   }
-  return pool;
+
+  // Warmup (forceRebuild) runs single-threaded from the trigger — build directly.
+  if (forceRebuild) return buildAndCachePool();
+
+  // Live request: serve from cache when warm.
+  var hit = readPoolFromCache();
+  if (hit) return hit;
+
+  // ===== Pool-level stampede protection (fixes the 6-min exam-morning timeouts) =====
+  // A cold or evicted pool at the start of a class wave used to be rebuilt by
+  // EVERY concurrent exam-start at once — each re-parsing the full bank — which
+  // ran requests to the 6-minute execution ceiling and saturated the ~30 shared
+  // slots (worst on mornings with 3 sites testing in parallel: Be'er Sheva /
+  // Mishmar HaNegev / Bahad 1, 2026-08-31..09-02). Now ONE request rebuilds
+  // while the rest wait briefly and reuse the freshly-built pool. Mirrors the
+  // bank loader's lock in loadQuestionsForLanguageServer.
+  var lockKey = 'qpool_lock_' + safeLang + '_' + lic;
+  var haveLock = false;
+  if (!cache.get(lockKey)) {
+    cache.put(lockKey, '1', 60);   // hold the pool-builder lock up to 60s
+    haveLock = true;
+  }
+  if (!haveLock) {
+    // Someone else is building this pool — wait for it instead of stampeding.
+    for (var w = 0; w < 20; w++) {
+      Utilities.sleep(1000);
+      var warmed = readPoolFromCache();
+      if (warmed) return warmed;
+      if (!cache.get(lockKey)) break;  // builder finished/failed — build it ourselves
+    }
+    // Timed out or the builder vanished: fall through and build as a fallback.
+  }
+  try {
+    return buildAndCachePool();
+  } finally {
+    if (haveLock) cache.remove(lockKey);
+  }
 }
 
 // Remove every cached pool chunk (all langs × all licenses). Used by the
@@ -4268,6 +4306,44 @@ function buildExamTranslations(selected, includeCi) {
 // Pick 30 questions per the license blueprint, return them WITHOUT the
 // correct-answer index. Authenticated clients only — falls back to a
 // rate-limited guest path for the standalone exam.html flow.
+// ========== Practice block while an exam is running ==========
+// Class practice (student.html) and exams share ONE Apps Script account — the
+// same ~30 concurrent execution slots and the same question cache/pools. A
+// practice wave (the daily peak) can therefore saturate the server and freeze
+// the exam side: the documented ~13:00 outage was a practice peak, and single-
+// site exam mornings still stalled because a class was practicing in parallel.
+// This guard turns class practice OFF whenever at least one exam session is
+// open. Exam draws (auth 'examinee') and standalone exam.html are NEVER
+// affected. The answer is cached ~60s so practice calls don't re-scan the
+// sessions sheet (which would add the very load we're removing). It self-clears
+// within ~60s after the last session closes or expires.
+function isExamSessionActiveForPracticeBlock() {
+  try {
+    var cache = CacheService.getScriptCache();
+    var flag = cache.get('exam_active_block');
+    if (flag === 'Y') return true;
+    if (flag === 'N') return false;
+    // Cache miss (at most once per 60s) → scan the sessions sheet once. Same
+    // active-session rule the examiner dashboard uses: פעיל(10) true AND not
+    // past תקף עד(9).
+    var active = false;
+    var sess = getSheet('סשנים').getDataRange().getValues();
+    var nowT = new Date().getTime();
+    for (var s = 1; s < sess.length; s++) {
+      var isActive = sess[s][10] === true || String(sess[s][10]).toUpperCase() === 'TRUE';
+      if (!isActive) continue;
+      var validUntil = sess[s][9] ? new Date(sess[s][9]).getTime() : 0;
+      if (!validUntil || validUntil > nowT) { active = true; break; }
+    }
+    try { cache.put('exam_active_block', active ? 'Y' : 'N', 60); } catch (ePut) {}
+    return active;
+  } catch (e) {
+    // Fail OPEN: a transient sheet/cache error must never block ALL practice.
+    Logger.log('[PRACTICE-BLOCK] check failed, allowing practice: ' + (e && e.message ? e.message : e));
+    return false;
+  }
+}
+
 function handleGetExamQuestions(p) {
   // Determine auth context
   var auth = 'guest';
@@ -4294,6 +4370,15 @@ function handleGetExamQuestions(p) {
   } else if (p.standaloneIdNumber) {
     // Standalone exam.html — examinee enters their ID, no token; rate-limit hard
     auth = 'standalone';
+  }
+
+  // Physical practice block: class practice (student.html) is turned OFF while
+  // any exam session is open, so it can't share the ~30 slots with the exam
+  // wave. Only auth 'student' (classCode+studentId) is affected — exam draws
+  // and standalone are not. Cheap: a cached flag, no per-call sheet scan.
+  if (auth === 'student' && isExamSessionActiveForPracticeBlock()) {
+    return jsonResponse({ status: 'error', code: 'practice_blocked_exam_active',
+      message: 'התרגול סגור כעת מפני שמתקיים מבחן במערכת. נסו שוב מאוחר יותר.' });
   }
 
   // Rate limit (per auth + identifier)
@@ -4444,6 +4529,13 @@ function handleGetQuestionsByIds(p) {
     auth = 'student';
   } else if (p.standaloneIdNumber) {
     auth = 'standalone';
+  }
+
+  // Practice block (see isExamSessionActiveForPracticeBlock): flashcards /
+  // language-switch in class practice are off while an exam session is open.
+  if (auth === 'student' && isExamSessionActiveForPracticeBlock()) {
+    return jsonResponse({ status: 'error', code: 'practice_blocked_exam_active',
+      message: 'התרגול סגור כעת מפני שמתקיים מבחן במערכת. נסו שוב מאוחר יותר.' });
   }
 
   var rlErr = requireRateLimit('getQuestionsByIds_' + auth,
