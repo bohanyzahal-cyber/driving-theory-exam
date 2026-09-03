@@ -13,6 +13,8 @@ var SHEET_HEADERS = {
   'אתרים': ['שם אתר', 'מזהה', 'טלפון מנהל', 'כיתות'],
   'סשנים': ['קוד', 'בוחן ת.ז.', 'שם בוחן', 'אתר', 'כיתה', 'דרגה', 'שפה', 'מצב שמע', 'זמן יצירה', 'תקף עד', 'פעיל', 'כמויות JSON', 'מאושרים JSON', 'בוחן אחראי'],
   'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה', 'דרגה', 'שמע', 'הארכת זמן', 'התחלת מבחן', 'טוקן נבחן', 'ספירת DQ', 'מסך נוסף'],
+  // Rows moved out of ממתינים by archiveOldPendingRows (full 19-col width, nothing deleted).
+  'ממתינים_ארכיון': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה', 'דרגה', 'שמע', 'הארכת זמן', 'התחלת מבחן', 'טוקן נבחן', 'ספירת DQ', 'מסך נוסף', 'ספירת אזהרות', 'אזהרה אחרונה', 'אתר', 'סיים במכשיר'],
   'תוצאות': ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר', 'כיתה', 'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ', 'אוכלוסיה', 'תוקן?', 'שמע', 'מאומת', 'חשוד', 'dqEventId', 'תוקן ע"י', 'סיבת תיקון', 'תאריך תיקון', 'מסלול שפות', 'מכשיר'],
   'הארכות זמן': ['תאריך', 'קוד סשן', 'ת.ז.', 'שם', 'דקות', 'סיבה', 'בוחן'],
   'מורים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד'],
@@ -81,6 +83,141 @@ function getSheet(name) {
     }
   }
   return sheet;
+}
+
+function getSheetIfExists(name) {
+  return SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
+}
+
+// ========== Tail reads for append-only sheets (perf) ==========
+// ממתינים / תוצאות are append-only and every live-path handler filters by the
+// CURRENT sessionCode, whose rows always sit at the bottom. Reading the whole
+// sheet (4,000+ rows × 19-30 cols) on every poll was the steady-state slowness:
+// checkApproval (20-30/min per examinee) + examinerDashboard (every 5s per
+// examiner, 3 full reads each) alone kept most of the ~30 execution slots busy
+// with no cold cache and no stampede involved.
+// readTail reads only the last TAIL_ROWS data rows. Safety guard: if the OLDEST
+// row in the tail is younger than TAIL_MAX_AGE_HOURS, rows of a live session
+// could still exist above the tail → fall back to a full read (correct, slower).
+var TAIL_ROWS = 1000;
+var TAIL_MAX_AGE_HOURS = 48;
+
+// NOTE: distinct from the existing parseSheetDate() (~line 4900), which drops the
+// HH:MM part of todayStr() dates. The tail guard and the archive cutoff need the
+// time of day, so this one keeps it. Do not merge the two.
+function parseSheetDateTime(v) {
+  if (!v) return null;
+  if (v instanceof Date) return isNaN(v.getTime()) ? null : v;
+  var s = String(v).trim();
+  // todayStr() format DD/MM/YYYY HH:MM — V8's Date parser would read it as MM/DD.
+  var m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2}))?/);
+  if (m) return new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]), Number(m[4] || 0), Number(m[5] || 0));
+  var d = new Date(s);   // ISO (nowISO) and anything else Date understands
+  return isNaN(d.getTime()) ? null : d;
+}
+
+// Returns { rows, off }. rows[0] = header; rows[i] (i >= 1) is sheet row (i + 1 + off).
+// off === 0 on a full read, so the existing `getRange(i + 1, ...)` write pattern
+// stays valid as long as callers add `off`.
+function readTail(sheet, tsColIdx) {
+  var lastRow = sheet.getLastRow();
+  var lastCol = sheet.getLastColumn();
+  if (lastRow - 1 <= TAIL_ROWS || lastCol < 1) {
+    return { rows: sheet.getDataRange().getValues(), off: 0 };
+  }
+  var startRow = lastRow - TAIL_ROWS + 1;
+  var tail = sheet.getRange(startRow, 1, TAIL_ROWS, lastCol).getValues();
+  var oldest = parseSheetDateTime(tail[0][tsColIdx]);
+  if (!oldest || (Date.now() - oldest.getTime()) < TAIL_MAX_AGE_HOURS * 3600 * 1000) {
+    // Tail might not cover a live session (burst day / unparseable timestamp).
+    return { rows: sheet.getDataRange().getValues(), off: 0 };
+  }
+  var header = sheet.getRange(1, 1, 1, lastCol).getValues();
+  return { rows: header.concat(tail), off: startRow - 2 };
+}
+
+function readPendingTail() { return readTail(getSheet('ממתינים'), 4); }   // col E = זמן הרשמה
+function readResultsTail() { return readTail(getSheet('תוצאות'), 0); }    // col A = תאריך
+
+// ========== Nightly archive of ממתינים (perf) ==========
+// Every live-path reader of ממתינים filters by the current sessionCode; the only
+// history reader is the commander wait-time stat, which reads the archive too.
+// Rows older than PENDING_ARCHIVE_RETAIN_DAYS are therefore dead weight on the
+// hot path → moved (not deleted) to 'ממתינים_ארכיון'.
+// Run archiveOldPendingRows() once by hand, then installPendingArchiveTrigger()
+// for a daily 03:00 run (script time zone).
+var PENDING_ARCHIVE_SHEET = 'ממתינים_ארכיון';
+var PENDING_ARCHIVE_RETAIN_DAYS = 14;
+var PENDING_TERMINAL = { completed: 1, disqualified: 1, dq_confirmed: 1, cancelled: 1, rejected: 1 };
+
+function archiveOldPendingRows() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) { Logger.log('archive: another run holds the lock'); return; }
+  var t0 = Date.now();
+  var BUDGET_MS = 4.5 * 60 * 1000;   // stay under the 6-min ceiling; the rest moves next run
+  try {
+    var src = getSheet('ממתינים');
+    var rows = src.getDataRange().getValues();
+    if (rows.length <= 1) return;
+    var now = Date.now();
+    var cutoff = now - PENDING_ARCHIVE_RETAIN_DAYS * 86400000;
+    var quietSince = now - 3 * 3600000;
+    var rowNums = [];   // 1-based sheet rows to move, ascending
+    var vals = [];
+    for (var i = 1; i < rows.length; i++) {
+      var st = String(rows[i][5] || '').trim();
+      var reg = parseSheetDateTime(rows[i][4]);
+      // Safety: never run while an exam may be in progress (a non-terminal row
+      // registered in the last 3h) — concurrent handlers hold row indexes.
+      if (!PENDING_TERMINAL[st] && reg && reg.getTime() > quietSince) {
+        Logger.log('archive: exam activity detected — skipping this run');
+        return;
+      }
+      if (reg && reg.getTime() < cutoff) { rowNums.push(i + 1); vals.push(rows[i]); }
+    }
+    if (!rowNums.length) { Logger.log('archive: nothing to move'); return; }
+
+    var arch = getSheet(PENDING_ARCHIVE_SHEET);
+    var width = rows[0].length;
+    var CHUNK = 300;
+    var moved = 0;
+    // Chunks from the BOTTOM: copy → delete → next. Deleting bottom-up keeps the
+    // remaining (smaller) row numbers valid, and concurrent registrations append
+    // BELOW the snapshot so they are never touched.
+    for (var c = rowNums.length; c > 0; c -= CHUNK) {
+      var from = Math.max(0, c - CHUNK);
+      var chunkRows = rowNums.slice(from, c);
+      var chunkVals = vals.slice(from, c);
+      arch.getRange(arch.getLastRow() + 1, 1, chunkVals.length, width).setValues(chunkVals);
+      SpreadsheetApp.flush();
+      var k = chunkRows.length - 1;
+      while (k >= 0) {
+        var end = chunkRows[k], start = end;
+        while (k - 1 >= 0 && chunkRows[k - 1] === start - 1) { k--; start = chunkRows[k]; }
+        src.deleteRows(start, end - start + 1);
+        k--;
+      }
+      moved += chunkVals.length;
+      if (Date.now() - t0 > BUDGET_MS) {
+        Logger.log('archive: time budget hit — ' + moved + '/' + rowNums.length + ' moved, rest next run');
+        return;
+      }
+    }
+    Logger.log('archive: moved ' + moved + ' rows in ' + (Date.now() - t0) + 'ms');
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function installPendingArchiveTrigger() {
+  var trigs = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < trigs.length; i++) {
+    if (trigs[i].getHandlerFunction() === 'archiveOldPendingRows') ScriptApp.deleteTrigger(trigs[i]);
+  }
+  // 01:00 — deliberately BEFORE the nightly rebuildAtRiskCache (03:00 Asia/Jerusalem)
+  // so the two jobs never overlap and the forecast sees a settled sheet.
+  ScriptApp.newTrigger('archiveOldPendingRows').timeBased().atHour(1).everyDays(1).inTimezone('Asia/Jerusalem').create();
+  Logger.log('installed daily 01:00 Asia/Jerusalem trigger for archiveOldPendingRows');
 }
 
 function findRow(sheet, colIndex, value) {
@@ -271,8 +408,7 @@ function generateExamineeToken() {
 //   we accept the call but flag it so we can audit / tighten later.
 // - reason values (when invalid): 'not_found', 'missing', 'mismatch'.
 function verifyExamineeToken(sessionCode, idNumber, examineeToken) {
-  var sheet = getSheet('ממתינים');
-  var data = sheet.getDataRange().getValues();
+  var data = readPendingTail().rows;   // read-only: no row-index writes here
   for (var i = data.length - 1; i >= 1; i--) {
     if (String(data[i][0]) === String(sessionCode) && normalizeId(data[i][1]) === normalizeId(idNumber)) {
       // Per-examinee audio (column J) rides along on the row we already read, so
@@ -1664,8 +1800,7 @@ function handleCheckApproval(p) {
   var rlErr = requireRateLimit('checkApproval', String(p.sessionCode || '') + '_' + normalizeId(p.idNumber), 60, 60);
   if (rlErr) return rlErr;
   var BASE_EXAM_MINUTES = 40;
-  var sheet = getSheet('ממתינים');
-  var data = sheet.getDataRange().getValues();
+  var data = readPendingTail().rows;   // read-only: no row-index writes here
   for (var i = data.length - 1; i >= 1; i--) {
     if (String(data[i][0]).trim() === String(p.sessionCode).trim() && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
       var approval = String(data[i][5] || 'waiting').trim();
@@ -1799,8 +1934,11 @@ function handleExaminerDashboard(p) {
   var pendSheet = getSheet('ממתינים');
   var resSheet = getSheet('תוצאות');
 
-  var pendData = pendSheet.getDataRange().getValues();
-  var resData = resSheet.getDataRange().getValues();
+  // Tail reads (see readTail). pendOff shifts the one row-index write below;
+  // resSheet is only ever appended to in this handler, so it needs no offset.
+  var _pendT = readTail(pendSheet, 4);
+  var pendData = _pendT.rows, pendOff = _pendT.off;
+  var resData = readTail(resSheet, 0).rows;
   var pending = [];
   var active = [];
 
@@ -1892,7 +2030,7 @@ function handleExaminerDashboard(p) {
 
     if (hasUnmatchedResult || effectiveStale) {
       // Fix dangling status — mark as completed
-      pendSheet.getRange(ci + 1, 6).setValue('completed');
+      pendSheet.getRange(ci + 1 + pendOff, 6).setValue('completed');
       pendData[ci][5] = 'completed'; // update local copy
       // Keep pendTermBySessId in sync: this row was in_exam/approved (loop guard
       // above) → now a 'completed' terminal, so a fresh rescan would count it here.
@@ -1923,7 +2061,7 @@ function handleExaminerDashboard(p) {
         // Refresh resData after append, and rebuild the results index so later
         // iterations' counts include the row just appended (behavior-identical to
         // the old per-iteration rescan of the freshly re-read sheet).
-        resData = resSheet.getDataRange().getValues();
+        resData = readTail(resSheet, 0).rows;
         resBySessId = buildResBySessId(resData);
       }
     }
@@ -1995,7 +2133,7 @@ function handleExaminerDashboard(p) {
   for (var akA in activeById) active.push(activeById[akA]);
 
   // Re-read resData in case cleanup added new results
-  resData = resSheet.getDataRange().getValues();
+  resData = readTail(resSheet, 0).rows;
   // DEDUP results per examinee: the תוצאות sheet can end up with several
   // non-בוטל rows for one (session, id) when recovery paths (timeout-fail,
   // manual force-complete, disqualify) appended rows that weren't superseded.
@@ -2131,8 +2269,7 @@ function handleGetExamStatus(p) {
   if (!p.sessionCode || !p.idNumber) return jsonResponse({ status: 'error', message: 'חסר מזהה' });
   var rlErr = requireRateLimit('getExamStatus', String(p.sessionCode || '') + '_' + normalizeId(p.idNumber), 60, 60);
   if (rlErr) return rlErr;
-  var sheet = getSheet('ממתינים');
-  var data = sheet.getDataRange().getValues();
+  var data = readPendingTail().rows;   // read-only: no row-index writes here
   for (var i = data.length - 1; i >= 1; i--) {
     if (String(data[i][0]).trim() === String(p.sessionCode).trim() && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
       var storedToken = String((data[i].length > 12 ? data[i][12] : '') || '').trim();
@@ -5453,8 +5590,11 @@ function handleCommanderDashboard(p) {
   // own site (new rows) or the session's host site (fallback).
   var waitTimesOut = { overall: { avg: 0, median: 0, p90: 0, count: 0 }, bySite: {} };
   try {
-    var pendSheetW = getSheet('ממתינים');
-    var pendDataW = pendSheetW.getDataRange().getValues();
+    var pendDataW = getSheet('ממתינים').getDataRange().getValues();
+    // Include rows archiveOldPendingRows moved out of the live sheet, so a
+    // date-range wait-time report stays complete beyond the retention window.
+    var archW = getSheetIfExists(PENDING_ARCHIVE_SHEET);
+    if (archW && archW.getLastRow() > 1) pendDataW = pendDataW.concat(archW.getDataRange().getValues().slice(1));
     var sessSheetW = getSheet('סשנים');
     var sessDataW = sessSheetW.getDataRange().getValues();
     var sessSiteMapW = {};
