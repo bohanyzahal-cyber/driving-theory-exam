@@ -987,6 +987,9 @@
 
   // Reset everything so the next examinee can use the same device
   window.resetForNextExaminee = function() {
+    examStartGeneration++;
+    examLoadInFlight = false;
+    if (examStartRetryTimer !== null) { clearTimeout(examStartRetryTimer); examStartRetryTimer = null; }
     dqScreenActive = false;
     try { window.removeEventListener('beforeunload', dqBeforeUnload); } catch(e) {}
     window.removeEventListener('popstate', onBackButton);
@@ -1094,22 +1097,34 @@
     return true;
   }
 
-  // ===== Bounded fetch (risk #3) =====
-  // Plain fetch() has no timeout — on a "soft" failure (captive portal, half-open
-  // connection, a stuck server) it can hang for the browser default (up to ~2 min),
-  // freezing the two calls that matter most: loading the exam and submitting the
-  // result. Cap every API call so it fails fast and hands off to the existing
-  // retry / "try again" paths. 30s is generous enough that a slow-but-real Apps
-  // Script response (cold starts included) is never aborted — only true hangs are.
+  // Bound the complete response, including its body. Abort alone is not enough
+  // on older browsers, so the deadline also rejects the caller's promise.
   var API_TIMEOUT_MS = 30000;
-  function fetchWithTimeout(url, opts, timeoutMs) {
+  function fetchJsonWithTimeout(url, opts, timeoutMs) {
     opts = opts || {};
-    if (typeof AbortController === 'undefined') return fetch(url, opts); // very old browser
-    var ctrl = new AbortController();
-    opts.signal = ctrl.signal;
-    var timer = setTimeout(function() { try { ctrl.abort(); } catch(e) {} }, timeoutMs || API_TIMEOUT_MS);
-    function clear() { clearTimeout(timer); }
-    return fetch(url, opts).then(function(r) { clear(); return r; }, function(err) { clear(); throw err; });
+    return new Promise(function(resolve, reject) {
+      var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      if (controller) opts.signal = controller.signal;
+      var settled = false;
+      var timer = setTimeout(function() {
+        var err = new Error('Request timed out');
+        err.name = 'TimeoutError';
+        finish(err);
+        if (controller) { try { controller.abort(); } catch(e) {} }
+      }, timeoutMs || API_TIMEOUT_MS);
+      function finish(err, data) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (err) reject(err); else resolve(data);
+      }
+      Promise.resolve().then(function() { return fetch(url, opts); }).then(function(response) {
+        return response.text().then(function(body) {
+          if (!response.ok) throw new Error('HTTP ' + response.status);
+          return JSON.parse(body);
+        });
+      }).then(function(data) { finish(null, data); }, function(err) { finish(err); });
+    });
   }
 
   function apiGet(params, timeoutMs) {
@@ -1121,16 +1136,7 @@
       if (params.hasOwnProperty(k)) qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
     }
     qs.push('_t=' + Date.now());
-    return fetchWithTimeout(API_URL + '?' + qs.join('&'), { cache: 'no-store' }, timeoutMs).then(function(r) {
-      return r.text().then(function(txt) {
-        try {
-          return JSON.parse(txt);
-        } catch(e) {
-          console.log('[API] Failed to parse JSON. Response:', txt.substring(0, 300));
-          throw new Error('Invalid JSON response from server');
-        }
-      });
-    });
+    return fetchJsonWithTimeout(API_URL + '?' + qs.join('&'), { cache: 'no-store' }, timeoutMs);
   }
 
   function apiPost(data) {
@@ -1139,11 +1145,11 @@
     if (shouldAttachExamineeToken(payload.action) && !payload.examineeToken) {
       payload.examineeToken = examineeToken;
     }
-    return fetchWithTimeout(API_URL, {
+    return fetchJsonWithTimeout(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify(payload)
-    }).then(function(r) { return r.json(); });
+    });
   }
 
   // Fire-and-forget POST (no response needed)
@@ -1529,6 +1535,13 @@
     approvalPollCount++;
     var pollNum = approvalPollCount;
     var polledId = examineeData.idNumber; // capture at request time
+    var polledSession = sessionCode;
+    var polledToken = examineeToken;
+    var polledGen = approvalPollGen;
+    function isCurrent() {
+      return polledId === examineeData.idNumber && polledSession === sessionCode &&
+        polledToken === examineeToken && polledGen === approvalPollGen;
+    }
     updateApprovalDebug('בדיקה #' + pollNum + ' | סשן: ' + sessionCode + ' | ת.ז.: ' + polledId);
     // Returned so the adaptive scheduler (approvalPollTick) can measure duration
     // and pace the next poll. All handlers below are unchanged.
@@ -1538,17 +1551,16 @@
       idNumber: polledId
     }).then(function(data) {
       // Guard: discard stale response if examinee changed (race condition)
-      if (polledId !== examineeData.idNumber) {
+      if (!isCurrent()) {
         console.log('[APPROVAL] Discarding stale response for ' + polledId + ' (current: ' + examineeData.idNumber + ')');
         return;
       }
-      approvalFailCount = 0; // reset on success
       console.log('[APPROVAL] Poll #' + pollNum + ' Response:', JSON.stringify(data));
-      // Hide error banner on success
-      var errBanner = document.getElementById('approvalError');
-      if (errBanner) errBanner.style.display = 'none';
 
-      if (data.status === 'ok') {
+      if (data && data.status === 'ok') {
+        approvalFailCount = 0;
+        var errBanner = document.getElementById('approvalError');
+        if (errBanner) errBanner.style.display = 'none';
         updateApprovalDebug('בדיקה #' + pollNum + ' OK', 'תגובה: ' + data.approval);
         // Per-examinee audio, straight off this examinee's ממתינים row. Applied
         // on every poll, so an examiner who turns audio on while the examinee
@@ -1576,14 +1588,15 @@
         }
         // else still 'waiting' — continue polling
       } else {
-        console.log('[APPROVAL] Non-ok status:', data.message);
-        updateApprovalDebug('בדיקה #' + pollNum + ' שגיאה', 'תגובה: ' + (data.message || 'unknown'));
+        console.log('[APPROVAL] Non-ok status:', data && data.message);
+        updateApprovalDebug('בדיקה #' + pollNum + ' שגיאה', 'תגובה: ' + ((data && data.message) || 'unknown'));
         approvalFailCount++;
         if (approvalFailCount >= 3) {
-          showApprovalError('שגיאת שרת: ' + (data.message || 'לא ידוע'));
+          showApprovalError('שגיאת שרת: ' + ((data && data.message) || 'לא ידוע'));
         }
       }
     }).catch(function(err) {
+      if (!isCurrent()) return;
       approvalFailCount++;
       console.log('[APPROVAL] Error (fail #' + approvalFailCount + '):', err);
       updateApprovalDebug('בדיקה #' + pollNum + ' נכשלה', 'שגיאה: ' + String(err).substring(0, 80));
@@ -1716,11 +1729,12 @@
     approvalFailCount = 0;
     approvalPollCount = 0;
     approvalPollGen++;
+    if (approvalInterval !== null) clearTimeout(approvalInterval);
     setupWaitingProtections(); // wake-lock + tab-title flash
     // Immediate first check — don't wait for the first tick
-    doCheckApproval();
     approvalPollDelayMs = APPROVAL_POLL_BASE_MS;
-    approvalInterval = setTimeout(approvalPollTick, approvalPollDelayMs);
+    approvalInterval = -1;
+    approvalPollTick(); // wait for this response before scheduling another check
   }
 
   // Translation files are no longer fetched from GitHub Pages — the server
@@ -1818,12 +1832,72 @@
   document.getElementById('changeSelectionInstructions').addEventListener('click', cancelAndChangeSelection);
 
   // ========== Start Exam ==========
+  var examLoadInFlight = false;
+  var examStartGeneration = 0;
+  var examStartRetryTimer = null;
+
+  function examStartIsCurrent(attempt) {
+    return attempt.generation === examStartGeneration && attempt.idNumber === examineeData.idNumber &&
+      attempt.sessionCode === sessionCode && attempt.examineeToken === examineeToken;
+  }
+
+  function examRetryWaitSeconds(response) {
+    var seconds = Number(response && response.waitSec);
+    if (isFinite(seconds) && seconds > 0) return Math.ceil(seconds);
+    return response && (response.rateLimited || response.retryable || response.code === 'question_cache_busy') ? 3 : 0;
+  }
+
+  // Keep the approved registration and question set in place. The retry is
+  // explicit and honors the server's cooldown instead of flooding a busy API.
+  function showExamStartError(response, attempt, retry, registrationFailed) {
+    if (!examStartIsCurrent(attempt)) return;
+    if (examStartRetryTimer !== null) { clearTimeout(examStartRetryTimer); examStartRetryTimer = null; }
+    var area = document.getElementById('examArea');
+    if (!area) return;
+    var temporary = response && (response.rateLimited || response.retryable || response.code === 'question_cache_busy');
+    var insufficient = response && response.status === 'ok' && Array.isArray(response.questions) && response.questions.length < TOTAL_QUESTIONS;
+    var title = registrationFailed ? 'לא הצלחנו לרשום את המבחן בשרת.' :
+      (temporary ? 'השרת עמוס כרגע. אפשר לנסות שוב בעוד רגע.' :
+      (insufficient ? 'אין מספיק שאלות לשילוב שנבחר. פנה לבוחן.' : 'לא הצלחנו לטעון את המבחן.'));
+    var detail = (response && response.message) || 'בדוק את החיבור ונסה שוב. אם התקלה נמשכת, קרא לבוחן.';
+    area.innerHTML = '<div id="examStartError" class="info-banner warn" role="alert" tabindex="-1" style="font-size:15px;text-align:center;">' +
+      '<strong>' + escHtml(title) + '</strong><br>' + escHtml(detail) +
+      '<p>הפרטים שלך נשמרו כאן. אין צורך להירשם מחדש. המבחן והזמן שלו עדיין לא התחילו.</p>' +
+      '<p id="examStartRetryStatus" role="status" aria-live="polite"></p>' +
+      '<button id="retryExamStartBtn" type="button" style="padding:10px 22px;font-size:15px;font-weight:800;background:#1a73e8;color:#fff;border:none;border-radius:10px;cursor:pointer;">נסה שוב</button></div>';
+    var button = document.getElementById('retryExamStartBtn');
+    var status = document.getElementById('examStartRetryStatus');
+    var panel = document.getElementById('examStartError');
+    if (panel && panel.focus) panel.focus();
+    var retryAt = Date.now() + examRetryWaitSeconds(response) * 1000;
+    function updateWait() {
+      examStartRetryTimer = null;
+      if (!examStartIsCurrent(attempt) || !button) return;
+      var seconds = Math.max(0, Math.ceil((retryAt - Date.now()) / 1000));
+      button.disabled = seconds > 0;
+      if (status) status.textContent = seconds > 0 ? 'אפשר לנסות שוב בעוד ' + seconds + ' שניות.' : 'אפשר לנסות שוב עכשיו.';
+      if (seconds > 0) examStartRetryTimer = setTimeout(updateWait, 1000);
+    }
+    updateWait();
+    if (button) button.addEventListener('click', function() {
+      if (button.disabled || !examStartIsCurrent(attempt)) return;
+      button.disabled = true;
+      // A retry is a new user gesture, so fullscreen can be requested again.
+      if (!isMobileDevice()) { try { requestFullscreen(); } catch(e) {} }
+      retry();
+    });
+  }
+
   function doStartExam() {
     // Guard: ensure an examinee is registered
-    if (!examineeData.idNumber) {
+    if (!examineeData.idNumber || examLoadInFlight || examInProgress || examSubmitted) {
       console.log('[EXAM] doStartExam blocked — no registered examinee');
       return;
     }
+    if (examStartRetryTimer !== null) { clearTimeout(examStartRetryTimer); examStartRetryTimer = null; }
+    var attempt = { generation: ++examStartGeneration, idNumber: examineeData.idNumber,
+      sessionCode: sessionCode, examineeToken: examineeToken };
+    examLoadInFlight = true;
 
     // in_exam is marked two independent ways for resilience: (a) the server
     // flips approved→in_exam during registerExamQuestions and reports
@@ -1854,6 +1928,7 @@
       license: license,
       includeTranslations: 'true'  // pre-fetch all 7 languages so switches are instant
     }, 45000).then(function(resp) {
+      if (!examStartIsCurrent(attempt)) return;
       hideLoadingOverlay();
       // Last audio sync before the exam renders. Covers the gap the approval
       // poll can't: examiner sets audio AFTER approving, when polling has
@@ -1865,31 +1940,21 @@
       // Cache translations for instant mid-exam language switching
       if (resp && resp.translations) window._examTranslations = resp.translations;
       if (!resp || resp.status !== 'ok' || !Array.isArray(resp.questions) || resp.questions.length < TOTAL_QUESTIONS) {
-        var errMsg = (resp && resp.message) ? resp.message : 'שגיאה בטעינת שאלות';
-        var langName = LANG_LABELS[language] || language;
-        var licName = LICENSE_LABELS[license] || license;
-        if (examAreaEl) {
-          examAreaEl.innerHTML =
-            '<div class="info-banner warn" style="font-size:15px;">' +
-            '<strong>אין מספיק שאלות לשילוב שנבחר:</strong><br>' +
-            'דרגה: ' + escHtml(licName) + ' | שפה: ' + escHtml(langName) + '<br><br>' +
-            'פנה לבוחן — ייתכן שצריך לשנות שפה או דרגה.' +
-            '<pre style="font-size:11px;color:#64748b;margin:12px;white-space:pre-wrap;text-align:right;">' + escHtml(errMsg) + '</pre></div>';
-        }
+        examLoadInFlight = false;
+        showExamStartError(resp, attempt, doStartExam, false);
         return;
       }
-      _finishStartingExam(resp.questions, license, language);
+      _finishStartingExam(resp.questions, license, language, attempt);
     }).catch(function(err) {
+      if (!examStartIsCurrent(attempt)) return;
+      examLoadInFlight = false;
       hideLoadingOverlay();
-      if (examAreaEl) {
-        examAreaEl.innerHTML =
-          '<div class="info-banner warn" style="font-size:15px;">שגיאת תקשורת בטעינת השאלות. נסה שוב.</div>';
-      }
+      showExamStartError(null, attempt, doStartExam, false);
     });
   }
 
   // Second half of doStartExam — runs after we have the questions from server.
-  function _finishStartingExam(exam, license, language) {
+  function _finishStartingExam(exam, license, language, attempt) {
     activeQuestions = exam;
     // Warm the offline image cache now, while we're definitely online (questions
     // just arrived from the server). Non-blocking — the exam start proceeds.
@@ -1925,24 +1990,20 @@
     // We now BLOCK the start until the server confirms it stored the key, with a
     // retry button on failure. Examinee never enters an exam that isn't recorded.
     var doRegister = function() {
+      if (!examStartIsCurrent(attempt)) return;
+      examLoadInFlight = true;
       showLoadingOverlay('רושם את המבחן בשרת…');
       registerExamQuestionsConfirmed(regQuestions, language, 4, function _onRegistered() {
+        if (!examStartIsCurrent(attempt)) return;
+        examLoadInFlight = false;
         hideLoadingOverlay();
         _beginExam(license, language);
-      }, function _onRegisterFailed() {
+      }, function _onRegisterFailed(response) {
+        if (!examStartIsCurrent(attempt)) return;
+        examLoadInFlight = false;
         hideLoadingOverlay();
-        var ea = document.getElementById('examArea');
-        if (ea) {
-          ea.innerHTML =
-            '<div class="info-banner warn" style="font-size:15px;text-align:center;">' +
-            '<strong>⚠️ לא הצלחנו לרשום את המבחן בשרת.</strong><br>' +
-            'אל תתחיל — קרא לבוחן (ייתכן בעיית רשת/עומס).<br><br>' +
-            '<button id="retryRegisterBtn" style="padding:10px 22px;font-size:15px;font-weight:800;background:#1a73e8;color:#fff;border:none;border-radius:10px;cursor:pointer;">נסה שוב</button>' +
-            '</div>';
-          var rb = document.getElementById('retryRegisterBtn');
-          if (rb) rb.addEventListener('click', doRegister);
-        }
-      });
+        showExamStartError(response, attempt, doRegister, true);
+      }, attempt);
     };
     doRegister();
   }
@@ -1950,14 +2011,17 @@
   // Confirmed registerExamQuestions: uses apiPost (READS the server response,
   // unlike the old no-cors path) and retries with backoff until status:ok.
   // onOk fires only on a confirmed persisted write; onFail after retries run out.
-  function registerExamQuestionsConfirmed(regQuestions, language, retries, onOk, onFail) {
+  function registerExamQuestionsConfirmed(regQuestions, language, retries, onOk, onFail, attempt) {
+    if (!examStartIsCurrent(attempt)) return;
     apiPost({
       action: 'registerExamQuestions',
-      sessionCode: sessionCode,
-      idNumber: examineeData.idNumber,
+      sessionCode: attempt.sessionCode,
+      idNumber: attempt.idNumber,
+      examineeToken: attempt.examineeToken,
       language: language,
       questions: regQuestions
     }).then(function(resp) {
+      if (!examStartIsCurrent(attempt)) return;
       if (resp && resp.status === 'ok') {
         // Register also marks in_exam server-side. Trust its examStarted flag;
         // if false (stale server, or the marking didn't land), leave
@@ -1966,10 +2030,12 @@
         examStartConfirmed = (resp.examStarted === true);
         onOk();
       }
-      else if (retries > 1) { setTimeout(function() { registerExamQuestionsConfirmed(regQuestions, language, retries - 1, onOk, onFail); }, 1500); }
+      else if (resp && (resp.rateLimited || resp.retryable || resp.code === 'question_cache_busy')) { onFail(resp); }
+      else if (retries > 1) { setTimeout(function() { registerExamQuestionsConfirmed(regQuestions, language, retries - 1, onOk, onFail, attempt); }, 1500); }
       else { onFail(resp); }
     }).catch(function(err) {
-      if (retries > 1) { setTimeout(function() { registerExamQuestionsConfirmed(regQuestions, language, retries - 1, onOk, onFail); }, 1500); }
+      if (!examStartIsCurrent(attempt)) return;
+      if (retries > 1) { setTimeout(function() { registerExamQuestionsConfirmed(regQuestions, language, retries - 1, onOk, onFail, attempt); }, 1500); }
       else { onFail(err); }
     });
   }
@@ -2354,30 +2420,60 @@
 
   // ========== DQ Overturn polling — checks if examiner reversed the DQ ==========
   var dqOverturnInterval = null;
+  var dqOverturnGen = 0;
+  var DQ_POLL_BASE_MS = 3000;
+  var DQ_POLL_MAX_MS = 20000;
+  var dqOverturnDelayMs = DQ_POLL_BASE_MS;
 
-  function startDQOverturnPolling() {
-    if (dqOverturnInterval) { clearInterval(dqOverturnInterval); dqOverturnInterval = null; }
-    dqOverturnInterval = setInterval(function() {
-      if (!sessionCode || !examineeData.idNumber) return;
-      apiGet({
+  function dqOverturnPollTick() {
+    if (dqOverturnInterval === null) return;
+    var generation = dqOverturnGen;
+    var requestedSession = sessionCode;
+    var requestedId = examineeData.idNumber;
+    var requestedToken = examineeToken;
+    if (!requestedSession || !requestedId) { stopDQOverturnPolling(); return; }
+    var started = Date.now();
+    var failed = false;
+    var serverWaitMs = 0;
+    function isCurrent() {
+      return dqOverturnInterval !== null && generation === dqOverturnGen &&
+        requestedSession === sessionCode && requestedId === examineeData.idNumber && requestedToken === examineeToken;
+    }
+    apiGet({
         action: 'checkApproval',
-        sessionCode: sessionCode,
-        idNumber: examineeData.idNumber
+        sessionCode: requestedSession,
+        idNumber: requestedId,
+        examineeToken: requestedToken
       }).then(function(data) {
-        if (data.status === 'ok' && data.approval === 'in_exam') {
+        if (!isCurrent()) return;
+        if (!data || data.status !== 'ok') {
+          failed = true;
+          serverWaitMs = examRetryWaitSeconds(data) * 1000;
+        } else if (data.approval === 'in_exam') {
           // Examiner overturned DQ — try to resume exam
-          clearInterval(dqOverturnInterval); dqOverturnInterval = null;
+          stopDQOverturnPolling();
           restoreExamFromSuspended();
-        } else if (data.status === 'ok' && data.approval === 'dq_confirmed') {
+        } else if (data.approval === 'dq_confirmed') {
           // Examiner confirmed DQ — show final screen
-          clearInterval(dqOverturnInterval); dqOverturnInterval = null;
+          stopDQOverturnPolling();
           showFinalDQScreen();
         }
-      }).catch(function() {});
-    }, 3000);
+      }).catch(function() { failed = true; }).then(function() {
+        if (!isCurrent()) return;
+        dqOverturnDelayMs = failed || Date.now() - started > 6000
+          ? Math.min(Math.round(dqOverturnDelayMs * 1.5), DQ_POLL_MAX_MS) : DQ_POLL_BASE_MS;
+        dqOverturnInterval = setTimeout(dqOverturnPollTick, Math.max(dqOverturnDelayMs, serverWaitMs));
+      });
+  }
+
+  function startDQOverturnPolling() {
+    stopDQOverturnPolling();
+    dqOverturnDelayMs = DQ_POLL_BASE_MS;
+    dqOverturnInterval = setTimeout(dqOverturnPollTick, dqOverturnDelayMs);
   }
 
   function stopDQOverturnPolling() {
+    dqOverturnGen++;
     if (dqOverturnInterval) { clearInterval(dqOverturnInterval); dqOverturnInterval = null; }
   }
 
@@ -2962,7 +3058,7 @@
     var failed = false;
     apiGet({ action: 'getExamStatus', sessionCode: sessionCode, idNumber: examineeData.idNumber, examineeToken: examineeToken })
       .then(function(data) {
-        if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
+        if (myGen !== examStatusGen || !examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
         if (data && data.status === 'ok') {
           if (typeof data.extraMinutes === 'number') applyExtraMinutes(data.extraMinutes);
           if (data.examStatus === 'disqualified' || data.examStatus === 'dq_confirmed') {
@@ -2970,7 +3066,7 @@
             try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
             showDQScreen();
           }
-        }
+        } else { failed = true; }
       })
       .catch(function() { failed = true; })
       .then(function() {
@@ -4378,10 +4474,7 @@
 
     // Save result to localStorage BEFORE sending — safety net for network failures
     try {
-      localStorage.setItem('pendingResult_' + payload.idNumber, JSON.stringify(payload));
-      if (wrongData && wrongData.length > 0) {
-        localStorage.setItem('pendingWrongAnswers_' + payload.idNumber, JSON.stringify(wrongData));
-      }
+      persistPendingResult(payload, wrongData);
     } catch(e2) {}
 
     // Result is persisted locally but NOT yet on the server — arm the survival
@@ -4433,7 +4526,7 @@
   // LOUD, visible failure banner on the done screen. Previously the failure
   // message went into a display:none debug div — so a result that never reached
   // the server still looked "submitted". Now the examinee/examiner cannot miss it.
-  function showSubmitFailureBanner(payload, wrongData) {
+  function showSubmitFailureBanner(payload, wrongData, terminalMessage) {
     var doneScreen = document.getElementById('screenDone');
     if (!doneScreen) return;
     var ssb = document.getElementById('submitStatusBanner');
@@ -4445,10 +4538,12 @@
       b.style.cssText = 'margin:16px auto;max-width:520px;padding:16px;background:#fef2f2;border:2px solid #dc2626;border-radius:12px;color:#991b1b;font-size:15px;text-align:center;font-weight:700;';
       doneScreen.insertBefore(b, doneScreen.firstChild);
     }
-    b.innerHTML =
-      '⚠️ התוצאה עדיין לא נשלחה לשרת.<br>' +
-      '<span style="font-weight:400;">אל תסגור את הדף — קרא לבוחן. המערכת ממשיכה לנסות אוטומטית.</span><br>' +
-      '<button id="submitRetryNowBtn" style="margin-top:10px;padding:10px 22px;font-size:15px;font-weight:800;background:#dc2626;color:#fff;border:none;border-radius:10px;cursor:pointer;">נסה לשלוח עכשיו</button>';
+    b.setAttribute('role', 'alert');
+    b.innerHTML = terminalMessage
+      ? '⚠️ ' + escHtml(terminalMessage) + '<br><span style="font-weight:400;">התוצאה נשמרת במכשיר. אל תסגור את הדף — קרא לבוחן.</span>'
+      : '⚠️ התוצאה עדיין לא נשלחה לשרת.<br>' +
+        '<span style="font-weight:400;">אל תסגור את הדף — קרא לבוחן. המערכת ממשיכה לנסות אוטומטית.</span><br>' +
+        '<button id="submitRetryNowBtn" style="margin-top:10px;padding:10px 22px;font-size:15px;font-weight:800;background:#dc2626;color:#fff;border:none;border-radius:10px;cursor:pointer;">נסה לשלוח עכשיו</button>';
     var rn = document.getElementById('submitRetryNowBtn');
     if (rn) rn.addEventListener('click', function() {
       b.innerHTML = '⏳ שולח…';
@@ -4575,11 +4670,97 @@
   // either appends → a DUPLICATE result row. Allow one in-flight send per id at a
   // time; the sequential 3s/15s retries re-acquire the slot after each settles.
   var _submitInFlight = {};
+  var _submitRetryTimers = {};
+  var _submitCompleted = {};
+  var _submitBlocked = {};
+
+  function submitAttemptKey(payload) {
+    return JSON.stringify([payload.sessionCode || '', payload.idNumber || '', payload.examineeToken || '']);
+  }
+
+  function persistPendingResult(payload, wrongData) {
+    if (!payload.origin) payload.origin = API_ORIGIN; // close/pagehide beacons bypass apiPost
+    var suffix = payload.idNumber;
+    var previousRaw = localStorage.getItem('pendingResult_' + suffix);
+    if (previousRaw) {
+      var previous = JSON.parse(previousRaw);
+      if (submitAttemptKey(previous) !== submitAttemptKey(payload)) {
+        // Preserve the previous attempt BEFORE replacing the per-ID slot.
+        // The same prefix keeps it discoverable by existing recovery/beacon scans.
+        var archiveSuffix = suffix + '__' + encodeURIComponent(previous.sessionCode || '') + '__' + encodeURIComponent(previous.examineeToken || 'legacy');
+        localStorage.setItem('pendingResult_' + archiveSuffix, previousRaw);
+        var previousWrong = localStorage.getItem('pendingWrongAnswers_' + suffix);
+        if (previousWrong) localStorage.setItem('pendingWrongAnswers_' + archiveSuffix, previousWrong);
+      }
+    }
+    localStorage.setItem('pendingResult_' + suffix, JSON.stringify(payload));
+    if (wrongData && wrongData.length > 0) localStorage.setItem('pendingWrongAnswers_' + suffix, JSON.stringify(wrongData));
+    else localStorage.removeItem('pendingWrongAnswers_' + suffix);
+  }
+
+  function clearSubmitRetry(payload) {
+    var key = submitAttemptKey(payload);
+    if (_submitRetryTimers[key] != null) {
+      clearTimeout(_submitRetryTimers[key]);
+      delete _submitRetryTimers[key];
+    }
+  }
+
+  function clearConfirmedPendingResult(payload) {
+    // A response from an older attempt must never erase a newer result that
+    // happens to use the same ID on a shared device.
+    try {
+      var matching = [];
+      for (var i = 0; i < localStorage.length; i++) {
+        var name = localStorage.key(i);
+        if (!name || name.indexOf('pendingResult_') !== 0) continue;
+        try {
+          var stored = JSON.parse(localStorage.getItem(name));
+          if (stored && submitAttemptKey(stored) === submitAttemptKey(payload)) matching.push(name);
+        } catch(e) {}
+      }
+      for (var j = 0; j < matching.length; j++) {
+        localStorage.removeItem(matching[j]);
+        localStorage.removeItem('pendingWrongAnswers_' + matching[j].substring('pendingResult_'.length));
+      }
+    } catch(e) {}
+  }
+
+  function showPendingRecoveryNotice() {
+    // A previous examinee's rejected result must remain visible after a reset
+    // or reload too, without exposing their details to the next examinee.
+    try {
+      var notice = document.getElementById('pendingRecoveryNotice');
+      if (!notice) {
+        notice = document.createElement('div');
+        notice.id = 'pendingRecoveryNotice';
+        notice.setAttribute('role', 'alert');
+        notice.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:99999;padding:12px 16px;background:#fef2f2;color:#991b1b;border-top:2px solid #dc2626;font-weight:700;text-align:center;direction:rtl;';
+        document.body.appendChild(notice);
+      }
+      notice.textContent = 'יש במכשיר תוצאה שהשרת טרם אישר עקב שינוי בהרשמה. התוצאה נשמרה כאן — קרא לבוחן לפני סגירת הדף או ניקוי המכשיר.';
+    } catch(e) {}
+  }
+
+  function isDisplayedResult(payload) {
+    return examineeData && payload.idNumber === examineeData.idNumber && payload.sessionCode === sessionCode &&
+      (payload.examineeToken || '') === (examineeToken || '');
+  }
+
   function submitWithRetry(payload, retries, wrongData) {
     var _sid = payload && payload.idNumber;
+    if (!_sid) return;
+    var key = submitAttemptKey(payload);
+    if (_submitCompleted[key] || _submitBlocked[key]) return;
+    clearSubmitRetry(payload); // manual/online retry replaces the scheduled one
     if (_sid) {
-      if (_submitInFlight[_sid]) { console.log('[SUBMIT] send already in flight for ' + _sid + ' — skipping duplicate'); return; }
-      _submitInFlight[_sid] = true;
+      if (_submitInFlight[_sid]) {
+        // A newer attempt sharing this ID must still get a turn when the old
+        // request settles; do not strand its locally saved result.
+        if (_submitInFlight[_sid] !== key) _submitFailedNext(payload, retries, wrongData);
+        return;
+      }
+      _submitInFlight[_sid] = key;
     }
     var attemptNum = 4 - retries;
     console.log('[SUBMIT] Sending result via POST, attempt ' + attemptNum);
@@ -4588,30 +4769,35 @@
       if (_sid) _submitInFlight[_sid] = false;
       console.log('[SUBMIT] Response:', JSON.stringify(data));
       if (data && data.status === 'ok') {
-        clearSubmitFailureBanner();
-        showSubmitStatus('received');
+        _submitCompleted[key] = true;
+        clearSubmitRetry(payload);
+        if (isDisplayedResult(payload)) {
+          clearSubmitFailureBanner();
+          showSubmitStatus('received');
+        }
         // Clear pending from localStorage — confirmed persisted on the server.
-        try {
-          localStorage.removeItem('pendingResult_' + payload.idNumber);
-          localStorage.removeItem('pendingWrongAnswers_' + payload.idNumber);
-        } catch(e3) {}
+        clearConfirmedPendingResult(payload);
         // Confirmed on the server — drop the close guard if nothing else is pending.
-        if (!hasAnyPendingResult()) disarmPendingResultGuard();
+        if (!hasAnyPendingResult()) {
+          disarmPendingResultGuard();
+          var notice = document.getElementById('pendingRecoveryNotice');
+          if (notice && notice.parentNode) notice.parentNode.removeChild(notice);
+        }
         // Wrong-answers are now written WITH the result (sent in the payload),
         // so no separate submitWrongAnswers call is needed. (sendWrongAnswers
         // kept for backward-compat / manual recovery only.)
       } else if (data && data.examineeTokenError === 'mismatch') {
-        // This stored result belongs to a PREVIOUS attempt (the examinee
-        // re-registered → a new token). The server correctly rejects it. DROP it:
-        // do not retry forever or show the scary banner, and never let its score
-        // attach to the new attempt (cross-attempt "bleed").
-        try {
-          localStorage.removeItem('pendingResult_' + payload.idNumber);
-          localStorage.removeItem('pendingWrongAnswers_' + payload.idNumber);
-        } catch(e5) {}
-        if (!hasAnyPendingResult()) disarmPendingResultGuard();
-        clearSubmitFailureBanner();
-        console.log('[SUBMIT] Stale result for a superseded attempt — discarded (token mismatch).');
+        // The server did NOT confirm persistence. Retain the evidence locally;
+        // an examiner must reconcile it with the superseding registration.
+        // Repeating the rejected attempt cannot fix its token, so stop retries.
+        _submitBlocked[key] = true;
+        clearSubmitRetry(payload);
+        armPendingResultGuard();
+        showPendingRecoveryNotice();
+        if (isDisplayedResult(payload)) {
+          showSubmitFailureBanner(payload, wrongData, 'השרת לא אישר את התוצאה משום שההרשמה השתנתה. נדרשת בדיקת הבוחן.');
+        }
+        console.log('[SUBMIT] Superseded attempt retained locally for examiner recovery.');
       } else {
         _submitFailedNext(payload, retries, wrongData);
       }
@@ -4634,12 +4820,14 @@
   // retrying slowly (15s) until the server accepts it. The result is also kept in
   // localStorage (renderExamDone) so a reload/auto-resend can recover it too.
   function _submitFailedNext(payload, retries, wrongData) {
-    if (retries > 1) {
-      setTimeout(function() { submitWithRetry(payload, retries - 1, wrongData); }, 3000);
-    } else {
-      showSubmitFailureBanner(payload, wrongData);
-      setTimeout(function() { submitWithRetry(payload, 1, wrongData); }, 15000);
-    }
+    var key = submitAttemptKey(payload);
+    if (_submitCompleted[key] || _submitBlocked[key]) return;
+    clearSubmitRetry(payload);
+    if (retries <= 1 && isDisplayedResult(payload)) showSubmitFailureBanner(payload, wrongData);
+    _submitRetryTimers[key] = setTimeout(function() {
+      delete _submitRetryTimers[key];
+      if (!_submitCompleted[key] && !_submitBlocked[key]) submitWithRetry(payload, retries > 1 ? retries - 1 : 1, wrongData);
+    }, retries > 1 ? 3000 : 15000);
   }
 
   // Resend a single pending (unsent) result for an id, if one is stored locally.
@@ -4651,6 +4839,7 @@
       var raw = localStorage.getItem('pendingResult_' + idNumber);
       if (!raw) return;
       var payload = JSON.parse(raw);
+      armPendingResultGuard(); // restore the close warning after a page reload too
       var wd = null;
       try { wd = JSON.parse(localStorage.getItem('pendingWrongAnswers_' + idNumber) || 'null'); } catch(e) {}
       console.log('[RECOVER] Resending pending result for ' + idNumber);

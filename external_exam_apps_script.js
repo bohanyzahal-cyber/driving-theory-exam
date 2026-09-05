@@ -480,13 +480,34 @@ function verifyExaminerForSession(sessionCode, examinerId) {
   return false;
 }
 
-function countAttempts(idNumber, license) {
-  var sheet = getSheet('תוצאות');
-  var data = sheet.getDataRange().getValues();
+function countAttempts(idNumber, license, resultRows, resultSheet) {
+  // A submit already has the complete history. Other callers keep the full read.
+  var data = resultRows || getSheet('תוצאות').getDataRange().getValues();
+  if (resultRows && resultSheet && resultSheet.getLastRow() !== data.length) {
+    return countAttempts(idNumber, license);
+  }
+  if (resultRows && resultSheet) {
+    var matchingHistory = 0;
+    for (var h = 1; h < data.length; h++) {
+      if (normalizeId(data[h][1]) === normalizeId(idNumber) && String(data[h][4]) === String(license)) matchingHistory++;
+    }
+    // Many retakes are cheaper to refresh in one request than many tiny reads.
+    if (matchingHistory > 4) return countAttempts(idNumber, license);
+  }
   var count = 0;
   for (var i = 1; i < data.length; i++) {
     if (normalizeId(data[i][1]) === normalizeId(idNumber) && String(data[i][4]) === String(license)) {
-      var status = String(data[i][7] || '').trim();
+      var row = data[i];
+      if (resultRows && resultSheet) {
+        // An examiner may have overturned an old result without appending a
+        // row. Refresh this examinee's history before assigning the attempt.
+        var live = resultSheet.getRange(i + 1, 1, 1, 14).getValues()[0];
+        if (!live || normalizeId(live[1]) !== normalizeId(idNumber) || String(live[4]) !== String(license) || String(live[13]) !== String(row[13])) {
+          return countAttempts(idNumber, license);
+        }
+        row = live;
+      }
+      var status = String(row[7] || '').trim();
       if (status === 'בוטל') continue; // overturned DQ is not a real attempt
       count++;
     }
@@ -528,12 +549,42 @@ function todayStr() {
   return dd + '/' + mm + '/' + yyyy + ' ' + hh + ':' + mi;
 }
 
+// Public build marker: identifies the deployed API without reading private data.
+var THEORY_API_BUILD = '2026-09-05-r1';
+var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
+
+function logTheoryApiTiming(phase, method, action, startedAt) {
+  // Never log request parameters, IDs, credentials, answers or arbitrary action text.
+  // A start without an end can identify a runtime timeout in the execution log.
+  try {
+    Logger.log('[API] ' + JSON.stringify({ build: THEORY_API_BUILD, phase: phase,
+      method: method, action: THEORY_API_ACTIONS.indexOf(action) >= 0 ? action : 'unknown',
+      elapsedMs: Math.max(0, Date.now() - startedAt) }));
+  } catch (logErr) { /* diagnostics must never break an exam */ }
+}
+
+function theoryRetryableErrorResponse(err) {
+  if (!err || err.retryable !== true) return null;
+  return jsonResponse({ status: 'error', code: 'question_cache_busy', retryable: true,
+    waitSec: Math.max(1, Math.min(30, Number(err.waitSec) || 3)),
+    message: 'מאגר השאלות מתעדכן כעת. אפשר לנסות שוב בעוד מספר שניות.' });
+}
+
+function questionRequestRateId(p, auth) {
+  // A class starting together must not share one candidate's allowance.
+  if (auth === 'examinee') return String(p.sessionCode || '') + '_' + normalizeId(p.idNumber);
+  return p.idNumber || p.examinerId || p.studentId || p.standaloneIdNumber || p.sessionCode || 'anon';
+}
+
 // ========== doGet — קריאות קריאה + פעולות קלות ==========
 
 function doGet(e) {
+  var apiStartedAt = Date.now();
+  var action = '';
   try {
-    var p = e.parameter || {};
-    var action = p.action || '';
+    var p = (e && e.parameter) || {};
+    action = p.action || '';
+    logTheoryApiTiming('start', 'GET', action, apiStartedAt);
 
     // Block sensitive state-mutating actions from GET — must come via POST.
     // Prevents URL-based forging (URLs leak to logs/history; trivially craftable).
@@ -546,6 +597,10 @@ function doGet(e) {
     // Soft origin check — log unauthorized origins (deterrent, bypassable but raises bar)
     var originErr = checkOrigin(p);
     if (originErr) return originErr;
+
+    if (action === 'health') {
+      return jsonResponse({ status: 'ok', build: THEORY_API_BUILD });
+    }
 
     // Actions that require examiner token authentication
     var examinerActions = ['getSites','listSessions','listAllSessions','createSession','updateSession','closeSession',
@@ -803,20 +858,25 @@ function doGet(e) {
     }
 
   } catch (err) {
-    return jsonResponse({ status: 'error', message: err.toString() });
+    return theoryRetryableErrorResponse(err) || jsonResponse({ status: 'error', message: err.toString() });
+  } finally {
+    logTheoryApiTiming('end', 'GET', action, apiStartedAt);
   }
 }
 
 // ========== doPost — שמירת תוצאות (נתונים גדולים) ==========
 
 function doPost(e) {
+  var apiStartedAt = Date.now();
+  var action = '';
   try {
     if (!e || !e.postData || !e.postData.contents) {
       return jsonResponse({ status: 'error', message: 'No POST data received' });
     }
     var raw = e.postData.contents;
     var data = JSON.parse(raw);
-    var action = data.action || '';
+    action = data.action || '';
+    logTheoryApiTiming('start', 'POST', action, apiStartedAt);
 
     // Soft origin check (deters casual scripts; bypassable by reading client source)
     var originErr = checkOrigin(data);
@@ -859,7 +919,9 @@ function doPost(e) {
     }
 
   } catch (err) {
-    return jsonResponse({ status: 'error', message: 'doPost error: ' + err.toString() });
+    return theoryRetryableErrorResponse(err) || jsonResponse({ status: 'error', message: 'doPost error: ' + err.toString() });
+  } finally {
+    logTheoryApiTiming('end', 'POST', action, apiStartedAt);
   }
 }
 
@@ -3170,8 +3232,8 @@ function handleRegisterExamQuestions(data) {
   // visibilitychange fallback armed.
   var marked = false;
   try {
-    var penSheet = getSheet('ממתינים');
-    var penData = penSheet.getDataRange().getValues();
+    var penSheet = pendSheet;
+    var penData = refreshExamineePendingRows(penSheet, pendData, data.sessionCode, data.idNumber);
     for (var mi = penData.length - 1; mi >= 1; mi--) {
       if (String(penData[mi][0]) !== String(data.sessionCode) || normalizeId(penData[mi][1]) !== normalizeId(data.idNumber)) continue;
       var mst = String(penData[mi][5]).trim();
@@ -3222,9 +3284,19 @@ function handleSubmitResult(data) {
   // session+id, the answers array is MANDATORY so the server re-scores from the
   // answer key. Without this, an examinee could POST a forged score with NO answers
   // and skip BOTH the re-score and the unverified-guard below (both answers-gated).
+  // Keep the full history for old-result recovery and retakes; do not tail-read
+  // it. Reuse only within this call, and retry a failed read in the later guards.
+  var registeredExamRows = null;
+  function readRegisteredExams() {
+    var registeredSheet = getSheet('מבחנים');
+    if (!registeredExamRows || registeredSheet.getLastRow() !== registeredExamRows.length) {
+      registeredExamRows = registeredSheet.getDataRange().getValues();
+    }
+    return registeredExamRows;
+  }
   var hasRegisteredExam = false;
   try {
-    var regChk = getSheet('מבחנים').getDataRange().getValues();
+    var regChk = readRegisteredExams();
     for (var rc = regChk.length - 1; rc >= 1; rc--) {
       if (String(regChk[rc][0]) === String(data.sessionCode) && normalizeId(regChk[rc][1]) === normalizeId(data.idNumber)) { hasRegisteredExam = true; break; }
     }
@@ -3240,8 +3312,7 @@ function handleSubmitResult(data) {
   // missing from the answer key, in which case we mark the result unverified.
   if (data.answers && Array.isArray(data.answers)) {
     try {
-      var examSheet = getSheet('מבחנים');
-      var examData = examSheet.getDataRange().getValues();
+      var examData = readRegisteredExams();
       var questionMap = null;
       var unverifiedCount = 0;
       var registeredLang = '';
@@ -3328,8 +3399,10 @@ function handleSubmitResult(data) {
             }
           }
           var defaultLang = String(data.language || registeredLang || 'he').toLowerCase();
-          // Pre-warm the default so we have a fallback for missing per-question langs.
-          var defaultDb = getLangDb(defaultLang);
+          // No feedback needs a bank when the authoritative score is perfect.
+          // For wrong answers keep the existing default-language fallback intact.
+          var allCorrect = totalQ > 0 && correctCount === totalQ;
+          var defaultDb = allCorrect ? null : getLangDb(defaultLang);
 
           var serverWrong = [];
           for (var wi = 0; wi < data.answers.length && wi < questionMap.length; wi++) {
@@ -3374,7 +3447,7 @@ function handleSubmitResult(data) {
             });
           }
           // Always replace client-provided wrongAnswers — server is authoritative.
-          if (defaultDb) data.wrongAnswers = serverWrong;
+          if (allCorrect || defaultDb) data.wrongAnswers = serverWrong;
         } catch (rwe) {
           // Reconstruction failed (Drive load, etc.) — keep whatever client sent
           // rather than wiping it. Log for diagnosis.
@@ -3390,8 +3463,7 @@ function handleSubmitResult(data) {
   // Server-side timing check: if exam took less than 3 minutes, flag as suspicious
   if (data.sessionCode && data.idNumber) {
     try {
-      var examSheet2 = getSheet('מבחנים');
-      var examData2 = examSheet2.getDataRange().getValues();
+      var examData2 = readRegisteredExams();
       for (var ti = examData2.length - 1; ti >= 1; ti--) {
         if (String(examData2[ti][0]) === String(data.sessionCode) && normalizeId(examData2[ti][1]) === normalizeId(data.idNumber)) {
           var regTime = new Date(examData2[ti][3]);
@@ -3440,15 +3512,21 @@ function handleSubmitResult(data) {
     sheet.getRange(fb + 1, 8).setValue('בוטל');                                    // H = pass/fail
     sheet.getRange(fb + 1, 27).setValue('בוטל אוטומטית — הנבחן השלים והגיש מבחן');  // AA = reason
     sheet.getRange(fb + 1, 28).setValue(todayStr());                               // AB = correction date
+    // The duplicate and attempt checks below reuse this complete snapshot.
+    fabRows[fb][7] = 'בוטל';
     fabSuperseded = true;
   }
-  if (fabSuperseded) SpreadsheetApp.flush(); // make the בוטל visible to the dup-check read below
+  if (fabSuperseded) SpreadsheetApp.flush();
 
   // Duplicate protection: check if result already exists for this session+ID+license+language
   // Skip disqualified (פסול) and cancelled (בוטל) rows — those are not real results and should not block retakes
   // Also skip duplicate check entirely if examinee has an active in_exam pending row (retake after DQ)
   var hasPendingInExam = false;
-  var pendCheck = getSheet('ממתינים').getDataRange().getValues();
+  // Re-check current status after potentially slow scoring/bank work. New rows
+  // or changed row positions require a full read; otherwise only this person's
+  // rows need refreshing. Never overwrite a newer examiner decision.
+  pendData = refreshExamineePendingRows(pendSheet, pendData, data.sessionCode, data.idNumber);
+  var pendCheck = pendData;
   for (var pc = pendCheck.length - 1; pc >= 1; pc--) {
     if (String(pendCheck[pc][0]) === String(data.sessionCode) && normalizeId(pendCheck[pc][1]) === normalizeId(data.idNumber) && String(pendCheck[pc][5]).trim() === 'in_exam') {
       hasPendingInExam = true;
@@ -3464,7 +3542,7 @@ function handleSubmitResult(data) {
         // Genuine prior real result for this exact exam — a true duplicate.
         // (Fabricated close/timeout fails were already superseded to בוטל above
         // and are skipped by the status filter, so they can't masquerade here.)
-        markPendingCompleted(data.sessionCode, data.idNumber);
+        markPendingCompleted(data.sessionCode, data.idNumber, { sheet: pendSheet, rows: pendData });
         return jsonResponse({ status: 'ok', waLink: existingData[d][18] || '', duplicate: true });
       }
     }
@@ -3530,7 +3608,7 @@ function handleSubmitResult(data) {
   var phone = formatPhoneForWA(data.phone);
 
   // Count attempt number for this examinee + license combination
-  var attemptNum = countAttempts(data.idNumber, data.license) + 1;
+  var attemptNum = countAttempts(data.idNumber, data.license, fabRows, sheet) + 1;
 
   var waMessage2 = waMessage; // preserve for link
   if (attemptNum > 1) {
@@ -3556,6 +3634,8 @@ function handleSubmitResult(data) {
   // finished the exam. Without this cleanup the sheet ends up with both a
   // פסול row AND a עבר/נכשל row — which is what happened at base 14 today.
   // We mark the old row as בוטל (audit trail preserved) and log the reason.
+  // Preserve the late complete read: another submission may have completed
+  // since scoring. In particular, do not move final retry detection earlier.
   var existingRows = sheet.getDataRange().getValues();
   for (var ex = existingRows.length - 1; ex >= 1; ex--) {
     if (String(existingRows[ex][13]) === String(data.sessionCode) &&
@@ -3565,6 +3645,8 @@ function handleSubmitResult(data) {
       sheet.getRange(ex + 1, 18).setValue(false);            // R = disqualified flag
       sheet.getRange(ex + 1, 27).setValue('בוטל אוטומטית — נבחן ניגש למבחן מחדש'); // AA = reason
       sheet.getRange(ex + 1, 28).setValue(todayStr());       // AB = correction date
+      existingRows[ex][7] = 'בוטל';
+      existingRows[ex][17] = false;
     }
   }
 
@@ -3579,7 +3661,7 @@ function handleSubmitResult(data) {
         String(existingRows[dc][5]) === (data.score + '/' + data.total) &&
         String(existingRows[dc][7]).trim() === String(passText).trim() &&
         String(existingRows[dc][8]) === String(data.time)) {
-      markPendingCompleted(data.sessionCode, data.idNumber);
+      markPendingCompleted(data.sessionCode, data.idNumber, { sheet: pendSheet, rows: pendData });
       return jsonResponse({ status: 'ok', duplicate: true, waLink: waLink });
     }
   }
@@ -3618,21 +3700,45 @@ function handleSubmitResult(data) {
   ]);
 
   // Update pending status to completed
-  markPendingCompleted(data.sessionCode, data.idNumber);
+  markPendingCompleted(data.sessionCode, data.idNumber, { sheet: pendSheet, rows: pendData });
 
   return jsonResponse({ status: 'ok', waLink: waLink });
+}
+
+// Refresh current rows without repeatedly copying the whole growing sheet.
+// Full snapshots retain old recovery rows; a changed row count/identity falls
+// back to a full read so registration, retakes and maintenance remain visible.
+function refreshExamineePendingRows(sheet, rows, sessionCode, idNumber) {
+  if (!rows || sheet.getLastRow() !== rows.length) return sheet.getDataRange().getValues();
+  var matchingRows = 0;
+  for (var m = 1; m < rows.length; m++) {
+    if (String(rows[m][0]) === String(sessionCode) && normalizeId(rows[m][1]) === normalizeId(idNumber)) matchingRows++;
+  }
+  if (matchingRows > 4) return sheet.getDataRange().getValues();
+  for (var i = rows.length - 1; i >= 1; i--) {
+    if (String(rows[i][0]) !== String(sessionCode) || normalizeId(rows[i][1]) !== normalizeId(idNumber)) continue;
+    var live = sheet.getRange(i + 1, 1, 1, rows[i].length).getValues()[0];
+    if (!live || String(live[0]) !== String(sessionCode) || normalizeId(live[1]) !== normalizeId(idNumber)) {
+      return sheet.getDataRange().getValues();
+    }
+    rows[i] = live;
+  }
+  return rows;
 }
 
 // Helper: mark ALL active pending rows for this session+ID as completed.
 // Closes EVERY in_exam/approved row (not just the latest) — a duplicate pending
 // row otherwise leaves the soldier stuck on the board even though they finished
 // and submitted (reported: "stuck in ממתינים/במבחן despite finishing").
-function markPendingCompleted(sessionCode, idNumber) {
-  var pendSheet = getSheet('ממתינים');
-  var pendData = pendSheet.getDataRange().getValues();
+function markPendingCompleted(sessionCode, idNumber, pendingSnapshot) {
+  var pendSheet = pendingSnapshot ? pendingSnapshot.sheet : getSheet('ממתינים');
+  var pendData = pendingSnapshot
+    ? refreshExamineePendingRows(pendSheet, pendingSnapshot.rows, sessionCode, idNumber)
+    : pendSheet.getDataRange().getValues();
   for (var j = pendData.length - 1; j >= 1; j--) {
     if (String(pendData[j][0]) === String(sessionCode) && normalizeId(pendData[j][1]) === normalizeId(idNumber) && (String(pendData[j][5]).trim() === 'in_exam' || String(pendData[j][5]).trim() === 'approved')) {
       pendSheet.getRange(j + 1, 6).setValue('completed');
+      pendData[j][5] = 'completed';
     }
   }
 }
@@ -3855,11 +3961,9 @@ function handleCancelFailOnClose(data) {
 }
 
 // ========== Question-cache warmup (for scheduled trigger) ==========
-// Apps Script's CacheService keeps entries for up to 6 hours. Loading the
-// 7 language files from Drive on a cold cache takes ~10-15 sec, which is
-// the main reason exam-start feels slow for the first user after a long
-// idle period. This function pre-loads every language file into cache so
-// real user requests always hit warm cache.
+// Cache entries can expire early. Warmup prepares bounded, compressed banks,
+// pools and translation shards; its final verification reports whether they
+// all survived in the shared cache. Timings depend on Drive/service health.
 //
 // Setup (one-time): in Apps Script editor →
 //   Triggers (clock icon, left sidebar) → Add Trigger
@@ -3869,54 +3973,63 @@ function handleCancelFailOnClose(data) {
 //   Every: 4 hours
 //   Save (you'll be asked to authorize)
 //
-// After that, the cache is continuously warm; users always see ~3-5 sec
-// exam-start instead of 15-20 sec.
+// Check the returned cache verification, not only the trigger's completion.
 function warmupQuestionCaches() {
-  var LANGS = ['he', 'ru', 'en', 'ar', 'fr', 'es', 'am'];
-  var summary = [];
-  for (var i = 0; i < LANGS.length; i++) {
-    var t0 = Date.now();
+  // Explicit request-local memo: each language is loaded at most once during
+  // this run and reused by all five pools and the translation index.
+  var memo = { banks: {}, cacheStatus: {} }, summary = [];
+  for (var i = 0; i < TX_LANGS.length; i++) {
+    var lang = TX_LANGS[i], t0 = Date.now();
     try {
-      var data = loadQuestionsForLanguageServer(LANGS[i]);
-      var n = data ? data.length : 0;
-      // Flag suspicious results loudly so they're easy to spot in the log.
-      // loadQuestionsForLanguageServer already refuses to cache empty results,
-      // but the warmup is the right place to notice that the Drive file
-      // itself went bad (was edited mid-day, partial upload, etc.).
-      var flag = (n === 0) ? '  ⚠️ EMPTY — check Drive source file' : '';
-      summary.push(LANGS[i] + ': ' + n + ' questions in ' + (Date.now() - t0) + 'ms' + flag);
+      var data = loadQuestionsForLanguageServer(lang, memo);
+      summary.push(lang + ': loaded ' + data.length + ' questions in ' + (Date.now() - t0) + 'ms');
     } catch (e) {
-      summary.push(LANGS[i] + ': ERROR - ' + (e && e.message ? e.message : e));
+      summary.push(lang + ': ERROR - ' + (e && e.message ? e.message : e));
     }
   }
-  // Build the per-id translation index off the freshly-warmed banks, so exam-start
-  // reads 30 small entries instead of parsing 6 extra full banks (the main cost).
-  try {
-    var tx = buildTranslationIndexCache();
-    summary.push('translation-index: ' + tx.count + ' questions, langs=' + tx.langs.join(','));
-  } catch (eTx) {
-    summary.push('translation-index: ERROR - ' + (eTx && eTx.message ? eTx.message : eTx));
+  var cache = CacheService.getScriptCache();
+  try { clearLegacyQuestionCaches(cache, memo.banks); }
+  catch (eOld) { summary.push('legacy cleanup: ERROR - ' + (eOld && eOld.message)); }
+  // Renew all bank TTLs from the local memo AFTER removing legacy keys. This
+  // also repairs first-migration eviction by the old oversized index. A warm
+  // cache hit must still get a fresh TTL when the four-hour trigger runs.
+  for (var b = 0; b < TX_LANGS.length; b++) {
+    var bankLang = TX_LANGS[b];
+    if (!memo.banks[bankLang]) continue;
+    var bankKey = QUESTION_CACHE_PREFIX + 'bank_' + bankLang;
+    var repairLease = null;
+    try {
+      repairLease = claimQuestionCacheLease('bank_' + bankLang);
+      memo.cacheStatus[bankLang] = writeQuestionCacheRecord(cache, bankKey, memo.banks[bankLang], QUESTION_BANK_MAX_PARTS);
+    } catch (eRepair) { memo.cacheStatus[bankLang] = false; summary.push(bankLang + ' refresh: ERROR - ' + (eRepair && eRepair.message)); }
+    finally { releaseQuestionCacheLease(repairLease); }
+    summary.push(bankLang + ': bank cached=' + memo.cacheStatus[bankLang]);
   }
-
-  // Rebuild every per-license pool off the freshly-warmed banks (force — a
-  // pool cached before a bank refresh must not survive it). One summary line
-  // per language = the monitoring view: any ERROR or count of 0 here means
-  // exam-starts will pay the rebuild themselves and [POOL] MISS lines will
-  // show up in the executions log.
-  var poolLicenses = Object.keys(EXAM_STRUCTURE_SERVER);
-  for (var wl = 0; wl < LANGS.length; wl++) {
-    var lineParts = [];
-    for (var wc = 0; wc < poolLicenses.length; wc++) {
+  // Never advertise an incomplete refresh as ready. A missing language stays
+  // visible in the report and the previous complete index remains in service.
+  if (Object.keys(memo.banks).length === TX_LANGS.length) {
+    try {
+      var tx = buildTranslationIndexCache(memo);
+      summary.push('translation-index: ' + tx.count + ' questions; cached=' + tx.cached);
+    } catch (eTx) { summary.push('translation-index: ERROR - ' + (eTx && eTx.message)); }
+  } else {
+    summary.push('translation-index: ERROR - skipped because a language bank failed');
+  }
+  var licenses = Object.keys(EXAM_STRUCTURE_SERVER);
+  for (var l = 0; l < TX_LANGS.length; l++) {
+    var code = TX_LANGS[l], parts = [];
+    if (!memo.banks[code]) continue;
+    for (var c = 0; c < licenses.length; c++) {
       try {
-        var wp = loadLicensePoolServer(LANGS[wl], poolLicenses[wc], true);
-        lineParts.push(poolLicenses[wc] + '=' + wp.length + (wp.length === 0 ? '⚠️' : ''));
-      } catch (ePool) {
-        lineParts.push(poolLicenses[wc] + '=ERROR(' + (ePool && ePool.message ? ePool.message : ePool) + ')');
-      }
+        var pool = loadLicensePoolServer(code, licenses[c], true, memo);
+        parts.push(licenses[c] + '=' + pool.length + '; cached=' + memo.cacheStatus[code + '/' + licenses[c]]);
+      } catch (ePool) { parts.push(licenses[c] + '=ERROR(' + (ePool && ePool.message) + ')'); }
     }
-    summary.push('pools ' + LANGS[wl] + ': ' + lineParts.join(' '));
+    summary.push('pools ' + code + ': ' + parts.join(' '));
   }
-
+  summary.push('persistent cache budget: <=423 keys; individual values <81KB');
+  try { summary.push('cache verification: ' + JSON.stringify(questionCacheStatus())); }
+  catch (eCheck) { summary.push('cache verification: ERROR - ' + (eCheck && eCheck.message)); }
   Logger.log('warmupQuestionCaches complete:\n' + summary.join('\n'));
   return summary;
 }
@@ -3929,58 +4042,22 @@ function warmupQuestionCaches() {
 // Real-world trigger: during one exam day, the Hebrew chunks were cached as
 // empty after a race condition between two parallel loads. Every subsequent
 // examinee got "0 questions" in Hebrew until the cache TTL expired. This
-// function fixes that in 5 seconds without waiting for TTL.
+// reset invalidates all derived data; completion time depends on Drive.
 //
 // Apps Script editor → select function: emergencyClearAndRefreshCache → Run.
 // Then check Logger output (View → Logs or "Execution log" panel).
 function emergencyClearAndRefreshCache() {
-  var cache = CacheService.getScriptCache();
-  var langs = ['he', 'ru', 'en', 'ar', 'fr', 'es', 'am'];
-  var report = ['=== Step 1: clearing cached chunks ==='];
-  langs.forEach(function(lang) {
-    var metaKey = 'qdata_' + lang + '_meta';
-    var meta = cache.get(metaKey);
-    if (meta) {
-      var n = parseInt(meta, 10) || 0;
-      var keys = [metaKey];
-      for (var i = 0; i < n; i++) keys.push('qdata_' + lang + '_part_' + i);
-      cache.removeAll(keys);
-      report.push(lang + ': removed ' + keys.length + ' keys');
-    } else {
-      report.push(lang + ': no cache to clear');
-    }
-  });
-  // Pools are DERIVED from the banks — clearing the banks without clearing the
-  // pools would keep serving stale questions for up to 6h. Always drop both.
-  report.push('pools: removed ' + clearAllLicensePools(cache, langs) + ' keys');
-  report.push('');
-  report.push('=== Step 2: refreshing from Drive ===');
-  langs.forEach(function(lang) {
-    var t0 = Date.now();
-    try {
-      var data = loadQuestionsForLanguageServer(lang);
-      var n = data ? data.length : 0;
-      var flag = (n === 0) ? '  ⚠️ STILL EMPTY — check Drive file questions_' + lang + '.json' : '';
-      report.push(lang + ': ' + n + ' questions (' + (Date.now() - t0) + 'ms)' + flag);
-    } catch (e) {
-      report.push(lang + ': ERROR - ' + (e && e.message ? e.message : e));
-    }
-  });
-  report.push('');
-  report.push('=== Step 3: rebuilding per-license pools ===');
-  var eLicenses = Object.keys(EXAM_STRUCTURE_SERVER);
-  langs.forEach(function(lang) {
-    var parts = [];
-    for (var c = 0; c < eLicenses.length; c++) {
-      try {
-        var p = loadLicensePoolServer(lang, eLicenses[c], true);
-        parts.push(eLicenses[c] + '=' + p.length + (p.length === 0 ? '⚠️' : ''));
-      } catch (e2) {
-        parts.push(eLicenses[c] + '=ERROR(' + (e2 && e2.message ? e2.message : e2) + ')');
-      }
-    }
-    report.push('pools ' + lang + ': ' + parts.join(' '));
-  });
+  var cache = CacheService.getScriptCache(), report = [];
+  for (var i = 0; i < TX_LANGS.length; i++) {
+    var lang = TX_LANGS[i];
+    clearQuestionCacheRecord(cache, QUESTION_CACHE_PREFIX + 'bank_' + lang, QUESTION_BANK_MAX_PARTS);
+  }
+  clearAllLicensePools(cache, TX_LANGS);
+  var keys = [QUESTION_CACHE_PREFIX + 'tx_meta'];
+  for (var s = 0; s < QUESTION_TX_SHARDS; s++) keys.push(QUESTION_CACHE_PREFIX + 'tx_' + s);
+  cache.removeAll(keys);
+  report.push('Cleared banks, pools AND translations; rebuilding from Drive.');
+  report = report.concat(warmupQuestionCaches());
   var out = report.join('\n');
   Logger.log(out);
   return out;
@@ -4051,353 +4128,402 @@ function shuffleArrayServer(arr) {
   return a;
 }
 
-// Read questions for a given language. Uses chunked CacheService caching so
-// subsequent calls within 6h don't hit Drive again. Cold start: ~2-4 sec
-// (Drive read + JSON.parse). Warm: ~300 ms (cache reassembly).
-function loadQuestionsForLanguageServer(lang) {
-  var safeLang = String(lang || 'he').toLowerCase();
-  if (!/^[a-z]{2}$/.test(safeLang)) throw new Error('Invalid language code');
+// Read a compressed cached bank, or let one execution rebuild it from Drive.
+// A request-local memo can reuse the loaded bank within a warmup operation.
+// CacheService limits: 100 KB/value, 1,000 items shared by the whole script.
+// gzip + base64 makes chunk length equal to its byte count (ASCII). Fixed slots
+// bound persistent storage: 7*(16+1) banks + 35*(4+1) pools + 128 shards + 1
+// manifest = 423 keys, leaving >500 for rate limits and active examinees.
+// Cache is evictable; generation tags prevent mixing old/new chunks on refresh.
+var QUESTION_CACHE_PREFIX = 'qv2_';
+var QUESTION_CACHE_PART_BYTES = 80000;
+var QUESTION_BANK_MAX_PARTS = 16;
+var QUESTION_POOL_MAX_PARTS = 4;
+var QUESTION_TX_SHARDS = 128;
 
-  var cache = CacheService.getScriptCache();
-  var metaKey = 'qdata_' + safeLang + '_meta';
+function questionCacheBusy() {
+  var err = new Error('מאגר השאלות מתעדכן כעת. יש לנסות שוב בעוד מספר שניות.');
+  err.code = 'question_cache_busy';
+  err.retryable = true;
+  err.waitSec = 3;
+  return err;
+}
 
-  // Reassemble the cached chunks into the questions array, or return null on a
-  // miss / partial / empty-poisoned cache. Factored out so both the initial
-  // read AND the stampede-waiters below can re-check without duplicating logic.
-  function readFromCache() {
-    var meta = cache.get(metaKey);
-    if (!meta) return null;
-    var numChunks = parseInt(meta, 10);
-    var keys = [];
-    for (var i = 0; i < numChunks; i++) keys.push('qdata_' + safeLang + '_part_' + i);
-    var chunks = cache.getAll(keys);
-    var json = '';
-    for (var k = 0; k < numChunks; k++) {
-      var c = chunks['qdata_' + safeLang + '_part_' + k];
-      if (c === null || c === undefined) return null;  // partial → treat as miss
-      json += c;
-    }
-    try {
-      var cached = JSON.parse(json);
-      // Cache-poisoning guard: empty array means a previous write captured a
-      // partial/empty file (real exam-day incident: Hebrew was cached as []
-      // after a race). Treat empty as a miss and re-read from Drive.
-      if (Array.isArray(cached) && cached.length > 0) return cached;
-      Logger.log('[CACHE] empty cached result for ' + safeLang + ' — ignoring and re-reading from Drive');
-    } catch (e) { /* fall through to Drive */ }
-    return null;
-  }
+function encodeQuestionCache(value) {
+  return Utilities.base64Encode(Utilities.gzip(Utilities.newBlob(JSON.stringify(value), 'application/json')).getBytes());
+}
 
-  var hit = readFromCache();
-  if (hit) return hit;
+function decodeQuestionCache(encoded) {
+  return JSON.parse(Utilities.ungzip(Utilities.newBlob(Utilities.base64Decode(encoded))).getDataAsString('UTF-8'));
+}
 
-  // ===== Stampede protection (fixes the ~13:00 daily outage) =====
-  // The question cache has a 6h TTL. When it expires, a whole exam-start wave
-  // hits a COLD cache at the same instant. Without this guard, EVERY request
-  // reads the big Drive file simultaneously — each taking tens of seconds —
-  // which saturates Apps Script's ~30 execution slots. That is exactly what
-  // froze exam-start + result-submit + examiner sync for ~15 min until one
-  // read finally re-warmed the cache. Fix: only ONE execution reads Drive; the
-  // rest wait briefly and reuse the freshly-warmed cache. A cold-cache moment
-  // becomes a ~3s blip for one call instead of a 15-min outage for everyone.
-  var lockKey = 'qload_lock_' + safeLang;
-  var haveLock = false;
-  if (!cache.get(lockKey)) {
-    cache.put(lockKey, '1', 60);   // hold the loader lock up to 60s
-    haveLock = true;
-  }
-  if (!haveLock) {
-    // Another execution is already loading — wait for it to warm the cache
-    // instead of stampeding Drive ourselves.
-    for (var w = 0; w < 10; w++) {
-      Utilities.sleep(1000);
-      var warmed = readFromCache();
-      if (warmed) return warmed;
-      if (!cache.get(lockKey)) break;  // loader finished/failed — load it ourselves
-    }
-    // Timed out or the loader vanished: fall through and read Drive as a fallback.
-  }
-
+function readQuestionCacheRecord(cache, key, maxParts) {
   try {
-    // Cache miss → read from Drive
-    var folderId = PropertiesService.getScriptProperties().getProperty('QUESTIONS_DRIVE_FOLDER_ID');
-    if (!folderId) {
-      throw new Error('QUESTIONS_DRIVE_FOLDER_ID not configured in ScriptProperties');
+    var raw = cache.get(key + '_meta');
+    if (!raw) return null;
+    var meta = JSON.parse(raw);
+    if (!meta || !meta.g || !Number.isInteger(meta.n) || meta.n < 1 || meta.n > maxParts) return null;
+    var keys = [];
+    for (var i = 0; i < meta.n; i++) keys.push(key + '_' + i);
+    var values = cache.getAll(keys), joined = '', prefix = meta.g + ':';
+    for (var j = 0; j < keys.length; j++) {
+      var part = values[keys[j]];
+      if (typeof part !== 'string' || part.indexOf(prefix) !== 0) return null;
+      joined += part.substring(prefix.length);
     }
-    var folder;
-    try { folder = DriveApp.getFolderById(folderId); }
-    catch (e) { throw new Error('Cannot access Drive folder: ' + e.message); }
-
-    var fileName = 'questions_' + safeLang + '.json';
-    var files = folder.getFilesByName(fileName);
-    if (!files.hasNext()) throw new Error(fileName + ' not found in Drive folder');
-    var file = files.next();
-
-    var jsonStr = file.getBlob().getDataAsString('UTF-8');
-
-    // Parse FIRST, then decide whether to cache. We never cache an empty result
-    // — that's how Hebrew got stuck at 0 questions for hours after a race.
-    var parsed;
-    try { parsed = JSON.parse(jsonStr); }
-    catch (e) { throw new Error('Failed to parse ' + fileName + ' from Drive: ' + e.message); }
-
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      // Write back to cache in chunks (CacheService cap: 100 KB per key)
-      var CHUNK_SIZE = 90000;
-      var totalChunks = Math.ceil(jsonStr.length / CHUNK_SIZE);
-      var putMap = {};
-      for (var pi = 0; pi < totalChunks; pi++) {
-        putMap['qdata_' + safeLang + '_part_' + pi] = jsonStr.substr(pi * CHUNK_SIZE, CHUNK_SIZE);
-      }
-      putMap[metaKey] = String(totalChunks);
-      try { cache.putAll(putMap, 21600); } catch (e) { /* cache full or unavailable — proceed without */ }
-    } else {
-      // Don't poison the cache. Log so we can spot a corrupted source file.
-      Logger.log('[DRIVE] ' + fileName + ' parsed to empty/non-array — NOT caching. Check the source file.');
-    }
-
-    return parsed;
-  } finally {
-    if (haveLock) cache.remove(lockKey);
+    return decodeQuestionCache(joined);
+  } catch (e) {
+    Logger.log('[CACHE] invalid/read failed ' + key + ': ' + (e && e.message ? e.message : e));
+    return null;
   }
 }
 
-// ========== Per-license question pools (perf) ==========
-// Exam-start used to reassemble + JSON.parse the FULL language bank (~3MB, 35
-// cache chunks) on EVERY request, just to filter it down to one license and
-// pick 30 questions — ~10-12s of slot time per exam start (measured live,
-// 2026-08-26). A classroom start-wave × 10s each, on top of the 5s polling,
-// saturated the ~30 concurrent execution slots: queuing on normal days
-// (clients time out → "שגיאת תקשורת"), hard 0-sec rejections on bad ones
-// (see the 2026-08-24 failures cluster).
-//
-// This layer stores the license-filtered, deduped, validity-checked pool as
-// its own (much smaller) chunked cache entry per (lang, license), built by
-// the warmup trigger. Exam-start then loads ~a third of the bytes and skips
-// filter+dedupe entirely.
-//
-// DESIGN RULE — single path, loud self-heal, no silent fallback:
-// there are NOT two ways to serve an exam. Every exam start goes through
-// this function. When the pool is absent (CacheService evicts at will —
-// that is the platform's contract, not a failure), the SAME code path
-// rebuilds it immediately, stores it back, and logs a loud [POOL] line —
-// so a miss is visible in the executions log, happens once per expiry
-// rather than repeatedly, and can never silently rot into "the old way".
-//
-// Order matters inside the build: filter by license BEFORE dedupe — the
-// source data repeats the same question id for multiple license types
-// (e.g. id 1276 as B and as C1); dedupe-first could keep the wrong row and
-// then lose the question to the license filter. (Moved verbatim from
-// handleGetExamQuestions — this is now the ONLY copy of that logic.)
-function loadLicensePoolServer(lang, license, forceRebuild) {
-  var safeLang = String(lang || 'he').toLowerCase();
-  if (!/^[a-z]{2}$/.test(safeLang)) throw new Error('Invalid language code');
-  var lic = String(license || '').trim();
-  if (!/^[A-Z0-9]{1,2}$/.test(lic)) throw new Error('Invalid license for pool: ' + lic);
-
-  var cache = CacheService.getScriptCache();
-  var metaKey = 'qpool_' + safeLang + '_' + lic + '_meta';
-
-  // Reassemble the cached pool chunks, or return null on miss / partial / empty.
-  // Factored out so the stampede-waiters below can re-check without duplicating.
-  function readPoolFromCache() {
-    var meta = cache.get(metaKey);
-    if (!meta) return null;
-    var numChunks = parseInt(meta, 10);
-    var keys = [];
-    for (var i = 0; i < numChunks; i++) keys.push('qpool_' + safeLang + '_' + lic + '_part_' + i);
-    var chunks = cache.getAll(keys);
-    var json = '';
-    for (var k = 0; k < numChunks; k++) {
-      var c = chunks['qpool_' + safeLang + '_' + lic + '_part_' + k];
-      if (c === null || c === undefined) return null;  // partial → treat as miss
-      json += c;
+function writeQuestionCacheRecord(cache, key, value, maxParts) {
+  try {
+    var encoded = encodeQuestionCache(value);
+    var n = Math.ceil(encoded.length / QUESTION_CACHE_PART_BYTES);
+    if (n < 1 || n > maxParts) throw new Error('compressed record exceeds reserved cache budget (' + n + '/' + maxParts + ' parts)');
+    var generation = Utilities.getUuid(), values = {}, keys = [];
+    for (var i = 0; i < n; i++) {
+      var partKey = key + '_' + i;
+      keys.push(partKey);
+      values[partKey] = generation + ':' + encoded.substring(i * QUESTION_CACHE_PART_BYTES, (i + 1) * QUESTION_CACHE_PART_BYTES);
     }
-    try {
-      var cached = JSON.parse(json);
-      // Same poison guard as the bank cache: never trust an empty array.
-      if (Array.isArray(cached) && cached.length > 0) return cached;
-      Logger.log('[POOL] empty cached pool ' + safeLang + '/' + lic + ' — ignoring, rebuilding');
-    } catch (ePar) { /* corrupted → rebuild */ }
-    return null;
+    cache.putAll(values, 21600);
+    var check = cache.getAll(keys);
+    for (var j = 0; j < keys.length; j++) if (check[keys[j]] !== values[keys[j]]) throw new Error('chunk missing immediately after write');
+    // Publish only after all chunks were verified. Readers reject mixed generations.
+    var meta = JSON.stringify({ g: generation, n: n });
+    cache.put(key + '_meta', meta, 21600);
+    if (cache.get(key + '_meta') !== meta) throw new Error('manifest missing immediately after write');
+    var obsolete = [];
+    for (var k = n; k < maxParts; k++) obsolete.push(key + '_' + k);
+    if (obsolete.length) cache.removeAll(obsolete);
+    return true;
+  } catch (e) {
+    Logger.log('[CACHE] WRITE FAILED ' + key + ': ' + (e && e.message ? e.message : e));
+    return false;
   }
+}
 
-  // (Re)build off the (bank-cached) questions and write the pool back to cache.
-  function buildAndCachePool() {
+function clearQuestionCacheRecord(cache, key, maxParts) {
+  var keys = [key + '_meta'];
+  for (var i = 0; i < maxParts; i++) keys.push(key + '_' + i);
+  cache.removeAll(keys);
+  return keys.length;
+}
+
+// Durable lease ownership is claimed under a short true mutex. The mutex is
+// released BEFORE Drive access, gzip or filtering. Waiters return a retryable
+// response, instead of occupying execution slots with 10-20 second sleeps.
+// The lease outlives the six-minute Apps Script execution limit after a crash.
+function claimQuestionCacheLease(resource) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(200)) throw questionCacheBusy();
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var key = QUESTION_CACHE_PREFIX + 'lease_' + resource;
+    var prior = props.getProperty(key), lease = null;
+    try { lease = prior ? JSON.parse(prior) : null; } catch (e) {}
+    if (lease && lease.until > Date.now()) throw questionCacheBusy();
+    var owner = Utilities.getUuid();
+    props.setProperty(key, JSON.stringify({ owner: owner, until: Date.now() + 370000 }));
+    return { key: key, owner: owner };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function releaseQuestionCacheLease(lease) {
+  if (!lease) return;
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(200)) {
+    Logger.log('[CACHE] lease release deferred until expiry: ' + lease.key);
+    return;
+  }
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var raw = props.getProperty(lease.key);
+    var current = raw ? JSON.parse(raw) : null;
+    if (current && current.owner === lease.owner) props.deleteProperty(lease.key);
+  } catch (e) {
+    Logger.log('[CACHE] lease release failed: ' + (e && e.message ? e.message : e));
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function normalizeQuestionCacheLanguage(lang) {
+  var safeLang = String(lang || 'he').toLowerCase();
+  if (TX_LANGS.indexOf(safeLang) === -1) throw new Error('Invalid language code');
+  return safeLang;
+}
+
+// Read-only post-warmup verification. It returns counts only, never question
+// text, IDs, tokens, folder IDs or student data. All required chunks must still
+// exist AFTER banks, pools and translations have shared the cache capacity.
+function questionCacheStatus() {
+  var cache = CacheService.getScriptCache(), records = [], licenses = Object.keys(EXAM_STRUCTURE_SERVER);
+  for (var l = 0; l < TX_LANGS.length; l++) {
+    records.push({ key: QUESTION_CACHE_PREFIX + 'bank_' + TX_LANGS[l], max: QUESTION_BANK_MAX_PARTS });
+    for (var c = 0; c < licenses.length; c++) records.push({ key: QUESTION_CACHE_PREFIX + 'pool_' + TX_LANGS[l] + '_' + licenses[c], max: QUESTION_POOL_MAX_PARTS });
+  }
+  var metaKeys = records.map(function(r) { return r.key + '_meta'; });
+  var txKey = QUESTION_CACHE_PREFIX + 'tx_meta';
+  metaKeys.push(txKey);
+  var metas = cache.getAll(metaKeys), required = {}, missing = 0, present = 0;
+  for (var i = 0; i < records.length; i++) {
+    var record = records[i], meta = null;
+    try { meta = JSON.parse(metas[record.key + '_meta'] || 'null'); } catch (e) {}
+    if (!meta || !meta.g || !Number.isInteger(meta.n) || meta.n < 1 || meta.n > record.max) { missing++; continue; }
+    present++;
+    for (var p = 0; p < meta.n; p++) required[record.key + '_' + p] = meta.g + ':';
+  }
+  var tx = null;
+  try { tx = JSON.parse(metas[txKey] || 'null'); } catch (eTx) {}
+  if (!tx || !tx.g || !Array.isArray(tx.langs) || tx.langs.length !== TX_LANGS.length) missing++;
+  else {
+    present++;
+    for (var s = 0; s < QUESTION_TX_SHARDS; s++) required[QUESTION_CACHE_PREFIX + 'tx_' + s] = tx.g + ':';
+  }
+  var keys = Object.keys(required), maxBytes = 0;
+  for (var start = 0; start < keys.length; start += 50) {
+    var batch = keys.slice(start, start + 50), values = cache.getAll(batch);
+    for (var k = 0; k < batch.length; k++) {
+      var value = values[batch[k]];
+      if (typeof value !== 'string' || value.indexOf(required[batch[k]]) !== 0) missing++;
+      else { present++; maxBytes = Math.max(maxBytes, value.length); }
+    }
+  }
+  return { ready: missing === 0, presentKeys: present, missingOrMixedKeys: missing, maxValueBytes: maxBytes, reservedKeyLimit: 423 };
+}
+
+// Removal does not depend on old metadata surviving eviction. Old code used up
+// to ~35 chunks/bank and ~12/pool; removing 128 fixed legacy slots also covers
+// larger past banks. Legacy per-question keys are removed from all loaded IDs.
+function clearLegacyQuestionCaches(cache, banks) {
+  var keys = ['tx_meta'];
+  for (var l = 0; l < TX_LANGS.length; l++) {
+    var lang = TX_LANGS[l];
+    keys.push('qdata_' + lang + '_meta', 'qload_lock_' + lang);
+    for (var p = 0; p < 128; p++) keys.push('qdata_' + lang + '_part_' + p);
+    var licenses = Object.keys(EXAM_STRUCTURE_SERVER);
+    for (var c = 0; c < licenses.length; c++) {
+      var base = 'qpool_' + lang + '_' + licenses[c];
+      keys.push(base + '_meta', 'qpool_lock_' + lang + '_' + licenses[c]);
+      for (var k = 0; k < 128; k++) keys.push(base + '_part_' + k);
+    }
+  }
+  var seen = {};
+  for (var code in banks) {
+    var rows = banks[code] || [];
+    for (var q = 0; q < rows.length; q++) if (rows[q] && rows[q].id !== undefined) seen[String(rows[q].id)] = true;
+  }
+  Object.keys(seen).forEach(function(id) { keys.push('tx_' + id); });
+  for (var i = 0; i < keys.length; i += 100) cache.removeAll(keys.slice(i, i + 100));
+  Logger.log('[CACHE] removed legacy bank/pool keys and ' + Object.keys(seen).length + ' legacy translation keys');
+}
+function loadQuestionsForLanguageServer(lang, memo) {
+  var safeLang = normalizeQuestionCacheLanguage(lang);
+  if (memo && memo.banks && memo.banks[safeLang]) return memo.banks[safeLang];
+  var cache = CacheService.getScriptCache(), key = QUESTION_CACHE_PREFIX + 'bank_' + safeLang;
+  function remember(data, cached) {
+    if (memo) {
+      if (!memo.banks) memo.banks = {};
+      if (!memo.cacheStatus) memo.cacheStatus = {};
+      memo.banks[safeLang] = data;
+      memo.cacheStatus[safeLang] = cached;
+    }
+    return data;
+  }
+  var hit = readQuestionCacheRecord(cache, key, QUESTION_BANK_MAX_PARTS);
+  if (Array.isArray(hit) && hit.length) return remember(hit, true);
+  var lease = claimQuestionCacheLease('bank_' + safeLang);
+  try {
+    // A builder may have finished between the first read and lease acquisition.
+    hit = readQuestionCacheRecord(cache, key, QUESTION_BANK_MAX_PARTS);
+    if (Array.isArray(hit) && hit.length) return remember(hit, true);
     var t0 = Date.now();
-    var allQuestions = loadQuestionsForLanguageServer(safeLang);  // stampede-locked + guarded
-    var filtered = filterByLicenseServer(allQuestions, lic);
-    var seen = {};
-    var pool = [];
+    var folderId = PropertiesService.getScriptProperties().getProperty('QUESTIONS_DRIVE_FOLDER_ID');
+    if (!folderId) throw new Error('QUESTIONS_DRIVE_FOLDER_ID not configured in ScriptProperties');
+    var folder = DriveApp.getFolderById(folderId);
+    var fileName = 'questions_' + safeLang + '.json';
+    var files = folder.getFilesByName(fileName);
+    if (!files.hasNext()) {
+      var missing = new Error(fileName + ' not found in Drive folder');
+      missing.code = 'question_language_unavailable';
+      throw missing;
+    }
+    var parsed = JSON.parse(files.next().getBlob().getDataAsString('UTF-8'));
+    if (!Array.isArray(parsed) || !parsed.length) throw new Error(fileName + ' is empty or invalid; cache not updated');
+    var cached = writeQuestionCacheRecord(cache, key, parsed, QUESTION_BANK_MAX_PARTS);
+    Logger.log('[CACHE] bank MISS ' + safeLang + ': ' + parsed.length + ' rows; cached=' + cached + '; ' + (Date.now() - t0) + 'ms');
+    return remember(parsed, cached);
+  } finally {
+    releaseQuestionCacheLease(lease);
+  }
+}
+
+// ========== Per-license question pools ==========
+// A pool contains license-filtered, deduplicated valid questions. Warmup shares
+// its local language-bank memo across pools. A live miss elects one builder;
+// contending requests receive an explicit retryable response.
+// Filter BEFORE dedupe because source rows repeat IDs across license types.
+function loadLicensePoolServer(lang, license, forceRebuild, memo) {
+  var safeLang = normalizeQuestionCacheLanguage(lang);
+  var lic = String(license || '').trim();
+  if (!Object.prototype.hasOwnProperty.call(EXAM_STRUCTURE_SERVER, lic)) throw new Error('Invalid license for pool: ' + lic);
+  var cache = CacheService.getScriptCache(), key = QUESTION_CACHE_PREFIX + 'pool_' + safeLang + '_' + lic;
+  var hit;
+  if (!forceRebuild) {
+    hit = readQuestionCacheRecord(cache, key, QUESTION_POOL_MAX_PARTS);
+    if (Array.isArray(hit) && hit.length) return hit;
+  }
+  var lease = claimQuestionCacheLease('pool_' + safeLang + '_' + lic);
+  try {
+    if (!forceRebuild) {
+      hit = readQuestionCacheRecord(cache, key, QUESTION_POOL_MAX_PARTS);
+      if (Array.isArray(hit) && hit.length) return hit;
+    }
+    var t0 = Date.now();
+    var filtered = filterByLicenseServer(loadQuestionsForLanguageServer(safeLang, memo), lic);
+    var seen = {}, pool = [];
+    // Filter BEFORE dedupe: repeated IDs have distinct license rows.
     for (var f = 0; f < filtered.length; f++) {
       var q = filtered[f];
-      if (!q || !q.id || seen[q.id]) continue;
-      if (!Array.isArray(q.answers) || q.answers.length < 2) continue;
+      if (!q || !q.id || seen[q.id] || !Array.isArray(q.answers) || q.answers.length < 2) continue;
       seen[q.id] = true;
       pool.push(q);
     }
-    Logger.log('[POOL] built ' + safeLang + '/' + lic + ': ' + pool.length + ' questions in ' +
-      (Date.now() - t0) + 'ms (' + (forceRebuild ? 'warmup rebuild' : 'MISS during live request') + ')');
-
-    if (pool.length > 0) {
-      var jsonStr = JSON.stringify(pool);
-      var CHUNK_SIZE = 90000;  // CacheService cap is 100KB/key
-      var totalChunks = Math.ceil(jsonStr.length / CHUNK_SIZE);
-      var putMap = {};
-      for (var pi = 0; pi < totalChunks; pi++) {
-        putMap['qpool_' + safeLang + '_' + lic + '_part_' + pi] = jsonStr.substr(pi * CHUNK_SIZE, CHUNK_SIZE);
-      }
-      putMap[metaKey] = String(totalChunks);
-      try { cache.putAll(putMap, 21600); }  // same 6h TTL as the bank
-      catch (ePut) { Logger.log('[POOL] cache write FAILED for ' + safeLang + '/' + lic + ': ' + (ePut && ePut.message ? ePut.message : ePut)); }
-    } else {
-      // Empty pool = a real content problem (bank/license mapping) — don't cache,
-      // let the handler surface its explicit "not enough questions" error.
-      Logger.log('[POOL] EMPTY pool for ' + safeLang + '/' + lic + ' — NOT caching; check the bank and license mapping');
+    if (!pool.length) throw new Error('Empty pool ' + safeLang + '/' + lic + '; check question bank');
+    var cached = writeQuestionCacheRecord(cache, key, pool, QUESTION_POOL_MAX_PARTS);
+    if (memo) {
+      if (!memo.cacheStatus) memo.cacheStatus = {};
+      memo.cacheStatus[safeLang + '/' + lic] = cached;
     }
+    Logger.log('[POOL] built ' + safeLang + '/' + lic + ': ' + pool.length + ' questions; cached=' + cached + '; ' + (Date.now() - t0) + 'ms; ' + (forceRebuild ? 'warmup' : 'MISS'));
     return pool;
-  }
-
-  // Warmup (forceRebuild) runs single-threaded from the trigger — build directly.
-  if (forceRebuild) return buildAndCachePool();
-
-  // Live request: serve from cache when warm.
-  var hit = readPoolFromCache();
-  if (hit) return hit;
-
-  // ===== Pool-level stampede protection (fixes the 6-min exam-morning timeouts) =====
-  // A cold or evicted pool at the start of a class wave used to be rebuilt by
-  // EVERY concurrent exam-start at once — each re-parsing the full bank — which
-  // ran requests to the 6-minute execution ceiling and saturated the ~30 shared
-  // slots (worst on mornings with 3 sites testing in parallel: Be'er Sheva /
-  // Mishmar HaNegev / Bahad 1, 2026-08-31..09-02). Now ONE request rebuilds
-  // while the rest wait briefly and reuse the freshly-built pool. Mirrors the
-  // bank loader's lock in loadQuestionsForLanguageServer.
-  var lockKey = 'qpool_lock_' + safeLang + '_' + lic;
-  var haveLock = false;
-  if (!cache.get(lockKey)) {
-    cache.put(lockKey, '1', 60);   // hold the pool-builder lock up to 60s
-    haveLock = true;
-  }
-  if (!haveLock) {
-    // Someone else is building this pool — wait for it instead of stampeding.
-    for (var w = 0; w < 20; w++) {
-      Utilities.sleep(1000);
-      var warmed = readPoolFromCache();
-      if (warmed) return warmed;
-      if (!cache.get(lockKey)) break;  // builder finished/failed — build it ourselves
-    }
-    // Timed out or the builder vanished: fall through and build as a fallback.
-  }
-  try {
-    return buildAndCachePool();
   } finally {
-    if (haveLock) cache.remove(lockKey);
+    releaseQuestionCacheLease(lease);
   }
 }
 
 // Remove every cached pool chunk (all langs × all licenses). Used by the
 // emergency reset so a bank refresh can never serve stale pools.
 function clearAllLicensePools(cache, langs) {
-  var licenses = Object.keys(EXAM_STRUCTURE_SERVER);
-  var removed = 0;
-  for (var li = 0; li < langs.length; li++) {
-    for (var ci = 0; ci < licenses.length; ci++) {
-      var metaKey = 'qpool_' + langs[li] + '_' + licenses[ci] + '_meta';
-      var meta = cache.get(metaKey);
-      if (!meta) continue;
-      var n = parseInt(meta, 10) || 0;
-      var keys = [metaKey];
-      for (var i = 0; i < n; i++) keys.push('qpool_' + langs[li] + '_' + licenses[ci] + '_part_' + i);
-      cache.removeAll(keys);
-      removed += keys.length;
+  var removed = 0, licenses = Object.keys(EXAM_STRUCTURE_SERVER);
+  for (var l = 0; l < langs.length; l++) {
+    for (var c = 0; c < licenses.length; c++) {
+      removed += clearQuestionCacheRecord(cache, QUESTION_CACHE_PREFIX + 'pool_' + langs[l] + '_' + licenses[c], QUESTION_POOL_MAX_PARTS);
     }
   }
   return removed;
 }
 
-// ========== Per-id translation index (perf) ==========
-// Exam-start used to load+parse ALL 7 full language banks (~25MB, ~43k questions)
-// on every request just to extract the translations of the 30 selected questions
-// — the single biggest per-request cost (cold cache: 80-176s), which held an
-// execution slot long enough to saturate them during the morning start-wave.
-// This index is built ONCE (by the warmup trigger) into small per-question cache
-// entries, so exam-start reads only the 30 it needs instead of parsing 6 extra
-// banks. The examinee RESPONSE is unchanged (still all 30 × 7 languages), so
-// offline mid-exam language switching keeps working exactly as before.
-//   tx_<id>  -> { he:{t,a}, ru:{t,a}, ... }   (only langs where the id exists)
-//   tx_meta  -> { langs:[...], count, builtAt } (readiness flag + available langs)
-// `ci` (correct-answer index; non-examinee only) is NOT stored — it is layered at
-// request time via lookupCorrectIndex, identical to the old bank path.
+// ========== Packed translation index ==========
+// 128 fixed gzip/base64 shards replace the oversized one-key-per-question
+// index. Exam starts batch-read only shards containing their selected IDs.
+// The response retains all available language texts/answers and the original
+// ci encoding for non-examinee callers. Correct-answer indices are never cached
+// in translation shards; they are attached from the server answer key on read.
 var TX_LANGS = ['he', 'ru', 'en', 'ar', 'fr', 'es', 'am'];
 
-function buildTranslationIndexCache() {
-  var cache = CacheService.getScriptCache();
-  var availLangs = [];
-  var byId = {};
-  for (var li = 0; li < TX_LANGS.length; li++) {
-    var lang = TX_LANGS[li];
-    var data;
-    try { data = loadQuestionsForLanguageServer(lang); }
-    catch (e) { Logger.log('[TX] skip ' + lang + ': ' + (e && e.message)); continue; }
-    if (!data || !data.length) { Logger.log('[TX] empty ' + lang + ' — skipping'); continue; }
-    availLangs.push(lang);
-    for (var qi = 0; qi < data.length; qi++) {
-      var q = data[qi];
-      if (!q || q.id === undefined || q.id === null) continue;
-      var e2 = byId[q.id] || (byId[q.id] = {});
-      e2[lang] = { t: q.text, a: q.answers };
+function questionTranslationShard(id) {
+  var text = String(id), hash = 0;
+  for (var i = 0; i < text.length; i++) hash = ((hash * 31) + text.charCodeAt(i)) >>> 0;
+  return hash % QUESTION_TX_SHARDS;
+}
+
+function buildTranslationIndexCache(memo) {
+  var lease = claimQuestionCacheLease('translations');
+  try {
+    var cache = CacheService.getScriptCache(), banks = {}, byId = {};
+    memo = memo || { banks: {}, cacheStatus: {} };
+    for (var l = 0; l < TX_LANGS.length; l++) {
+      var lang = TX_LANGS[l];
+      // A failed/busy language aborts before touching the published index.
+      var rows = loadQuestionsForLanguageServer(lang, memo);
+      banks[lang] = rows;
+      for (var q = 0; q < rows.length; q++) {
+        var row = rows[q];
+        if (!row || row.id === undefined || row.id === null) continue;
+        var per = byId[row.id] || (byId[row.id] = {});
+        per[lang] = { t: row.text, a: row.answers };
+      }
     }
+    var shards = [], ids = Object.keys(byId);
+    for (var s = 0; s < QUESTION_TX_SHARDS; s++) shards.push({});
+    for (var i = 0; i < ids.length; i++) shards[questionTranslationShard(ids[i])][ids[i]] = byId[ids[i]];
+    var generation = Utilities.getUuid(), values = {}, keys = [];
+    for (var b = 0; b < shards.length; b++) {
+      var encoded = encodeQuestionCache(shards[b]);
+      if (encoded.length > QUESTION_CACHE_PART_BYTES) throw new Error('Translation shard ' + b + ' exceeds reserved cache budget');
+      var key = QUESTION_CACHE_PREFIX + 'tx_' + b;
+      keys.push(key);
+      values[key] = generation + ':' + encoded;
+    }
+    cache.putAll(values, 21600);
+    var verified = cache.getAll(keys);
+    for (var k = 0; k < keys.length; k++) {
+      if (verified[keys[k]] !== values[keys[k]]) throw new Error('Translation shard missing immediately after write');
+    }
+    var meta = JSON.stringify({ g: generation, langs: TX_LANGS.slice(), count: ids.length, builtAt: Date.now() });
+    cache.put(QUESTION_CACHE_PREFIX + 'tx_meta', meta, 21600);
+    if (cache.get(QUESTION_CACHE_PREFIX + 'tx_meta') !== meta) throw new Error('Translation manifest missing after write');
+    Logger.log('[TX] index cached: ' + ids.length + ' questions in ' + QUESTION_TX_SHARDS + ' shards');
+    return { count: ids.length, langs: TX_LANGS.slice(), cached: true };
+  } catch (e) {
+    Logger.log('[TX] WRITE FAILED: ' + (e && e.message ? e.message : e));
+    throw e;
+  } finally {
+    releaseQuestionCacheLease(lease);
   }
-  var ids = Object.keys(byId);
-  var BATCH = 100, put = {};
-  for (var i = 0; i < ids.length; i++) {
-    put['tx_' + ids[i]] = JSON.stringify(byId[ids[i]]);
-    if ((i + 1) % BATCH === 0) { try { cache.putAll(put, 21600); } catch (eP) {} put = {}; }
-  }
-  if (Object.keys(put).length) { try { cache.putAll(put, 21600); } catch (eP2) {} }
-  try { cache.put('tx_meta', JSON.stringify({ langs: availLangs, count: ids.length, builtAt: Date.now() }), 21600); } catch (eM) {}
-  Logger.log('[TX] index built: ' + ids.length + ' questions, langs=' + availLangs.join(','));
-  return { count: ids.length, langs: availLangs };
 }
 
 // Assemble translations for the selected questions from the per-id index. Returns
 // the SAME { lang: { id: {t,a[,ci]} } } shape as the bank path, or null to signal
 // "index not ready / incomplete → caller should fall back to the banks".
 function tryTranslationsFromIndex(idList, includeCi) {
-  var cache = CacheService.getScriptCache();
-  var metaRaw = cache.get('tx_meta');
-  if (!metaRaw) return null;                       // never built → fall back
-  var meta; try { meta = JSON.parse(metaRaw); } catch (eJ) { return null; }
-  var langs = (meta && meta.langs) || [];
-  if (!langs.length) return null;
-  var keys = [];
-  for (var i = 0; i < idList.length; i++) keys.push('tx_' + idList[i]);
-  var got = cache.getAll(keys);
-  var byId = {};
-  for (var j = 0; j < idList.length; j++) {
-    var raw = got['tx_' + idList[j]];
-    if (raw === null || raw === undefined) return null;   // any selected id missing → fall back
-    try { byId[idList[j]] = JSON.parse(raw); } catch (eJ2) { return null; }
-  }
-  var translations = {};
-  for (var li = 0; li < langs.length; li++) {
-    var lang = langs[li];
-    var altMap = {};
-    for (var k = 0; k < idList.length; k++) {
-      var id = idList[k];
-      var per = byId[id];
-      if (!per || !per[lang]) continue;             // id absent in this lang → skip (matches banks)
-      var entry = { t: per[lang].t, a: per[lang].a };
-      if (includeCi && typeof lookupCorrectIndex === 'function') {
-        var cc = lookupCorrectIndex(Number(id), lang);
-        if (cc !== null && cc !== undefined) entry.ci = cc ^ (id % 256);
-      }
-      altMap[id] = entry;
+  try {
+    var cache = CacheService.getScriptCache();
+    var raw = cache.get(QUESTION_CACHE_PREFIX + 'tx_meta');
+    if (!raw) return null;
+    var meta = JSON.parse(raw);
+    if (!meta || !meta.g || !Array.isArray(meta.langs) || meta.langs.length !== TX_LANGS.length) return null;
+    var keys = [], needed = {};
+    for (var i = 0; i < idList.length; i++) {
+      var shard = questionTranslationShard(idList[i]);
+      if (!needed[shard]) { needed[shard] = true; keys.push(QUESTION_CACHE_PREFIX + 'tx_' + shard); }
     }
-    translations[lang] = altMap;
+    // Two cache reads total: manifest + only the needed packed shards.
+    var got = cache.getAll(keys), byId = {}, prefix = meta.g + ':';
+    for (var k = 0; k < keys.length; k++) {
+      var packed = got[keys[k]];
+      if (typeof packed !== 'string' || packed.indexOf(prefix) !== 0) return null;
+      var entries = decodeQuestionCache(packed.substring(prefix.length));
+      Object.keys(entries).forEach(function(id) { byId[id] = entries[id]; });
+    }
+    for (var j = 0; j < idList.length; j++) if (!byId[idList[j]]) return null;
+    var translations = {};
+    for (var l = 0; l < meta.langs.length; l++) {
+      var lang = meta.langs[l], altMap = {};
+      for (var q = 0; q < idList.length; q++) {
+        var id = idList[q], per = byId[id];
+        if (!per || !per[lang]) continue;
+        var entry = { t: per[lang].t, a: per[lang].a };
+        if (includeCi && typeof lookupCorrectIndex === 'function') {
+          var ci = lookupCorrectIndex(Number(id), lang);
+          if (ci !== null && ci !== undefined) entry.ci = ci ^ (id % 256);
+        }
+        altMap[id] = entry;
+      }
+      translations[lang] = altMap;
+    }
+    return translations;
+  } catch (e) {
+    Logger.log('[TX] invalid/read failed: ' + (e && e.message ? e.message : e));
+    return null;
   }
-  return translations;
 }
 
 // FALLBACK — verbatim of the original per-request logic: load each full language
@@ -4405,12 +4531,13 @@ function tryTranslationsFromIndex(idList, includeCi) {
 // behavior is never worse than before the index existed.
 function buildTranslationsFromBanks(selected, includeCi) {
   var translations = {};
+  var memo = { banks: {}, cacheStatus: {} };
   var idSet = {};
   for (var ix = 0; ix < selected.length; ix++) idSet[selected[ix].id] = true;
   for (var li = 0; li < TX_LANGS.length; li++) {
     var altLang = TX_LANGS[li];
     try {
-      var altData = loadQuestionsForLanguageServer(altLang);
+      var altData = loadQuestionsForLanguageServer(altLang, memo);
       var altMap = {};
       for (var ai = 0; ai < altData.length; ai++) {
         var aq = altData[ai];
@@ -4426,7 +4553,14 @@ function buildTranslationsFromBanks(selected, includeCi) {
         }
       }
       translations[altLang] = altMap;
-    } catch (e) { /* language file missing — skip */ }
+    } catch (e) {
+      // Keep legacy resilience for unavailable/malformed optional languages.
+      // Contention is transient and must propagate, so a retry can retain the
+      // available translations. Primary-language failures remain fatal in
+      // loadLicensePoolServer before this optional translation step.
+      if (e && e.retryable) throw e;
+      Logger.log('[TX] optional language omitted ' + altLang + ': ' + (e && e.message ? e.message : e));
+    }
   }
   return translations;
 }
@@ -4437,6 +4571,7 @@ function buildExamTranslations(selected, includeCi) {
   for (var i = 0; i < selected.length; i++) idList.push(selected[i].id);
   var fast = tryTranslationsFromIndex(idList, includeCi);
   if (fast !== null) return fast;
+  Logger.log('[TX] shard MISS: using language banks for ' + idList.length + ' selected questions');
   return buildTranslationsFromBanks(selected, includeCi);
 }
 
@@ -4519,7 +4654,7 @@ function handleGetExamQuestions(p) {
   }
 
   // Rate limit (per auth + identifier)
-  var rlId = p.sessionCode || p.idNumber || p.examinerId || p.studentId || p.standaloneIdNumber || 'anon';
+  var rlId = questionRequestRateId(p, auth);
   var rlMax = (auth === 'guest' || auth === 'standalone') ? 5 : 20;
   var rlErr = requireRateLimit('getExamQuestions_' + auth, rlId, rlMax, 60);
   if (rlErr) return rlErr;
@@ -4537,6 +4672,8 @@ function handleGetExamQuestions(p) {
   var pool;
   try { pool = loadLicensePoolServer(lang, license); }
   catch (e) {
+    var busyResponse = theoryRetryableErrorResponse(e);
+    if (busyResponse) return busyResponse;
     Logger.log('loadLicensePoolServer(' + lang + ',' + license + ') failed: ' + (e && e.message));
     return jsonResponse({ status: 'error', message: 'שגיאה בטעינת שאלות. נסה שוב.' });
   }
@@ -4676,7 +4813,7 @@ function handleGetQuestionsByIds(p) {
   }
 
   var rlErr = requireRateLimit('getQuestionsByIds_' + auth,
-    p.sessionCode || p.idNumber || p.examinerId || p.studentId || p.standaloneIdNumber || 'anon',
+    questionRequestRateId(p, auth),
     30, 60);
   if (rlErr) return rlErr;
 
@@ -4693,6 +4830,8 @@ function handleGetQuestionsByIds(p) {
   var allQuestions;
   try { allQuestions = loadQuestionsForLanguageServer(lang); }
   catch (e) {
+    var busyResponse = theoryRetryableErrorResponse(e);
+    if (busyResponse) return busyResponse;
     Logger.log('loadQuestionsForLanguageServer(' + lang + ') failed: ' + (e && e.message));
     return jsonResponse({ status: 'error', message: 'שגיאה בטעינת שאלות. נסה שוב.' });
   }

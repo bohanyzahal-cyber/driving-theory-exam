@@ -1092,6 +1092,37 @@
   }
 
   // ========== API Helper ==========
+  var API_TIMEOUT_MS = 30000;
+  // Bound the complete response, including its body. A stalled body must not
+  // hold a dashboard poll or an examiner action indefinitely. Reject even on
+  // older browsers without AbortController; abort the transport when possible.
+  function fetchJsonWithTimeout(url, opts, timeoutMs) {
+    opts = opts || {};
+    return new Promise(function(resolve, reject) {
+      var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      if (controller) opts.signal = controller.signal;
+      var settled = false;
+      var timer = setTimeout(function() {
+        var err = new Error('Request timed out');
+        err.name = 'TimeoutError';
+        finish(err);
+        if (controller) { try { controller.abort(); } catch(e) {} }
+      }, timeoutMs || API_TIMEOUT_MS);
+      function finish(err, data) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (err) reject(err); else resolve(data);
+      }
+      Promise.resolve().then(function() { return fetch(url, opts); }).then(function(response) {
+        return response.text().then(function(body) {
+          if (!response.ok) throw new Error('HTTP ' + response.status);
+          return JSON.parse(body);
+        });
+      }).then(function(data) { finish(null, data); }, function(err) { finish(err); });
+    });
+  }
+
   function apiGet(params) {
     // Auto-attach token and examinerId for authenticated requests (skip for login/verifyLogin)
     if (examinerToken && examinerData && !params.token && params.action !== 'login' && params.action !== 'verifyLogin') {
@@ -1104,7 +1135,7 @@
       if (params.hasOwnProperty(k)) qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
     }
     qs.push('_t=' + Date.now());
-    return fetch(API_URL + '?' + qs.join('&'), { cache: 'no-store' }).then(function(r) { return r.json(); }).then(function(data) {
+    return fetchJsonWithTimeout(API_URL + '?' + qs.join('&'), { cache: 'no-store' }).then(function(data) {
       if (data && data.tokenExpired && params.action !== 'login') {
         alert('פג תוקף ההתחברות — יש להתחבר מחדש');
         logout();
@@ -1123,11 +1154,11 @@
       payload.token = examinerToken;
       if (!payload.examinerId) payload.examinerId = examinerData.id;
     }
-    return fetch(API_URL, {
+    return fetchJsonWithTimeout(API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify(payload)
-    }).then(function(r) { return r.json(); });
+    });
   }
 
   // Upload result HTML to the exam-results Cloudflare Worker.
@@ -1673,6 +1704,30 @@
   resetSetupQuotas();
 
   // ========== Create Session ==========
+  function examinerMutationErrorText(error) {
+    return error && error.name === 'TimeoutError'
+      ? 'לא התקבל אישור בזמן. ייתכן שהפעולה בוצעה. בדוק את הנתונים לפני ניסיון נוסף.'
+      : 'שגיאת תקשורת. בדוק את החיבור ונסה שוב.';
+  }
+
+  function showCreateSessionRequestError(error, button, errorElement) {
+    button.disabled = false;
+    button.textContent = 'פתח בחינה';
+    errorElement.textContent = error && error.name === 'TimeoutError'
+      ? 'ייתכן שהסבב נוצר. בדוק את רשימת הסבבים הפעילים לפני יצירת סבב נוסף.'
+      : examinerMutationErrorText(error);
+    errorElement.style.display = 'block';
+    if (error && error.name === 'TimeoutError') {
+      var refresh = document.createElement('button');
+      refresh.type = 'button';
+      refresh.textContent = 'בדוק סבבים פעילים';
+      refresh.style.cssText = 'display:block;margin-top:10px;padding:8px 14px;';
+      refresh.addEventListener('click', fetchPreviousSessions);
+      errorElement.appendChild(refresh);
+      fetchPreviousSessions(); // read-only reconciliation; never create automatically
+    }
+  }
+
   document.getElementById('createSessionBtn').addEventListener('click', function() {
     var siteSelVal = document.getElementById('siteSelect').value;
     var site = siteSelVal === '__other__'
@@ -1769,10 +1824,8 @@
         errEl.textContent = data.message || 'שגיאה ביצירת סשן';
         errEl.style.display = 'block';
       }
-    }).catch(function() {
-      btn.disabled = false; btn.textContent = 'פתח בחינה';
-      errEl.textContent = 'שגיאת תקשורת. נסה שוב.';
-      errEl.style.display = 'block';
+    }).catch(function(error) {
+      showCreateSessionRequestError(error, btn, errEl);
     });
   });
 
@@ -1825,6 +1878,7 @@
   var DASH_POLL_MAX_MS = 20000;
   var dashPollDelayMs = DASH_POLL_BASE_MS;
   var dashPollGen = 0;  // stop/restart double-chain guard
+  var dashboardRequest = null;
   function dashboardPollTick() {
     var myGen = dashPollGen;
     var t0 = Date.now();
@@ -1841,25 +1895,44 @@
   }
 
   function startDashboardPolling() {
-    pollDashboard();
+    if (dashboardInterval !== null) clearTimeout(dashboardInterval);
     dashPollGen++;
     dashPollDelayMs = DASH_POLL_BASE_MS;
-    dashboardInterval = setTimeout(dashboardPollTick, dashPollDelayMs);
+    dashboardInterval = -1;
+    dashboardPollTick(); // first check immediately; next waits for completion
   }
 
   function stopDashboardPolling() {
+    dashPollGen++;
     if (dashboardInterval) { clearInterval(dashboardInterval); dashboardInterval = null; }
     if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null; }
   }
 
   function pollDashboard() {
-    console.log('[DASHBOARD] Polling session=' + sessionCode);
+    var requestedSession = sessionCode;
+    var requestedToken = examinerToken;
+    var requestedGen = dashPollGen;
+    if (dashboardRequest && dashboardRequest.session === requestedSession &&
+        dashboardRequest.token === requestedToken && dashboardRequest.generation === requestedGen) {
+      return dashboardRequest.promise; // manual refresh and automatic poll share one request
+    }
+    var request = { session: requestedSession, token: requestedToken, generation: requestedGen };
+    dashboardRequest = request;
+    function isCurrent() {
+      return requestedSession === sessionCode && requestedToken === examinerToken && requestedGen === dashPollGen;
+    }
+    function recordFailure() {
+      if (!isCurrent()) return;
+      failedPolls++;
+      if (failedPolls >= 3) document.getElementById('offlineBanner').classList.add('show');
+    }
     // Returned so the adaptive scheduler (dashboardPollTick) can measure
     // duration and pace the next poll. Handlers below are unchanged.
-    return apiGet({ action: 'examinerDashboard', sessionCode: sessionCode }).then(function(data) {
-      failedPolls = 0;
-      document.getElementById('offlineBanner').classList.remove('show');
-      if (data.status === 'ok') {
+    request.promise = apiGet({ action: 'examinerDashboard', sessionCode: requestedSession }).then(function(data) {
+      if (!isCurrent()) return;
+      if (data && data.status === 'ok') {
+        failedPolls = 0;
+        document.getElementById('offlineBanner').classList.remove('show');
         console.log('[DASHBOARD] pending=' + (data.pending||[]).length + ' active=' + (data.active||[]).length + ' completed=' + (data.completed||[]).length);
         // Cache pending so the search-input handler can re-render between polls
         // without waiting for the next 5-second tick.
@@ -1868,13 +1941,16 @@
         updateActiveList(data.active || []);
         updateCompletedList(data.completed || []);
       } else {
-        console.log('[DASHBOARD] Error:', data.message);
+        recordFailure();
+        console.log('[DASHBOARD] Server error:', data && data.message);
       }
     }).catch(function(err) {
-      failedPolls++;
+      recordFailure();
       console.log('[DASHBOARD] Network error (fails=' + failedPolls + '):', err);
-      if (failedPolls >= 3) document.getElementById('offlineBanner').classList.add('show');
+    }).then(function() {
+      if (dashboardRequest === request) dashboardRequest = null;
     });
+    return request.promise;
   }
 
   // ========== Pending list ==========
@@ -1970,8 +2046,8 @@
           errEl.textContent = 'שגיאה: ' + ((data && data.message) || 'לא ידוע'); errEl.style.display = 'block';
           confirmBtn.disabled = false; confirmBtn.textContent = 'הוסף זמן';
         }
-      }).catch(function() {
-        errEl.textContent = 'שגיאת תקשורת — נסה שוב.'; errEl.style.display = 'block';
+      }).catch(function(error) {
+        errEl.textContent = examinerMutationErrorText(error); errEl.style.display = 'block';
         confirmBtn.disabled = false; confirmBtn.textContent = 'הוסף זמן';
       });
     });
@@ -2162,8 +2238,8 @@
                 approveBtn.disabled = false;
                 approveBtn.textContent = 'אשר';
               }
-            }).catch(function() {
-              alert('שגיאת תקשורת באישור');
+            }).catch(function(error) {
+              alert(examinerMutationErrorText(error));
               approveBtn.disabled = false;
               approveBtn.textContent = 'אשר';
             });
@@ -2185,8 +2261,8 @@
                 rejectBtn.disabled = false;
                 rejectBtn.textContent = 'דחה';
               }
-            }).catch(function() {
-              alert('שגיאת תקשורת בדחייה');
+            }).catch(function(error) {
+              alert(examinerMutationErrorText(error));
               rejectBtn.disabled = false;
               rejectBtn.textContent = 'דחה';
             });
