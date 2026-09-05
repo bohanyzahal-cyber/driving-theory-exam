@@ -1,4 +1,4 @@
-# Reliability release — 2026-09-05-r1
+# Reliability release — 2026-09-05-r2
 
 This release addresses cache churn, repeated spreadsheet reads and browser requests that could remain pending after response headers arrived. The changes preserve the existing question selection, server scoring and exam registration protocol.
 
@@ -9,6 +9,7 @@ This release addresses cache churn, repeated spreadsheet reads and browser reque
 - Question request limits apply to each authenticated examinee within a session. Guest limits remain unchanged.
 - Result submission reuses spreadsheet snapshots with targeted freshness checks and retains the late full result read for duplicate detection. It avoids loading question text for a perfect score. Full history remains available for old results and retakes.
 - Client deadlines cover response bodies as well as headers. Dashboard, approval and DQ polling recover from errors without overlapping their own requests. A question-loading failure offers a cooldown-aware retry that preserves registration. Result retries retain unconfirmed data, cancel obsolete timers and distinguish different attempts on a shared device.
+- r2: a cache-builder lease is released even when the script mutex is busy at that moment. Previously a hot mutex during a class start wave could leave the lease in place for 370 seconds, and if the cache write had also failed, every later question request for that language and license received `question_cache_busy` until the lease expired. Ownership comparison protects a replacement lease without the mutex.
 - `action=health&origin=examinee-app` returns the API build marker without reading Sheets or Drive. API timing logs contain the build, method, an allowlisted action name and elapsed milliseconds; request parameters are not included.
 
 ## Offline validation
@@ -38,7 +39,7 @@ GitHub Pages and Apps Script deploy separately. The client update remains compat
 
 1. Update the existing Apps Script source with the complete `external_exam_apps_script.js`. Keep the existing private answer-key file and script properties.
 2. Publish a new version of the existing web-app deployment so its `/exec` URL remains unchanged.
-3. Check that the public health response reports `build: "2026-09-05-r1"`. A successful Pages deployment does not prove this server step occurred.
+3. Check that the public health response reports `build: "2026-09-05-r2"`. A successful Pages deployment does not prove this server step occurred.
 4. Run `warmupQuestionCaches` in the Apps Script editor. Its summary must contain no `ERROR` or `cached=false`. Final cache verification must show `ready: true` and `missingOrMixedKeys: 0`. `questionCacheStatus` is also available as a read-only editor function. CacheService may evict entries later; this check is a snapshot.
 5. Confirm the existing warmup trigger runs every four hours. Before the exam day, perform a complete controlled exam on two devices and verify that the examiner receives the result. Check API execution logs during that test, including `getExamQuestions`, `registerExamQuestions` and `submitResult`.
 

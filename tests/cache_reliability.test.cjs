@@ -198,6 +198,28 @@ const owned=failure.ctx.claimQuestionCacheLease('owner-test');
 failure.properties.set(owned.key,JSON.stringify({owner:'new-owner',until:Date.now()+100000}));
 failure.ctx.releaseQuestionCacheLease(owned);
 assert.equal(JSON.parse(failure.properties.get(owned.key)).owner,'new-owner','old owner cannot remove replacement lease');
+// A hot mutex at release time (start wave) must not strand the lease: the
+// next miss on that resource has to build, not report "busy" for 370 seconds.
+const hot=environment(banks);
+hot.rejectWrites(true); // keep the record absent so the next request must claim the lease again
+assert.equal(hot.ctx.loadQuestionsForLanguageServer('he').length,banks.he.length);
+hot.rejectWrites(false);
+const contended=hot.ctx.claimQuestionCacheLease('bank_he');
+hot.setHeld(true);
+hot.ctx.releaseQuestionCacheLease(contended);
+hot.setHeld(false);
+assert.equal(hot.properties.has(contended.key),false,'lease released even when the mutex is busy');
+assert.ok(hot.logs.some(s=>s.includes('lease released without mutex')));
+assert.equal(hot.ctx.loadQuestionsForLanguageServer('he').length,banks.he.length,'next miss builds instead of reporting busy');
+assert.equal(hot.reads.he,2);
+// Without the mutex, a replacement owner is still protected.
+const replaced=hot.ctx.claimQuestionCacheLease('mutex-busy-owner');
+hot.properties.set(replaced.key,JSON.stringify({owner:'someone-else',until:Date.now()+100000}));
+hot.setHeld(true);
+hot.ctx.releaseQuestionCacheLease(replaced);
+hot.setHeld(false);
+assert.equal(JSON.parse(hot.properties.get(replaced.key)).owner,'someone-else');
+hot.properties.delete(replaced.key);
 failure.properties.set('qv2_lease_expired',JSON.stringify({owner:'expired',until:Date.now()-1}));
 const expiredReplacement=failure.ctx.claimQuestionCacheLease('expired');
 assert.notEqual(expiredReplacement.owner,'expired');

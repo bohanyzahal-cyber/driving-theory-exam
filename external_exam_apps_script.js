@@ -550,7 +550,7 @@ function todayStr() {
 }
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-05-r1';
+var THEORY_API_BUILD = '2026-09-05-r2';
 var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
 
 function logTheoryApiTiming(phase, method, action, startedAt) {
@@ -4237,19 +4237,23 @@ function claimQuestionCacheLease(resource) {
 function releaseQuestionCacheLease(lease) {
   if (!lease) return;
   var lock = LockService.getScriptLock();
-  if (!lock.tryLock(200)) {
-    Logger.log('[CACHE] lease release deferred until expiry: ' + lease.key);
-    return;
-  }
+  var locked = lock.tryLock(200);
+  // A busy mutex must NOT leave the lease in place: a start wave keeps the
+  // mutex hot exactly when the builder finishes, and an unreleased lease
+  // makes every later miss on this resource "busy" for up to 370 seconds.
+  // Owner comparison is sufficient without the mutex: while this lease is
+  // unexpired nobody else can claim the key, and after expiry a replacement
+  // carries a different owner, so the delete below cannot remove it.
   try {
     var props = PropertiesService.getScriptProperties();
     var raw = props.getProperty(lease.key);
     var current = raw ? JSON.parse(raw) : null;
     if (current && current.owner === lease.owner) props.deleteProperty(lease.key);
+    if (!locked) Logger.log('[CACHE] lease released without mutex: ' + lease.key);
   } catch (e) {
     Logger.log('[CACHE] lease release failed: ' + (e && e.message ? e.message : e));
   } finally {
-    lock.releaseLock();
+    if (locked) lock.releaseLock();
   }
 }
 

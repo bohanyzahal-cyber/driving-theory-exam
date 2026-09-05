@@ -68,7 +68,7 @@ test('health identifies build without Sheets, Drive or private parameters', () =
   ctx.getSheet = () => { throw new Error('health must not access Sheets'); };
   const result = ctx.doGet({ parameter: { action: 'health', origin: 'examinee-app', token: 'DO_NOT_LOG_ME' } });
   assert.equal(result.status, 'ok');
-  assert.equal(result.build, '2026-09-05-r1');
+  assert.equal(result.build, '2026-09-05-r2');
   assert.equal(logs.length, 2);
   assert.ok(logs[0].includes('"phase":"start"'));
   assert.ok(logs[1].includes('"phase":"end"'));
