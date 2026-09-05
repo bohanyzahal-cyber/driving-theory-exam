@@ -1701,7 +1701,7 @@
   // approvalInterval now holds a setTimeout id; clearInterval() clears those too,
   // so every existing "clearInterval(approvalInterval); approvalInterval = null"
   // stop-site keeps working unchanged.
-  var APPROVAL_POLL_BASE_MS = 8000;
+  var APPROVAL_POLL_BASE_MS = 5000;  // r6: back to 5s (was 8s while cache reads were failing server-side)
   var APPROVAL_POLL_MAX_MS = 20000;
   var approvalPollDelayMs = APPROVAL_POLL_BASE_MS;
   // Generation counter: a tick whose request was in flight while polling was

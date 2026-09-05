@@ -1874,7 +1874,7 @@
   // immediately without touching this chain. dashboardInterval now holds a
   // setTimeout id; clearInterval() clears those too, so stopDashboardPolling
   // keeps working unchanged.
-  var DASH_POLL_BASE_MS = 8000;
+  var DASH_POLL_BASE_MS = 5000;  // r6: back to 5s (was 8s while cache reads were failing server-side)
   var DASH_POLL_MAX_MS = 20000;
   var dashPollDelayMs = DASH_POLL_BASE_MS;
   var dashPollGen = 0;  // stop/restart double-chain guard

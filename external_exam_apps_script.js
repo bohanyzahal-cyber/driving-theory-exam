@@ -550,7 +550,7 @@ function todayStr() {
 }
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-05-r5';
+var THEORY_API_BUILD = '2026-09-05-r6';
 var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
 
 function logTheoryApiTiming(phase, method, action, startedAt) {
@@ -4593,12 +4593,24 @@ function buildExamTranslations(selected, includeCi) {
 // affected. The answer is cached ~60s so practice calls don't re-scan the
 // sessions sheet (which would add the very load we're removing). It self-clears
 // within ~60s after the last session closes or expires.
+// r6: OFF by default. The block was introduced while every practice request
+// rebuilt a full question pool (the cache was unreadable, see r5). A practice
+// request is now a ~2s cache hit, so class practice no longer competes with
+// exams. Re-enable without a deployment by setting the Script Property
+// PRACTICE_BLOCK_DURING_EXAMS to "on" (takes effect within ~60s); remove it or
+// set anything else to disable again.
+var PRACTICE_BLOCK_PROPERTY = 'PRACTICE_BLOCK_DURING_EXAMS';
 function isExamSessionActiveForPracticeBlock() {
   try {
     var cache = CacheService.getScriptCache();
     var flag = cache.get('exam_active_block');
     if (flag === 'Y') return true;
     if (flag === 'N') return false;
+    var enabled = String(PropertiesService.getScriptProperties().getProperty(PRACTICE_BLOCK_PROPERTY) || '').trim().toLowerCase() === 'on';
+    if (!enabled) {
+      try { cache.put('exam_active_block', 'N', 60); } catch (eOff) {}
+      return false;
+    }
     // Cache miss (at most once per 60s) → scan the sessions sheet once. Same
     // active-session rule the examiner dashboard uses: פעיל(10) true AND not
     // past תקף עד(9).
