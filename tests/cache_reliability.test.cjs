@@ -56,9 +56,9 @@ function environment(banks) {
     remove(key) { entries.delete(key); },
     removeAll(keys) { for (const key of keys) entries.delete(key); }
   };
-  function blob(data) {
+  function blob(data, contentType) {
     const bytes = typeof data === 'string' ? Buffer.from(data,'utf8') : Buffer.from(data);
-    return { getBytes: () => [...bytes], getDataAsString: () => bytes.toString('utf8') };
+    return { contentType: contentType || null, getBytes: () => [...bytes], getDataAsString: () => bytes.toString('utf8') };
   }
   function unlocked() { if (held) stats.lockedWork++; assert.equal(held, false, 'global mutex must not cover expensive work'); }
   const ctx = {
@@ -75,8 +75,9 @@ function environment(banks) {
     } },
     Utilities: {
       getUuid: randomUUID, newBlob: blob,
-      gzip: b => { unlocked(); return blob(zlib.gzipSync(Buffer.from(b.getBytes()))); },
-      ungzip: b => { unlocked(); return blob(zlib.gunzipSync(Buffer.from(b.getBytes()))); },
+      gzip: b => { unlocked(); return blob(zlib.gzipSync(Buffer.from(b.getBytes())), 'application/x-gzip'); },
+      // Apps Script: Utilities.ungzip throws for a Blob created without a content type.
+      ungzip: b => { unlocked(); if (!b.contentType) throw new Error('Blob object must have non-null content type for this operation'); return blob(zlib.gunzipSync(Buffer.from(b.getBytes()))); },
       base64Encode: b => Buffer.from(b).toString('base64'),
       base64Decode: s => [...Buffer.from(s,'base64')],
       sleep() { stats.sleeps++; throw new Error('sleep is forbidden on cache contention'); }
@@ -125,6 +126,7 @@ assert.deepEqual(env.reads, Object.fromEntries(langs.map(l => [l,1])), 'warmup r
 assert.ok(![...env.entries.keys()].some(k => /^tx_/.test(k)), 'legacy translation keys removed even without metadata');
 assert.equal(env.ctx.questionCacheStatus().ready,true);
 assert.ok(env.ctx.questionCacheStatus().presentKeys <=304);
+assert.equal(env.ctx.questionCacheStatus().decodeFailures, 0, 'status decodes a real pool and a real shard');
 assert.ok(![...env.entries.keys()].some(k => /^qv2_bank_/.test(k)), 'full language banks are never cached');
 assert.ok(env.stats.maxBytes <81000);
 const evictionsAfterWarmup = env.stats.evictions;

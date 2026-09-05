@@ -550,7 +550,7 @@ function todayStr() {
 }
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-05-r4';
+var THEORY_API_BUILD = '2026-09-05-r5';
 var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
 
 function logTheoryApiTiming(phase, method, action, startedAt) {
@@ -4141,7 +4141,12 @@ function encodeQuestionCache(value) {
 }
 
 function decodeQuestionCache(encoded) {
-  return JSON.parse(Utilities.ungzip(Utilities.newBlob(Utilities.base64Decode(encoded))).getDataAsString('UTF-8'));
+  // Utilities.ungzip refuses a Blob without a content type ("Blob object must
+  // have non-null content type for this operation"). Without the explicit type
+  // every cache read failed in production (r1-r4) and every request rebuilt
+  // its pool from Drive while the shared cache looked healthy.
+  var gz = Utilities.newBlob(Utilities.base64Decode(encoded), 'application/x-gzip', 'cache.gz');
+  return JSON.parse(Utilities.ungzip(gz).getDataAsString('UTF-8'));
 }
 
 function readQuestionCacheRecord(cache, key, maxParts) {
@@ -4177,8 +4182,17 @@ function writeQuestionCacheRecord(cache, key, value, maxParts) {
       values[partKey] = generation + ':' + encoded.substring(i * QUESTION_CACHE_PART_BYTES, (i + 1) * QUESTION_CACHE_PART_BYTES);
     }
     cache.putAll(values, 21600);
-    var check = cache.getAll(keys);
-    for (var j = 0; j < keys.length; j++) if (check[keys[j]] !== values[keys[j]]) throw new Error('chunk missing immediately after write');
+    var check = cache.getAll(keys), joined = '';
+    for (var j = 0; j < keys.length; j++) {
+      if (check[keys[j]] !== values[keys[j]]) throw new Error('chunk missing immediately after write');
+      joined += check[keys[j]].substring(generation.length + 1);
+    }
+    // Round-trip the read-back bytes through the real decoder. A string-only
+    // comparison passed for four releases while every decode was failing.
+    var decoded = decodeQuestionCache(joined);
+    var expectedLength = Array.isArray(value) ? value.length : Object.keys(value).length;
+    var decodedLength = Array.isArray(decoded) ? decoded.length : Object.keys(decoded).length;
+    if (decodedLength !== expectedLength) throw new Error('read-back decode mismatch (' + decodedLength + '/' + expectedLength + ')');
     // Publish only after all chunks were verified. Readers reject mixed generations.
     var meta = JSON.stringify({ g: generation, n: n });
     cache.put(key + '_meta', meta, 21600);
@@ -4276,7 +4290,14 @@ function questionCacheStatus() {
     present++;
     for (var s = 0; s < QUESTION_TX_SHARDS; s++) required[QUESTION_CACHE_PREFIX + 'tx_' + s] = tx.g + ':';
   }
-  var keys = Object.keys(required), maxBytes = 0;
+  var keys = Object.keys(required), maxBytes = 0, decodeChecks = 0, decodeFailures = 0;
+  // Decode a real pool record and a real shard, not only their prefixes.
+  try {
+    var probePool = readQuestionCacheRecord(cache, QUESTION_CACHE_PREFIX + 'pool_he_B', QUESTION_POOL_MAX_PARTS);
+    decodeChecks++; if (!Array.isArray(probePool) || !probePool.length) decodeFailures++;
+    var probeTx = tryTranslationsFromIndex(probePool && probePool.length ? [probePool[0].id] : [1], false);
+    decodeChecks++; if (!probeTx) decodeFailures++;
+  } catch (eProbe) { decodeFailures++; }
   for (var start = 0; start < keys.length; start += 50) {
     var batch = keys.slice(start, start + 50), values = cache.getAll(batch);
     for (var k = 0; k < batch.length; k++) {
@@ -4285,7 +4306,8 @@ function questionCacheStatus() {
       else { present++; maxBytes = Math.max(maxBytes, value.length); }
     }
   }
-  return { ready: missing === 0, presentKeys: present, missingOrMixedKeys: missing, maxValueBytes: maxBytes,
+  return { ready: missing === 0 && decodeFailures === 0, presentKeys: present, missingOrMixedKeys: missing, maxValueBytes: maxBytes,
+    decodeChecks: decodeChecks, decodeFailures: decodeFailures,
     translationLanguages: tx && Array.isArray(tx.langs) ? tx.langs.length : 0, reservedKeyLimit: QUESTION_CACHE_RESERVED_KEYS };
 }
 
@@ -4472,6 +4494,9 @@ function buildTranslationIndexCache(memo, skipFailedLanguages) {
     for (var k = 0; k < keys.length; k++) {
       if (verified[keys[k]] !== values[keys[k]]) throw new Error('Translation shard missing immediately after write');
     }
+    // Decode one read-back shard with the real decoder (see writeQuestionCacheRecord).
+    var probe = decodeQuestionCache(verified[keys[0]].substring(generation.length + 1));
+    if (Object.keys(probe).length !== Object.keys(shards[0]).length) throw new Error('Translation shard read-back decode mismatch');
     if (!langs.length) throw new Error('No language bank could be loaded');
     var meta = JSON.stringify({ g: generation, langs: langs, count: ids.length, builtAt: Date.now() });
     cache.put(QUESTION_CACHE_PREFIX + 'tx_meta', meta, 21600);
