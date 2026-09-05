@@ -1,15 +1,19 @@
-# Reliability release — 2026-09-05-r3
+# Reliability release — 2026-09-05-r4
 
 This release addresses cache churn, repeated spreadsheet reads and browser requests that could remain pending after response headers arrived. The changes preserve the existing question selection, server scoring and exam registration protocol.
 
 ## Changes
 
-- Question banks and license pools use gzip/base64 records with generation checks. Each value stays below 81 KB. Seven banks, 35 pools and the packed translation index reserve at most 423 cache keys, instead of approximately 1,700 individual translation keys alone.
+- Question banks and license pools use gzip/base64 records with generation checks. Each value stays below 81 KB. Seven banks, 35 pools and the packed translation index reserve at most 423 cache keys, instead of approximately 1,700 individual translation keys alone. (Superseded in r4: banks are no longer cached and the budget is 304 keys.)
 - Warmup reads each language bank once per invocation, reuses the data, renews the bank TTL, removes legacy entries and verifies the complete cache after writing all pools. Cold builders claim an owned lease under a short script lock; competing requests receive a retryable response instead of sleeping inside Apps Script. The script lock is released before reading Drive or processing questions.
 - Question request limits apply to each authenticated examinee within a session. Guest limits remain unchanged.
 - Result submission reuses spreadsheet snapshots with targeted freshness checks and retains the late full result read for duplicate detection. It avoids loading question text for a perfect score. Full history remains available for old results and retakes.
 - Client deadlines cover response bodies as well as headers. Dashboard, approval and DQ polling recover from errors without overlapping their own requests. A question-loading failure offers a cooldown-aware retry that preserves registration. Result retries retain unconfirmed data, cancel obsolete timers and distinguish different attempts on a shared device.
 - r2: a cache-builder lease is released even when the script mutex is busy at that moment. Previously a hot mutex during a class start wave could leave the lease in place for 370 seconds, and if the cache write had also failed, every later question request for that language and license received `question_cache_busy` until the lease expired. Ownership comparison protects a replacement lease without the mutex.
+- r4: exam start measured against the live r3 deployment took 22-48 s (one request exceeded 90 s) while `health` answered in 2.5 s, and `question_cache_busy` appeared 80 minutes after a verified warmup, i.e. cache records were being evicted and rebuilt. Two causes were removed:
+  - A live `getExamQuestions` no longer falls back to loading all seven language banks (about 5 s each) when a single translation shard is missing. The exam starts without prefetched translations and the client fetches a language on demand through `getQuestionsByIds`, which it already did for older responses.
+  - Full language banks are no longer cached. Reading a bank back from CacheService (16 chunks, base64, gunzip, JSON.parse) took 5-6 s in production, the same as reading the JSON from Drive, while the seven banks used roughly 40% of the shared cache and pushed out the pools and shards that live requests need. Banks are read from Drive and memoised per request; the reserved cache budget drops from 423 to 304 keys. Warmup removes the r1-r3 bank records.
+  - The translation index tolerates a language whose JSON is absent from Drive (it is left out; `questionCacheStatus` reports `translationLanguages`). A transient failure never replaces a fuller index that is already published.
 - r3: no code change. The build marker is bumped so that a full re-paste of this file into the Apps Script editor can be verified from `health`. The editor project had accumulated code that was never committed (a `result-lease cleanup` step in warmup); after r3 the editor file is identical to `external_exam_apps_script.js` in Git, and `appsscript.json` is tracked.
 - `action=health&origin=examinee-app` returns the API build marker without reading Sheets or Drive. API timing logs contain the build, method, an allowlisted action name and elapsed milliseconds; request parameters are not included.
 
@@ -40,7 +44,7 @@ GitHub Pages and Apps Script deploy separately. The client update remains compat
 
 1. Update the existing Apps Script source with the complete `external_exam_apps_script.js`. Keep the existing private answer-key file and script properties.
 2. Publish a new version of the existing web-app deployment so its `/exec` URL remains unchanged.
-3. Check that the public health response reports `build: "2026-09-05-r3"`. A successful Pages deployment does not prove this server step occurred.
+3. Check that the public health response reports `build: "2026-09-05-r4"`. A successful Pages deployment does not prove this server step occurred.
 4. Run `warmupQuestionCaches` in the Apps Script editor. Its summary must contain no `ERROR` or `cached=false`. Final cache verification must show `ready: true` and `missingOrMixedKeys: 0`. `questionCacheStatus` is also available as a read-only editor function. CacheService may evict entries later; this check is a snapshot.
 5. Confirm the existing warmup trigger runs every four hours. Before the exam day, perform a complete controlled exam on two devices and verify that the examiner receives the result. Check API execution logs during that test, including `getExamQuestions`, `registerExamQuestions` and `submitResult`.
 

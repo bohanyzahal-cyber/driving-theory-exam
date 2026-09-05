@@ -124,7 +124,8 @@ assert.ok(report.every(line => !line.includes('ERROR') && !line.includes('cached
 assert.deepEqual(env.reads, Object.fromEntries(langs.map(l => [l,1])), 'warmup reads each Drive bank once');
 assert.ok(![...env.entries.keys()].some(k => /^tx_/.test(k)), 'legacy translation keys removed even without metadata');
 assert.equal(env.ctx.questionCacheStatus().ready,true);
-assert.ok(env.ctx.questionCacheStatus().presentKeys <=423);
+assert.ok(env.ctx.questionCacheStatus().presentKeys <=304);
+assert.ok(![...env.entries.keys()].some(k => /^qv2_bank_/.test(k)), 'full language banks are never cached');
 assert.ok(env.stats.maxBytes <81000);
 const evictionsAfterWarmup = env.stats.evictions;
 // Reserve realistic ephemeral traffic alongside all long-lived cache records.
@@ -145,24 +146,33 @@ for (const lang of langs) for (const license of licenses) {
   assert.deepEqual(got,expected,'license filter must precede deduplication');
 }
 assert.deepEqual(env.reads,Object.fromEntries(langs.map(l=>[l,1])),'warm reads never touch Drive');
-// A four-hour warmup must renew cached banks as well as derived pools/index.
-const initialExpiry=env.entries.get('qv2_bank_he_meta').expires;
+// A four-hour warmup renews the derived pools and index. Banks are read from
+// Drive once per run and never cached (a cached bank costs as much to decode).
+const initialExpiry=env.entries.get('qv2_pool_he_B_meta').expires;
 env.advance(4*60*60*1000);
 env.ctx.warmupQuestionCaches();
-assert.ok(env.entries.get('qv2_bank_he_meta').expires>initialExpiry,'cache hits receive a renewed TTL');
+assert.ok(env.entries.get('qv2_pool_he_B_meta').expires>initialExpiry,'pools receive a renewed TTL');
+assert.deepEqual(env.reads,Object.fromEntries(langs.map(l=>[l,2])),'each warmup reads every bank from Drive exactly once');
 env.advance(3*60*60*1000);
-assert.equal(env.ctx.loadQuestionsForLanguageServer('he').length,banks.he.length);
-assert.deepEqual(env.reads,Object.fromEntries(langs.map(l=>[l,1])),'renewed bank survives beyond original six-hour expiry');
+assert.ok(env.ctx.loadLicensePoolServer('he','B').length>0);
+assert.deepEqual(json(env.ctx.tryTranslationsFromIndex([1,2,3],false)),expectedTranslations(banks,[1,2,3],false));
+assert.deepEqual(env.reads,Object.fromEntries(langs.map(l=>[l,2])),'renewed pools/index survive beyond the original six-hour expiry without Drive');
 
 // Missing/corrupt/mixed shards must never produce incomplete translations.
 const ids=[1,2,3,1729], shardKey='qv2_tx_'+env.ctx.questionTranslationShard(1);
 const oldShard=env.cache.get(shardKey);
 env.cache.remove(shardKey);
 assert.equal(env.ctx.tryTranslationsFromIndex(ids,false),null);
-assert.deepEqual(json(env.ctx.buildExamTranslations(ids.map(id=>({id})),false)),expectedTranslations(banks,ids,false));
+// A missing shard never sends a live exam start to the seven language banks:
+// the exam starts without prefetched translations and Drive is untouched.
+const readsBeforeMiss=json(env.reads);
+assert.equal(env.ctx.buildExamTranslations(ids.map(id=>({id})),false),null);
+assert.deepEqual(env.reads,readsBeforeMiss,'shard miss must not read language banks');
+assert.ok(env.logs.some(l=>l.includes('shard MISS')));
 env.cache.put(shardKey, 'different-generation:'+oldShard.split(':').slice(1).join(':'),21600);
 assert.equal(env.ctx.tryTranslationsFromIndex(ids,false),null);
 env.cache.put(shardKey, oldShard,21600);
+assert.deepEqual(json(env.ctx.buildExamTranslations(ids.map(id=>({id})),false)),expectedTranslations(banks,ids,false));
 
 // Byte encoding protects multibyte JSON; truncated gzip and mixed generation
 // chunks are detected before returning a value.
@@ -175,10 +185,11 @@ assert.equal(env.ctx.readQuestionCacheRecord(env.cache,'unicode-fixture',16),nul
 assert.equal(env.ctx.writeQuestionCacheRecord(env.cache,'over-budget-fixture',{noise:randomBytes(200000).toString('base64')},1),false);
 assert.equal(env.cache.get('over-budget-fixture_meta'),null,'oversized record never publishes a manifest');
 
-// True lease contention returns immediately: no extra Drive read and no sleeps.
+// True lease contention on a pool build returns immediately: no extra Drive
+// read and no sleeps. Bank reads themselves take no lease.
 const cold=environment(banks);
-cold.beforeDrive(lang=>assert.throws(()=>cold.ctx.loadQuestionsForLanguageServer(lang),e=>e.code==='question_cache_busy'&&e.retryable&&e.waitSec===3));
-cold.ctx.loadQuestionsForLanguageServer('he');
+cold.beforeDrive(lang=>assert.throws(()=>cold.ctx.loadLicensePoolServer('he','B'),e=>e.code==='question_cache_busy'&&e.retryable&&e.waitSec===3));
+assert.ok(cold.ctx.loadLicensePoolServer('he','B').length>0);
 assert.equal(cold.reads.he,1);
 assert.equal(cold.stats.sleeps,0);
 assert.equal(cold.stats.lockedWork,0);
@@ -191,9 +202,11 @@ cold.setHeld(false);
 const failure=environment(banks);
 failure.beforeDrive(()=>{throw new Error('injected Drive failure');});
 assert.throws(()=>failure.ctx.loadQuestionsForLanguageServer('he'),/injected Drive failure/);
+assert.throws(()=>failure.ctx.loadLicensePoolServer('he','B'),/injected Drive failure/);
 assert.equal([...failure.properties.keys()].filter(k=>k.includes('lease_')).length,0);
 failure.beforeDrive(null);
 assert.equal(failure.ctx.loadQuestionsForLanguageServer('he').length,banks.he.length);
+assert.ok(failure.ctx.loadLicensePoolServer('he','B').length>0);
 const owned=failure.ctx.claimQuestionCacheLease('owner-test');
 failure.properties.set(owned.key,JSON.stringify({owner:'new-owner',until:Date.now()+100000}));
 failure.ctx.releaseQuestionCacheLease(owned);
@@ -202,15 +215,15 @@ assert.equal(JSON.parse(failure.properties.get(owned.key)).owner,'new-owner','ol
 // next miss on that resource has to build, not report "busy" for 370 seconds.
 const hot=environment(banks);
 hot.rejectWrites(true); // keep the record absent so the next request must claim the lease again
-assert.equal(hot.ctx.loadQuestionsForLanguageServer('he').length,banks.he.length);
+assert.ok(hot.ctx.loadLicensePoolServer('he','B').length>0);
 hot.rejectWrites(false);
-const contended=hot.ctx.claimQuestionCacheLease('bank_he');
+const contended=hot.ctx.claimQuestionCacheLease('pool_he_B');
 hot.setHeld(true);
 hot.ctx.releaseQuestionCacheLease(contended);
 hot.setHeld(false);
 assert.equal(hot.properties.has(contended.key),false,'lease released even when the mutex is busy');
 assert.ok(hot.logs.some(s=>s.includes('lease released without mutex')));
-assert.equal(hot.ctx.loadQuestionsForLanguageServer('he').length,banks.he.length,'next miss builds instead of reporting busy');
+assert.ok(hot.ctx.loadLicensePoolServer('he','B').length>0,'next miss builds instead of reporting busy');
 assert.equal(hot.reads.he,2);
 // Without the mutex, a replacement owner is still protected.
 const replaced=hot.ctx.claimQuestionCacheLease('mutex-busy-owner');
@@ -230,31 +243,47 @@ failure.ctx.releaseQuestionCacheLease(expiredReplacement);
 // within that run even when every cache write fails.
 const outage=environment(banks), memo={banks:{},cacheStatus:{}};
 outage.rejectWrites(true);
-assert.equal(outage.ctx.loadQuestionsForLanguageServer('he',memo).length,banks.he.length);
-assert.equal(outage.ctx.loadQuestionsForLanguageServer('he',memo).length,banks.he.length);
+assert.ok(outage.ctx.loadLicensePoolServer('he','B',false,memo).length>0);
+assert.ok(outage.ctx.loadLicensePoolServer('he','C',false,memo).length>0);
 assert.equal(outage.reads.he,1);
-assert.equal(memo.cacheStatus.he,false);
+assert.equal(memo.cacheStatus['he/B'],false);
 assert.ok(outage.logs.some(s=>s.includes('WRITE FAILED')));
 
-// A missing index plus busy bank must bubble up retryability, not omit a language.
+// No index yet: the live path returns no translations and never touches Drive,
+// even while another builder holds a pool lease.
 const busy=environment(banks);
-busy.ctx.claimQuestionCacheLease('bank_he');
-assert.throws(()=>busy.ctx.buildExamTranslations([{id:1}],false),e=>e.code==='question_cache_busy');
+busy.ctx.claimQuestionCacheLease('pool_he_B');
+assert.equal(busy.ctx.buildExamTranslations([{id:1}],false),null);
+assert.deepEqual(busy.reads,{});
+// A language whose JSON is genuinely absent from Drive is left out of the index.
 const optionalBanks={...banks}; delete optionalBanks.am;
 const optional=environment(optionalBanks);
+const optionalReport=optional.ctx.warmupQuestionCaches();
+assert.ok(optionalReport.some(l=>l.startsWith('am: ERROR')));
+assert.ok(optionalReport.some(l=>l.startsWith('translation-index: ') && l.includes('languages=he,ru,en,ar,fr,es;')));
 assert.deepEqual(json(optional.ctx.buildExamTranslations([{id:1}],false)),expectedTranslations(optionalBanks,[1],false),'genuinely absent optional language retains legacy behavior');
+assert.equal(optional.ctx.questionCacheStatus().translationLanguages,6);
+// A transient failure with nothing published yet still yields the six available languages.
 for (const optionalFailure of ['empty','malformed','unreadable']) {
   const altered={...banks,am:optionalFailure==='empty'?[]:'not-a-question-array'};
   const degraded=environment(altered);
   if (optionalFailure==='unreadable') degraded.beforeDrive(lang=>{if(lang==='am')throw new Error('optional Drive unavailable');});
+  const degradedReport=degraded.ctx.warmupQuestionCaches();
+  assert.ok(degradedReport.some(l=>l.startsWith('am: ERROR')),optionalFailure);
   assert.deepEqual(json(degraded.ctx.buildExamTranslations([{id:1}],false)),expectedTranslations(optionalBanks,[1],false),'nonretryable '+optionalFailure+' optional bank retains baseline behavior');
-  assert.ok(degraded.logs.some(line=>line.includes('optional language omitted am')));
 }
 
 // Emergency reset invalidates translations too and reloads all seven banks.
 env.ctx.emergencyClearAndRefreshCache();
-assert.deepEqual(env.reads,Object.fromEntries(langs.map(l=>[l,2])));
+assert.deepEqual(env.reads,Object.fromEntries(langs.map(l=>[l,3])));
 assert.equal(env.ctx.questionCacheStatus().ready,true);
+// A transient failure of one language must not replace a fuller published index.
+env.beforeDrive(lang=>{if(lang==='am')throw new Error('transient Drive failure');});
+const transientReport=env.ctx.warmupQuestionCaches();
+env.beforeDrive(null);
+assert.ok(transientReport.some(l=>l.startsWith('translation-index: ERROR - skipped')));
+assert.equal(env.ctx.questionCacheStatus().translationLanguages,7,'seven-language index stays in service');
+assert.deepEqual(json(env.ctx.tryTranslationsFromIndex([1,2],false)),expectedTranslations(banks,[1,2],false));
 console.log('PASS synthetic: 1,750 IDs; exact seven-language/ci parity; bounded UTF-8 cache; legacy cleanup; leases; failure recovery; reset');
 
 if (process.argv[2]) {
@@ -273,6 +302,6 @@ if (process.argv[2]) {
   }
   const status=real.ctx.questionCacheStatus();
   assert.equal(status.ready,true);
-  assert.ok(status.presentKeys<=423);
+  assert.ok(status.presentKeys<=304);
   console.log('PASS optional real banks: '+JSON.stringify({uniqueIds:realIds.length,...json(status)}));
 }

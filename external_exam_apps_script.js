@@ -550,7 +550,7 @@ function todayStr() {
 }
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-05-r3';
+var THEORY_API_BUILD = '2026-09-05-r4';
 var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
 
 function logTheoryApiTiming(phase, method, action, startedAt) {
@@ -3975,45 +3975,33 @@ function handleCancelFailOnClose(data) {
 //
 // Check the returned cache verification, not only the trigger's completion.
 function warmupQuestionCaches() {
-  // Explicit request-local memo: each language is loaded at most once during
-  // this run and reused by all five pools and the translation index.
-  var memo = { banks: {}, cacheStatus: {} }, summary = [];
+  // Explicit request-local memo: each language is read from Drive at most once
+  // during this run and reused by all five pools and the translation index.
+  var memo = { banks: {}, cacheStatus: {} }, summary = [], transientFailures = 0;
   for (var i = 0; i < TX_LANGS.length; i++) {
     var lang = TX_LANGS[i], t0 = Date.now();
     try {
       var data = loadQuestionsForLanguageServer(lang, memo);
       summary.push(lang + ': loaded ' + data.length + ' questions in ' + (Date.now() - t0) + 'ms');
     } catch (e) {
+      if (!(e && e.code === 'question_language_unavailable')) transientFailures++;
       summary.push(lang + ': ERROR - ' + (e && e.message ? e.message : e));
     }
   }
   var cache = CacheService.getScriptCache();
   try { clearLegacyQuestionCaches(cache, memo.banks); }
   catch (eOld) { summary.push('legacy cleanup: ERROR - ' + (eOld && eOld.message)); }
-  // Renew all bank TTLs from the local memo AFTER removing legacy keys. This
-  // also repairs first-migration eviction by the old oversized index. A warm
-  // cache hit must still get a fresh TTL when the four-hour trigger runs.
-  for (var b = 0; b < TX_LANGS.length; b++) {
-    var bankLang = TX_LANGS[b];
-    if (!memo.banks[bankLang]) continue;
-    var bankKey = QUESTION_CACHE_PREFIX + 'bank_' + bankLang;
-    var repairLease = null;
+  // A language whose JSON is genuinely absent from Drive is left out of the
+  // index (clients fetch it on demand). A transient failure (Drive error,
+  // malformed file) must not replace a fuller index that is already published.
+  var loadedLangs = Object.keys(memo.banks).length;
+  if (loadedLangs > 0 && (transientFailures === 0 || loadedLangs >= publishedTranslationLanguageCount(cache))) {
     try {
-      repairLease = claimQuestionCacheLease('bank_' + bankLang);
-      memo.cacheStatus[bankLang] = writeQuestionCacheRecord(cache, bankKey, memo.banks[bankLang], QUESTION_BANK_MAX_PARTS);
-    } catch (eRepair) { memo.cacheStatus[bankLang] = false; summary.push(bankLang + ' refresh: ERROR - ' + (eRepair && eRepair.message)); }
-    finally { releaseQuestionCacheLease(repairLease); }
-    summary.push(bankLang + ': bank cached=' + memo.cacheStatus[bankLang]);
-  }
-  // Never advertise an incomplete refresh as ready. A missing language stays
-  // visible in the report and the previous complete index remains in service.
-  if (Object.keys(memo.banks).length === TX_LANGS.length) {
-    try {
-      var tx = buildTranslationIndexCache(memo);
-      summary.push('translation-index: ' + tx.count + ' questions; cached=' + tx.cached);
+      var tx = buildTranslationIndexCache(memo, true);
+      summary.push('translation-index: ' + tx.count + ' questions; languages=' + tx.langs.join(',') + '; cached=' + tx.cached);
     } catch (eTx) { summary.push('translation-index: ERROR - ' + (eTx && eTx.message)); }
   } else {
-    summary.push('translation-index: ERROR - skipped because a language bank failed');
+    summary.push('translation-index: ERROR - skipped; a language failed transiently and the published index is fuller');
   }
   var licenses = Object.keys(EXAM_STRUCTURE_SERVER);
   for (var l = 0; l < TX_LANGS.length; l++) {
@@ -4027,7 +4015,7 @@ function warmupQuestionCaches() {
     }
     summary.push('pools ' + code + ': ' + parts.join(' '));
   }
-  summary.push('persistent cache budget: <=423 keys; individual values <81KB');
+  summary.push('persistent cache budget: <=' + QUESTION_CACHE_RESERVED_KEYS + ' keys (pools + translation shards; banks are not cached); individual values <81KB');
   try { summary.push('cache verification: ' + JSON.stringify(questionCacheStatus())); }
   catch (eCheck) { summary.push('cache verification: ERROR - ' + (eCheck && eCheck.message)); }
   Logger.log('warmupQuestionCaches complete:\n' + summary.join('\n'));
@@ -4048,15 +4036,12 @@ function warmupQuestionCaches() {
 // Then check Logger output (View → Logs or "Execution log" panel).
 function emergencyClearAndRefreshCache() {
   var cache = CacheService.getScriptCache(), report = [];
-  for (var i = 0; i < TX_LANGS.length; i++) {
-    var lang = TX_LANGS[i];
-    clearQuestionCacheRecord(cache, QUESTION_CACHE_PREFIX + 'bank_' + lang, QUESTION_BANK_MAX_PARTS);
-  }
+  clearQuestionBankCacheKeys(cache);
   clearAllLicensePools(cache, TX_LANGS);
   var keys = [QUESTION_CACHE_PREFIX + 'tx_meta'];
   for (var s = 0; s < QUESTION_TX_SHARDS; s++) keys.push(QUESTION_CACHE_PREFIX + 'tx_' + s);
   cache.removeAll(keys);
-  report.push('Cleared banks, pools AND translations; rebuilding from Drive.');
+  report.push('Cleared pools AND translations (and any legacy bank records); rebuilding from Drive.');
   report = report.concat(warmupQuestionCaches());
   var out = report.join('\n');
   Logger.log(out);
@@ -4140,6 +4125,8 @@ var QUESTION_CACHE_PART_BYTES = 80000;
 var QUESTION_BANK_MAX_PARTS = 16;
 var QUESTION_POOL_MAX_PARTS = 4;
 var QUESTION_TX_SHARDS = 128;
+// 35 pools x (manifest + 4 parts) + 128 translation shards + 1 manifest.
+var QUESTION_CACHE_RESERVED_KEYS = 304;
 
 function questionCacheBusy() {
   var err = new Error('מאגר השאלות מתעדכן כעת. יש לנסות שוב בעוד מספר שניות.');
@@ -4269,7 +4256,6 @@ function normalizeQuestionCacheLanguage(lang) {
 function questionCacheStatus() {
   var cache = CacheService.getScriptCache(), records = [], licenses = Object.keys(EXAM_STRUCTURE_SERVER);
   for (var l = 0; l < TX_LANGS.length; l++) {
-    records.push({ key: QUESTION_CACHE_PREFIX + 'bank_' + TX_LANGS[l], max: QUESTION_BANK_MAX_PARTS });
     for (var c = 0; c < licenses.length; c++) records.push({ key: QUESTION_CACHE_PREFIX + 'pool_' + TX_LANGS[l] + '_' + licenses[c], max: QUESTION_POOL_MAX_PARTS });
   }
   var metaKeys = records.map(function(r) { return r.key + '_meta'; });
@@ -4285,7 +4271,7 @@ function questionCacheStatus() {
   }
   var tx = null;
   try { tx = JSON.parse(metas[txKey] || 'null'); } catch (eTx) {}
-  if (!tx || !tx.g || !Array.isArray(tx.langs) || tx.langs.length !== TX_LANGS.length) missing++;
+  if (!tx || !tx.g || !Array.isArray(tx.langs) || !tx.langs.length) missing++;
   else {
     present++;
     for (var s = 0; s < QUESTION_TX_SHARDS; s++) required[QUESTION_CACHE_PREFIX + 'tx_' + s] = tx.g + ':';
@@ -4299,7 +4285,8 @@ function questionCacheStatus() {
       else { present++; maxBytes = Math.max(maxBytes, value.length); }
     }
   }
-  return { ready: missing === 0, presentKeys: present, missingOrMixedKeys: missing, maxValueBytes: maxBytes, reservedKeyLimit: 423 };
+  return { ready: missing === 0, presentKeys: present, missingOrMixedKeys: missing, maxValueBytes: maxBytes,
+    translationLanguages: tx && Array.isArray(tx.langs) ? tx.langs.length : 0, reservedKeyLimit: QUESTION_CACHE_RESERVED_KEYS };
 }
 
 // Removal does not depend on old metadata surviving eviction. Old code used up
@@ -4325,47 +4312,47 @@ function clearLegacyQuestionCaches(cache, banks) {
   }
   Object.keys(seen).forEach(function(id) { keys.push('tx_' + id); });
   for (var i = 0; i < keys.length; i += 100) cache.removeAll(keys.slice(i, i + 100));
-  Logger.log('[CACHE] removed legacy bank/pool keys and ' + Object.keys(seen).length + ' legacy translation keys');
+  var bankKeys = clearQuestionBankCacheKeys(cache);
+  Logger.log('[CACHE] removed legacy bank/pool keys, ' + bankKeys + ' r1-r3 bank record keys and ' + Object.keys(seen).length + ' legacy translation keys');
 }
+// Full language banks are NOT cached in CacheService any more (r4). Measured in
+// production: reading a bank back from the cache (16 x 80KB base64 chunks,
+// base64-decode, gunzip, JSON.parse of ~2MB) took 5-6s, the same as reading the
+// JSON from Drive, while the seven banks occupied ~40% of the shared cache and
+// pushed the pools/translation shards that live requests actually need out of
+// it. Banks are read from Drive and memoised per request; only the derived
+// per-license pools and the packed translation index are cached.
 function loadQuestionsForLanguageServer(lang, memo) {
   var safeLang = normalizeQuestionCacheLanguage(lang);
   if (memo && memo.banks && memo.banks[safeLang]) return memo.banks[safeLang];
-  var cache = CacheService.getScriptCache(), key = QUESTION_CACHE_PREFIX + 'bank_' + safeLang;
-  function remember(data, cached) {
-    if (memo) {
-      if (!memo.banks) memo.banks = {};
-      if (!memo.cacheStatus) memo.cacheStatus = {};
-      memo.banks[safeLang] = data;
-      memo.cacheStatus[safeLang] = cached;
-    }
-    return data;
+  var t0 = Date.now();
+  var folderId = PropertiesService.getScriptProperties().getProperty('QUESTIONS_DRIVE_FOLDER_ID');
+  if (!folderId) throw new Error('QUESTIONS_DRIVE_FOLDER_ID not configured in ScriptProperties');
+  var folder = DriveApp.getFolderById(folderId);
+  var fileName = 'questions_' + safeLang + '.json';
+  var files = folder.getFilesByName(fileName);
+  if (!files.hasNext()) {
+    var missing = new Error(fileName + ' not found in Drive folder');
+    missing.code = 'question_language_unavailable';
+    throw missing;
   }
-  var hit = readQuestionCacheRecord(cache, key, QUESTION_BANK_MAX_PARTS);
-  if (Array.isArray(hit) && hit.length) return remember(hit, true);
-  var lease = claimQuestionCacheLease('bank_' + safeLang);
-  try {
-    // A builder may have finished between the first read and lease acquisition.
-    hit = readQuestionCacheRecord(cache, key, QUESTION_BANK_MAX_PARTS);
-    if (Array.isArray(hit) && hit.length) return remember(hit, true);
-    var t0 = Date.now();
-    var folderId = PropertiesService.getScriptProperties().getProperty('QUESTIONS_DRIVE_FOLDER_ID');
-    if (!folderId) throw new Error('QUESTIONS_DRIVE_FOLDER_ID not configured in ScriptProperties');
-    var folder = DriveApp.getFolderById(folderId);
-    var fileName = 'questions_' + safeLang + '.json';
-    var files = folder.getFilesByName(fileName);
-    if (!files.hasNext()) {
-      var missing = new Error(fileName + ' not found in Drive folder');
-      missing.code = 'question_language_unavailable';
-      throw missing;
-    }
-    var parsed = JSON.parse(files.next().getBlob().getDataAsString('UTF-8'));
-    if (!Array.isArray(parsed) || !parsed.length) throw new Error(fileName + ' is empty or invalid; cache not updated');
-    var cached = writeQuestionCacheRecord(cache, key, parsed, QUESTION_BANK_MAX_PARTS);
-    Logger.log('[CACHE] bank MISS ' + safeLang + ': ' + parsed.length + ' rows; cached=' + cached + '; ' + (Date.now() - t0) + 'ms');
-    return remember(parsed, cached);
-  } finally {
-    releaseQuestionCacheLease(lease);
+  var parsed = JSON.parse(files.next().getBlob().getDataAsString('UTF-8'));
+  if (!Array.isArray(parsed) || !parsed.length) throw new Error(fileName + ' is empty or invalid');
+  Logger.log('[BANK] Drive read ' + safeLang + ': ' + parsed.length + ' rows; ' + (Date.now() - t0) + 'ms');
+  if (memo) {
+    if (!memo.banks) memo.banks = {};
+    memo.banks[safeLang] = parsed;
   }
+  return parsed;
+}
+
+// Legacy (r1-r3) bank records: remove them so the space goes to pools/shards.
+function clearQuestionBankCacheKeys(cache) {
+  var removed = 0;
+  for (var l = 0; l < TX_LANGS.length; l++) {
+    removed += clearQuestionCacheRecord(cache, QUESTION_CACHE_PREFIX + 'bank_' + TX_LANGS[l], QUESTION_BANK_MAX_PARTS);
+  }
+  return removed;
 }
 
 // ========== Per-license question pools ==========
@@ -4438,15 +4425,29 @@ function questionTranslationShard(id) {
   return hash % QUESTION_TX_SHARDS;
 }
 
-function buildTranslationIndexCache(memo) {
+// skipFailedLanguages: the caller (warmup) has already decided that a partial
+// index is acceptable; any language that fails to load is left out. Without it
+// only a language whose JSON is genuinely absent from Drive is skipped.
+function buildTranslationIndexCache(memo, skipFailedLanguages) {
   var lease = claimQuestionCacheLease('translations');
   try {
     var cache = CacheService.getScriptCache(), banks = {}, byId = {};
     memo = memo || { banks: {}, cacheStatus: {} };
+    var langs = [];
     for (var l = 0; l < TX_LANGS.length; l++) {
       var lang = TX_LANGS[l];
-      // A failed/busy language aborts before touching the published index.
-      var rows = loadQuestionsForLanguageServer(lang, memo);
+      var rows;
+      try { rows = loadQuestionsForLanguageServer(lang, memo); }
+      catch (eLang) {
+        // Only a genuinely absent optional language is skipped; anything else
+        // aborts before touching the published index.
+        if (skipFailedLanguages || (eLang && eLang.code === 'question_language_unavailable')) {
+          Logger.log('[TX] language omitted from index: ' + lang + ' (' + (eLang && eLang.message ? eLang.message : eLang) + ')');
+          continue;
+        }
+        throw eLang;
+      }
+      langs.push(lang);
       banks[lang] = rows;
       for (var q = 0; q < rows.length; q++) {
         var row = rows[q];
@@ -4471,17 +4472,25 @@ function buildTranslationIndexCache(memo) {
     for (var k = 0; k < keys.length; k++) {
       if (verified[keys[k]] !== values[keys[k]]) throw new Error('Translation shard missing immediately after write');
     }
-    var meta = JSON.stringify({ g: generation, langs: TX_LANGS.slice(), count: ids.length, builtAt: Date.now() });
+    if (!langs.length) throw new Error('No language bank could be loaded');
+    var meta = JSON.stringify({ g: generation, langs: langs, count: ids.length, builtAt: Date.now() });
     cache.put(QUESTION_CACHE_PREFIX + 'tx_meta', meta, 21600);
     if (cache.get(QUESTION_CACHE_PREFIX + 'tx_meta') !== meta) throw new Error('Translation manifest missing after write');
-    Logger.log('[TX] index cached: ' + ids.length + ' questions in ' + QUESTION_TX_SHARDS + ' shards');
-    return { count: ids.length, langs: TX_LANGS.slice(), cached: true };
+    Logger.log('[TX] index cached: ' + ids.length + ' questions, ' + langs.length + ' languages, in ' + QUESTION_TX_SHARDS + ' shards');
+    return { count: ids.length, langs: langs, cached: true };
   } catch (e) {
     Logger.log('[TX] WRITE FAILED: ' + (e && e.message ? e.message : e));
     throw e;
   } finally {
     releaseQuestionCacheLease(lease);
   }
+}
+
+function publishedTranslationLanguageCount(cache) {
+  try {
+    var meta = JSON.parse(cache.get(QUESTION_CACHE_PREFIX + 'tx_meta') || 'null');
+    return meta && Array.isArray(meta.langs) ? meta.langs.length : 0;
+  } catch (e) { return 0; }
 }
 
 // Assemble translations for the selected questions from the per-id index. Returns
@@ -4493,7 +4502,7 @@ function tryTranslationsFromIndex(idList, includeCi) {
     var raw = cache.get(QUESTION_CACHE_PREFIX + 'tx_meta');
     if (!raw) return null;
     var meta = JSON.parse(raw);
-    if (!meta || !meta.g || !Array.isArray(meta.langs) || meta.langs.length !== TX_LANGS.length) return null;
+    if (!meta || !meta.g || !Array.isArray(meta.langs) || !meta.langs.length) return null;
     var keys = [], needed = {};
     for (var i = 0; i < idList.length; i++) {
       var shard = questionTranslationShard(idList[i]);
@@ -4530,53 +4539,19 @@ function tryTranslationsFromIndex(idList, includeCi) {
   }
 }
 
-// FALLBACK — verbatim of the original per-request logic: load each full language
-// bank and pull out the selected ids. Used only when the index isn't ready, so
-// behavior is never worse than before the index existed.
-function buildTranslationsFromBanks(selected, includeCi) {
-  var translations = {};
-  var memo = { banks: {}, cacheStatus: {} };
-  var idSet = {};
-  for (var ix = 0; ix < selected.length; ix++) idSet[selected[ix].id] = true;
-  for (var li = 0; li < TX_LANGS.length; li++) {
-    var altLang = TX_LANGS[li];
-    try {
-      var altData = loadQuestionsForLanguageServer(altLang, memo);
-      var altMap = {};
-      for (var ai = 0; ai < altData.length; ai++) {
-        var aq = altData[ai];
-        if (aq && idSet[aq.id]) {
-          var entry = { t: aq.text, a: aq.answers };
-          if (includeCi && typeof lookupCorrectIndex === 'function') {
-            var altCorrect = lookupCorrectIndex(Number(aq.id), altLang);
-            if (altCorrect !== null && altCorrect !== undefined) {
-              entry.ci = altCorrect ^ (aq.id % 256);
-            }
-          }
-          altMap[aq.id] = entry;
-        }
-      }
-      translations[altLang] = altMap;
-    } catch (e) {
-      // Keep legacy resilience for unavailable/malformed optional languages.
-      // Contention is transient and must propagate, so a retry can retain the
-      // available translations. Primary-language failures remain fatal in
-      // loadLicensePoolServer before this optional translation step.
-      if (e && e.retryable) throw e;
-      Logger.log('[TX] optional language omitted ' + altLang + ': ' + (e && e.message ? e.message : e));
-    }
-  }
-  return translations;
-}
-
-// Fast path first; fall back to the banks if the index isn't ready/complete.
+// Live exam start never loads full language banks (r4). When the packed index
+// is not ready or a shard is missing, the exam starts WITHOUT prefetched
+// translations; the client already falls back to getQuestionsByIds on a
+// mid-exam language switch. The previous fallback loaded all seven banks in the
+// request (~5s each, ~35s total) and was the measured cause of 30-50s exam
+// starts whenever a single shard had been evicted.
 function buildExamTranslations(selected, includeCi) {
   var idList = [];
   for (var i = 0; i < selected.length; i++) idList.push(selected[i].id);
   var fast = tryTranslationsFromIndex(idList, includeCi);
   if (fast !== null) return fast;
-  Logger.log('[TX] shard MISS: using language banks for ' + idList.length + ' selected questions');
-  return buildTranslationsFromBanks(selected, includeCi);
+  Logger.log('[TX] shard MISS: exam starts without prefetched translations for ' + idList.length + ' questions (client fetches on demand)');
+  return null;
 }
 
 // Pick 30 questions per the license blueprint, return them WITHOUT the
