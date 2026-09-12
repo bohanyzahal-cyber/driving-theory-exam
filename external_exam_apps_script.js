@@ -550,7 +550,7 @@ function todayStr() {
 }
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-05-r6';
+var THEORY_API_BUILD = '2026-09-12-r7';
 var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
 
 function logTheoryApiTiming(phase, method, action, startedAt) {
@@ -3965,6 +3965,13 @@ function handleCancelFailOnClose(data) {
 // pools and translation shards; its final verification reports whether they
 // all survived in the shared cache. Timings depend on Drive/service health.
 //
+// The run is time-boxed well under Google's 360-second kill and resumes:
+// it rebuilds the translation index only when the published one is missing
+// or older than four hours, refreshes pool languages from a stored cursor,
+// and stops early rather than being killed mid-build. A summary line ending
+// in PARTIAL is normal and means the next scheduled run continues from the
+// cursor it reports; only ERROR lines need attention.
+//
 // Setup (one-time): in Apps Script editor →
 //   Triggers (clock icon, left sidebar) → Add Trigger
 //   Function: warmupQuestionCaches
@@ -3974,52 +3981,209 @@ function handleCancelFailOnClose(data) {
 //   Save (you'll be asked to authorize)
 //
 // Check the returned cache verification, not only the trigger's completion.
-function warmupQuestionCaches() {
-  // Explicit request-local memo: each language is read from Drive at most once
-  // during this run and reused by all five pools and the translation index.
+function warmupQuestionCaches(options) {
+  var opts = options || {};
+  var started = Date.now();
+  var budget = opts.budgetMs > 0 ? Math.min(opts.budgetMs, WARMUP_MAX_BUDGET_MS) : WARMUP_BUDGET_MS;
+  var deadline = started + budget;
   var memo = { banks: {}, cacheStatus: {} }, summary = [], transientFailures = 0;
-  for (var i = 0; i < TX_LANGS.length; i++) {
-    var lang = TX_LANGS[i], t0 = Date.now();
-    try {
-      var data = loadQuestionsForLanguageServer(lang, memo);
-      summary.push(lang + ': loaded ' + data.length + ' questions in ' + (Date.now() - t0) + 'ms');
-    } catch (e) {
-      if (!(e && e.code === 'question_language_unavailable')) transientFailures++;
-      summary.push(lang + ': ERROR - ' + (e && e.message ? e.message : e));
+  var cache = CacheService.getScriptCache();
+  var state = opts.resetCursor === true ? { langIdx: 0 } : readWarmupState();
+  var partial = false;
+  // Reserves grow from this run's own measurements: a unit is started only
+  // while the time left still covers the slowest unit of its kind so far.
+  var bankMaxMs = WARMUP_BANK_RESERVE_MS, poolMaxMs = WARMUP_POOL_RESERVE_MS;
+
+  // ---- Language banks + translation index ----------------------------------
+  // The index needs every bank in memory at once and is the heaviest single
+  // unit, while its cache TTL is six hours. Rebuilding it on every hourly run
+  // was most of the work that pushed the run into Google's 360-second kill.
+  var txAge = translationIndexAgeMs(cache);
+  var txMissing = txAge === null;
+  var txDue = opts.forceTranslations === true || txMissing || txAge > WARMUP_TX_MAX_AGE_MS;
+  // No published index at all is the worst state to be in: every exam start
+  // falls back to parsing whole banks. Such a run gets the larger budget, and
+  // if even that cannot load all seven banks it still spends what it loaded on
+  // pools rather than wasting the reads.
+  if (txDue && txMissing && !(opts.budgetMs > 0)) {
+    deadline = started + WARMUP_MAX_BUDGET_MS;
+    summary.push('translation-index: MISSING - this run takes the larger ' + WARMUP_MAX_BUDGET_MS + 'ms budget');
+  }
+  // A rebuild needs every bank in one execution, so it is attempted only when
+  // the whole phase can be expected to fit. A stale index that keeps serving is
+  // better than a run that spends its budget loading banks it cannot use.
+  var txEstimateMs = TX_LANGS.length * bankMaxMs + WARMUP_TX_RESERVE_MS;
+  if (txDue && !txMissing && deadline - Date.now() < txEstimateMs) {
+    txDue = false;
+    partial = true;
+    summary.push('translation-index: SKIPPED - a rebuild needs about ' + txEstimateMs +
+      'ms and this run has ' + (deadline - Date.now()) + 'ms; the published index keeps serving');
+  } else if (!txDue) {
+    summary.push('translation-index: SKIPPED - published ' + Math.round(txAge / 60000) +
+      ' min ago (rebuilt after ' + Math.round(WARMUP_TX_MAX_AGE_MS / 60000) + ' min)');
+  }
+  if (txDue) {
+    var loadedAll = true;
+    for (var i = 0; i < TX_LANGS.length; i++) {
+      if (deadline - Date.now() < bankMaxMs + WARMUP_TX_RESERVE_MS) {
+        loadedAll = false; partial = true;
+        summary.push('bank loads: PARTIAL - budget too short to reach ' + TX_LANGS[i] +
+          '; the published index is left untouched');
+        break;
+      }
+      var lang = TX_LANGS[i], t0 = Date.now();
+      try {
+        var data = loadQuestionsForLanguageServer(lang, memo);
+        var bankMs = Date.now() - t0;
+        if (bankMs > bankMaxMs) bankMaxMs = bankMs;
+        summary.push(lang + ': loaded ' + data.length + ' questions in ' + bankMs + 'ms');
+      } catch (e) {
+        if (!(e && e.code === 'question_language_unavailable')) transientFailures++;
+        summary.push(lang + ': ERROR - ' + (e && e.message ? e.message : e));
+      }
+    }
+    try { clearLegacyQuestionCachesOnce(cache, memo.banks, summary); }
+    catch (eOld) { summary.push('legacy cleanup: ERROR - ' + (eOld && eOld.message)); }
+    // A language whose JSON is genuinely absent from Drive is left out of the
+    // index (clients fetch it on demand). A transient failure (Drive error,
+    // malformed file) must not replace a fuller index that is already
+    // published - and neither may a run that ran out of budget mid-load.
+    var loadedLangs = Object.keys(memo.banks).length;
+    if (loadedAll && loadedLangs > 0 &&
+        (transientFailures === 0 || loadedLangs >= publishedTranslationLanguageCount(cache))) {
+      try {
+        var tx = buildTranslationIndexCache(memo, true);
+        summary.push('translation-index: ' + tx.count + ' questions; languages=' + tx.langs.join(',') + '; cached=' + tx.cached);
+      } catch (eTx) { summary.push('translation-index: ERROR - ' + (eTx && eTx.message)); }
+    } else if (loadedAll) {
+      summary.push('translation-index: ERROR - skipped; a language failed transiently and the published index is fuller');
     }
   }
-  var cache = CacheService.getScriptCache();
-  try { clearLegacyQuestionCaches(cache, memo.banks); }
-  catch (eOld) { summary.push('legacy cleanup: ERROR - ' + (eOld && eOld.message)); }
-  // A language whose JSON is genuinely absent from Drive is left out of the
-  // index (clients fetch it on demand). A transient failure (Drive error,
-  // malformed file) must not replace a fuller index that is already published.
-  var loadedLangs = Object.keys(memo.banks).length;
-  if (loadedLangs > 0 && (transientFailures === 0 || loadedLangs >= publishedTranslationLanguageCount(cache))) {
-    try {
-      var tx = buildTranslationIndexCache(memo, true);
-      summary.push('translation-index: ' + tx.count + ' questions; languages=' + tx.langs.join(',') + '; cached=' + tx.cached);
-    } catch (eTx) { summary.push('translation-index: ERROR - ' + (eTx && eTx.message)); }
-  } else {
-    summary.push('translation-index: ERROR - skipped; a language failed transiently and the published index is fuller');
-  }
-  var licenses = Object.keys(EXAM_STRUCTURE_SERVER);
-  for (var l = 0; l < TX_LANGS.length; l++) {
-    var code = TX_LANGS[l], parts = [];
-    if (!memo.banks[code]) continue;
+
+  // ---- Per-license pools, resumed from the stored cursor -------------------
+  // Each language costs one Drive read (banks are not cached) plus five pool
+  // builds. Whatever does not fit in this run is picked up by the next run from
+  // the same cursor, so every language is refreshed well inside the six-hour
+  // pool TTL while no single run approaches the kill limit.
+  var licenses = Object.keys(EXAM_STRUCTURE_SERVER), langsBuilt = 0;
+  // The rotation is computed from where this run started: reading the cursor
+  // inside the loop, while the loop itself advances it, walks the languages in
+  // a stride that repeats some and never reaches others.
+  var startIdx = state.langIdx;
+  for (var step = 0; step < TX_LANGS.length; step++) {
+    var idx = (startIdx + step) % TX_LANGS.length, code = TX_LANGS[idx];
+    var need = (memo.banks[code] ? 0 : bankMaxMs) + poolMaxMs + WARMUP_TAIL_RESERVE_MS;
+    if (deadline - Date.now() < need) { partial = true; break; }
+    if (!memo.banks[code]) {
+      var tBank = Date.now();
+      try {
+        loadQuestionsForLanguageServer(code, memo);
+        var lazyMs = Date.now() - tBank;
+        if (lazyMs > bankMaxMs) bankMaxMs = lazyMs;
+      } catch (eBank) {
+        // An optional language with no JSON in Drive is expected, not a fault:
+        // keep ERROR lines meaningful for the post-deploy check.
+        var absent = eBank && eBank.code === 'question_language_unavailable';
+        summary.push('pools ' + code + (absent ? ': SKIPPED - no bank in Drive' :
+          ': ERROR - bank unavailable (' + (eBank && eBank.message ? eBank.message : eBank) + ')'));
+        state.langIdx = (idx + 1) % TX_LANGS.length;
+        continue;
+      }
+    }
+    var parts = [], langPartial = false;
     for (var c = 0; c < licenses.length; c++) {
+      if (deadline - Date.now() < poolMaxMs + WARMUP_TAIL_RESERVE_MS) { langPartial = true; partial = true; break; }
+      var tPool = Date.now();
       try {
         var pool = loadLicensePoolServer(code, licenses[c], true, memo);
+        var poolMs = Date.now() - tPool;
+        if (poolMs > poolMaxMs) poolMaxMs = poolMs;
         parts.push(licenses[c] + '=' + pool.length + '; cached=' + memo.cacheStatus[code + '/' + licenses[c]]);
       } catch (ePool) { parts.push(licenses[c] + '=ERROR(' + (ePool && ePool.message) + ')'); }
     }
-    summary.push('pools ' + code + ': ' + parts.join(' '));
+    summary.push('pools ' + code + (langPartial ? ' PARTIAL' : '') + ': ' + parts.join(' '));
+    // A language cut in half is rebuilt from its first license next run: the
+    // cursor advances only past a language whose five pools were all written.
+    if (langPartial) break;
+    state.langIdx = (idx + 1) % TX_LANGS.length;
+    langsBuilt++;
   }
+  writeWarmupState(state);
+
   summary.push('persistent cache budget: <=' + QUESTION_CACHE_RESERVED_KEYS + ' keys (pools + translation shards; banks are not cached); individual values <81KB');
-  try { summary.push('cache verification: ' + JSON.stringify(questionCacheStatus())); }
-  catch (eCheck) { summary.push('cache verification: ERROR - ' + (eCheck && eCheck.message)); }
+  if (deadline - Date.now() > WARMUP_VERIFY_RESERVE_MS) {
+    try { summary.push('cache verification: ' + JSON.stringify(questionCacheStatus())); }
+    catch (eCheck) { summary.push('cache verification: ERROR - ' + (eCheck && eCheck.message)); }
+  } else {
+    summary.push('cache verification: SKIPPED - out of budget; run questionCacheStatus() from the editor');
+  }
+  summary.push('warmup ' + (partial ? 'PARTIAL' : 'COMPLETE') + ': ' + langsBuilt + '/' + TX_LANGS.length +
+    ' pool languages in ' + (Date.now() - started) + 'ms of a ' + (deadline - started) + 'ms budget; next cursor=' + TX_LANGS[state.langIdx] +
+    (partial ? ' (the next scheduled run continues from there)' : ''));
   Logger.log('warmupQuestionCaches complete:\n' + summary.join('\n'));
   return summary;
+}
+
+// ---- Warmup budget, resume cursor and one-time legacy sweep ---------------
+// Apps Script kills an execution at 360 seconds, and a killed run never reaches
+// a finally block: every cache lease it held stays locked for its full
+// 370-second TTL, on exactly the resource it failed to publish. That resource
+// is then both missing from the cache and unbuildable, so live requests for it
+// answer question_cache_busy until the lease expires. Two production runs died
+// that way (2026-09-09 and 2026-09-11, both starting 08:29, killed at 361s),
+// inside the exam-morning start wave. Hence the budget: the run stops on its
+// own terms, releases its leases, records how far it got, and the next
+// scheduled run continues from there.
+var WARMUP_BUDGET_MS = 240000;       // four minutes of the six-minute ceiling
+var WARMUP_MAX_BUDGET_MS = 300000;   // cap on a caller-supplied budget
+var WARMUP_TX_MAX_AGE_MS = 14400000; // rebuild the index after 4h of its 6h TTL
+var WARMUP_BANK_RESERVE_MS = 8000;   // measured Drive read + parse: 5-6s/bank
+var WARMUP_POOL_RESERVE_MS = 8000;   // filter + dedupe + gzip + write per pool
+var WARMUP_TX_RESERVE_MS = 75000;    // index build after the last bank load
+var WARMUP_TAIL_RESERVE_MS = 5000;
+var WARMUP_VERIFY_RESERVE_MS = 25000;
+var WARMUP_STATE_KEY = 'warmup_state';
+var WARMUP_LEGACY_KEY = 'warmup_legacy_cleared';
+
+function readWarmupState() {
+  try {
+    var raw = PropertiesService.getScriptProperties().getProperty(QUESTION_CACHE_PREFIX + WARMUP_STATE_KEY);
+    var state = raw ? JSON.parse(raw) : null;
+    if (state && typeof state.langIdx === 'number' && state.langIdx >= 0 && state.langIdx < TX_LANGS.length) return state;
+  } catch (e) {}
+  return { langIdx: 0 };
+}
+
+function writeWarmupState(state) {
+  try {
+    PropertiesService.getScriptProperties().setProperty(QUESTION_CACHE_PREFIX + WARMUP_STATE_KEY, JSON.stringify(state));
+  } catch (e) { Logger.log('[WARMUP] cursor write failed: ' + (e && e.message)); }
+}
+
+// Age of the published translation index, or null when none is published.
+function translationIndexAgeMs(cache) {
+  try {
+    var meta = JSON.parse(cache.get(QUESTION_CACHE_PREFIX + 'tx_meta') || 'null');
+    if (!meta || !meta.builtAt) return null;
+    var age = Date.now() - meta.builtAt;
+    return age > 0 ? age : 0;
+  } catch (e) { return null; }
+}
+
+// The legacy sweep deletes ~7,160 r1-r3 keys in ~72 CacheService round-trips.
+// It is a migration, not maintenance: nothing writes those keys any more, so
+// once it has run against a complete set of banks there is nothing left to
+// find. Delete the ScriptProperty below to re-arm it after a rollback.
+function clearLegacyQuestionCachesOnce(cache, banks, summary) {
+  var props = PropertiesService.getScriptProperties();
+  if (props.getProperty(QUESTION_CACHE_PREFIX + WARMUP_LEGACY_KEY) === '1') return;
+  if (Object.keys(banks).length < TX_LANGS.length) {
+    summary.push('legacy cleanup: deferred until one run loads every bank');
+    return;
+  }
+  clearLegacyQuestionCaches(cache, banks);
+  props.setProperty(QUESTION_CACHE_PREFIX + WARMUP_LEGACY_KEY, '1');
+  summary.push('legacy cleanup: completed once; skipped from now on');
 }
 
 // ========== Emergency cache reset ==========
@@ -4042,7 +4206,7 @@ function emergencyClearAndRefreshCache() {
   for (var s = 0; s < QUESTION_TX_SHARDS; s++) keys.push(QUESTION_CACHE_PREFIX + 'tx_' + s);
   cache.removeAll(keys);
   report.push('Cleared pools AND translations (and any legacy bank records); rebuilding from Drive.');
-  report = report.concat(warmupQuestionCaches());
+  report = report.concat(warmupQuestionCaches({ forceTranslations: true, resetCursor: true }));
   var out = report.join('\n');
   Logger.log(out);
   return out;
