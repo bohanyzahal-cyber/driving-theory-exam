@@ -550,7 +550,7 @@ function todayStr() {
 }
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-12-r7';
+var THEORY_API_BUILD = '2026-09-12-r8';
 var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
 
 function logTheoryApiTiming(phase, method, action, startedAt) {
@@ -4042,8 +4042,6 @@ function warmupQuestionCaches(options) {
         summary.push(lang + ': ERROR - ' + (e && e.message ? e.message : e));
       }
     }
-    try { clearLegacyQuestionCachesOnce(cache, memo.banks, summary); }
-    catch (eOld) { summary.push('legacy cleanup: ERROR - ' + (eOld && eOld.message)); }
     // A language whose JSON is genuinely absent from Drive is left out of the
     // index (clients fetch it on demand). A transient failure (Drive error,
     // malformed file) must not replace a fuller index that is already
@@ -4143,7 +4141,6 @@ var WARMUP_TX_RESERVE_MS = 75000;    // index build after the last bank load
 var WARMUP_TAIL_RESERVE_MS = 5000;
 var WARMUP_VERIFY_RESERVE_MS = 25000;
 var WARMUP_STATE_KEY = 'warmup_state';
-var WARMUP_LEGACY_KEY = 'warmup_legacy_cleared';
 
 function readWarmupState() {
   try {
@@ -4170,20 +4167,51 @@ function translationIndexAgeMs(cache) {
   } catch (e) { return null; }
 }
 
-// The legacy sweep deletes ~7,160 r1-r3 keys in ~72 CacheService round-trips.
-// It is a migration, not maintenance: nothing writes those keys any more, so
-// once it has run against a complete set of banks there is nothing left to
-// find. Delete the ScriptProperty below to re-arm it after a rollback.
-function clearLegacyQuestionCachesOnce(cache, banks, summary) {
-  var props = PropertiesService.getScriptProperties();
-  if (props.getProperty(QUESTION_CACHE_PREFIX + WARMUP_LEGACY_KEY) === '1') return;
-  if (Object.keys(banks).length < TX_LANGS.length) {
-    summary.push('legacy cleanup: deferred until one run loads every bank');
-    return;
+// The r1-r3 key sweep is GONE from the warmup. It deleted ~7,160 keys in ~72
+// CacheService round-trips on every run and cannot find anything any more:
+// nothing has written those key names since r4, and a CacheService entry lives
+// at most six hours, so they expired within six hours of that deploy. Measured
+// 2026-09-12 in production: banks + all 35 pools + verification take 58s, so
+// that sweep and the translation index together accounted for roughly 300 of
+// the 361 seconds Google killed on 09-09 and 09-11. clearLegacyQuestionCaches
+// itself is left in the file, uncalled, as a manual escape hatch: run it from
+// the editor if a rollback to r1-r3 ever re-creates those key names.
+
+// Editor helper: rebuild ONLY the translation index and report how long its
+// phases really take. Run it from the editor in a quiet window to measure the
+// heaviest unit in the system, and to leave a fresh index before an exam
+// morning. It never touches the per-license pools.
+function warmupTranslationIndexOnly() {
+  var t0 = Date.now(), memo = { banks: {}, cacheStatus: {} }, summary = [];
+  for (var i = 0; i < TX_LANGS.length; i++) {
+    var lang = TX_LANGS[i], tb = Date.now();
+    try {
+      var rows = loadQuestionsForLanguageServer(lang, memo);
+      summary.push(lang + ': loaded ' + rows.length + ' questions in ' + (Date.now() - tb) + 'ms');
+    } catch (e) {
+      summary.push(lang + ': ERROR - ' + (e && e.message ? e.message : e));
+    }
   }
-  clearLegacyQuestionCaches(cache, banks);
-  props.setProperty(QUESTION_CACHE_PREFIX + WARMUP_LEGACY_KEY, '1');
-  summary.push('legacy cleanup: completed once; skipped from now on');
+  var loaded = Object.keys(memo.banks).length, banksMs = Date.now() - t0, indexMs = 0;
+  if (loaded < TX_LANGS.length) {
+    summary.push('translation-index: ABORTED - only ' + loaded + '/' + TX_LANGS.length +
+      ' banks loaded; the published index is left untouched');
+  } else {
+    var tIndex = Date.now();
+    try {
+      var tx = buildTranslationIndexCache(memo, true);
+      indexMs = Date.now() - tIndex;
+      summary.push('translation-index: ' + tx.count + ' questions; languages=' + tx.langs.join(',') +
+        '; cached=' + tx.cached);
+    } catch (eTx) {
+      indexMs = Date.now() - tIndex;
+      summary.push('translation-index: ERROR - ' + (eTx && eTx.message));
+    }
+  }
+  summary.push('phase timings: banks ' + banksMs + 'ms, index build ' + indexMs + 'ms, total ' +
+    (Date.now() - t0) + 'ms (Google kills an execution at 360000ms)');
+  Logger.log('warmupTranslationIndexOnly:' + '\n' + summary.join('\n'));
+  return summary;
 }
 
 // ========== Emergency cache reset ==========

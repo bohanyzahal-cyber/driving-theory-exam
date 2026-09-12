@@ -162,8 +162,10 @@ check('hourly run still refreshes every pool, for much less work', () => {
   assert.equal(env.pools(), 35);
   assert.ok(second.elapsed < first.elapsed, `${second.elapsed}ms should beat ${first.elapsed}ms`);
 });
-check('the legacy key sweep runs once, then never again', () => {
-  assert.match(first.text, /legacy cleanup: completed once/);
+check('the r1-r3 key sweep is gone from every run', () => {
+  // It cost ~72 CacheService round-trips per run and cannot match anything any
+  // more; nothing has written those key names since r4.
+  assert.ok(!/legacy cleanup/.test(first.text), first.text);
   assert.ok(!/legacy cleanup/.test(second.text), second.text);
 });
 
@@ -223,5 +225,26 @@ check('emergency reset rebuilds the index even when it is fresh', () => {
   assert.notEqual(emergency.txGeneration(), before);
 });
 check('emergency reset leaves no lease behind', () => assert.deepEqual(emergency.leases(), []));
+
+// ---- 7. The index-only editor helper ------------------------------------
+const indexOnly = environment(banks, HEALTHY());
+const measured = indexOnly.ctx.warmupTranslationIndexOnly().join('\n');
+check('index-only helper publishes the index and reports both phases', () => {
+  assert.match(measured, /translation-index: 1700 questions; languages=he,ru,en,ar,fr,es,am; cached=true/);
+  assert.match(measured, /phase timings: banks \d+ms, index build \d+ms, total \d+ms/);
+  assert.equal(indexOnly.txLangs(), 7);
+  assert.equal(indexOnly.pools(), 0, 'it must not touch the pools');
+  assert.deepEqual(indexOnly.leases(), []);
+});
+// A missing bank must abort the helper instead of publishing a thinner index.
+const missingRu = JSON.parse(JSON.stringify(banks));
+delete missingRu.ru;
+const thin = environment(missingRu, HEALTHY());
+const thinReport = thin.ctx.warmupTranslationIndexOnly().join('\n');
+check('index-only helper aborts rather than publish a thinner index', () => {
+  assert.match(thinReport, /translation-index: ABORTED - only 6\/7 banks loaded/);
+  assert.equal(thin.txLangs(), 0, 'nothing published at all');
+  assert.deepEqual(thin.leases(), []);
+});
 
 console.log(`\n${checks} checks passed`);
