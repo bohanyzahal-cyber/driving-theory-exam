@@ -150,17 +150,27 @@ check('no lease survives the run', () => assert.deepEqual(env.leases(), []));
 check('each bank is read from Drive exactly once per run', () =>
   assert.deepEqual(env.reads, Object.fromEntries(LANGS.map(l => [l, 1]))));
 
-// ---- 2. The next hourly run does not rebuild a fresh index ---------------
+// ---- 2. Every run refreshes the index and the pools ----------------------
+// The index build is ~6s on a run that must read all seven banks for the pools
+// anyway, so it is never skipped for being "fresh enough": a threshold sitting
+// on the trigger interval left an index unrenewed until it expired.
 const generation = env.txGeneration();
 env.clock.t += 60 * 60 * 1000;
 const second = env.run();
-check('hourly run skips the fresh translation index', () => {
-  assert.match(second.text, /translation-index: SKIPPED - published 6[01] min ago \(rebuilt after 240 min\)/);
-  assert.equal(env.txGeneration(), generation, 'index generation unchanged');
+check('the next run rebuilds the index rather than trusting its age', () => {
+  assert.match(second.text, /translation-index: 1700 questions/);
+  assert.notEqual(env.txGeneration(), generation, 'a new generation is published');
+  assert.equal(env.txLangs(), 7);
 });
-check('hourly run still refreshes every pool, for much less work', () => {
+check('the next run also refreshes every pool and renews their TTL', () => {
   assert.equal(env.pools(), 35);
-  assert.ok(second.elapsed < first.elapsed, `${second.elapsed}ms should beat ${first.elapsed}ms`);
+  assert.equal(env.ctx.questionCacheStatus().ready, true);
+});
+check('an index older than its TTL can never be served', () => {
+  // The failure this replaces: a 6h TTL with a 4h refresh threshold meant a
+  // run at exactly 4h skipped the rebuild, and the index lapsed at 6h.
+  const age = env.clock.t - (JSON.parse(env.cache.get('qv2_tx_meta')).builtAt);
+  assert.ok(age < 60 * 60 * 1000, `index was rebuilt this run (age ${age}ms)`);
 });
 check('the r1-r3 key sweep is gone from every run', () => {
   // It cost ~72 CacheService round-trips per run and cannot match anything any
@@ -169,12 +179,13 @@ check('the r1-r3 key sweep is gone from every run', () => {
   assert.ok(!/legacy cleanup/.test(second.text), second.text);
 });
 
-// ---- 3. The index is rebuilt once it passes the refresh age ---------------
-env.clock.t += 5 * 60 * 60 * 1000;
+// ---- 3. A run after the TTL has lapsed republishes from scratch -----------
+env.clock.t += 7 * 60 * 60 * 1000;   // past the six-hour cache TTL
 const third = env.run();
-check('index is rebuilt after it ages past four hours', () => {
+check('a run whose index has expired republishes it with the larger budget', () => {
+  assert.match(third.text, /translation-index: MISSING - this run takes the larger 300000ms budget/);
   assert.match(third.text, /translation-index: 1700 questions/);
-  assert.notEqual(env.txGeneration(), generation);
+  assert.equal(env.ctx.questionCacheStatus().ready, true);
 });
 
 // ---- 4. A sick Google must yield PARTIAL, never a kill -------------------

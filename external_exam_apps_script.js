@@ -550,7 +550,7 @@ function todayStr() {
 }
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-12-r8';
+var THEORY_API_BUILD = '2026-09-12-r9';
 var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
 
 function logTheoryApiTiming(phase, method, action, startedAt) {
@@ -3995,32 +3995,32 @@ function warmupQuestionCaches(options) {
   var bankMaxMs = WARMUP_BANK_RESERVE_MS, poolMaxMs = WARMUP_POOL_RESERVE_MS;
 
   // ---- Language banks + translation index ----------------------------------
-  // The index needs every bank in memory at once and is the heaviest single
-  // unit, while its cache TTL is six hours. Rebuilding it on every hourly run
-  // was most of the work that pushed the run into Google's 360-second kill.
-  var txAge = translationIndexAgeMs(cache);
-  var txMissing = txAge === null;
-  var txDue = opts.forceTranslations === true || txMissing || txAge > WARMUP_TX_MAX_AGE_MS;
+  // The index is rebuilt on every run, as it always was. Measured in production
+  // 2026-09-12: the build itself is 5.8s, and the run has to read all seven
+  // banks for the pools anyway, so refreshing it costs almost nothing and its
+  // six-hour TTL is renewed every time. Skipping it while it is "fresh enough"
+  // was a false economy that also made the refresh depend on the trigger
+  // interval: an index exactly at the threshold was never renewed and expired.
+  var txMissing = translationIndexAgeMs(cache) === null;
+  var txDue = true;
   // No published index at all is the worst state to be in: every exam start
   // falls back to parsing whole banks. Such a run gets the larger budget, and
   // if even that cannot load all seven banks it still spends what it loaded on
   // pools rather than wasting the reads.
-  if (txDue && txMissing && !(opts.budgetMs > 0)) {
+  if (txMissing && !(opts.budgetMs > 0)) {
     deadline = started + WARMUP_MAX_BUDGET_MS;
     summary.push('translation-index: MISSING - this run takes the larger ' + WARMUP_MAX_BUDGET_MS + 'ms budget');
   }
-  // A rebuild needs every bank in one execution, so it is attempted only when
-  // the whole phase can be expected to fit. A stale index that keeps serving is
-  // better than a run that spends its budget loading banks it cannot use.
+  // A rebuild needs every bank inside one execution, so it is attempted only
+  // when the whole phase can be expected to fit. Under a Drive slow enough to
+  // make that impossible, a published index that keeps serving beats a run that
+  // spends its budget on banks it cannot use.
   var txEstimateMs = TX_LANGS.length * bankMaxMs + WARMUP_TX_RESERVE_MS;
-  if (txDue && !txMissing && deadline - Date.now() < txEstimateMs) {
+  if (!txMissing && deadline - Date.now() < txEstimateMs) {
     txDue = false;
     partial = true;
     summary.push('translation-index: SKIPPED - a rebuild needs about ' + txEstimateMs +
       'ms and this run has ' + (deadline - Date.now()) + 'ms; the published index keeps serving');
-  } else if (!txDue) {
-    summary.push('translation-index: SKIPPED - published ' + Math.round(txAge / 60000) +
-      ' min ago (rebuilt after ' + Math.round(WARMUP_TX_MAX_AGE_MS / 60000) + ' min)');
   }
   if (txDue) {
     var loadedAll = true;
@@ -4049,10 +4049,24 @@ function warmupQuestionCaches(options) {
     var loadedLangs = Object.keys(memo.banks).length;
     if (loadedAll && loadedLangs > 0 &&
         (transientFailures === 0 || loadedLangs >= publishedTranslationLanguageCount(cache))) {
-      try {
-        var tx = buildTranslationIndexCache(memo, true);
+      // A shard that vanishes immediately after a successful write means the
+      // shared cache is full of records nothing reads any more: r1-r3 keys left
+      // behind by an upgrade or by a rollback. Reclaiming them costs ~72
+      // CacheService round-trips (~300s in production), so it runs only when
+      // the index actually failed, and only once - never on a healthy run.
+      var tx = null, txError = null;
+      try { tx = buildTranslationIndexCache(memo, true); }
+      catch (eTx) { txError = eTx; }
+      if (txError && deadline - Date.now() > WARMUP_TAIL_RESERVE_MS &&
+          sweepLegacyQuestionCachesOnce(cache, memo.banks, summary)) {
+        try { tx = buildTranslationIndexCache(memo, true); txError = null; }
+        catch (eRetry) { txError = eRetry; }
+      }
+      if (tx) {
         summary.push('translation-index: ' + tx.count + ' questions; languages=' + tx.langs.join(',') + '; cached=' + tx.cached);
-      } catch (eTx) { summary.push('translation-index: ERROR - ' + (eTx && eTx.message)); }
+      } else {
+        summary.push('translation-index: ERROR - ' + (txError && txError.message ? txError.message : txError));
+      }
     } else if (loadedAll) {
       summary.push('translation-index: ERROR - skipped; a language failed transiently and the published index is fuller');
     }
@@ -4134,13 +4148,13 @@ function warmupQuestionCaches(options) {
 // scheduled run continues from there.
 var WARMUP_BUDGET_MS = 240000;       // four minutes of the six-minute ceiling
 var WARMUP_MAX_BUDGET_MS = 300000;   // cap on a caller-supplied budget
-var WARMUP_TX_MAX_AGE_MS = 14400000; // rebuild the index after 4h of its 6h TTL
 var WARMUP_BANK_RESERVE_MS = 8000;   // measured Drive read + parse: 5-6s/bank
 var WARMUP_POOL_RESERVE_MS = 8000;   // filter + dedupe + gzip + write per pool
-var WARMUP_TX_RESERVE_MS = 75000;    // index build after the last bank load
+var WARMUP_TX_RESERVE_MS = 30000;    // index build: 5.8s measured, 5x margin
 var WARMUP_TAIL_RESERVE_MS = 5000;
 var WARMUP_VERIFY_RESERVE_MS = 25000;
 var WARMUP_STATE_KEY = 'warmup_state';
+var WARMUP_LEGACY_KEY = 'warmup_legacy_swept';
 
 function readWarmupState() {
   try {
@@ -4167,15 +4181,31 @@ function translationIndexAgeMs(cache) {
   } catch (e) { return null; }
 }
 
-// The r1-r3 key sweep is GONE from the warmup. It deleted ~7,160 keys in ~72
-// CacheService round-trips on every run and cannot find anything any more:
-// nothing has written those key names since r4, and a CacheService entry lives
-// at most six hours, so they expired within six hours of that deploy. Measured
-// 2026-09-12 in production: banks + all 35 pools + verification take 58s, so
-// that sweep and the translation index together accounted for roughly 300 of
-// the 361 seconds Google killed on 09-09 and 09-11. clearLegacyQuestionCaches
-// itself is left in the file, uncalled, as a manual escape hatch: run it from
-// the editor if a rollback to r1-r3 ever re-creates those key names.
+// The r1-r3 key sweep is no longer part of a normal run. It deleted ~7,160
+// keys in ~72 CacheService round-trips every single time, and measurement in
+// production on 2026-09-12 showed it was ~300 of the 361 seconds Google killed
+// on 09-09 and 09-11 (banks + all 35 pools + verification are only ~58s).
+// Nothing has written those key names since r4 and a CacheService entry lives
+// at most six hours, so on a running system there is nothing left to find.
+// It is kept as recovery for the one case where it still matters: the shared
+// cache is so full of them that the translation index cannot be written. Then
+// it runs once, and the persisted flag stops it from ever running again.
+// Delete the ScriptProperty qv2_warmup_legacy_swept to re-arm it by hand.
+function sweepLegacyQuestionCachesOnce(cache, banks, summary) {
+  var props = PropertiesService.getScriptProperties();
+  var flag = QUESTION_CACHE_PREFIX + WARMUP_LEGACY_KEY;
+  if (props.getProperty(flag) === '1') return false;
+  // The per-question legacy key list is derived from the banks, so a partial
+  // load would leave most of them behind and waste the single attempt.
+  if (Object.keys(banks).length < TX_LANGS.length) return false;
+  clearLegacyQuestionCaches(cache, banks);
+  // Only a completed sweep sets the flag: a run killed mid-sweep holds no
+  // lease and the next one simply tries again.
+  props.setProperty(flag, '1');
+  summary.push('legacy cleanup: one-time sweep of r1-r3 keys, to make room for the index');
+  return true;
+}
+
 
 // Editor helper: rebuild ONLY the translation index and report how long its
 // phases really take. Run it from the editor in a quiet window to measure the
@@ -4234,7 +4264,7 @@ function emergencyClearAndRefreshCache() {
   for (var s = 0; s < QUESTION_TX_SHARDS; s++) keys.push(QUESTION_CACHE_PREFIX + 'tx_' + s);
   cache.removeAll(keys);
   report.push('Cleared pools AND translations (and any legacy bank records); rebuilding from Drive.');
-  report = report.concat(warmupQuestionCaches({ forceTranslations: true, resetCursor: true }));
+  report = report.concat(warmupQuestionCaches({ resetCursor: true }));
   var out = report.join('\n');
   Logger.log(out);
   return out;
