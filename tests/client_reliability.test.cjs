@@ -35,10 +35,12 @@ function dom() {
   const document = { activeElement: null, getElementById: id => nodes.get(id) || null };
   function element(id) {
     const el = { id, textContent: '', disabled: false, style: {}, handlers: {}, attrs: {},
-      classList: { values: new Set(), add(v) { this.values.add(v); }, remove(v) { this.values.delete(v); } },
+      classList: { values: new Set(), add(v) { this.values.add(v); }, remove(v) { this.values.delete(v); }, contains(v) { return this.values.has(v); } },
       addEventListener(type, cb) { this.handlers[type] = cb; },
       setAttribute(key, value) { this.attrs[key] = value; },
-      appendChild(child) { this.children = this.children || []; this.children.push(child); child.parentNode = this; },
+      appendChild(child) { this.children = this.children || []; this.children.push(child); child.parentNode = this; nodes.set(child.id, child); },
+      insertBefore(child, before) { this.children = this.children || []; const at = this.children.indexOf(before); this.children.splice(at < 0 ? this.children.length : at, 0, child); child.parentNode = this; nodes.set(child.id, child); },
+      removeChild(child) { this.children = (this.children || []).filter(el => el !== child); nodes.delete(child.id); child.parentNode = null; },
       focus() { document.activeElement = this; },
       click() { if (!this.disabled && this.handlers.click) this.handlers.click(); }
     };
@@ -52,7 +54,7 @@ function dom() {
   document.createElement = () => element('');
   document.body = { appendChild(el) { nodes.set(el.id, el); el.parentNode = this; }, removeChild(el) { nodes.delete(el.id); } };
   for (const id of ['examArea', 'offlineBanner', 'approvalError']) element(id);
-  return { document, nodes };
+  return { document, nodes, element };
 }
 function context(extra = {}, timer = new Timers()) {
   const clockDate = class extends Date { static now() { return timer.now; } };
@@ -281,7 +283,7 @@ test('token mismatch preserves pending result and wrong answers for examiner rec
   assert.ok(nodes.get('pendingRecoveryNotice').textContent); assert.ok(!nodes.get('pendingRecoveryNotice').textContent.includes('SYNTHETIC'));
   ctx.submitWithRetry(payload, 3, []); await timer.advance(60000); assert.equal(calls, 1);
 });
-test('finishing a later attempt archives the unconfirmed earlier result and confirmed cleanup is attempt-specific', () => {
+test('finishing a later attempt preserves the unconfirmed earlier result and cleanup is attempt-specific', () => {
   const { ctx, stored, payload } = submitContext();
   const newer = resultPayload('new-token');
   ctx.persistPendingResult(newer, [{ questionId: 'synthetic-question' }]);
@@ -291,9 +293,10 @@ test('finishing a later attempt archives the unconfirmed earlier result and conf
   assert.ok(results.some(([, raw]) => JSON.parse(raw).examineeToken === 'new-token'));
   ctx.clearConfirmedPendingResult(payload);
   assert.equal([...stored.keys()].filter(key => key.startsWith('pendingResult_')).length, 1);
-  assert.equal(JSON.parse(stored.get('pendingResult_SYNTHETIC')).examineeToken, 'new-token');
-  assert.equal(JSON.parse(stored.get('pendingResult_SYNTHETIC')).origin, 'examinee-app');
-  assert.equal(JSON.parse(stored.get('pendingWrongAnswers_SYNTHETIC'))[0].questionId, 'synthetic-question');
+  const [newKey, newRaw] = [...stored.entries()].find(([key]) => key.startsWith('pendingResult_'));
+  assert.equal(JSON.parse(newRaw).examineeToken, 'new-token');
+  assert.equal(JSON.parse(newRaw).origin, 'examinee-app');
+  assert.equal(JSON.parse(stored.get('pendingWrongAnswers_' + newKey.slice('pendingResult_'.length)))[0].questionId, 'synthetic-question');
 });
 test('a rejected previous result is visible even when another examinee is using the device', async () => {
   const { ctx, nodes, stored, payload, statuses } = submitContext(() => Promise.resolve({ status: 'error', examineeTokenError: 'mismatch' }));
@@ -305,11 +308,241 @@ test('old submit response cannot erase or falsely confirm a newer result sharing
   const pending = deferred(); let calls = 0;
   const { ctx, timer, stored, statuses, payload } = submitContext(() => { calls++; return calls === 1 ? pending.promise : Promise.resolve({ status: 'ok' }); });
   ctx.submitWithRetry(payload, 3, []);
-  const newer = resultPayload('new-token'); ctx.examineeToken = 'new-token'; stored.set('pendingResult_SYNTHETIC', JSON.stringify(newer));
+  const newer = resultPayload('new-token'); ctx.examineeToken = 'new-token'; ctx.persistPendingResult(newer, []);
   ctx.submitWithRetry(newer, 3, []); assert.equal(calls, 1);
   pending.resolve({ status: 'ok' }); await drain();
-  assert.equal(JSON.parse(stored.get('pendingResult_SYNTHETIC')).examineeToken, 'new-token'); assert.deepEqual(statuses, []);
+  const remaining = [...stored.entries()].filter(([key]) => key.startsWith('pendingResult_'));
+  assert.equal(remaining.length, 1); assert.equal(JSON.parse(remaining[0][1]).examineeToken, 'new-token'); assert.deepEqual(statuses, []);
   await timer.advance(3000); assert.equal(calls, 2); assert.equal(stored.size, 0); assert.deepEqual(statuses, ['received']);
+});
+
+// Execute every inline script in original order. Only browser surfaces and the
+// network are synthetic; API, finish, storage, retry and bootstrap functions are
+// never replaced. Expose test entry points at the end of the existing closure.
+// This complements real-browser checks; it does not emulate browser layout or
+// native beforeunload dialogs.
+function memoryStore() {
+  const entries = new Map(), writes = [];
+  const store = {
+    entries, writes, rejectWrite: () => false,
+    get length() { return entries.size; }, key: i => [...entries.keys()][i] ?? null,
+    getItem: key => entries.get(String(key)) ?? null,
+    setItem(key, value) {
+      key = String(key); value = String(value); writes.push({ key, value });
+      if (store.rejectWrite(key, value)) throw Object.assign(new Error('Synthetic storage quota'), { name: 'QuotaExceededError' });
+      entries.set(key, value);
+    }, removeItem: key => entries.delete(String(key))
+  };
+  return store;
+}
+function savedResults(store) {
+  return [...store.entries].filter(([key]) => key.startsWith('pendingResult_')).flatMap(([key, raw]) => {
+    try { return [{ key, payload: JSON.parse(raw) }]; } catch { return []; }
+  });
+}
+function completePage({ local = memoryStore(), session = memoryStore(), reply = () => Promise.reject(new Error('Synthetic offline')) } = {}) {
+  const ui = dom(), requests = [], beacons = [], windowEvents = new Map(), documentEvents = new Map();
+  for (const tag of examinee.slice(0, examinee.indexOf('<script')).matchAll(/<[^>]+\bid="([^"]+)"[^>]*>/g)) {
+    const el = ui.element(tag[1]), classes = /\bclass="([^"]+)"/.exec(tag[0]);
+    if (classes) classes[1].split(/\s+/).forEach(value => el.classList.add(value));
+    el.value = ''; el.options = [];
+  }
+  function eventTarget(target, events) {
+    target.addEventListener = (name, cb) => { if (!events.has(name)) events.set(name, new Set()); events.get(name).add(cb); };
+    target.removeEventListener = (name, cb) => events.get(name)?.delete(cb);
+  }
+  eventTarget(ui.document, documentEvents);
+  ui.document.head = ui.document.body;
+  ui.document.documentElement = { style: {}, setAttribute() {} };
+  ui.document.visibilityState = 'visible';
+  ui.document.querySelectorAll = selector => selector === '.screen' ? [...ui.nodes.values()].filter(node => node.classList.contains('screen')) : [];
+  ui.document.querySelector = selector => selector === '.screen.active' ? [...ui.nodes.values()].find(node => node.classList.contains('screen') && node.classList.contains('active')) || null : null;
+  const setup = context({ ...ui, localStorage: local, sessionStorage: session, URL, URLSearchParams, Blob,
+    navigator: { userAgent: 'Synthetic test browser', platform: 'Synthetic', maxTouchPoints: 0, onLine: true,
+      sendBeacon(url, blob) { beacons.push(blob); return true; } },
+    history: { pushState() {} }, location: { search: '', pathname: '/synthetic/examinee.html', reload() { throw new Error('Unexpected automatic reload'); } },
+    fetch(url, opts = {}) {
+      if (opts.method === 'HEAD') return Promise.resolve({ headers: { get: () => null } });
+      const payload = opts.body ? JSON.parse(opts.body) : Object.fromEntries(new URL(url).searchParams);
+      requests.push(payload);
+      return Promise.resolve(reply(payload)).then(data => ({ ok: true, text: () => Promise.resolve(JSON.stringify(data)) }));
+    }
+  });
+  setup.ctx.window = setup.ctx;
+  setup.ctx.setInterval = setup.timer.set;
+  eventTarget(setup.ctx, windowEvents);
+  const exposure = `
+  window.__testExam = {
+    seed: function(token) {
+      sessionCode='TEST00'; examineeToken=token||'new-token';
+      examineeData={idNumber:'SYNTHETIC',fullName:'Synthetic Test',license:'B',language:'he'};
+      sessionData={license:'B',language:'he',audioMode:'off'};
+      activeQuestions=Array.from({length:30},function(_,i){return {id:i+1,text:'Synthetic question',answers:['A','B','C','D'],ci:1,category:'חוק'};});
+      shuffledOrders=activeQuestions.map(function(){return {order:[0,1,2,3],correctIdx:1};});
+      languageHistory=['he','ar','ru','en','fr','es','am'];
+      userAnswers=activeQuestions.map(function(_,i){return {chosenIndex:1,isCorrect:true,langAtAnswer:languageHistory[i%7]};});
+      examInProgress=true; examSubmitted=false; examStartTime=Date.now();
+      examDeadline=Date.now()+2400000; timeRemaining=2400; examTimeMinutes=40;
+      saveExamineeState('screenExam'); saveActiveExam();
+    },
+    finish:renderExamDone,persist:persistPendingResult,flush:flushPendingResult,resend:resendAllPendingResults,
+    submit:submitWithRetry,beacon:beaconAllPendingResults,hasPending:hasAnyPendingResult,
+    state:function(){return {inProgress:examInProgress,submitted:examSubmitted,id:examineeData.idNumber,token:examineeToken,
+      memoryOnly:Object.keys(_pendingMemoryOnly).length,guard:pendingResultGuardArmed};}
+  };
+`;
+  const scripts = [...examinee.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)];
+  for (let i = 0; i < scripts.length; i++) {
+    let code = scripts[i][1];
+    if (code.includes('function renderExamDone()')) {
+      const end = code.lastIndexOf('})();'); assert.ok(end >= 0);
+      code = code.slice(0, end) + exposure + code.slice(end);
+    }
+    vm.runInContext(code, setup.ctx, { filename: 'examinee.html:inline-' + (i + 1) });
+  }
+  assert.ok(setup.ctx.__testExam, 'entire main script reached its end');
+  return { ...setup, ...ui, local, session, requests, beacons, windowEvents, exam: setup.ctx.__testExam,
+    dispatch(name, event = {}) { for (const cb of [...(windowEvents.get(name) || [])]) cb(event); } };
+}
+
+test('complete page: corrupt prior result cannot block saving the finished 30-answer exam', async () => {
+  const page = completePage(); page.exam.seed();
+  page.local.entries.set('pendingResult_SYNTHETIC', '{corrupt');
+  page.exam.finish(); await drain();
+  assert.equal(page.local.getItem('pendingResult_SYNTHETIC'), '{corrupt');
+  const [saved] = savedResults(page.local);
+  assert.equal(saved.payload.examineeToken, 'new-token'); assert.equal(saved.payload.answers.length, 30);
+  assert.equal(saved.payload.score, 30); assert.equal(saved.payload.percent, 100); assert.equal(saved.payload.passed, true);
+  assert.equal(new Set(saved.payload.answers.map(answer => answer.langAtAnswer)).size, 7);
+  assert.equal(page.session.getItem('ext_exam_active'), null); assert.equal(page.exam.state().submitted, true);
+  let prevented = false; page.dispatch('beforeunload', { preventDefault() { prevented = true; } });
+  assert.equal(prevented, true); assert.equal(page.exam.hasPending(), true);
+});
+
+test('complete page: oversized older result is not copied before the new attempt is saved', async () => {
+  const page = completePage(); page.exam.seed();
+  const oldRaw = JSON.stringify({ ...resultPayload('old-token'), answers: Array(30).fill({ text: 'x'.repeat(1000) }) });
+  page.local.entries.set('pendingResult_SYNTHETIC', oldRaw);
+  page.local.rejectWrite = (key, value) => key.startsWith('pendingResult_') && value.length > 10000;
+  page.exam.finish(); await drain();
+  assert.equal(page.local.getItem('pendingResult_SYNTHETIC'), oldRaw);
+  assert.equal(savedResults(page.local).length, 2); assert.equal(savedResults(page.session).length, 0);
+  assert.ok(!page.local.writes.some(write => write.value === oldRaw));
+});
+
+test('complete page: rejected attempt-key write preserves old local result and recovers session fallback after reload', async () => {
+  const page = completePage(); page.exam.seed();
+  const oldRaw = JSON.stringify(resultPayload('old-token'));
+  page.local.entries.set('pendingResult_SYNTHETIC', oldRaw);
+  page.local.rejectWrite = key => key.startsWith('pendingResult_') && key.includes('__');
+  page.exam.finish(); await drain();
+  assert.equal(page.local.getItem('pendingResult_SYNTHETIC'), oldRaw);
+  assert.equal(savedResults(page.session)[0].payload.answers.length, 30);
+  assert.ok(page.nodes.get('pendingTabStorageNotice').textContent.includes('סגירת הלשונית'));
+  assert.equal(page.nodes.get('doneLeaveText').style.display, 'none');
+  // A fresh VM with the same storage executes actual early bootstrap again.
+  const reload = completePage({ local: page.local, session: page.session }); await drain();
+  assert.equal(reload.exam.state().inProgress, false); assert.equal(reload.exam.state().guard, true);
+  assert.ok(reload.nodes.get('pendingTabStorageNotice').textContent.includes('טרם אושרה'));
+  assert.equal(reload.nodes.get('doneLeaveText').style.display, 'none');
+  await reload.timer.advance(3000);
+  assert.ok(reload.requests.some(payload => payload.action === 'submitResult' && payload.examineeToken === 'new-token'));
+  assert.equal(savedResults(reload.session)[0].payload.answers.length, 30);
+});
+
+test('complete page: session-only warning survives transport failures and disappears only after confirmation', async () => {
+  const page = completePage(); page.exam.seed(); page.local.rejectWrite = () => true;
+  page.exam.finish(); await drain(); await page.timer.advance(6000);
+  assert.ok(page.nodes.get('submitFailBanner'), 'actual transport-failure banner was rendered');
+  assert.ok(page.nodes.get('pendingTabStorageNotice').textContent.includes('סגירת הלשונית'));
+  assert.equal(page.nodes.get('doneLeaveText').style.display, 'none');
+  const confirmation = deferred();
+  const reload = completePage({ local: page.local, session: page.session, reply: () => confirmation.promise });
+  await drain(); assert.ok(reload.nodes.get('pendingTabStorageNotice'));
+  confirmation.resolve({ status: 'ok' }); await drain();
+  assert.equal(savedResults(reload.session).length, 0); assert.equal(reload.exam.state().guard, false);
+  assert.equal(reload.nodes.get('pendingTabStorageNotice'), undefined);
+});
+
+test('complete page: failure of both stores warns, blocks next candidate and cannot reopen a finished exam after forced reload', async () => {
+  const page = completePage(); page.exam.seed();
+  page.local.rejectWrite = page.session.rejectWrite = () => true;
+  page.exam.finish(); await drain();
+  assert.equal(page.exam.state().memoryOnly, 1); assert.equal(page.exam.state().guard, true);
+  assert.ok(page.nodes.get('pendingStorageFailure').textContent.includes('רק בזיכרון הדף'));
+  assert.equal(page.nodes.get('doneLeaveText').style.display, 'none');
+  page.ctx.resetForNextExaminee(); assert.equal(page.exam.state().id, 'SYNTHETIC'); assert.equal(page.exam.state().submitted, true);
+  page.exam.beacon(); const beaconPayloads = await Promise.all(page.beacons.map(async blob => JSON.parse(await blob.text())));
+  assert.ok(beaconPayloads.some(payload => payload.action === 'submitResult' && payload.answers.length === 30));
+  assert.equal(page.session.getItem('ext_exam_active'), null);
+  const forcedReload = completePage({ local: page.local, session: page.session }); await drain();
+  assert.equal(forcedReload.exam.state().inProgress, false); assert.equal(forcedReload.exam.state().id, '');
+  // Both unavailable stores cannot provide forced-reload durability. Never
+  // conceal that limitation by resuming the finished active-exam backup.
+  assert.equal(forcedReload.exam.hasPending(), false);
+});
+
+test('complete page: real apiPost may attach a legacy token without changing confirmed cleanup identity', async () => {
+  const page = completePage({ reply: () => ({ status: 'ok' }) }); page.exam.seed();
+  const old = resultPayload(undefined); delete old.examineeToken;
+  page.local.entries.set('pendingResult_SYNTHETIC', JSON.stringify(old));
+  page.exam.flush('SYNTHETIC'); await drain();
+  assert.equal(page.requests.find(payload => payload.action === 'submitResult').examineeToken, 'new-token');
+  assert.equal(page.local.getItem('pendingResult_SYNTHETIC'), null); assert.equal(page.exam.state().guard, false);
+});
+
+test('complete page: a late older acknowledgement leaves the new attempt queued and stored', async () => {
+  const olderAck = deferred(), newerAck = deferred();
+  const page = completePage({ reply: payload => payload.examineeToken === 'old-token' ? olderAck.promise : newerAck.promise });
+  page.exam.seed('old-token'); page.exam.finish(); await drain();
+  page.exam.seed('new-token'); page.exam.finish(); await drain();
+  assert.equal(page.requests.filter(payload => payload.action === 'submitResult').length, 1);
+  assert.equal(savedResults(page.local).length, 2);
+  olderAck.resolve({ status: 'ok' }); await drain();
+  const remaining = savedResults(page.local);
+  assert.equal(remaining.length, 1); assert.equal(remaining[0].payload.examineeToken, 'new-token');
+  assert.equal(page.exam.hasPending(), true);
+  await page.timer.advance(3000);
+  assert.equal(page.requests.filter(payload => payload.action === 'submitResult').length, 2);
+  assert.equal(savedResults(page.local).length, 1);
+  newerAck.resolve({ status: 'ok' }); await drain();
+  assert.equal(savedResults(page.local).length, 0); assert.equal(page.exam.state().guard, false);
+});
+
+for (const code of ['submission_busy', 'result_commit_busy', 'result_commit_uncertain']) {
+  test('complete page: ' + code + ' keeps retrying past fast attempts and clears only after a successful acknowledgement', async () => {
+    let accepted = false;
+    const page = completePage({ reply: () => accepted ? { status: 'ok' } : { status: 'error', code, retryable: true, waitSec: 3 } });
+    page.exam.seed(); page.exam.finish(); await drain();
+    await page.timer.advance(60000);
+    const submits = page.requests.filter(payload => payload.action === 'submitResult');
+    assert.ok(submits.length >= 5, 'slow retries continue after the three fast attempts');
+    assert.ok(submits.every(payload => payload.examineeToken === 'new-token' && payload.answers.length === 30));
+    assert.equal(savedResults(page.local).length, 1); assert.equal(page.exam.state().guard, true);
+    assert.ok(page.nodes.get('submitFailBanner').innerHTML.includes('ממשיכה לנסות'));
+    assert.ok(!page.nodes.get('submitStatusBanner').innerHTML.includes('התקבלה ונשמרה'));
+    accepted = true; page.dispatch('online'); await drain();
+    assert.equal(savedResults(page.local).length, 0); assert.equal(page.exam.state().guard, false);
+    assert.ok(page.nodes.get('submitStatusBanner').innerHTML.includes('התקבלה ונשמרה'));
+    const count = page.requests.length;
+    await page.timer.advance(60000);
+    assert.equal(page.requests.length, count, 'successful online retry cancelled the scheduled retry');
+  });
+}
+
+test('complete page: online flush shares an in-flight request while pagehide beacon retains the same attempt identity', async () => {
+  const first = deferred();
+  const page = completePage({ reply: () => first.promise }); page.exam.seed(); page.exam.finish(); await drain();
+  page.dispatch('online'); page.dispatch('online'); page.exam.resend(); await drain();
+  assert.equal(page.requests.filter(payload => payload.action === 'submitResult').length, 1);
+  page.dispatch('pagehide');
+  const beaconPayloads = await Promise.all(page.beacons.map(async blob => JSON.parse(await blob.text())));
+  const resultBeacons = beaconPayloads.filter(payload => payload.action === 'submitResult');
+  assert.equal(resultBeacons.length, 1); assert.equal(resultBeacons[0].examineeToken, 'new-token');
+  assert.equal(resultBeacons[0].answers.length, 30);
+  assert.equal(savedResults(page.local).length, 1, 'beacon enqueue is not a persistence acknowledgement');
+  first.resolve({ status: 'error', code: 'result_commit_uncertain', retryable: true, waitSec: 3 }); await drain();
+  assert.equal(savedResults(page.local).length, 1); assert.equal(page.exam.state().guard, true);
 });
 
 test('all inline client scripts and both service workers parse', () => {

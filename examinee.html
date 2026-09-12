@@ -987,6 +987,7 @@
 
   // Reset everything so the next examinee can use the same device
   window.resetForNextExaminee = function() {
+    if (_pendingMemoryOnly && Object.keys(_pendingMemoryOnly).length) { showPendingStorageFailure(); return; }
     examStartGeneration++;
     examLoadInFlight = false;
     if (examStartRetryTimer !== null) { clearTimeout(examStartRetryTimer); examStartRetryTimer = null; }
@@ -4504,6 +4505,7 @@
       msg.innerHTML = '<p class="muted">הזמן נגמר. נענו ' + answeredCount + ' שאלות מתוך ' + TOTAL_QUESTIONS + '.</p>';
     }
     showScreen('screenDone');
+    updatePendingStorageNotices();
   }
 
   function sendWrongAnswers(wrongData, capturedIdNumber) {
@@ -4579,12 +4581,10 @@
   //   2. last-gasp sendBeacon of the REAL result on close/pagehide.
   //   3. an 'online' listener that flushes the instant connectivity returns.
   function hasAnyPendingResult() {
-    try {
-      for (var i = 0; i < localStorage.length; i++) {
-        var k = localStorage.key(i);
-        if (k && k.indexOf('pendingResult_') === 0) return true;
-      }
-    } catch(e) {}
+    if(pendingPayloads().length)return true;
+    // Retain awareness of malformed older evidence too.
+    var stores=pendingStores();
+    for(var s=0;s<stores.length;s++)try{for(var i=0;i<stores[s].length;i++){var key=stores[s].key(i);if(key&&key.indexOf('pendingResult_')===0)return true;}}catch(e){}
     return false;
   }
 
@@ -4593,15 +4593,14 @@
   // examinee on a shared device is rescued too.
   function beaconAllPendingResults() {
     try {
-      if (!navigator.sendBeacon) return;
-      for (var i = 0; i < localStorage.length; i++) {
-        var k = localStorage.key(i);
-        if (!k || k.indexOf('pendingResult_') !== 0) continue;
-        var raw = localStorage.getItem(k);
-        if (!raw) continue;
-        try { navigator.sendBeacon(API_URL, new Blob([raw], { type: 'application/json' })); } catch(ex) {}
+      if(!navigator.sendBeacon)return;
+      var pending=pendingPayloads();
+      for(var i=0;i<pending.length;i++){
+        var wire=JSON.parse(JSON.stringify(pending[i]));
+        if(!wire.origin)wire.origin=API_ORIGIN;
+        try{navigator.sendBeacon(API_URL,new Blob([JSON.stringify(wire)],{type:'text/plain'}));}catch(e){}
       }
-    } catch(e) {}
+    }catch(e){}
   }
 
   // Flush over a normal fetch the moment the OS reports the network is back —
@@ -4673,29 +4672,101 @@
   var _submitRetryTimers = {};
   var _submitCompleted = {};
   var _submitBlocked = {};
+  var _volatilePendingResults = {};
+  var _pendingMemoryOnly = {};
+  var _pendingTabOnly = {};
 
   function submitAttemptKey(payload) {
     return JSON.stringify([payload.sessionCode || '', payload.idNumber || '', payload.examineeToken || '']);
   }
 
-  function persistPendingResult(payload, wrongData) {
-    if (!payload.origin) payload.origin = API_ORIGIN; // close/pagehide beacons bypass apiPost
-    var suffix = payload.idNumber;
-    var previousRaw = localStorage.getItem('pendingResult_' + suffix);
-    if (previousRaw) {
-      var previous = JSON.parse(previousRaw);
-      if (submitAttemptKey(previous) !== submitAttemptKey(payload)) {
-        // Preserve the previous attempt BEFORE replacing the per-ID slot.
-        // The same prefix keeps it discoverable by existing recovery/beacon scans.
-        var archiveSuffix = suffix + '__' + encodeURIComponent(previous.sessionCode || '') + '__' + encodeURIComponent(previous.examineeToken || 'legacy');
-        localStorage.setItem('pendingResult_' + archiveSuffix, previousRaw);
-        var previousWrong = localStorage.getItem('pendingWrongAnswers_' + suffix);
-        if (previousWrong) localStorage.setItem('pendingWrongAnswers_' + archiveSuffix, previousWrong);
-      }
+  // Candidate adapter: retain original attempts, use tab storage if origin
+  // storage cannot accept the new result, and retain an explicit volatile copy.
+  function pendingStores() {
+    var stores = [];
+    try { stores.push(localStorage); } catch(e) {}
+    try { stores.push(sessionStorage); } catch(e) {}
+    return stores;
+  }
+
+  function pendingPayloads() {
+    var found = {}, values = [], stores = pendingStores();
+    _pendingTabOnly = {};
+    function add(payload) {
+      if (!payload || payload.action !== 'submitResult' || !payload.idNumber) return;
+      var key = submitAttemptKey(payload);
+      if (found[key]) return;
+      found[key] = true; values.push(payload);
     }
-    localStorage.setItem('pendingResult_' + suffix, JSON.stringify(payload));
-    if (wrongData && wrongData.length > 0) localStorage.setItem('pendingWrongAnswers_' + suffix, JSON.stringify(wrongData));
-    else localStorage.removeItem('pendingWrongAnswers_' + suffix);
+    for (var s = 0; s < stores.length; s++) {
+      try {
+        for (var i = 0; i < stores[s].length; i++) {
+          var name = stores[s].key(i);
+          if (!name || name.indexOf('pendingResult_') !== 0) continue;
+          try {
+            var value=JSON.parse(stores[s].getItem(name));
+            if(value&&!value.wrongAnswers){try{value.wrongAnswers=JSON.parse(stores[s].getItem('pendingWrongAnswers_'+name.substring('pendingResult_'.length))||'null');}catch(e){}}
+            if(value&&value.action==='submitResult'&&value.idNumber&&!found[submitAttemptKey(value)]){
+              try{if(stores[s]===sessionStorage)_pendingTabOnly[submitAttemptKey(value)]=true;}catch(e){}
+            }
+            add(value);
+          } catch(e) {}
+        }
+      } catch(e) {}
+    }
+    for (var key in _volatilePendingResults) if (Object.prototype.hasOwnProperty.call(_volatilePendingResults,key)) add(_volatilePendingResults[key]);
+    return values;
+  }
+
+  function showPendingStorageFailure() {
+    try {
+      var notice=document.getElementById('pendingStorageFailure');
+      if(!notice){notice=document.createElement('div');notice.id='pendingStorageFailure';notice.setAttribute('role','alert');notice.style.cssText='position:fixed;bottom:0;left:0;right:0;z-index:100000;padding:14px;background:#991b1b;color:white;text-align:center;direction:rtl;font-weight:bold;';document.body.appendChild(notice);}
+      notice.textContent='לא הצלחנו לשמור עותק מקומי של התוצאה. היא נמצאת כרגע רק בזיכרון הדף. אל תרענן ואל תסגור — קרא לבוחן והמתן לאישור מהשרת.';
+    } catch(e) {}
+  }
+
+  function updatePendingStorageNotices() {
+    try {
+      var memoryOnly=Object.keys(_pendingMemoryOnly).length>0;
+      var tabOnly=Object.keys(_pendingTabOnly).length>0;
+      var leave=document.getElementById('doneLeaveText');
+      if(leave)leave.style.display=memoryOnly||tabOnly?'none':'';
+      var tabNotice=document.getElementById('pendingTabStorageNotice');
+      if(memoryOnly){showPendingStorageFailure();if(tabNotice)tabNotice.style.display='none';return;}
+      if(tabOnly){
+        if(!tabNotice){tabNotice=document.createElement('div');tabNotice.id='pendingTabStorageNotice';tabNotice.setAttribute('role','alert');tabNotice.style.cssText='position:fixed;bottom:0;left:0;right:0;z-index:100001;padding:14px;background:#fff3cd;color:#7c2d12;border-top:3px solid #d97706;text-align:center;direction:rtl;font-weight:bold;';document.body.appendChild(tabNotice);}
+        tabNotice.style.display='block';
+        tabNotice.textContent='התוצאה שמורה זמנית בלשונית זו וטרם אושרה בשרת. סגירת הלשונית או הדפדפן עלולה לאבד אותה. אל תסגור — המתן לאישור מהשרת או קרא לבוחן.';
+      }else if(tabNotice&&tabNotice.parentNode){tabNotice.parentNode.removeChild(tabNotice);}
+    }catch(e){}
+  }
+
+  function persistPendingResult(payload, wrongData) {
+    if (!payload.origin) payload.origin = API_ORIGIN;
+    var key=submitAttemptKey(payload);
+    // Write the new attempt directly. Never parse, move, or overwrite an older
+    // primary record merely to make room for the result that just finished.
+    var suffix=payload.idNumber+'__'+encodeURIComponent(payload.sessionCode||'')+'__'+encodeURIComponent(payload.examineeToken||'legacy');
+    _volatilePendingResults[key]=payload;
+    try {
+      localStorage.setItem('pendingResult_'+suffix,JSON.stringify(payload));
+      // Wrong answers already travel inside the result. A redundant sidecar
+      // failure must not turn a successfully saved result into a failed save.
+      try {
+        if(wrongData&&wrongData.length)localStorage.setItem('pendingWrongAnswers_'+suffix,JSON.stringify(wrongData));
+        else localStorage.removeItem('pendingWrongAnswers_'+suffix);
+      } catch(e) {}
+      delete _pendingMemoryOnly[key]; return true;
+    } catch(e) {}
+    try {
+      sessionStorage.setItem('pendingResult_'+suffix,JSON.stringify(payload));
+      delete _pendingMemoryOnly[key]; _pendingTabOnly[key]=true; updatePendingStorageNotices(); return true;
+    } catch(e) {
+      _pendingMemoryOnly[key]=true;
+      updatePendingStorageNotices();
+      return false;
+    }
   }
 
   function clearSubmitRetry(payload) {
@@ -4707,23 +4778,21 @@
   }
 
   function clearConfirmedPendingResult(payload) {
-    // A response from an older attempt must never erase a newer result that
-    // happens to use the same ID on a shared device.
-    try {
-      var matching = [];
-      for (var i = 0; i < localStorage.length; i++) {
-        var name = localStorage.key(i);
-        if (!name || name.indexOf('pendingResult_') !== 0) continue;
-        try {
-          var stored = JSON.parse(localStorage.getItem(name));
-          if (stored && submitAttemptKey(stored) === submitAttemptKey(payload)) matching.push(name);
-        } catch(e) {}
-      }
-      for (var j = 0; j < matching.length; j++) {
-        localStorage.removeItem(matching[j]);
-        localStorage.removeItem('pendingWrongAnswers_' + matching[j].substring('pendingResult_'.length));
-      }
-    } catch(e) {}
+    var key=submitAttemptKey(payload), stores=pendingStores();
+    for(var s=0;s<stores.length;s++){
+      try {
+        var names=[];
+        for(var i=0;i<stores[s].length;i++){
+          var name=stores[s].key(i);
+          if(!name||name.indexOf('pendingResult_')!==0)continue;
+          try{var value=JSON.parse(stores[s].getItem(name));if(value&&submitAttemptKey(value)===key)names.push(name);}catch(e){}
+        }
+        for(var j=0;j<names.length;j++){stores[s].removeItem(names[j]);stores[s].removeItem('pendingWrongAnswers_'+names[j].substring('pendingResult_'.length));}
+      }catch(e){}
+    }
+    delete _volatilePendingResults[key];delete _pendingMemoryOnly[key];
+    delete _pendingTabOnly[key];pendingPayloads();updatePendingStorageNotices();
+    if(Object.keys(_pendingMemoryOnly).length===0){try{var warning=document.getElementById('pendingStorageFailure');if(warning&&warning.parentNode)warning.parentNode.removeChild(warning);}catch(e){}}
   }
 
   function showPendingRecoveryNotice() {
@@ -4765,7 +4834,8 @@
     var attemptNum = 4 - retries;
     console.log('[SUBMIT] Sending result via POST, attempt ' + attemptNum);
     try {
-      apiPost(payload).then(function(data) {
+      var wirePayload = JSON.parse(JSON.stringify(payload));
+      apiPost(wirePayload).then(function(data) {
       if (_sid) _submitInFlight[_sid] = false;
       console.log('[SUBMIT] Response:', JSON.stringify(data));
       if (data && data.status === 'ok') {
@@ -4834,31 +4904,15 @@
   // submitWithRetry clears localStorage only on CONFIRMED server success, so this
   // is safe to call repeatedly. Used by the reset guard and on-load recovery.
   function flushPendingResult(idNumber) {
-    if (!idNumber) return;
-    try {
-      var raw = localStorage.getItem('pendingResult_' + idNumber);
-      if (!raw) return;
-      var payload = JSON.parse(raw);
-      armPendingResultGuard(); // restore the close warning after a page reload too
-      var wd = null;
-      try { wd = JSON.parse(localStorage.getItem('pendingWrongAnswers_' + idNumber) || 'null'); } catch(e) {}
-      console.log('[RECOVER] Resending pending result for ' + idNumber);
-      submitWithRetry(payload, 3, wd);
-    } catch(e) {}
+    var pending=pendingPayloads();
+    for(var i=0;i<pending.length;i++)if(pending[i].idNumber===idNumber){armPendingResultGuard();submitWithRetry(pending[i],3,pending[i].wrongAnswers||null);}
   }
 
-  // Scan localStorage for ANY unsent result (any examinee) and resend it. Called
-  // on page load so a result that failed to send (network blip, reload, device
-  // reused) is recovered instead of lost. Idempotent with server-side dedup.
   function resendAllPendingResults() {
-    try {
-      var ids = [];
-      for (var i = 0; i < localStorage.length; i++) {
-        var k = localStorage.key(i);
-        if (k && k.indexOf('pendingResult_') === 0) ids.push(k.substring('pendingResult_'.length));
-      }
-      for (var j = 0; j < ids.length; j++) flushPendingResult(ids[j]);
-    } catch(e) {}
+    var pending=pendingPayloads();
+    updatePendingStorageNotices();
+    if(pending.length)armPendingResultGuard();
+    for(var i=0;i<pending.length;i++)submitWithRetry(pending[i],3,pending[i].wrongAnswers||null);
   }
 
   // ========== Auto-restore on page load ==========
