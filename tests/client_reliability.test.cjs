@@ -58,8 +58,11 @@ function dom() {
 }
 function context(extra = {}, timer = new Timers()) {
   const clockDate = class extends Date { static now() { return timer.now; } };
+  // CRITICAL_POST_TIMEOUT_MS is declared in the apiGet-area section of the page
+  // but referenced from the separately-loaded submit/register sections; mirror
+  // the page constant here the way the harness already stubs cross-section deps.
   const ctx = { console: quiet, Date: clockDate, setTimeout: timer.set, clearTimeout: timer.clear,
-    clearInterval: timer.clear, AbortController, ...extra };
+    clearInterval: timer.clear, AbortController, CRITICAL_POST_TIMEOUT_MS: 60000, ...extra };
   vm.createContext(ctx); return { ctx, timer };
 }
 function load(ctx, code) { vm.runInContext(code, ctx); }
@@ -303,6 +306,20 @@ test('a rejected previous result is visible even when another examinee is using 
   ctx.examineeData.idNumber = 'NEXT'; ctx.examineeToken = 'next-token';
   ctx.submitWithRetry(payload, 3, []); await drain();
   assert.ok(nodes.get('pendingRecoveryNotice')); assert.equal(stored.size, 2); assert.deepEqual(statuses, []);
+});
+test('two-tap dismiss removes only a superseded (blocked) result and clears the notice', async () => {
+  const { ctx, nodes, stored, payload } = submitContext(() => Promise.resolve({ status: 'error', examineeTokenError: 'mismatch' }));
+  ctx.submitWithRetry(payload, 3, []); await drain();
+  assert.ok(nodes.get('pendingRecoveryNotice'));
+  assert.equal([...stored.keys()].filter(k => k.startsWith('pendingResult_')).length, 1);
+  const btn = nodes.get('pendingRecoveryDismiss');
+  assert.ok(btn, 'dismiss button is rendered');
+  btn.click();                                   // first tap only arms — nothing removed yet
+  assert.match(btn.textContent, /לחץ שוב/);
+  assert.equal([...stored.keys()].filter(k => k.startsWith('pendingResult_')).length, 1);
+  btn.click();                                   // second tap removes the undeliverable result
+  assert.equal([...stored.keys()].filter(k => k.startsWith('pendingResult_')).length, 0);
+  assert.equal(nodes.get('pendingRecoveryNotice') || null, null);
 });
 test('old submit response cannot erase or falsely confirm a newer result sharing the same ID', async () => {
   const pending = deferred(); let calls = 0;

@@ -1101,6 +1101,12 @@
   // Bound the complete response, including its body. Abort alone is not enough
   // on older browsers, so the deadline also rejects the caller's promise.
   var API_TIMEOUT_MS = 30000;
+  // registerExamQuestions and submitResult each do real Sheet work (read +
+  // append + status flip). Warm, that is ~1s (measured 2026-09-14); but the
+  // FIRST request of a session hits a cold Apps Script container and can run
+  // long. At the old 30s cap a cold register aborted, and the retry wrote a
+  // SECOND מבחנים row. A wider cap lets the slow-but-successful write land once.
+  var CRITICAL_POST_TIMEOUT_MS = 60000;
   function fetchJsonWithTimeout(url, opts, timeoutMs) {
     opts = opts || {};
     return new Promise(function(resolve, reject) {
@@ -1140,7 +1146,7 @@
     return fetchJsonWithTimeout(API_URL + '?' + qs.join('&'), { cache: 'no-store' }, timeoutMs);
   }
 
-  function apiPost(data) {
+  function apiPost(data, timeoutMs) {
     var payload = data || {};
     if (!payload.origin) payload.origin = API_ORIGIN;
     if (shouldAttachExamineeToken(payload.action) && !payload.examineeToken) {
@@ -1150,7 +1156,7 @@
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify(payload)
-    });
+    }, timeoutMs);
   }
 
   // Fire-and-forget POST (no response needed)
@@ -2021,7 +2027,7 @@
       examineeToken: attempt.examineeToken,
       language: language,
       questions: regQuestions
-    }).then(function(resp) {
+    }, CRITICAL_POST_TIMEOUT_MS).then(function(resp) {
       if (!examStartIsCurrent(attempt)) return;
       if (resp && resp.status === 'ok') {
         // Register also marks in_exam server-side. Trust its examStarted flag;
@@ -4807,8 +4813,62 @@
         notice.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:99999;padding:12px 16px;background:#fef2f2;color:#991b1b;border-top:2px solid #dc2626;font-weight:700;text-align:center;direction:rtl;';
         document.body.appendChild(notice);
       }
-      notice.textContent = 'יש במכשיר תוצאה שהשרת טרם אישר עקב שינוי בהרשמה. התוצאה נשמרה כאן — קרא לבוחן לפני סגירת הדף או ניקוי המכשיר.';
+      notice.textContent = 'יש במכשיר תוצאה שהשרת טרם אישר עקב שינוי בהרשמה (הנבחן אופס או נרשם מחדש). התוצאה נשמרה כאן — קרא לבוחן לפני סגירת הדף או ניקוי המכשיר.';
+      // This result can no longer be delivered — its registration was
+      // superseded on the server (examineeTokenError 'mismatch'). Without an
+      // in-app exit it nags every later examinee on a shared device until site
+      // data is wiped by hand. Offer the examiner a two-tap removal — no native
+      // confirm(), which is unreliable on iOS Safari (see docs/KNOWN_ISSUES).
+      var clearBtn = document.createElement('button');
+      clearBtn.type = 'button';
+      clearBtn.id = 'pendingRecoveryDismiss';
+      clearBtn.style.cssText = 'display:block;margin:8px auto 0;padding:8px 16px;font-size:14px;font-weight:800;background:#dc2626;color:#fff;border:none;border-radius:8px;cursor:pointer;';
+      clearBtn.textContent = 'הבוחן ראה — הסר מהמכשיר';
+      var armed = false, armTimer = null;
+      clearBtn.addEventListener('click', function() {
+        if (!armed) {
+          armed = true;
+          clearBtn.textContent = 'לחץ שוב לאישור ההסרה';
+          armTimer = setTimeout(function() { armed = false; clearBtn.textContent = 'הבוחן ראה — הסר מהמכשיר'; }, 4000);
+          return;
+        }
+        if (armTimer) { clearTimeout(armTimer); armTimer = null; }
+        dismissBlockedPendingResults();
+      });
+      notice.appendChild(clearBtn);
     } catch(e) {}
+  }
+
+  // Remove ONLY results the server has definitively rejected as superseded
+  // (examineeTokenError 'mismatch' → tracked in _submitBlocked). A deliverable
+  // pending result is never touched here, so a genuine unsent pass is safe.
+  function dismissBlockedPendingResults() {
+    var stores = pendingStores();
+    for (var s = 0; s < stores.length; s++) {
+      try {
+        var names = [];
+        for (var i = 0; i < stores[s].length; i++) {
+          var name = stores[s].key(i);
+          if (!name || name.indexOf('pendingResult_') !== 0) continue;
+          try {
+            var value = JSON.parse(stores[s].getItem(name));
+            if (value && _submitBlocked[submitAttemptKey(value)]) names.push(name);
+          } catch(e) {}
+        }
+        for (var j = 0; j < names.length; j++) {
+          stores[s].removeItem(names[j]);
+          stores[s].removeItem('pendingWrongAnswers_' + names[j].substring('pendingResult_'.length));
+        }
+      } catch(e) {}
+    }
+    for (var key in _volatilePendingResults) {
+      if (Object.prototype.hasOwnProperty.call(_volatilePendingResults, key) && _submitBlocked[key]) delete _volatilePendingResults[key];
+    }
+    pendingPayloads();
+    updatePendingStorageNotices();
+    if (!hasAnyPendingResult()) disarmPendingResultGuard();
+    var notice = document.getElementById('pendingRecoveryNotice');
+    if (notice && notice.parentNode) notice.parentNode.removeChild(notice);
   }
 
   function isDisplayedResult(payload) {
@@ -4835,7 +4895,7 @@
     console.log('[SUBMIT] Sending result via POST, attempt ' + attemptNum);
     try {
       var wirePayload = JSON.parse(JSON.stringify(payload));
-      apiPost(wirePayload).then(function(data) {
+      apiPost(wirePayload, CRITICAL_POST_TIMEOUT_MS).then(function(data) {
       if (_sid) _submitInFlight[_sid] = false;
       console.log('[SUBMIT] Response:', JSON.stringify(data));
       if (data && data.status === 'ok') {
