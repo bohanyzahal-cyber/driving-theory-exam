@@ -550,7 +550,7 @@ function todayStr() {
 }
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-12-r9';
+var THEORY_API_BUILD = '2026-09-15-r10';
 var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
 
 function logTheoryApiTiming(phase, method, action, startedAt) {
@@ -581,9 +581,11 @@ function questionRequestRateId(p, auth) {
 function doGet(e) {
   var apiStartedAt = Date.now();
   var action = '';
+  diagBegin('GET');
   try {
     var p = (e && e.parameter) || {};
     action = p.action || '';
+    if (DIAG_EXEC) { DIAG_EXEC.action = action; DIAG_EXEC.t0 = apiStartedAt; }
     logTheoryApiTiming('start', 'GET', action, apiStartedAt);
 
     // Block sensitive state-mutating actions from GET — must come via POST.
@@ -860,6 +862,7 @@ function doGet(e) {
   } catch (err) {
     return theoryRetryableErrorResponse(err) || jsonResponse({ status: 'error', message: err.toString() });
   } finally {
+    diagFinish(action, apiStartedAt);
     logTheoryApiTiming('end', 'GET', action, apiStartedAt);
   }
 }
@@ -869,6 +872,7 @@ function doGet(e) {
 function doPost(e) {
   var apiStartedAt = Date.now();
   var action = '';
+  diagBegin('POST');
   try {
     if (!e || !e.postData || !e.postData.contents) {
       return jsonResponse({ status: 'error', message: 'No POST data received' });
@@ -876,6 +880,7 @@ function doPost(e) {
     var raw = e.postData.contents;
     var data = JSON.parse(raw);
     action = data.action || '';
+    if (DIAG_EXEC) { DIAG_EXEC.action = action; DIAG_EXEC.t0 = apiStartedAt; }
     logTheoryApiTiming('start', 'POST', action, apiStartedAt);
 
     // Soft origin check (deters casual scripts; bypassable by reading client source)
@@ -921,6 +926,7 @@ function doPost(e) {
   } catch (err) {
     return theoryRetryableErrorResponse(err) || jsonResponse({ status: 'error', message: 'doPost error: ' + err.toString() });
   } finally {
+    diagFinish(action, apiStartedAt);
     logTheoryApiTiming('end', 'POST', action, apiStartedAt);
   }
 }
@@ -3143,6 +3149,7 @@ function handleRegisterExamQuestions(data) {
   } catch (e) { /* cache failure — fall through to existing flow */ }
 
   // Verify examinee is in_exam / approved status
+  diagMark('sheet:pending-register');
   var pendSheet = getSheet('ממתינים');
   var pendData = pendSheet.getDataRange().getValues();
   var found = false;
@@ -3215,6 +3222,7 @@ function handleRegisterExamQuestions(data) {
     examSheet = ss.insertSheet('מבחנים');
     examSheet.appendRow(['קוד סשן', 'ת.ז.', 'שאלות JSON', 'זמן רישום', 'שפה', 'שגויות לא מאומתות']);
   }
+  diagMark('sheet:append-register');
   examSheet.appendRow([
     String(data.sessionCode),
     normalizeId(data.idNumber),
@@ -3253,12 +3261,14 @@ function handleSubmitResult(data) {
   if (srRlErr) return srRlErr;
   // Require the examinee token before accepting any result. Legacy rows
   // (no stored token) pass through requireExamineeToken with legacy=true.
+  diagMark('sheet:token-submit');
   var srTokenErr = requireExamineeToken(data);
   if (srTokenErr) return srTokenErr;
   var sheet = getSheet('תוצאות');
 
   // Verify examinee is approved (in_exam status) before accepting results
   if (data.sessionCode && data.idNumber) {
+    diagMark('sheet:pending-submit');
     var pendSheet = getSheet('ממתינים');
     var pendData = pendSheet.getDataRange().getValues();
     var isApproved = false;
@@ -3987,6 +3997,7 @@ function warmupQuestionCaches(options) {
   var budget = opts.budgetMs > 0 ? Math.min(opts.budgetMs, WARMUP_MAX_BUDGET_MS) : WARMUP_BUDGET_MS;
   var deadline = started + budget;
   var memo = { banks: {}, cacheStatus: {} }, summary = [], transientFailures = 0;
+  try { diagSweep(summary); } catch (eSweep) { summary.push('diagnostics sweep: skipped (' + (eSweep && eSweep.message ? eSweep.message : eSweep) + ')'); }
   var cache = CacheService.getScriptCache();
   var state = opts.resetCursor === true ? { langIdx: 0 } : readWarmupState();
   var partial = false;
@@ -4139,7 +4150,7 @@ function warmupQuestionCaches(options) {
 // ---- Warmup budget, resume cursor and one-time legacy sweep ---------------
 // Apps Script kills an execution at 360 seconds, and a killed run never reaches
 // a finally block: every cache lease it held stays locked for its full
-// 370-second TTL, on exactly the resource it failed to publish. That resource
+// lease TTL, on exactly the resource it failed to publish. That resource
 // is then both missing from the cache and unbuildable, so live requests for it
 // answer question_cache_busy until the lease expires. Two production runs died
 // that way (2026-09-09 and 2026-09-11, both starting 08:29, killed at 361s),
@@ -4242,6 +4253,195 @@ function warmupTranslationIndexOnly() {
     (Date.now() - t0) + 'ms (Google kills an execution at 360000ms)');
   Logger.log('warmupTranslationIndexOnly:' + '\n' + summary.join('\n'));
   return summary;
+}
+
+// ========== r10: hot-path hardening (2026-09-15) ==========
+// Evidence from the Executions log of 08/09, 10/09 and 14/09: on every exam
+// day a handful of doGet executions ran the full 360 seconds until Google
+// killed them, each pinned to a Google service call (Drive/Sheets/Cache have
+// no per-call timeout) while holding an execution slot; a killed pool builder
+// also left its lease locked for 370s, freezing that license for six more
+// minutes. Google's slowness is the trigger; the exposure below is ours.
+
+// A live builder that genuinely needs more than this is slower than the
+// slowest Drive read seen under degradation (100s); after it a second builder
+// may start, which costs one duplicate read instead of a six-minute freeze.
+var QUESTION_CACHE_LEASE_MS = 150000;
+
+// Never read Drive inside an examinee request. On a live pool miss every
+// caller answers question_cache_busy (the client retries in 3s) and ONE
+// one-shot trigger rebuilds whatever is missing out of band. The flag dedupes
+// a start wave; Apps Script allows 20 triggers per script, so creation is
+// gated and the rebuild deletes its own triggers when it runs.
+var QUESTION_REBUILD_FLAG = 'rebuild_pending';
+var QUESTION_REBUILD_FLAG_MS = 180000;
+var QUESTION_REBUILD_FUNCTION = 'rebuildMissingQuestionCaches';
+
+function requestQuestionCacheRebuild(resource) {
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var flagKey = QUESTION_CACHE_PREFIX + QUESTION_REBUILD_FLAG;
+    var raw = props.getProperty(flagKey), pending = null;
+    try { pending = raw ? JSON.parse(raw) : null; } catch (e) {}
+    if (pending && pending.at && Date.now() - pending.at < QUESTION_REBUILD_FLAG_MS) return true;
+    var lock = LockService.getScriptLock();
+    if (!lock.tryLock(200)) return true; // someone else is scheduling it right now
+    try {
+      raw = props.getProperty(flagKey);
+      try { pending = raw ? JSON.parse(raw) : null; } catch (e2) { pending = null; }
+      if (pending && pending.at && Date.now() - pending.at < QUESTION_REBUILD_FLAG_MS) return true;
+      ScriptApp.newTrigger(QUESTION_REBUILD_FUNCTION).timeBased().after(1000).create();
+      props.setProperty(flagKey, JSON.stringify({ at: Date.now(), resource: String(resource || '') }));
+      Logger.log('[POOL] live MISS on ' + resource + ': rebuild scheduled out of band');
+      return true;
+    } finally {
+      lock.releaseLock();
+    }
+  } catch (e) {
+    // No trigger (quota, permission) means the caller must build inline as before.
+    Logger.log('[POOL] rebuild scheduling failed, falling back to inline build: ' + (e && e.message ? e.message : e));
+    return false;
+  }
+}
+
+// Trigger target: rebuild only what is missing, inside the warmup's budget,
+// then remove every one-shot trigger pointing here and clear the flag.
+function rebuildMissingQuestionCaches() {
+  var started = Date.now(), summary = [], memo = { banks: {}, cacheStatus: {} };
+  try {
+    var triggers = ScriptApp.getProjectTriggers();
+    for (var t = 0; t < triggers.length; t++) {
+      if (triggers[t].getHandlerFunction() === QUESTION_REBUILD_FUNCTION) ScriptApp.deleteTrigger(triggers[t]);
+    }
+  } catch (eTrig) { summary.push('trigger cleanup: ERROR - ' + (eTrig && eTrig.message)); }
+  var cache = CacheService.getScriptCache(), licenses = Object.keys(EXAM_STRUCTURE_SERVER), rebuilt = 0;
+  try {
+    if (translationIndexAgeMs(cache) === null) {
+      for (var i = 0; i < TX_LANGS.length; i++) {
+        if (Date.now() - started > WARMUP_BUDGET_MS - WARMUP_TX_RESERVE_MS) break;
+        try { loadQuestionsForLanguageServer(TX_LANGS[i], memo); } catch (eLang) {}
+      }
+      if (Object.keys(memo.banks).length === TX_LANGS.length) {
+        try { var tx = buildTranslationIndexCache(memo, true); summary.push('translation-index rebuilt: ' + tx.count); rebuilt++; }
+        catch (eTx) { summary.push('translation-index: ERROR - ' + (eTx && eTx.message)); }
+      } else {
+        summary.push('translation-index: left missing, banks incomplete within budget');
+      }
+    }
+    for (var l = 0; l < TX_LANGS.length; l++) {
+      for (var c = 0; c < licenses.length; c++) {
+        if (Date.now() - started > WARMUP_BUDGET_MS - WARMUP_POOL_RESERVE_MS) { summary.push('budget reached'); l = TX_LANGS.length; break; }
+        var key = QUESTION_CACHE_PREFIX + 'pool_' + TX_LANGS[l] + '_' + licenses[c];
+        var hit = readQuestionCacheRecord(cache, key, QUESTION_POOL_MAX_PARTS);
+        if (Array.isArray(hit) && hit.length) continue;
+        try { loadLicensePoolServer(TX_LANGS[l], licenses[c], true, memo); rebuilt++; }
+        catch (ePool) { summary.push('pool ' + TX_LANGS[l] + '/' + licenses[c] + ': ERROR - ' + (ePool && ePool.message)); }
+      }
+    }
+  } finally {
+    try { PropertiesService.getScriptProperties().deleteProperty(QUESTION_CACHE_PREFIX + QUESTION_REBUILD_FLAG); } catch (eFlag) {}
+  }
+  summary.push('rebuilt ' + rebuilt + ' missing cache records in ' + (Date.now() - started) + 'ms');
+  Logger.log('rebuildMissingQuestionCaches:\n' + summary.join('\n'));
+  return summary;
+}
+
+// Mid-exam language switches (getQuestionsByIds) used to read the whole bank
+// from Drive on every call. The per-license pools already hold every question
+// of that language in full; answer from them when they cover the request.
+function questionsFromCachedPools(lang, ids) {
+  var cache = CacheService.getScriptCache(), licenses = Object.keys(EXAM_STRUCTURE_SERVER), byId = {}, missing = ids.length;
+  for (var c = 0; c < licenses.length && missing > 0; c++) {
+    var pool = readQuestionCacheRecord(cache, QUESTION_CACHE_PREFIX + 'pool_' + lang + '_' + licenses[c], QUESTION_POOL_MAX_PARTS);
+    if (!Array.isArray(pool)) continue;
+    for (var i = 0; i < pool.length; i++) {
+      var q = pool[i];
+      if (q && q.id && !byId[q.id] && ids.indexOf(Number(q.id)) !== -1) { byId[q.id] = q; missing--; }
+    }
+  }
+  return missing === 0 ? byId : null;
+}
+
+// ---- Diagnostics that survive a killed execution ---------------------------
+// Per-execution logs are unreachable in this project's Executions page (no
+// Cloud project is linked), so a 360-second row says nothing about WHERE it
+// hung. A phase marker is written to ScriptProperties before each risky
+// Google call and deleted when the request finishes; a killed execution never
+// reaches the delete, so its last phase is still there for the warmup to
+// sweep into the 'אבחון' sheet. Requests that finish but take longer than
+// DIAG_SLOW_MS write their own row. Markers are limited to exam start,
+// registration, submission and cache builds - never to the 5-second polls -
+// so a busy day costs a few thousand property writes, well inside quota.
+var DIAG_SHEET = 'אבחון';
+var DIAG_SLOW_MS = 15000;
+var DIAG_STALE_MS = 420000;
+var DIAG_EXEC = null;
+
+function diagBegin(method) {
+  // Runs before the request's try/catch: it must be incapable of throwing.
+  try { DIAG_EXEC = { id: Utilities.getUuid(), method: method, action: '', phase: '', marked: false, notes: [] }; }
+  catch (e) { DIAG_EXEC = null; }
+}
+
+function diagMark(phase) {
+  try {
+    if (!DIAG_EXEC) return;
+    DIAG_EXEC.phase = phase;
+    DIAG_EXEC.notes.push(phase + '@' + (Date.now() - (DIAG_EXEC.t0 || Date.now())));
+    PropertiesService.getScriptProperties().setProperty(QUESTION_CACHE_PREFIX + 'diag_' + DIAG_EXEC.id,
+      JSON.stringify({ a: DIAG_EXEC.action, m: DIAG_EXEC.method, ph: phase, t: Date.now() }));
+    DIAG_EXEC.marked = true;
+  } catch (e) { /* diagnostics must never break a request */ }
+}
+
+function diagFinish(action, startedAt) {
+  try {
+    if (!DIAG_EXEC) return;
+    var elapsed = Date.now() - startedAt;
+    if (DIAG_EXEC.marked) {
+      try { PropertiesService.getScriptProperties().deleteProperty(QUESTION_CACHE_PREFIX + 'diag_' + DIAG_EXEC.id); } catch (eDel) {}
+    }
+    if (elapsed >= DIAG_SLOW_MS) {
+      getDiagnosticsSheet().appendRow([nowISO(), 'SLOW', DIAG_EXEC.method, action || DIAG_EXEC.action || '', elapsed,
+        DIAG_EXEC.phase || '', DIAG_EXEC.notes.join(' ')]);
+    }
+  } catch (e) { /* never throw into the response path */ }
+  finally { DIAG_EXEC = null; }
+}
+
+// Called by the warmup: markers older than DIAG_STALE_MS belong to executions
+// that never finished (killed at 360s, or crashed) - record where they were.
+function diagSweep(summary) {
+  var swept = 0;
+  try {
+    var props = PropertiesService.getScriptProperties(), all = props.getProperties(), prefix = QUESTION_CACHE_PREFIX + 'diag_';
+    var sheet = null;
+    for (var key in all) {
+      if (!Object.prototype.hasOwnProperty.call(all, key) || key.indexOf(prefix) !== 0) continue;
+      var entry = null;
+      try { entry = JSON.parse(all[key]); } catch (e) {}
+      if (entry && entry.t && Date.now() - entry.t < DIAG_STALE_MS) continue; // still running, leave it
+      if (entry) {
+        if (!sheet) sheet = getDiagnosticsSheet();
+        sheet.appendRow([nowISO(), 'KILLED', entry.m || '', entry.a || '', '', entry.ph || '',
+          'started ' + new Date(entry.t).toISOString()]);
+      }
+      props.deleteProperty(key);
+      swept++;
+    }
+  } catch (e) { if (summary) summary.push('diagnostics sweep: skipped (' + (e && e.message ? e.message : e) + ')'); }
+  if (summary) summary.push('diagnostics sweep: ' + swept + ' stale marker(s) recorded');
+  return swept;
+}
+
+function getDiagnosticsSheet() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet(), sheet = ss.getSheetByName(DIAG_SHEET);
+  if (!sheet) {
+    sheet = ss.insertSheet(DIAG_SHEET);
+    sheet.getRange(1, 1, 1, 7).setValues([['זמן', 'סוג', 'שיטה', 'פעולה', 'משך (ms)', 'שלב אחרון', 'הערות']]);
+    sheet.getRange(1, 1, 1, 7).setFontWeight('bold');
+  }
+  return sheet;
 }
 
 // ========== Emergency cache reset ==========
@@ -4450,7 +4650,7 @@ function claimQuestionCacheLease(resource) {
     try { lease = prior ? JSON.parse(prior) : null; } catch (e) {}
     if (lease && lease.until > Date.now()) throw questionCacheBusy();
     var owner = Utilities.getUuid();
-    props.setProperty(key, JSON.stringify({ owner: owner, until: Date.now() + 370000 }));
+    props.setProperty(key, JSON.stringify({ owner: owner, until: Date.now() + QUESTION_CACHE_LEASE_MS }));
     return { key: key, owner: owner };
   } finally {
     lock.releaseLock();
@@ -4463,7 +4663,7 @@ function releaseQuestionCacheLease(lease) {
   var locked = lock.tryLock(200);
   // A busy mutex must NOT leave the lease in place: a start wave keeps the
   // mutex hot exactly when the builder finishes, and an unreleased lease
-  // makes every later miss on this resource "busy" for up to 370 seconds.
+  // makes every later miss on this resource "busy" for the whole lease TTL.
   // Owner comparison is sufficient without the mutex: while this lease is
   // unexpired nobody else can claim the key, and after expiry a replacement
   // carries a different owner, so the delete below cannot remove it.
@@ -4570,6 +4770,7 @@ function loadQuestionsForLanguageServer(lang, memo) {
   var safeLang = normalizeQuestionCacheLanguage(lang);
   if (memo && memo.banks && memo.banks[safeLang]) return memo.banks[safeLang];
   var t0 = Date.now();
+  diagMark('drive:' + safeLang);
   var folderId = PropertiesService.getScriptProperties().getProperty('QUESTIONS_DRIVE_FOLDER_ID');
   if (!folderId) throw new Error('QUESTIONS_DRIVE_FOLDER_ID not configured in ScriptProperties');
   var folder = DriveApp.getFolderById(folderId);
@@ -4613,6 +4814,12 @@ function loadLicensePoolServer(lang, license, forceRebuild, memo) {
   if (!forceRebuild) {
     hit = readQuestionCacheRecord(cache, key, QUESTION_POOL_MAX_PARTS);
     if (Array.isArray(hit) && hit.length) return hit;
+    // r10: a live miss never reads Drive inside the request. Every caller gets
+    // question_cache_busy (client retries in 3s) and one out-of-band rebuild
+    // fills the gap; the inline build below remains only as the fallback when
+    // no trigger could be scheduled.
+    if (requestQuestionCacheRebuild('pool_' + safeLang + '_' + lic)) throw questionCacheBusy();
+    diagMark('pool-build-inline:' + safeLang + '/' + lic);
   }
   var lease = claimQuestionCacheLease('pool_' + safeLang + '_' + lic);
   try {
@@ -4859,6 +5066,7 @@ function handleGetExamQuestions(p) {
   var auth = 'guest';
   var examineeAudioMode = null;
   if (p.sessionCode && p.idNumber && p.examineeToken) {
+    diagMark('sheet:token-examstart');
     var ev = verifyExamineeToken(p.sessionCode, p.idNumber, p.examineeToken);
     if (!ev.valid) {
       return jsonResponse({ status: 'error', message: 'Examinee token invalid', reason: ev.reason });
@@ -5065,13 +5273,21 @@ function handleGetQuestionsByIds(p) {
   if (ids.length === 0) return jsonResponse({ status: 'error', message: 'No IDs provided' });
   if (ids.length > 50) return jsonResponse({ status: 'error', message: 'Too many IDs (max 50)' });
 
-  var allQuestions;
-  try { allQuestions = loadQuestionsForLanguageServer(lang); }
-  catch (e) {
-    var busyResponse = theoryRetryableErrorResponse(e);
-    if (busyResponse) return busyResponse;
-    Logger.log('loadQuestionsForLanguageServer(' + lang + ') failed: ' + (e && e.message));
-    return jsonResponse({ status: 'error', message: 'שגיאה בטעינת שאלות. נסה שוב.' });
+  // r10: the per-license pools already hold every question of this language;
+  // a full Drive read happens only when they do not cover the request.
+  var allQuestions, cachedById = null;
+  try { cachedById = questionsFromCachedPools(lang, ids); } catch (eCached) { cachedById = null; }
+  if (cachedById) {
+    allQuestions = [];
+    for (var ck in cachedById) if (Object.prototype.hasOwnProperty.call(cachedById, ck)) allQuestions.push(cachedById[ck]);
+  } else {
+    try { allQuestions = loadQuestionsForLanguageServer(lang); }
+    catch (e) {
+      var busyResponse = theoryRetryableErrorResponse(e);
+      if (busyResponse) return busyResponse;
+      Logger.log('loadQuestionsForLanguageServer(' + lang + ') failed: ' + (e && e.message));
+      return jsonResponse({ status: 'error', message: 'שגיאה בטעינת שאלות. נסה שוב.' });
+    }
   }
 
   // Build id → question lookup

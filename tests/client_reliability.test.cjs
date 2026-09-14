@@ -207,6 +207,20 @@ test('busy, old-server errors and network errors provide an accessible retry wit
     assert.equal(nodes.get('retryExamStartBtn').disabled, false); assert.equal(ctx.examineeToken, 'synthetic');
   }
 });
+test('a Google error page or a timeout during exam start is presented as temporary with a cooldown', async () => {
+  for (const [name, expectedText] of [['SyntaxError', 'Google'], ['TimeoutError', 'לא ענה בזמן']]) {
+    const err = new Error(name === 'SyntaxError' ? 'Unexpected token <' : 'Request timed out'); err.name = name;
+    const { ctx, timer, nodes } = startContext(() => Promise.reject(err));
+    ctx.doStartExam(); await drain();
+    assert.ok(nodes.get('retryExamStartBtn'), 'retry button rendered');
+    assert.ok(nodes.get('examArea').innerHTML.includes(expectedText), 'honest message: ' + expectedText);
+    assert.ok(nodes.get('examArea').innerHTML.includes('השרת עמוס כרגע'), 'classified as temporary');
+    assert.equal(nodes.get('retryExamStartBtn').disabled, true, 'cooldown armed');
+    await timer.advance(5000);
+    assert.equal(nodes.get('retryExamStartBtn').disabled, false, 'retry enabled after the 5s cooldown');
+    assert.equal(ctx.examineeToken, 'synthetic', 'registration preserved');
+  }
+});
 test('a stale question response or retry button cannot start the next candidate', async () => {
   const response = deferred(); let loaded = 0;
   const { ctx, nodes } = startContext(() => response.promise); ctx._finishStartingExam = () => loaded++;

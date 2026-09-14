@@ -1956,8 +1956,26 @@
       if (!examStartIsCurrent(attempt)) return;
       examLoadInFlight = false;
       hideLoadingOverlay();
-      showExamStartError(null, attempt, doStartExam, false);
+      showExamStartError(transportErrorResponse(err), attempt, doStartExam, false);
     });
+  }
+
+  // A rejected fetch during exam start is almost always Google, not us: on
+  // 14/09/2026 Google's front end answered with its own HTML error page (a
+  // SyntaxError here) or not at all (TimeoutError) for minutes at a time. Both
+  // are temporary, so present them as such - with the retry cooldown - instead
+  // of the generic "could not load" that sent examinees into a re-click storm.
+  function transportErrorResponse(err) {
+    var name = err && err.name;
+    if (name === 'SyntaxError') {
+      return { retryable: true, waitSec: 5, code: 'google_error_page',
+        message: 'השרת של Google מגיב לאט כרגע ומחזיר דף שגיאה במקום נתונים. ממתינים אוטומטית — אין צורך ללחוץ שוב.' };
+    }
+    if (name === 'TimeoutError') {
+      return { retryable: true, waitSec: 5, code: 'server_timeout',
+        message: 'השרת לא ענה בזמן. ממתינים אוטומטית — אין צורך ללחוץ שוב.' };
+    }
+    return null;
   }
 
   // Second half of doStartExam — runs after we have the questions from server.
@@ -2043,7 +2061,7 @@
     }).catch(function(err) {
       if (!examStartIsCurrent(attempt)) return;
       if (retries > 1) { setTimeout(function() { registerExamQuestionsConfirmed(regQuestions, language, retries - 1, onOk, onFail, attempt); }, 1500); }
-      else { onFail(err); }
+      else { onFail(transportErrorResponse(err) || err); }
     });
   }
 

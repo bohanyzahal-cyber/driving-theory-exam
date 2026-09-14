@@ -65,6 +65,7 @@ function environment(banks) {
     Logger: { log: s => logs.push(s) },
     CacheService: { getScriptCache: () => cache },
     PropertiesService: { getScriptProperties: () => ({
+      getProperties: () => Object.fromEntries(properties),
       getProperty: k => properties.get(k) || null,
       setProperty: (k,v) => { properties.set(k,v); },
       deleteProperty: k => properties.delete(k)
