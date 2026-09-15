@@ -58,7 +58,21 @@ function environment(banks) {
   };
   const blob = data => { const bytes = typeof data === 'string' ? Buffer.from(data, 'utf8') : Buffer.from(data); return { getBytes: () => [...bytes], getDataAsString: () => bytes.toString('utf8') }; };
   function sheet(name) {
-    if (!sheets.has(name)) sheets.set(name, { name, rows: [], appendRow(r) { this.rows.push(r); }, getRange() { return { setValues() {}, setFontWeight() {} }; }, getDataRange() { return { getValues: () => this.rows }; } });
+    if (!sheets.has(name)) sheets.set(name, {
+      name, rows: [], fullReads: 0,
+      appendRow(r) { this.rows.push(r); },
+      getLastRow() { return this.rows.length; },
+      getLastColumn() { return this.rows.reduce((w, r) => Math.max(w, r.length), 0); },
+      // readTail slices with getRange(startRow, 1, numRows, numCols)
+      getRange(startRow, startCol, numRows, numCols) {
+        const self = this;
+        return {
+          setValues() {}, setFontWeight() {},
+          getValues() { return self.rows.slice(startRow - 1, startRow - 1 + (numRows || 1)).map(r => (r || []).slice(startCol - 1, startCol - 1 + (numCols || 1))); }
+        };
+      },
+      getDataRange() { const self = this; return { getValues() { self.fullReads++; return self.rows; } }; }
+    });
     return sheets.get(name);
   }
   const ctx = {
@@ -221,6 +235,69 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
     assert.deepEqual([...env.properties.keys()].filter(k => k.startsWith('qv2_diag_')), []);
     assert.ok(env.logs.some(l => /drive:he|sheet:token-examstart/.test(l)) || true);
   });
+}
+
+
+// ---- 7. the combined site report: tail-read without breaking history --------
+// The first row the 'אבחון' sheet ever recorded was this report at 81.5s, and
+// the 360s doGet kills cluster at end-of-exam report time. It must read far
+// less on a normal same-day report, and still be exactly correct for an old one.
+{
+  const env = environment(banks);
+  const DAY = 24 * 60 * 60 * 1000;
+  const today = new Date(env.clock.t);
+  const older = new Date(env.clock.t - 40 * DAY);
+  const iso = dt => dt.toISOString();
+
+  // sessions: one today, one 40 days ago, both at the same site
+  const sess = env.sheet('סשנים');
+  sess.rows.push(['קוד','ת.ז.','בוחן','אתר','כיתה','דרגה','שפה','שמע','נוצר','תקף','פעיל','מכסה','מכסה2','אחראי']);
+  sess.rows.push(['TODAY01','111','בוחן א','אתר-א','101','B','he','off', today, '', true, '', '', 'בוחן א']);
+  sess.rows.push(['OLD0001','111','בוחן א','אתר-א','101','B','he','off', older, '', false, '', '', 'בוחן א']);
+
+  // examiners sheet: the caller is the responsible examiner
+  const exm = env.sheet('בוחנים');
+  exm.rows.push(['שם','ת.ז.','טלפון','פעיל']);
+  exm.rows.push(['בוחן א','111','050','כן']);
+
+  // results: 1 row for today's session, 1 for the old one, plus 1300 unrelated
+  // rows in between so the sheet is long enough for readTail to engage.
+  const res = env.sheet('תוצאות');
+  res.rows.push(new Array(30).fill('').map((_, i) => 'H' + i));
+  res.rows.push([older, '900000001', 'ישן', '', 'B', 26, 87, 'עבר', '30:00', 'בוחן א', 'אתר-א', '101', 'he', 'OLD0001', 1,
+    '', '', false, '', 'צבא', '', 'off', 'v', '', '', '', '', '', '', 'desktop']);
+  for (let i = 0; i < 1300; i++) {
+    const when = new Date(env.clock.t - (39 - i * 0.03) * DAY);
+    res.rows.push([when, '8000' + i, 'אחר', '', 'B', 26, 87, 'עבר', '30:00', 'בוחן ב', 'אתר-ב', '1', 'he', 'OTHER' + i, 1,
+      '', '', false, '', 'צבא', '', 'off', 'v', '', '', '', '', '', '', 'desktop']);
+  }
+  res.rows.push([today, '900000002', 'היום', '', 'B', 28, 93, 'עבר', '25:00', 'בוחן א', 'אתר-א', '101', 'he', 'TODAY01', 1,
+    '', '', false, '', 'צבא', '', 'off', 'v', '', '', '', '', '', '', 'desktop']);
+
+  env.ctx.verifyToken = () => true;
+  env.ctx.getExaminerRole = () => 'בוחן';
+  env.ctx.decodeSessionQuotas = () => ({});
+  env.ctx.normalizeId = v => String(v || '').trim();
+
+  const readsBefore = res.fullReads;
+  const todayOut = env.json(env.ctx.handleSiteCombinedReport({ examinerId: '111', token: 't', sessionCode: 'TODAY01' }));
+  check('a same-day report returns exactly its own results', () => {
+    assert.equal(todayOut.status, 'ok');
+    assert.equal(todayOut.site, 'אתר-א');
+    assert.deepEqual(todayOut.results.map(r => r.idNumber), ['900000002']);
+  });
+  check('a same-day report no longer reads the whole results sheet', () =>
+    assert.equal(res.fullReads - readsBefore, 0, 'it used the tail, not getDataRange'));
+
+  const beforeOld = res.fullReads;
+  const oldOut = env.json(env.ctx.handleSiteCombinedReport({ examinerId: '111', token: 't', sessionCode: 'OLD0001' }));
+  check('a historical report is still exactly correct', () => {
+    assert.equal(oldOut.status, 'ok');
+    assert.deepEqual(oldOut.results.map(r => r.idNumber), ['900000001'],
+      'the 40-day-old result sits above the tail and must still be found');
+  });
+  check('a historical report falls back to the full read on purpose', () =>
+    assert.equal(res.fullReads - beforeOld, 1));
 }
 
 console.log(`\n${checks} checks passed`);

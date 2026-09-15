@@ -550,7 +550,7 @@ function todayStr() {
 }
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-15-r10';
+var THEORY_API_BUILD = '2026-09-16-r11';
 var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
 
 function logTheoryApiTiming(phase, method, action, startedAt) {
@@ -1131,6 +1131,7 @@ function handleCenterManagerReport(p) {
   }
 
   // Walk תוצאות, filter by site IN managed + date range. Skip 'בוטל' (cancelled DQ).
+  diagMark('sheet:results-center-report');
   var sheet = getSheet('תוצאות');
   var rows = sheet.getDataRange().getValues();
   var overall = { total: 0, passed: 0, failed: 0, dq: 0 };
@@ -1282,6 +1283,7 @@ function handleListAllSessions(p) {
   if (role !== 'מפקד') {
     return jsonResponse({ status: 'error', message: 'פעולה זו זמינה רק למפקדים' });
   }
+  diagMark('sheet:sessions-list');
   var sheet = getSheet('סשנים');
   var data = sheet.getDataRange().getValues();
   var sitesSheet = getSheet('אתרים');
@@ -1394,6 +1396,7 @@ function handleSiteCombinedReport(p) {
     return jsonResponse({ status: 'error', message: 'טוקן לא תקין', tokenExpired: true });
   }
 
+  diagMark('sheet:sessions-report');
   var sessSheet = getSheet('סשנים');
   var sessData = sessSheet.getDataRange().getValues();
 
@@ -1453,6 +1456,7 @@ function handleSiteCombinedReport(p) {
   }
 
   // Authorization: pass if caller is responsible-on-some-session OR commander.
+  diagMark('sheet:role-report');
   var role = getExaminerRole(p.examinerId);
   var isCommander = (
     role === 'מפקד' || role === 'מפקד מקומי' || role === 'מפקד ראשי' ||
@@ -1480,8 +1484,22 @@ function handleSiteCombinedReport(p) {
   var sessionCodesSet = {};
   for (var sc = 0; sc < sessions.length; sc++) sessionCodesSet[sessions[sc].code] = true;
 
-  var resSheet = getSheet('תוצאות');
-  var resData = resSheet.getDataRange().getValues();
+  // r11: 'תוצאות' grows forever and this handler read every row of it. The very
+  // first line the 'אבחון' sheet ever recorded was this report at 81.5s
+  // (2026-09-15) - and the 360s doGet kills cluster at end-of-exam report time,
+  // which makes this the prime suspect. Read only the tail, but ONLY when the
+  // tail provably reaches back past the reported day: this report is a
+  // historical record, so a report for an older day must still read everything.
+  diagMark('sheet:results-report');
+  var resRead = readResultsTail();
+  if (resRead.off > 0) {
+    var oldestInTail = parseSheetDateTime(resRead.rows[1] && resRead.rows[1][0]);
+    if (!oldestInTail || oldestInTail.getTime() > dayStart.getTime()) {
+      diagMark('sheet:results-report-full');
+      resRead = { rows: getSheet('תוצאות').getDataRange().getValues(), off: 0 };
+    }
+  }
+  var resData = resRead.rows;
   var results = [];
   for (var r = 1; r < resData.length; r++) {
     var sCode = String(resData[r][13] || '').trim();
@@ -5539,6 +5557,7 @@ function handleCommanderDashboard(p) {
   dateTo.setHours(23, 59, 59, 999);
 
   // Read results
+  diagMark('sheet:results-commander');
   var resSheet = getSheet('תוצאות');
   var resData = resSheet.getDataRange().getValues();
 
@@ -7669,6 +7688,7 @@ function handleExaminerForecast(p) {
   // the forecast can be split per site (examiner-allocation planning).
   var activeSessions = {}, sessionSite = {};
   try {
+    diagMark('sheet:sessions-forecast');
     var sess = getSheet('סשנים').getDataRange().getValues();
     var nowT = new Date().getTime();
     for (var s = 1; s < sess.length; s++) {
