@@ -389,13 +389,33 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
     const got = recent.rows.slice(1).filter(r => r[0].getTime() >= cutoff).length;
     assert.equal(got, expected);
   });
-  const wider = read(big, 50);                             // ~2500 rows: tail1000 fails, tail4000 covers
-  check('a wider window grows the tail once instead of reading everything', () => {
-    assert.equal(wider.mode, 'tail4000/6001'); assert.equal(wider.rows.length, 4001); assert.equal(big.fullReads, 0);
+  const wider = read(big, 50);       // 50 days ≈ 2500 rows: the probe window cannot see that far
+  check('a wider window is sized from the observed row-rate, not from a ladder', () => {
+    assert.match(wider.mode, /^tail(\d+)\/6001$/);
+    const n = Number(/^tail(\d+)\//.exec(wider.mode)[1]);
+    assert.ok(n > 2500 && n < 6000, 'enough to reach the cutoff, still less than the sheet: ' + n);
+    assert.equal(big.fullReads, 0);
+    const cutoff = now - 50 * DAY;
+    assert.equal(wider.rows.slice(1).filter(r => r[0].getTime() >= cutoff).length,
+      big.rows.slice(1).filter(r => r[0].getTime() >= cutoff).length, 'nothing in range was left behind');
   });
-  const ancient = read(big, 100);                          // ~5000 rows: beyond both tails
-  check('a cutoff the tails cannot reach falls back to the full read', () => {
+  const ancient = read(big, 100);    // 100 days ≈ 5000 rows: with the margin this exceeds the sheet
+  check('a cutoff that needs most of the sheet reads it whole, without a wasted tail', () => {
     assert.equal(ancient.mode, 'full/6001'); assert.equal(ancient.rows.length, 6001); assert.equal(big.fullReads, 1);
+  });
+  // The shape that broke the ladder: 'תוצאות תרגול' = 107,614 rows (reported by
+  // r17's own mode string). A month-deep cutoff must still not read it all.
+  check('at the real sheet scale a 32-day cutoff reads a fraction, not everything', () => {
+    const huge = env.sheet('huge'); fill(huge, 20000, 110);   // same rows-per-day ratio, kept testable
+    huge.fullReads = 0;
+    const r = env.ctx.readRowsSince(huge, 0, new Date(now - 32 * DAY));
+    assert.match(r.mode, /^tail\d+\/20001$/, 'must not fall back to full: ' + r.mode);
+    const n = Number(/^tail(\d+)\//.exec(r.mode)[1]);
+    assert.ok(n < 20000 / 2, 'well under half the sheet: ' + n);
+    assert.equal(huge.fullReads, 0);
+    const cutoff = now - 32 * DAY;
+    assert.equal(r.rows.slice(1).filter(x => x[0].getTime() >= cutoff).length,
+      huge.rows.slice(1).filter(x => x[0].getTime() >= cutoff).length);
   });
   const small = env.sheet('small'); fill(small, 200, 400);
   check('a small sheet is simply read whole', () => {
@@ -440,7 +460,7 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
       wideT.rows.push(wide.rows[0].slice());
       for (let i = 0; i < 1500; i++) wideT.rows.push([new Date(now - (1500 - i) * 3600000), 'S' + i, 'n', 'C', 'exam', 'B', 1, 2, 3, '', '', '', 'he', blob, blob, '05']);
       const t = env.ctx.readRowsSince(wideT, 0, new Date(now - 2 * DAY), SPEC);
-      assert.equal(t.mode, 'tail1000/1501');
+      assert.match(t.mode, /^tail\d+\/1501$/);
       assert.equal(t.rows[0][0], 'תאריך'); assert.equal(t.rows[0][15], 'טלפון');
       assert.equal(t.rows[0][13], '', 'skipped in the header exactly as in the body');
     });
@@ -457,11 +477,18 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
   const cmd = src.slice(src.indexOf('function handleCommanderDashboard('), src.indexOf('\nfunction ', src.indexOf('function handleCommanderDashboard(') + 10));
   check('the commander dashboard reads results and practice through readRowsSince', () => {
     assert.ok(/readRowsSince\(resSheet, 0, prevFrom \? new Date\(prevFrom\.getTime\(\) - DAY_MS\)/.test(cmd));
-    assert.ok(/readRowsSince\(practiceSheet, 0, prevFrom \? new Date\(prevFrom\.getTime\(\) - 31 \* DAY_MS\)[\s\S]{0,60}\[\[1, 13\], \[16, 1\]\]/.test(cmd),
-      'practice is read columns A-M + P only — never the two JSON blobs');
+    // The spec is read out of the source and checked against the columns the
+    // handler actually indexes — a column dropped from one side must fail here,
+    // because at runtime it would silently read as '' instead.
+    const specSrc = /readRowsSince\(practiceSheet, 0,[\s\S]{0,140}?(\[\[[\d, \[\]]+\])\)/.exec(cmd);
+    assert.ok(specSrc, 'the practice read passes an explicit column spec');
+    const allowed = new Set();
+    for (const [first, count] of JSON.parse(specSrc[1])) for (let c = first; c < first + count; c++) allowed.add(c - 1);
     const touched = [...cmd.matchAll(/practiceData\[\w+\]\[(\d+)\]/g)].map(m => Number(m[1]));
-    assert.ok(touched.length > 0 && touched.every(i => i <= 12 || i === 15),
-      'every practice column the handler indexes is inside the spec: ' + [...new Set(touched)].sort((a, b) => a - b));
+    assert.ok(touched.length >= 5, 'found the indexing sites');
+    const missing = [...new Set(touched)].filter(i => !allowed.has(i));
+    assert.deepEqual(missing, [], 'columns indexed but not fetched (they would read empty)');
+    assert.ok(!allowed.has(13) && !allowed.has(14), 'the two JSON blob columns stay out of the read');
     assert.equal((cmd.match(/getSheet\('תוצאות( תרגול)?'\)\.getDataRange\(\)/g) || []).length, 0, 'no bare full read of either sheet remains');
   });
 }

@@ -184,14 +184,38 @@ function readSheetSlice(sheet, startRow, numRows, lastCol, colSpec) {
   return out;
 }
 
+// r18: ask the sheet how far back the cutoff is, instead of guessing.
+// The fixed ladder (1000, then 4000) was built without knowing the sheet's real
+// size. 'אבחון' 15/09 13:13 finally reported it: `full/107614` — 'תוצאות תרגול'
+// holds 107,614 rows, so both rungs missed by more than an order of magnitude
+// and every read fell through to the whole sheet. Probe the TIMESTAMP COLUMN
+// ALONE first (one cell per row — the cheapest question there is), convert the
+// observed row-rate into the row count the cutoff actually needs, and then do a
+// single correctly-sized read. Returns 0 for "cannot tell" → read everything.
+function rowsNeededSince(sheet, tsColIdx, cutoff, lastRow, dataRows) {
+  try {
+    var probe = Math.min(TAIL_ROWS, dataRows);
+    var col = sheet.getRange(lastRow - probe + 1, tsColIdx + 1, probe, 1).getValues();
+    var newest = null, oldest = null;
+    for (var i = col.length - 1; i >= 0 && !newest; i--) newest = parseSheetDateTime(col[i][0]);
+    for (var j = 0; j < col.length && !oldest; j++) oldest = parseSheetDateTime(col[j][0]);
+    if (!newest || !oldest) return 0;
+    if (oldest.getTime() < cutoff.getTime()) return probe;   // the probe already reaches past it
+    var span = newest.getTime() - oldest.getTime();
+    if (span <= 0) return 0;                                 // no usable rate (all one instant)
+    // 1.4x margin: rows do not arrive at a constant rate, and reading a few
+    // thousand too many is far cheaper than falling back to the whole sheet.
+    var need = Math.ceil((newest.getTime() - cutoff.getTime()) / (span / probe) * 1.4) + probe;
+    return (isFinite(need) && need > 0) ? need : 0;
+  } catch (e) { return 0; }
+}
+
 function readRowsSince(sheet, tsColIdx, cutoff, colSpec) {
-  var lastRow = sheet.getLastRow(), lastCol = sheet.getLastColumn();
+  var lastRow = sheet.getLastRow(), lastCol = sheet.getLastColumn(), dataRows = lastRow - 1;
   var bounded = cutoff instanceof Date && !isNaN(cutoff.getTime());
-  if (bounded && lastCol >= 1) {
-    var sizes = [TAIL_ROWS, TAIL_ROWS * 4];
-    for (var s = 0; s < sizes.length; s++) {
-      var n = sizes[s];
-      if (lastRow - 1 <= n) break;                      // the tail would be the whole sheet
+  if (bounded && lastCol >= 1 && dataRows > TAIL_ROWS) {
+    var n = rowsNeededSince(sheet, tsColIdx, cutoff, lastRow, dataRows);
+    if (n > 0 && n < dataRows) {
       var startRow = lastRow - n + 1;
       var tail = readSheetSlice(sheet, startRow, n, lastCol, colSpec);
       var oldest = parseSheetDateTime(tail[0][tsColIdx]);
@@ -618,7 +642,7 @@ function todayStr() {
 }
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-16-r17';
+var THEORY_API_BUILD = '2026-09-16-r18';
 var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
 
 function logTheoryApiTiming(phase, method, action, startedAt) {
@@ -5737,15 +5761,18 @@ function handleCommanderDashboard(p) {
   // before exam predict success?" metric. The student app stores its own
   // "מזהה תלמיד" (not the national ID), so we match only on full name +
   // license. Note that this is best-effort: identical names will collapse.
-  // r17: columns A-M + P only. This loop reads date(0), name(2), class(3),
-  // license(5), percent(8) and phone(15) — and NOTHING else. Columns N/O
-  // ('פירוט שגויות' / 'פירוט לפי נושא') are per-row JSON blobs holding the full
-  // text of every wrong question, ~2KB a row, and they were 28 of this handler's
-  // seconds. If you ever index another column here, add it to this list.
+  // r17/r18: 'תוצאות תרגול' is 107,614 rows — 24x 'תוצאות' — so this read is
+  // bounded on BOTH axes. Rows: only back to 31 days before prevFrom (see
+  // rowsNeededSince). Columns: exactly the six this loop indexes —
+  // date(0)=A, name(2)=C, class(3)=D, license(5)=F, percent(8)=I, phone(15)=P.
+  // Everything else, above all the per-row JSON blobs in N ('פירוט שגויות', the
+  // full text of every wrong question) and O, is never fetched.
+  // ⚠ Index another column here and you MUST add it below — a column outside
+  // the list reads as '' rather than failing. A test enforces the pairing.
   diagMark('sheet:practice-commander');
   var practiceSheet = getSheet('תוצאות תרגול');
   var practiceRead = readRowsSince(practiceSheet, 0, prevFrom ? new Date(prevFrom.getTime() - 31 * DAY_MS) : null,
-    [[1, 13], [16, 1]]);
+    [[1, 1], [3, 2], [6, 1], [9, 1], [16, 1]]);
   var practiceData = practiceRead.rows;
   diagMark('sheet:practice-commander-done:' + practiceRead.mode);
 
