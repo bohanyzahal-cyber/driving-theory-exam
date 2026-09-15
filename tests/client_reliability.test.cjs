@@ -113,6 +113,32 @@ test('dashboard counts server errors and only a successful response clears the w
   response = { status: 'ok', pending: [], active: [], completed: [] }; await ctx.pollDashboard();
   assert.equal(ctx.failedPolls, 0); assert.equal(nodes.get('offlineBanner').classList.values.has('show'), false);
 });
+test('dashboard closes the gap while a result is syncing, and never at the cost of a struggling server', async () => {
+  const syncing = { status: 'ok', pending: [], completed: [], active: [{ idNumber: 'A', finishedOnDevice: true }] };
+  const settled = { status: 'ok', pending: [], completed: [], active: [{ idNumber: 'A', finishedOnDevice: false }] };
+  let response = settled;
+  const { ctx, timer } = dashboardContext(() => Promise.resolve(response));
+  ctx.startDashboardPolling(); await drain();
+  // normal cadence: nothing pending, so the next tick is the usual 5s
+  await timer.advance(4999); assert.equal(ctx.dashPollDelayMs, 5000, 'idle dashboards stay at 5s');
+  response = syncing; await timer.advance(1); await drain();
+  assert.equal(ctx.dashPollDelayMs, 2000, 'a syncing result pulls the next tick in to 2s');
+  response = settled; await timer.advance(2000); await drain();
+  assert.equal(ctx.dashPollDelayMs, 5000, 'once the result lands it returns to 5s');
+  // a stuck "syncing" row must not pin the dashboard at 2s forever
+  response = syncing; await timer.advance(5000); await drain();
+  assert.equal(ctx.dashPollDelayMs, 2000);
+  for (let i = 0; i < 20; i++) await timer.advance(2000);
+  assert.equal(ctx.dashPollDelayMs, 5000, 'fast polling gives up after its 30s window');
+  // A failing server always wins over the fast cadence: a syncing result was
+  // seen (dashSyncSince set) and then the polls start erroring — the dashboard
+  // must ease off rather than hammer at 2s.
+  ctx.dashSyncSince = ctx.Date.now();
+  response = { status: 'error', message: 'server busy' };
+  await timer.advance(5000); await drain();
+  assert.ok(ctx.dashPollDelayMs > 5000, 'backoff still applies while a result is syncing');
+  ctx.stopDashboardPolling();
+});
 test('dashboard shares overlapping refreshes and discards a response after switching sessions', async () => {
   const response = deferred(); let calls = 0, renders = 0;
   const { ctx } = dashboardContext(() => { calls++; return response.promise; });

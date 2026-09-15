@@ -1876,6 +1876,17 @@
   // keeps working unchanged.
   var DASH_POLL_BASE_MS = 5000;  // r6: back to 5s (was 8s while cache reads were failing server-side)
   var DASH_POLL_MAX_MS = 20000;
+  // While an examinee's device reports "finished, syncing" the result is known
+  // to be seconds away, so the dashboard closes the gap instead of waiting out
+  // a full 5s tick: measured 2026-09-15, a result took ~20s to appear (submit
+  // ~2s + up to 5s until the next tick + a 8-10s dashboard request). The fast
+  // cadence is bounded two ways: it never applies when the server is slow or
+  // failing (the backoff branch wins), and a result still not landed after
+  // DASH_SYNC_FAST_WINDOW_MS falls back to the normal tick, so one stuck
+  // "syncing" row cannot pin the dashboard at 2s for the rest of the session.
+  var DASH_POLL_SYNC_MS = 2000;
+  var DASH_SYNC_FAST_WINDOW_MS = 30000;
+  var dashSyncSince = 0;  // ms timestamp the current syncing stretch began; 0 = nobody syncing
   var dashPollDelayMs = DASH_POLL_BASE_MS;
   var dashPollGen = 0;  // stop/restart double-chain guard
   var dashboardRequest = null;
@@ -1886,9 +1897,10 @@
     var reschedule = function() {
       if (dashboardInterval === null || myGen !== dashPollGen) return;  // stopped/restarted meanwhile
       var slow = (Date.now() - t0) > 6000;
+      var syncingNow = dashSyncSince && (Date.now() - dashSyncSince) < DASH_SYNC_FAST_WINDOW_MS;
       dashPollDelayMs = (slow || failedPolls > 0)
         ? Math.min(Math.round(dashPollDelayMs * 1.5), DASH_POLL_MAX_MS)
-        : DASH_POLL_BASE_MS;
+        : (syncingNow ? DASH_POLL_SYNC_MS : DASH_POLL_BASE_MS);
       dashboardInterval = setTimeout(dashboardPollTick, dashPollDelayMs);
     };
     if (p && typeof p.then === 'function') { p.then(reschedule, reschedule); } else { reschedule(); }
@@ -1937,6 +1949,12 @@
         // Cache pending so the search-input handler can re-render between polls
         // without waiting for the next 5-second tick.
         window.__lastPending = data.pending || [];
+        // Arm the fast tick while at least one device reports "finished,
+        // syncing" (the green banner state); clear it the moment none do, so
+        // the next stretch gets its own fresh DASH_SYNC_FAST_WINDOW_MS.
+        var syncing = (data.active || []).some(function(item) { return item && item.finishedOnDevice && !item.dqPending; });
+        if (!syncing) dashSyncSince = 0;
+        else if (!dashSyncSince) dashSyncSince = Date.now();
         updatePendingList(window.__lastPending);
         updateActiveList(data.active || []);
         updateCompletedList(data.completed || []);
