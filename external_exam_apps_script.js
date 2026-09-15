@@ -646,7 +646,7 @@ function todayStr() {
 }
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-16-r19';
+var THEORY_API_BUILD = '2026-09-16-r20';
 var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
 
 function logTheoryApiTiming(phase, method, action, startedAt) {
@@ -3429,6 +3429,12 @@ function handleSubmitResult(data) {
   function readRegisteredExams() {
     var registeredSheet = getSheet('מבחנים');
     if (!registeredExamRows || registeredSheet.getLastRow() !== registeredExamRows.length) {
+      // r20 (marks only): prime suspect for the 32s this handler spends after
+      // meta:wrong-answers — 'מבחנים' carries the question-map JSON of EVERY
+      // exam ever registered, one blob per row, and this pulls all of it to use
+      // a single row. Do NOT narrow it blindly: column C IS the answer key the
+      // re-score depends on (line ~3461). Measure first.
+      diagMark('sheet:registered-submit');
       registeredExamRows = registeredSheet.getDataRange().getValues();
     }
     return registeredExamRows;
@@ -3649,6 +3655,7 @@ function handleSubmitResult(data) {
   // match would miss it and the dup-check below would swallow the real result →
   // a false 0/30 "vanished" exam, especially on iOS. Mark them בוטל (audit kept).
   // Mirrors the פסול-supersede pass below; genuine real נכשל rows lack the marker.
+  diagMark('sheet:results-submit');
   var fabRows = sheet.getDataRange().getValues();
   var fabSuperseded = false;
   for (var fb = 1; fb < fabRows.length; fb++) {
@@ -3685,6 +3692,7 @@ function handleSubmitResult(data) {
     }
   }
   if (!hasPendingInExam) {
+    diagMark('sheet:results-submit-2');
     var existingData = sheet.getDataRange().getValues();
     for (var d = 1; d < existingData.length; d++) {
       var existingStatus = String(existingData[d][7] || '').trim();
@@ -3787,6 +3795,7 @@ function handleSubmitResult(data) {
   // We mark the old row as בוטל (audit trail preserved) and log the reason.
   // Preserve the late complete read: another submission may have completed
   // since scoring. In particular, do not move final retry detection earlier.
+  diagMark('sheet:results-submit-3');
   var existingRows = sheet.getDataRange().getValues();
   for (var ex = existingRows.length - 1; ex >= 1; ex--) {
     if (String(existingRows[ex][13]) === String(data.sessionCode) &&
@@ -3853,6 +3862,7 @@ function handleSubmitResult(data) {
   // Update pending status to completed
   markPendingCompleted(data.sessionCode, data.idNumber, { sheet: pendSheet, rows: pendData });
 
+  diagMark('compute:submit-done');
   return jsonResponse({ status: 'ok', waLink: waLink });
 }
 
