@@ -550,7 +550,7 @@ function todayStr() {
 }
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-16-r14';
+var THEORY_API_BUILD = '2026-09-16-r15';
 var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
 
 function logTheoryApiTiming(phase, method, action, startedAt) {
@@ -2022,9 +2022,17 @@ function handleExaminerDashboard(p) {
 
   // Tail reads (see readTail). pendOff shifts the one row-index write below;
   // resSheet is only ever appended to in this handler, so it needs no offset.
+  // r15: instrumented. This is THE exam hot path — every examiner polls it every
+  // 2-5s for the whole exam — and on 2026-09-15 it recorded 27.9s with no marks
+  // at all, so the trail could not say where the time went. It re-reads the
+  // results tail three times per request (here, after a state change, and before
+  // the completed list); the marks will finally price that.
+  diagMark('sheet:pending-dash');
   var _pendT = readTail(pendSheet, 4);
   var pendData = _pendT.rows, pendOff = _pendT.off;
+  diagMark('sheet:results-dash');
   var resData = readTail(resSheet, 0).rows;
+  diagMark('sheet:extensions-dash');
   var pending = [];
   var active = [];
 
@@ -2218,7 +2226,13 @@ function handleExaminerDashboard(p) {
   for (var pkA in pendingById) pending.push(pendingById[pkA]);
   for (var akA in activeById) active.push(activeById[akA]);
 
-  // Re-read resData in case cleanup added new results
+  // Re-read resData in case cleanup added new results.
+  // NOTE (r15): the only write to resSheet above is inside the rare timeout-fail
+  // branch, which re-reads by itself — so on a normal poll this second tail read
+  // re-fetches identical data. It is kept for now because it ALSO picks up a
+  // result another execution appended mid-request, which is exactly the latency
+  // the 2s fast-sync was built to remove. Measure it before trading that away.
+  diagMark('sheet:results-dash-2');
   resData = readTail(resSheet, 0).rows;
   // DEDUP results per examinee: the תוצאות sheet can end up with several
   // non-בוטל rows for one (session, id) when recovery paths (timeout-fail,
@@ -2314,6 +2328,7 @@ function handleExaminerDashboard(p) {
     }
   }
 
+  diagMark('compute:dash-done');
   return jsonResponse({ status: 'ok', pending: pending, active: active, completed: completed });
 }
 
@@ -3408,12 +3423,24 @@ function handleSubmitResult(data) {
         try {
           // Lazy per-language cache: questions DB + byId map per language code.
           // Avoids loading every language up-front when most exams use one.
-          var langDbCache = {};
+          //
+          // r15: this used to call loadQuestionsForLanguageServer — a DRIVE read,
+          // on the result-submission hot path. The 'אבחון' sheet caught it live on
+          // 2026-09-15: `SLOW POST submitResult 20066 ... drive:he@4000`, i.e. 16
+          // of those 20 seconds were Drive, while the examinee's device sat on a
+          // 60s deadline and the examiner waited for a result that never arrived.
+          // The cached per-license pools hold the same objects, and they are the
+          // very pools this exam was served from, so every question the examinee
+          // saw is provably in the union — questionMetaForLanguage still falls
+          // back to Drive if a pool is missing, so nothing is reconstructed from
+          // a partial bank.
+          var langDbCache = {}, qMetaMemo = {};
           function getLangDb(lang) {
             var safeLang = String(lang || 'he').toLowerCase();
             if (langDbCache[safeLang]) return langDbCache[safeLang];
             try {
-              var qs = loadQuestionsForLanguageServer(safeLang);
+              diagMark('meta:wrong-answers');
+              var qs = questionMetaForLanguage(safeLang, qMetaMemo);
               if (!qs || !qs.length) return null;
               var idx = {};
               for (var q = 0; q < qs.length; q++) {
@@ -4387,9 +4414,9 @@ function questionsFromCachedPools(lang, ids) {
 // Google call and deleted when the request finishes; a killed execution never
 // reaches the delete, so its last phase is still there for the warmup to
 // sweep into the 'אבחון' sheet. Requests that finish but take longer than
-// DIAG_SLOW_MS write their own row. Markers are limited to exam start,
-// registration, submission and cache builds - never to the 5-second polls -
-// so a busy day costs a few thousand property writes, well inside quota.
+// DIAG_SLOW_MS write their own row. Marks may now be placed anywhere, polling
+// handlers included: the property is written only after DIAG_MARK_MIN_MS, so a
+// healthy request costs nothing at all (see diagMark).
 var DIAG_SHEET = 'אבחון';
 var DIAG_SLOW_MS = 15000;
 var DIAG_STALE_MS = 420000;
@@ -4401,11 +4428,27 @@ function diagBegin(method) {
   catch (e) { DIAG_EXEC = null; }
 }
 
+// r15: a mark is now FREE until the request is already in trouble.
+//
+// Every mark used to cost a ScriptProperties round-trip, which was affordable
+// only because marks were kept off the polling handlers. That restriction made
+// the one handler we most needed to understand - examinerDashboard, polled every
+// 2s by every examiner for the whole exam - the one handler with no trail at
+// all: it recorded 27.9s on 2026-09-15 with not a single phase to show for it.
+// So the phase trail is kept in memory (free, and diagFinish's SLOW row reads it
+// from there), and the property - whose only job is to survive a 360s kill so
+// the sweep can report where the execution died - is written only once the
+// request has already passed DIAG_MARK_MIN_MS. A healthy 2s poll now pays
+// nothing; anything slow enough to be killed crossed the threshold long before.
+var DIAG_MARK_MIN_MS = 8000;
+
 function diagMark(phase) {
   try {
     if (!DIAG_EXEC) return;
+    var elapsed = Date.now() - (DIAG_EXEC.t0 || Date.now());
     DIAG_EXEC.phase = phase;
-    DIAG_EXEC.notes.push(phase + '@' + (Date.now() - (DIAG_EXEC.t0 || Date.now())));
+    DIAG_EXEC.notes.push(phase + '@' + elapsed);
+    if (elapsed < DIAG_MARK_MIN_MS) return;   // still healthy: no service call
     PropertiesService.getScriptProperties().setProperty(QUESTION_CACHE_PREFIX + 'diag_' + DIAG_EXEC.id,
       JSON.stringify({ a: DIAG_EXEC.action, m: DIAG_EXEC.method, ph: phase, t: Date.now() }));
     DIAG_EXEC.marked = true;

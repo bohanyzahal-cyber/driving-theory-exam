@@ -1264,8 +1264,39 @@
     area.style.display = 'none';
     list.innerHTML = '';
 
+    // A failed load must NEVER look like "you have no open session". All three
+    // outcomes used to render the same empty screen: request failed, server
+    // error, and genuinely nothing active. On 15/09/2026 an examiner with a
+    // live session saw an empty dashboard because this request hit one of the
+    // day's slow Google responses (measured: 35.5s, then 2.2s on retry) — the
+    // natural reaction is to open a SECOND session, which splits the class
+    // between one session the examinees registered to and another the examiner
+    // is watching. Say plainly that the load failed, and offer a retry.
+    function showSessionLoadFailure(reason) {
+      area.style.display = 'block';
+      list.innerHTML = '';
+      var box = document.createElement('div');
+      box.style.cssText = 'background:#fef2f2;border:2px solid #dc2626;border-radius:12px;padding:14px 18px;margin-bottom:10px;color:#991b1b;text-align:center;';
+      var msg = document.createElement('div');
+      msg.style.cssText = 'font-weight:800;margin-bottom:8px;';
+      msg.textContent = '⚠️ לא הצלחנו לטעון את הסשנים הפעילים' + (reason ? ' (' + reason + ')' : '') + '.';
+      var sub = document.createElement('div');
+      sub.style.cssText = 'font-weight:400;margin-bottom:10px;';
+      sub.textContent = 'זו תקלת טעינה — לא סימן שאין לך סשן פתוח. אל תפתח סשן חדש לפני שתנסה שוב.';
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.style.cssText = 'padding:8px 18px;font-size:14px;font-weight:800;background:#dc2626;color:#fff;border:none;border-radius:8px;cursor:pointer;';
+      btn.textContent = 'נסה שוב';
+      btn.addEventListener('click', function() { fetchPreviousSessions(); });
+      box.appendChild(msg); box.appendChild(sub); box.appendChild(btn);
+      list.appendChild(box);
+    }
+
     apiGet({ action: 'listSessions', examinerId: examinerData.id }).then(function(data) {
-      if (data.status !== 'ok' || !data.sessions) return;
+      if (!data || data.status !== 'ok' || !data.sessions) {
+        showSessionLoadFailure(data && data.message ? data.message : '');
+        return;
+      }
 
       // Filter only active sessions that haven't expired
       var now = new Date();
@@ -1312,7 +1343,11 @@
           list.appendChild(card);
         })(active[j]);
       }
-    }).catch(function() {});
+    }).catch(function(err) {
+      // Was `.catch(function() {})` — a timed-out or failed load vanished
+      // without a trace and the examiner saw an empty "no open session" screen.
+      showSessionLoadFailure(err && err.name === 'TimeoutError' ? 'החיבור איטי' : 'שגיאת תקשורת');
+    });
   }
 
   // ========== Commander: list all active sessions across examiners ==========

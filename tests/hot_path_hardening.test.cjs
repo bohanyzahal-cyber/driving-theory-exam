@@ -235,6 +235,58 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
     assert.deepEqual([...env.properties.keys()].filter(k => k.startsWith('qv2_diag_')), []);
     assert.ok(env.logs.some(l => /drive:he|sheet:token-examstart/.test(l)) || true);
   });
+  // (e) r15: a mark is free while the request is healthy. examinerDashboard is
+  // polled every 2s by every examiner; five property writes per poll would have
+  // been thousands of service calls an hour — so the property (the kill
+  // breadcrumb) is only written once the request has already passed 8s, while
+  // the in-memory trail still feeds every phase into the SLOW row.
+  {
+    const propWrites = () => [...env.properties.keys()].filter(k => k.startsWith('qv2_diag_')).length;
+    env.ctx.diagBegin('GET'); env.ctx.DIAG_EXEC.t0 = env.clock.t; env.ctx.DIAG_EXEC.action = 'examinerDashboard';
+    env.ctx.diagMark('sheet:pending-dash'); env.clock.t += 3000;
+    env.ctx.diagMark('sheet:results-dash'); env.clock.t += 3000;
+    check('marks under 8s touch no service at all', () => assert.equal(propWrites(), 0));
+    env.clock.t += 3000;                      // 9s in: now in trouble
+    env.ctx.diagMark('sheet:results-dash-2');
+    check('the kill breadcrumb appears once the request is already slow', () => {
+      assert.equal(propWrites(), 1);
+      const entry = JSON.parse([...env.properties.values()].find(v => /results-dash-2/.test(v)));
+      assert.equal(entry.a, 'examinerDashboard'); assert.equal(entry.ph, 'sheet:results-dash-2');
+    });
+    env.clock.t += 8000;                      // 17s total → SLOW row
+    const before = env.sheet('אבחון').rows.length;
+    env.ctx.diagFinish('examinerDashboard', env.clock.t - 17000);
+    check('the SLOW row still carries the full in-memory trail, breadcrumb cleared', () => {
+      const row = env.sheet('אבחון').rows[before];
+      assert.equal(row[1], 'SLOW'); assert.equal(row[3], 'examinerDashboard');
+      assert.match(row[6], /sheet:pending-dash@0 sheet:results-dash@3000 sheet:results-dash-2@9000/);
+      assert.equal(propWrites(), 0);
+    });
+  }
+}
+
+// ---- 6b. result submission must not touch Drive -----------------------------
+// 'אבחון' 2026-09-15: `SLOW POST submitResult 20066 ... drive:he@4000` — the
+// wrong-answer reconstruction loaded the bank from Drive on the submission hot
+// path. It must draw on the cached pools (which carry the full question objects,
+// answers included) exactly like the reports do.
+{
+  const src = fs.readFileSync(path.join(__dirname, '..', 'external_exam_apps_script.js'), 'utf8');
+  const start = src.indexOf('function handleSubmitResult('), end = src.indexOf('\nfunction ', start + 10);
+  const body = src.slice(start, end);
+  check('handleSubmitResult no longer reads the question bank from Drive', () => {
+    assert.ok(body.length > 1000, 'handler located');
+    assert.equal(body.includes('loadQuestionsForLanguageServer('), false);
+    assert.ok(body.includes('questionMetaForLanguage('), 'it resolves through the cached pools');
+  });
+  const env = environment(banks);
+  env.ctx.warmupQuestionCaches();
+  const rows = env.ctx.questionMetaForLanguage('he', {});
+  check('the cached metadata carries the answers the reconstruction renders', () => {
+    const q = rows.find(x => x.id === 7);
+    assert.ok(Array.isArray(q.answers) && q.answers.length >= 2, 'answers present');
+    assert.ok(q.text && q.category, 'text + category present');
+  });
 }
 
 

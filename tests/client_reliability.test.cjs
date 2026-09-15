@@ -53,6 +53,7 @@ function dom() {
     let html = '';
     Object.defineProperty(el, 'innerHTML', { get: () => html, set(value) {
       html = value;
+      el.children = [];   // as in a real DOM: writing innerHTML drops the appended children
       for (const match of value.matchAll(/id="([^"]+)"/g)) element(match[1]);
     } });
     nodes.set(id, el); return el;
@@ -644,6 +645,72 @@ test('complete page: online flush shares an in-flight request while pagehide bea
   assert.equal(savedResults(page.local).length, 1, 'beacon enqueue is not a persistence acknowledgement');
   first.resolve({ status: 'error', code: 'result_commit_uncertain', retryable: true, waitSec: 3 }); await drain();
   assert.equal(savedResults(page.local).length, 1); assert.equal(page.exam.state().guard, true);
+});
+
+// ===== "you have no open session" must mean exactly that =====================
+// 15/09/2026: an examiner with a live session opened the dashboard and saw
+// nothing on his name. The request had failed (the endpoint answered in 35.5s,
+// then 2.2s on retry), and this loader swallowed it — an empty `.catch` plus a
+// bare `return` on a non-ok status rendered the identical empty screen as a
+// genuine "no active sessions". The next move an examiner makes from that
+// screen is to open a SECOND session, splitting the class between the session
+// the examinees registered to and the one the examiner is watching.
+function prevSessionsPage(apiGet) {
+  const ui = dom();
+  ui.element('prevSessionsArea'); ui.element('prevSessionsList');
+  const setup = context({ ...ui, apiGet, examinerData: { id: '111', name: 'בוחן' },
+    LICENSE_LABELS: { B: 'דרגה B' }, escHtml: value => String(value == null ? '' : value),
+    resumeSession() {} });
+  setup.ctx.window = setup.ctx;
+  load(setup.ctx, section(examiner, '  // ========== Fetch Previous Sessions ==========',
+    '  // ========== Commander: list all active sessions'));
+  return { ...setup, ...ui };
+}
+const shown = ui => {
+  const area = ui.nodes.get('prevSessionsArea'), list = ui.nodes.get('prevSessionsList');
+  const texts = (list.children || []).flatMap(card => (card.children || []).map(part => part.textContent || ''));
+  return { visible: area.style.display === 'block', cards: (list.children || []).length,
+    failed: texts.some(text => text.indexOf('לא הצלחנו לטעון') >= 0), retry: (list.children || [])[0] };
+};
+const liveSession = () => ({ status: 'ok', sessions: [{ code: 'ABC12345', active: true, site: 'אתר', classroom: '1',
+  license: 'B', validUntil: new Date(Date.now() + 3 * 3600 * 1000).toISOString() }] });
+
+test('a failed session load says so instead of looking like "no open session"', async () => {
+  for (const [label, apiGet] of [
+    ['rejected request', () => Promise.reject(Object.assign(new Error('timed out'), { name: 'TimeoutError' }))],
+    ['server error', () => Promise.resolve({ status: 'error', message: 'server busy' })],
+    ['malformed payload', () => Promise.resolve({ status: 'ok' })],
+  ]) {
+    const page = prevSessionsPage(apiGet);
+    page.ctx.fetchPreviousSessions(); await drain();
+    const state = shown(page);
+    assert.equal(state.visible, true, label + ': the failure is on screen');
+    assert.equal(state.failed, true, label + ': it names the failure, not an empty list');
+  }
+});
+test('an examiner with a live session still sees it, and a genuine empty result stays silent', async () => {
+  const live = prevSessionsPage(() => Promise.resolve(liveSession()));
+  live.ctx.fetchPreviousSessions(); await drain();
+  assert.equal(shown(live).cards, 1); assert.equal(shown(live).failed, false);
+
+  for (const empty of [{ status: 'ok', sessions: [] },
+    { status: 'ok', sessions: [{ code: 'OLD', active: true, validUntil: new Date(Date.now() - 1000).toISOString() }] }]) {
+    const page = prevSessionsPage(() => Promise.resolve(empty));
+    page.ctx.fetchPreviousSessions(); await drain();
+    assert.equal(shown(page).failed, false, 'nothing active is not an error');
+    assert.equal(shown(page).visible, false, 'and it must not be confusable with one');
+  }
+});
+test('retrying after a failure recovers the session list', async () => {
+  let reply = () => Promise.reject(new Error('network'));
+  const page = prevSessionsPage(() => reply());
+  page.ctx.fetchPreviousSessions(); await drain();
+  assert.equal(shown(page).failed, true);
+  reply = () => Promise.resolve(liveSession());
+  const box = shown(page).retry;
+  box.children.find(child => child.handlers && child.handlers.click).click(); await drain();
+  assert.equal(shown(page).failed, false, 'the failure box is gone');
+  assert.equal(shown(page).cards, 1, 'and the real session took its place');
 });
 
 test('all inline client scripts and both service workers parse', () => {
