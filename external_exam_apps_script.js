@@ -149,7 +149,42 @@ function readResultsTail() { return readTail(getSheet('תוצאות'), 0); }    
 // relevant sit above it. Otherwise grow once (x4), then read everything. The
 // result is correct whatever the sheet's size or a day's row count - the size
 // only decides how often the cheap path wins. `mode` goes into the diag trail.
-function readRowsSince(sheet, tsColIdx, cutoff) {
+//
+// r17 — the second half of the same problem: WIDTH. Bounding the rows bought
+// almost nothing on 'תוצאות תרגול' (28.5s, mode `full`) while 'תוצאות' — the
+// longer sheet — read in 1.3s, because a practice row carries two JSON blobs:
+// col N 'פירוט שגויות' holds every wrong question's full text (~2KB/row) and
+// col O 'פירוט לפי נושא' another. The commander handler reads NEITHER. So a
+// caller may name the column ranges it needs and the skipped ones come back as
+// '' — absolute indices are preserved, so `row[15]` is still the phone.
+//
+// `colSpec` is [[firstCol, numCols], ...], 1-based and ascending, and applies
+// to the full read as well — that is where the 28 seconds actually were.
+// ⚠ A caller passing colSpec MUST list every column it touches; a column left
+// out reads as empty, it does not fail. Keep each call site's list next to the
+// code that indexes the row.
+function readSheetSlice(sheet, startRow, numRows, lastCol, colSpec) {
+  if (numRows <= 0) return [];
+  if (!colSpec || !colSpec.length) return sheet.getRange(startRow, 1, numRows, lastCol).getValues();
+  var parts = [];
+  for (var i = 0; i < colSpec.length; i++) {
+    var first = colSpec[i][0], count = Math.min(colSpec[i][1], lastCol - first + 1);
+    parts.push(count > 0 ? sheet.getRange(startRow, first, numRows, count).getValues() : null);
+  }
+  var out = [];
+  for (var r = 0; r < numRows; r++) {
+    var row = [];
+    for (var j = 0; j < colSpec.length; j++) {
+      while (row.length < colSpec[j][0] - 1) row.push('');   // the columns we deliberately skipped
+      var piece = parts[j] ? parts[j][r] : null;
+      if (piece) for (var k = 0; k < piece.length; k++) row.push(piece[k]);
+    }
+    out.push(row);
+  }
+  return out;
+}
+
+function readRowsSince(sheet, tsColIdx, cutoff, colSpec) {
   var lastRow = sheet.getLastRow(), lastCol = sheet.getLastColumn();
   var bounded = cutoff instanceof Date && !isNaN(cutoff.getTime());
   if (bounded && lastCol >= 1) {
@@ -158,15 +193,18 @@ function readRowsSince(sheet, tsColIdx, cutoff) {
       var n = sizes[s];
       if (lastRow - 1 <= n) break;                      // the tail would be the whole sheet
       var startRow = lastRow - n + 1;
-      var tail = sheet.getRange(startRow, 1, n, lastCol).getValues();
+      var tail = readSheetSlice(sheet, startRow, n, lastCol, colSpec);
       var oldest = parseSheetDateTime(tail[0][tsColIdx]);
       if (oldest && oldest.getTime() < cutoff.getTime()) {
-        var header = sheet.getRange(1, 1, 1, lastCol).getValues();
-        return { rows: header.concat(tail), off: startRow - 2, mode: 'tail' + n };
+        var header = readSheetSlice(sheet, 1, 1, lastCol, colSpec);
+        return { rows: header.concat(tail), off: startRow - 2, mode: 'tail' + n + '/' + lastRow };
       }
     }
   }
-  return { rows: sheet.getDataRange().getValues(), off: 0, mode: 'full' };
+  // The row count rides along in `mode`: when a read still falls back to `full`
+  // the trail must say how big the sheet actually is, instead of us guessing.
+  if (colSpec && lastCol >= 1) return { rows: readSheetSlice(sheet, 1, lastRow, lastCol, colSpec), off: 0, mode: 'full/' + lastRow };
+  return { rows: sheet.getDataRange().getValues(), off: 0, mode: 'full/' + lastRow };
 }
 
 // ========== Nightly archive of ממתינים (perf) ==========
@@ -580,7 +618,7 @@ function todayStr() {
 }
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-16-r16';
+var THEORY_API_BUILD = '2026-09-16-r17';
 var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
 
 function logTheoryApiTiming(phase, method, action, startedAt) {
@@ -5699,9 +5737,15 @@ function handleCommanderDashboard(p) {
   // before exam predict success?" metric. The student app stores its own
   // "מזהה תלמיד" (not the national ID), so we match only on full name +
   // license. Note that this is best-effort: identical names will collapse.
+  // r17: columns A-M + P only. This loop reads date(0), name(2), class(3),
+  // license(5), percent(8) and phone(15) — and NOTHING else. Columns N/O
+  // ('פירוט שגויות' / 'פירוט לפי נושא') are per-row JSON blobs holding the full
+  // text of every wrong question, ~2KB a row, and they were 28 of this handler's
+  // seconds. If you ever index another column here, add it to this list.
   diagMark('sheet:practice-commander');
   var practiceSheet = getSheet('תוצאות תרגול');
-  var practiceRead = readRowsSince(practiceSheet, 0, prevFrom ? new Date(prevFrom.getTime() - 31 * DAY_MS) : null);
+  var practiceRead = readRowsSince(practiceSheet, 0, prevFrom ? new Date(prevFrom.getTime() - 31 * DAY_MS) : null,
+    [[1, 13], [16, 1]]);
   var practiceData = practiceRead.rows;
   diagMark('sheet:practice-commander-done:' + practiceRead.mode);
 
@@ -6522,6 +6566,11 @@ function handleCommanderDashboard(p) {
     waitTimes: waitTimesOut
   };
 
+  // 15/09 measured 12.1s between compute:commander-resolvers@32775 and the
+  // request's 44932ms total — a quarter of the request after the last mark,
+  // unattributed. This one closes the trail: anything left between it and the
+  // total is serialisation of the payload plus diagFinish's own sheet append.
+  diagMark('compute:commander-payload');
   return jsonResponse({ status: 'ok', data: result });
 }
 

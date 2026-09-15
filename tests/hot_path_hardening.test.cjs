@@ -59,7 +59,7 @@ function environment(banks) {
   const blob = data => { const bytes = typeof data === 'string' ? Buffer.from(data, 'utf8') : Buffer.from(data); return { getBytes: () => [...bytes], getDataAsString: () => bytes.toString('utf8') }; };
   function sheet(name) {
     if (!sheets.has(name)) sheets.set(name, {
-      name, rows: [], fullReads: 0,
+      name, rows: [], fullReads: 0, cellsRead: 0,
       appendRow(r) { this.rows.push(r); },
       getLastRow() { return this.rows.length; },
       getLastColumn() { return this.rows.reduce((w, r) => Math.max(w, r.length), 0); },
@@ -68,10 +68,14 @@ function environment(banks) {
         const self = this;
         return {
           setValues() {}, setFontWeight() {},
-          getValues() { return self.rows.slice(startRow - 1, startRow - 1 + (numRows || 1)).map(r => (r || []).slice(startCol - 1, startCol - 1 + (numCols || 1))); }
+          getValues() {
+            const out = self.rows.slice(startRow - 1, startRow - 1 + (numRows || 1)).map(r => (r || []).slice(startCol - 1, startCol - 1 + (numCols || 1)));
+            self.cellsRead += out.length * (numCols || 1);   // what the read actually costs
+            return out;
+          }
         };
       },
-      getDataRange() { const self = this; return { getValues() { self.fullReads++; return self.rows; } }; }
+      getDataRange() { const self = this; return { getValues() { self.fullReads++; self.cellsRead += self.rows.length * self.getLastColumn(); return self.rows; } }; }
     });
     return sheets.get(name);
   }
@@ -371,7 +375,7 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
 
   const recent = read(big, 10);                            // needs the last ~10 days = ~500 rows
   check('a recent cutoff is served by the 1000-row tail alone', () => {
-    assert.equal(recent.mode, 'tail1000');
+    assert.equal(recent.mode, 'tail1000/6001', 'mode carries the sheet size, so a fallback is never a guess');
     assert.equal(recent.rows.length, 1001, 'header + tail');
     assert.equal(big.fullReads, 0);
     assert.deepEqual(recent.rows[0], ['תאריך', 'מזהה', 'שם'], 'header preserved');
@@ -387,24 +391,64 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
   });
   const wider = read(big, 50);                             // ~2500 rows: tail1000 fails, tail4000 covers
   check('a wider window grows the tail once instead of reading everything', () => {
-    assert.equal(wider.mode, 'tail4000'); assert.equal(wider.rows.length, 4001); assert.equal(big.fullReads, 0);
+    assert.equal(wider.mode, 'tail4000/6001'); assert.equal(wider.rows.length, 4001); assert.equal(big.fullReads, 0);
   });
   const ancient = read(big, 100);                          // ~5000 rows: beyond both tails
   check('a cutoff the tails cannot reach falls back to the full read', () => {
-    assert.equal(ancient.mode, 'full'); assert.equal(ancient.rows.length, 6001); assert.equal(big.fullReads, 1);
+    assert.equal(ancient.mode, 'full/6001'); assert.equal(ancient.rows.length, 6001); assert.equal(big.fullReads, 1);
   });
   const small = env.sheet('small'); fill(small, 200, 400);
   check('a small sheet is simply read whole', () => {
-    const r = read(small, 1); assert.equal(r.mode, 'full'); assert.equal(r.rows.length, 201); assert.equal(r.off, 0);
+    const r = read(small, 1); assert.equal(r.mode, 'full/201'); assert.equal(r.rows.length, 201); assert.equal(r.off, 0);
   });
   check('no usable cutoff means a full read, never a guess', () => {
-    assert.equal(env.ctx.readRowsSince(big, 0, null).mode, 'full');
-    assert.equal(env.ctx.readRowsSince(big, 0, new Date(NaN)).mode, 'full');
+    assert.equal(env.ctx.readRowsSince(big, 0, null).mode, 'full/6001');
+    assert.equal(env.ctx.readRowsSince(big, 0, new Date(NaN)).mode, 'full/6001');
   });
+
+  // ---- r17: width. Bounding rows bought ~1s on 'תוצאות תרגול' (28.5s, `full`)
+  // while the LONGER 'תוצאות' read in 1.3s — because a practice row carries two
+  // JSON blobs (cols N/O) the handler never reads.
+  {
+    const wide = env.sheet('wide');
+    const blob = 'x'.repeat(2000);
+    wide.rows.push(['תאריך', 'מזהה', 'שם', 'כיתה', 'מצב', 'דרגה', 'ציון', 'סה"כ', 'אחוז', 'עבר', 'זמן', 'נושא', 'שפה', 'פירוט שגויות', 'לפי נושא', 'טלפון']);
+    for (let i = 0; i < 300; i++) {
+      wide.rows.push([new Date(now - (300 - i) * 60000), 'S' + i, 'שם ' + i, 'C1', 'exam', 'B', 20, 30, 67, 'נכשל', '10:00', '', 'he', blob, blob, '050' + i]);
+    }
+    const SPEC = [[1, 13], [16, 1]];
+    wide.cellsRead = 0;
+    const pruned = env.ctx.readRowsSince(wide, 0, new Date(now - 1 * DAY), SPEC);
+    const prunedCells = wide.cellsRead;
+    check('a pruned read keeps every index the caller uses', () => {
+      const row = pruned.rows[5];
+      assert.equal(row.length, 16, 'absolute column positions are preserved');
+      assert.ok(row[0] instanceof Date); assert.equal(row[2], 'שם 4'); assert.equal(row[5], 'B');
+      assert.equal(row[8], 67); assert.equal(row[15], '0504', 'col P still lands on index 15');
+    });
+    check('the JSON columns it does not use come back empty, not fetched', () => {
+      assert.equal(pruned.rows[5][13], ''); assert.equal(pruned.rows[5][14], '');
+    });
+    wide.cellsRead = 0;
+    env.ctx.readRowsSince(wide, 0, new Date(now - 1 * DAY));   // same rows, every column
+    check('pruning is what makes the read cheap, not the row bound', () => {
+      assert.ok(prunedCells < wide.cellsRead * 0.9,
+        `pruned ${prunedCells} cells vs ${wide.cellsRead} unpruned`);
+    });
+    check('the header row is pruned the same way, so it still aligns', () => {
+      const wideT = env.sheet('wideTail');
+      wideT.rows.push(wide.rows[0].slice());
+      for (let i = 0; i < 1500; i++) wideT.rows.push([new Date(now - (1500 - i) * 3600000), 'S' + i, 'n', 'C', 'exam', 'B', 1, 2, 3, '', '', '', 'he', blob, blob, '05']);
+      const t = env.ctx.readRowsSince(wideT, 0, new Date(now - 2 * DAY), SPEC);
+      assert.equal(t.mode, 'tail1000/1501');
+      assert.equal(t.rows[0][0], 'תאריך'); assert.equal(t.rows[0][15], 'טלפון');
+      assert.equal(t.rows[0][13], '', 'skipped in the header exactly as in the body');
+    });
+  }
   check('an unparseable oldest row disables the tail (correctness over speed)', () => {
     const odd = env.sheet('odd'); fill(odd, 1500, 30); odd.rows[odd.rows.length - 1000][0] = 'not a date';
     const r = read(odd, 1);
-    assert.equal(r.mode, 'full', 'the 1000-tail is rejected; a 4000-tail would be the whole sheet, so it reads whole');
+    assert.equal(r.mode, 'full/1501', 'the 1000-tail is rejected; a 4000-tail would be the whole sheet, so it reads whole');
     assert.equal(r.rows.length, 1501); assert.equal(odd.fullReads, 1);
   });
   // The commander handler must route both heavy reads through it, bounded by
@@ -413,7 +457,11 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
   const cmd = src.slice(src.indexOf('function handleCommanderDashboard('), src.indexOf('\nfunction ', src.indexOf('function handleCommanderDashboard(') + 10));
   check('the commander dashboard reads results and practice through readRowsSince', () => {
     assert.ok(/readRowsSince\(resSheet, 0, prevFrom \? new Date\(prevFrom\.getTime\(\) - DAY_MS\)/.test(cmd));
-    assert.ok(/readRowsSince\(practiceSheet, 0, prevFrom \? new Date\(prevFrom\.getTime\(\) - 31 \* DAY_MS\)/.test(cmd));
+    assert.ok(/readRowsSince\(practiceSheet, 0, prevFrom \? new Date\(prevFrom\.getTime\(\) - 31 \* DAY_MS\)[\s\S]{0,60}\[\[1, 13\], \[16, 1\]\]/.test(cmd),
+      'practice is read columns A-M + P only — never the two JSON blobs');
+    const touched = [...cmd.matchAll(/practiceData\[\w+\]\[(\d+)\]/g)].map(m => Number(m[1]));
+    assert.ok(touched.length > 0 && touched.every(i => i <= 12 || i === 15),
+      'every practice column the handler indexes is inside the spec: ' + [...new Set(touched)].sort((a, b) => a - b));
     assert.equal((cmd.match(/getSheet\('תוצאות( תרגול)?'\)\.getDataRange\(\)/g) || []).length, 0, 'no bare full read of either sheet remains');
   });
 }
