@@ -32,7 +32,13 @@ class Timers {
 }
 function dom() {
   const nodes = new Map();
-  const document = { activeElement: null, getElementById: id => nodes.get(id) || null };
+  // visibilityState + document-level listeners: the iOS rescue nets (approval
+  // chain restart, markExamStarted re-fire) hang off visibilitychange.
+  const docHandlers = new Map();
+  const document = { activeElement: null, getElementById: id => nodes.get(id) || null,
+    visibilityState: 'visible',
+    addEventListener(type, cb) { if (!docHandlers.has(type)) docHandlers.set(type, []); docHandlers.get(type).push(cb); },
+    removeEventListener(type, cb) { const list = docHandlers.get(type) || []; const i = list.indexOf(cb); if (i >= 0) list.splice(i, 1); } };
   function element(id) {
     const el = { id, textContent: '', disabled: false, style: {}, handlers: {}, attrs: {},
       classList: { values: new Set(), add(v) { this.values.add(v); }, remove(v) { this.values.delete(v); }, contains(v) { return this.values.has(v); } },
@@ -54,7 +60,12 @@ function dom() {
   document.createElement = () => element('');
   document.body = { appendChild(el) { nodes.set(el.id, el); el.parentNode = this; }, removeChild(el) { nodes.delete(el.id); } };
   for (const id of ['examArea', 'offlineBanner', 'approvalError']) element(id);
-  return { document, nodes, element };
+  // Drive the page between background and foreground, as iOS does.
+  const setVisibility = state => {
+    document.visibilityState = state;
+    for (const cb of docHandlers.get('visibilitychange') || []) cb();
+  };
+  return { document, nodes, element, setVisibility };
 }
 function context(extra = {}, timer = new Timers()) {
   const clockDate = class extends Date { static now() { return timer.now; } };
@@ -174,7 +185,7 @@ test('create-session timeout offers read-only reconciliation without claiming th
 function approvalContext(apiGet) {
   const ui = dom(); const setup = context({ ...ui, apiGet, examineeData: { idNumber: 'SYNTHETIC' },
     sessionCode: 'TEST00', examineeToken: 'synthetic', approvalPollCount: 0, approvalFailCount: 0,
-    approvalInterval: null, updateApprovalDebug() {}, setupWaitingProtections() {}, teardownWaitingProtections() {},
+    approvalInterval: null, examInProgress: false, updateApprovalDebug() {}, setupWaitingProtections() {}, teardownWaitingProtections() {},
     showApprovalError(message) { ui.nodes.get('approvalError').textContent = message; },
     notifyApprovedToExaminee() {}, showInstructions() {}, sessionData: {} });
   load(setup.ctx, section(examinee, '  function doCheckApproval()', '  function showApprovalError(msg)'));
@@ -190,6 +201,39 @@ test('approval counts repeated server errors and stops on approval without overl
   const before = calls; ctx.startApprovalPolling(); await timer.advance(20000); assert.equal(calls - before, 1);
   pending.resolve({ status: 'ok', approval: 'approved' }); await drain();
   assert.equal(ctx.approvalFailCount, 0); assert.equal(ctx.approvalInterval, null); assert.equal(timer.jobs.size, 0);
+});
+
+test('an approval chain killed while the page was frozen restarts when the iPhone wakes', async () => {
+  // iOS can suspend the page mid-request and never settle the promise, which
+  // kills the self-rescheduling chain: the examinee then waits forever for an
+  // approval that already happened (two iPhones, מחנה עמוס, 15/09/2026).
+  const dead = deferred(); let calls = 0, approved = 0;
+  const { ctx, timer, setVisibility } = approvalContext(() => { calls++; return calls === 1 ? dead.promise : Promise.resolve({ status: 'ok', approval: 'approved' }); });
+  ctx.showInstructions = () => approved++;
+  ctx.startApprovalPolling(); await drain();
+  assert.equal(calls, 1, 'first check fired');
+  await timer.advance(60000);
+  assert.equal(calls, 1, 'the chain is dead: no further checks while the request never settles');
+  setVisibility('hidden'); await drain();
+  await timer.advance(4000);          // past the 3s "a healthy chain just ran" guard
+  setVisibility('visible'); await drain();
+  assert.equal(calls, 2, 'returning to the foreground restarts the chain immediately');
+  assert.equal(approved, 1, 'the pending approval is picked up at once');
+  // the resurrected chain must be the only one: a late answer from the dead
+  // request cannot schedule a second chain alongside it
+  dead.resolve({ status: 'ok', approval: 'pending' }); await drain();
+  const settled = calls; await timer.advance(20000);
+  assert.ok(calls - settled <= 1, 'no duplicate chain formed');
+});
+test('a healthy approval chain is not restarted by ordinary tab switching', async () => {
+  let calls = 0;
+  const { ctx, timer, setVisibility } = approvalContext(() => { calls++; return Promise.resolve({ status: 'ok', approval: 'pending' }); });
+  ctx.startApprovalPolling(); await drain();
+  const afterFirst = calls;
+  setVisibility('hidden'); setVisibility('visible'); await drain();
+  assert.equal(calls, afterFirst, 'a poll that just ran is not piled on');
+  ctx.stopApprovalPolling && ctx.stopApprovalPolling();
+  ctx.approvalInterval = null; timer.jobs.clear();
 });
 
 function startContext(apiGet) {

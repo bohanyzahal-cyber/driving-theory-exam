@@ -1716,9 +1716,11 @@
   // would run two chains side by side. Each start bumps the generation; a
   // finalizer from an older generation is a no-op.
   var approvalPollGen = 0;
+  var lastApprovalTickAt = 0;
   function approvalPollTick() {
     var myGen = approvalPollGen;
     var t0 = Date.now();
+    lastApprovalTickAt = t0;
     var p = doCheckApproval();
     var reschedule = function() {
       if (approvalInterval === null || myGen !== approvalPollGen) return;  // stopped/restarted meanwhile
@@ -1730,6 +1732,23 @@
     };
     if (p && typeof p.then === 'function') { p.then(reschedule, reschedule); } else { reschedule(); }
   }
+
+  // iOS rescue for the WAITING phase. The approval chain reschedules itself only
+  // when a request settles, so a fetch that iOS kills while the page is frozen
+  // (screen lock, app switch) leaves the promise unsettled and the chain dead —
+  // the examinee then waits for an approval that already happened. Two iPhones
+  // at מחנה עמוס on 15/09/2026 were stuck exactly this way and had to retake the
+  // exam on borrowed devices. The exam phase already had this net (the
+  // markExamStarted visibilitychange handler); the waiting phase had none.
+  // Restart is safe: startApprovalPolling bumps the generation, so a late
+  // finalizer from the dead chain is a no-op and no second chain can form.
+  document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState !== 'visible') return;
+    if (approvalInterval === null || examInProgress) return;   // not waiting for approval
+    if (Date.now() - lastApprovalTickAt < 3000) return;         // a healthy chain just ran; don't pile on
+    console.log('[APPROVAL] page returned to foreground — restarting the approval chain');
+    startApprovalPolling();
+  });
 
   function startApprovalPolling() {
     console.log('[APPROVAL] Starting polling for session=' + sessionCode + ' id=' + examineeData.idNumber);
