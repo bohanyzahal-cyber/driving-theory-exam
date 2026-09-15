@@ -300,4 +300,50 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
     assert.equal(res.fullReads - beforeOld, 1));
 }
 
+
+// ---- 8. report question-metadata resolver: cache, not Drive -----------------
+// The 'אבחון' sheet showed commanderDashboard spending 30-60 of its 33-70s on
+// Drive reads of the question banks - every language, twice. The per-license
+// pools hold the same objects, so the resolver must answer from cache, share a
+// memo across both resolver loops, and never return a partial answer.
+{
+  const env = environment(banks);
+  env.ctx.warmupQuestionCaches();              // pools + index warm
+  const readsAfterWarm = { ...env.reads };
+
+  const memo = {};
+  const he1 = env.ctx.questionMetaForLanguage('he', memo);
+  check('metadata comes from the cached pools, with no Drive read', () => {
+    assert.equal(env.reads.he, readsAfterWarm.he, 'no extra Drive read for he');
+    assert.equal(he1.length, 300, 'every question of the language is covered');
+    const q = he1.find(x => x.id === 7);
+    assert.ok(q && q.category && q.text, 'category + text are present (what the resolvers need)');
+  });
+  const he2 = env.ctx.questionMetaForLanguage('he', memo);
+  check('the shared memo resolves a language at most once per request', () => {
+    assert.equal(he2, he1, 'same array returned');
+    assert.equal(env.reads.he, readsAfterWarm.he);
+  });
+  for (const lang of LANGS) env.ctx.questionMetaForLanguage(lang, memo);
+  check('all seven languages resolve without touching Drive', () =>
+    assert.deepEqual(env.reads, readsAfterWarm));
+
+  // A missing pool must not yield a partial answer: fall back to Drive.
+  env.cache.remove('qv2_pool_he_C1_meta');
+  const cold = env.ctx.questionMetaForLanguage('he', {});
+  check('a missing pool falls back to Drive rather than answering partially', () => {
+    assert.equal(env.reads.he, readsAfterWarm.he + 1, 'exactly one Drive read');
+    assert.equal(cold.length, banks.he.length, 'the full bank, not a partial union');
+  });
+
+  // Same guard when the translation index (the expected-count source) is gone.
+  const noIndex = environment(banks);
+  noIndex.ctx.warmupQuestionCaches();
+  const beforeNoIndex = { ...noIndex.reads };
+  noIndex.cache.remove('qv2_tx_meta');
+  noIndex.ctx.questionMetaForLanguage('ru', {});
+  check('without the index to verify coverage it also falls back to Drive', () =>
+    assert.equal(noIndex.reads.ru, beforeNoIndex.ru + 1));
+}
+
 console.log(`\n${checks} checks passed`);

@@ -550,7 +550,7 @@ function todayStr() {
 }
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-16-r11';
+var THEORY_API_BUILD = '2026-09-16-r12';
 var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
 
 function logTheoryApiTiming(phase, method, action, startedAt) {
@@ -4462,6 +4462,53 @@ function getDiagnosticsSheet() {
   return sheet;
 }
 
+// Question metadata (topic / image) for the reports, WITHOUT touching Drive.
+//
+// Measured in the 'אבחון' sheet on 2026-09-15, the day the diagnostics shipped:
+// commanderDashboard ran 33-70s, and the trail showed the Sheets read finishing
+// in 0.6s while the remaining 30-60s were Drive reads of the question banks —
+// every language, twice, because the two resolver loops each called
+// loadQuestionsForLanguageServer with no shared memo (up to 14 reads in one
+// request). That is what times the client out at 30s, and on a slow Google
+// afternoon it is exactly the shape of the 360s kills.
+//
+// The per-license pools already hold the same question objects (id, text,
+// category, imageUrl) and live in CacheService, so the union of the five pools
+// answers both loops. Two guards keep it honest:
+//   - a missing pool falls back to Drive (never a partial answer);
+//   - the union is compared against the translation index's question count, so
+//     a question belonging to no license type cannot silently disappear.
+// The memo makes a language cost at most one resolution per request.
+function questionMetaForLanguage(lang, memo) {
+  var safeLang;
+  try { safeLang = normalizeQuestionCacheLanguage(lang); } catch (eLang) { return []; }
+  if (memo && memo[safeLang]) return memo[safeLang];
+  var rows = null;
+  try {
+    var cache = CacheService.getScriptCache();
+    var expected = 0;
+    try {
+      var meta = JSON.parse(cache.get(QUESTION_CACHE_PREFIX + 'tx_meta') || 'null');
+      expected = (meta && meta.count) ? meta.count : 0;
+    } catch (eMeta) { expected = 0; }
+    if (expected > 0) {
+      var licenses = Object.keys(EXAM_STRUCTURE_SERVER), seen = {}, out = [];
+      for (var c = 0; c < licenses.length; c++) {
+        var pool = readQuestionCacheRecord(cache, QUESTION_CACHE_PREFIX + 'pool_' + safeLang + '_' + licenses[c], QUESTION_POOL_MAX_PARTS);
+        if (!Array.isArray(pool) || !pool.length) { out = null; break; }
+        for (var i = 0; i < pool.length; i++) {
+          var q = pool[i];
+          if (q && q.id && !seen[q.id]) { seen[q.id] = true; out.push(q); }
+        }
+      }
+      if (out && out.length >= expected) rows = out;
+    }
+  } catch (eCache) { rows = null; }
+  if (!rows) rows = loadQuestionsForLanguageServer(safeLang);   // marks drive:<lang> itself
+  if (memo) memo[safeLang] = rows;
+  return rows;
+}
+
 // ========== Emergency cache reset ==========
 // Run this manually from the Apps Script editor when you see "0 questions"
 // (or similar nonsense from a poisoned cache). Clears every cached language
@@ -6143,6 +6190,9 @@ function handleCommanderDashboard(p) {
   // repeated loads cheap (~300ms warm per language).
   var topicWrong = {};
   var topicWrongByLic = {};
+  // Shared across BOTH resolver loops below: without it each language was
+  // resolved twice per request (see questionMetaForLanguage).
+  var qMetaMemo = {};
   try {
     var WT_LANGS = ['he', 'ru', 'en', 'ar', 'fr', 'es', 'am'];
     for (var wtl = 0; wtl < WT_LANGS.length; wtl++) {
@@ -6152,7 +6202,7 @@ function handleCommanderDashboard(p) {
       }
       if (!wtUnresolved) break;
       var wtQs;
-      try { wtQs = loadQuestionsForLanguageServer(WT_LANGS[wtl]); } catch (eWtLoad) { continue; }
+      try { wtQs = questionMetaForLanguage(WT_LANGS[wtl], qMetaMemo); } catch (eWtLoad) { continue; }
       if (!Array.isArray(wtQs) || wtQs.length === 0) continue;
       var wtById = {}, wtByText = {};
       for (var wtq = 0; wtq < wtQs.length; wtq++) {
@@ -6289,7 +6339,7 @@ function handleCommanderDashboard(p) {
         }
         if (!stillMissing) break;
         var langQs;
-        try { langQs = loadQuestionsForLanguageServer(SUPPORTED_LANGS_FOR_IMG[lgi]); }
+        try { langQs = questionMetaForLanguage(SUPPORTED_LANGS_FOR_IMG[lgi], qMetaMemo); }
         catch (eLoad) { continue; }
         if (!Array.isArray(langQs) || langQs.length === 0) continue;
         // Index by ID (fast path) and by text (fallback path)
