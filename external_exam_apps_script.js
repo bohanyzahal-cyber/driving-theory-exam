@@ -184,45 +184,49 @@ function readSheetSlice(sheet, startRow, numRows, lastCol, colSpec) {
   return out;
 }
 
-// r18: ask the sheet how far back the cutoff is, instead of guessing.
-// The fixed ladder (1000, then 4000) was built without knowing the sheet's real
-// size. 'אבחון' 15/09 13:13 finally reported it: `full/107614` — 'תוצאות תרגול'
-// holds 107,614 rows, so both rungs missed by more than an order of magnitude
-// and every read fell through to the whole sheet. Probe the TIMESTAMP COLUMN
-// ALONE first (one cell per row — the cheapest question there is), convert the
-// observed row-rate into the row count the cutoff actually needs, and then do a
-// single correctly-sized read. Returns 0 for "cannot tell" → read everything.
-function rowsNeededSince(sheet, tsColIdx, cutoff, lastRow, dataRows) {
-  try {
-    var probe = Math.min(TAIL_ROWS, dataRows);
-    var col = sheet.getRange(lastRow - probe + 1, tsColIdx + 1, probe, 1).getValues();
-    var newest = null, oldest = null;
-    for (var i = col.length - 1; i >= 0 && !newest; i--) newest = parseSheetDateTime(col[i][0]);
-    for (var j = 0; j < col.length && !oldest; j++) oldest = parseSheetDateTime(col[j][0]);
-    if (!newest || !oldest) return 0;
-    if (oldest.getTime() < cutoff.getTime()) return probe;   // the probe already reaches past it
-    var span = newest.getTime() - oldest.getTime();
-    if (span <= 0) return 0;                                 // no usable rate (all one instant)
-    // 1.4x margin: rows do not arrive at a constant rate, and reading a few
-    // thousand too many is far cheaper than falling back to the whole sheet.
-    var need = Math.ceil((newest.getTime() - cutoff.getTime()) / (span / probe) * 1.4) + probe;
-    return (isFinite(need) && need > 0) ? need : 0;
-  } catch (e) { return 0; }
+// r19: find the boundary EXACTLY, stop estimating it.
+//
+// Two guesses in a row missed. r16's fixed ladder (1000, 4000) was built without
+// knowing the sheet's size — it turned out to be 107,614 rows. r18 replaced it
+// with a row-rate estimate from the last 1000 rows, and that missed too: the
+// 15/09 13:28 trail still reported `full/107626`, so whatever the real arrival
+// pattern is, extrapolating a burst of 1000 rows does not describe it.
+//
+// So ask for the answer instead of modelling it. ONE read of the timestamp
+// column alone (1 cell per row — for this sheet 107k cells against the 1.7M the
+// full read moves) gives every row's date; the first row at or after the cutoff
+// is then a fact. No assumption about row-rate, and none about ordering either:
+// `first` is the TOPMOST qualifying row, so everything above it was examined and
+// ruled out, whatever order the sheet is in.
+//
+// A row whose date will not parse counts as QUALIFYING. It may be junk the
+// caller's own loop skips anyway, but the two loops here use two different
+// parsers (parseSheetDate / parseSheetDateTime) — dropping a row this one
+// cannot read risks losing a row the caller could. Never trade correctness for
+// the read; if that forces a near-full read, `mode` will say so.
+function firstRowSince(sheet, tsColIdx, cutoff, lastRow) {
+  var col = sheet.getRange(2, tsColIdx + 1, lastRow - 1, 1).getValues();
+  for (var i = 0; i < col.length; i++) {
+    var d = parseSheetDateTime(col[i][0]);
+    if (!d || d.getTime() >= cutoff.getTime()) return i + 2;   // sheet row number
+  }
+  return 0;                                                    // nothing in range
 }
 
 function readRowsSince(sheet, tsColIdx, cutoff, colSpec) {
   var lastRow = sheet.getLastRow(), lastCol = sheet.getLastColumn(), dataRows = lastRow - 1;
   var bounded = cutoff instanceof Date && !isNaN(cutoff.getTime());
   if (bounded && lastCol >= 1 && dataRows > TAIL_ROWS) {
-    var n = rowsNeededSince(sheet, tsColIdx, cutoff, lastRow, dataRows);
-    if (n > 0 && n < dataRows) {
-      var startRow = lastRow - n + 1;
+    var startRow = 0;
+    try { startRow = firstRowSince(sheet, tsColIdx, cutoff, lastRow); } catch (eScan) { startRow = -1; }
+    if (startRow === 0) {   // no row is recent enough: the caller wants the header and nothing else
+      return { rows: readSheetSlice(sheet, 1, 1, lastCol, colSpec), off: 0, mode: 'none/' + lastRow };
+    }
+    if (startRow > 2) {
+      var n = lastRow - startRow + 1;
       var tail = readSheetSlice(sheet, startRow, n, lastCol, colSpec);
-      var oldest = parseSheetDateTime(tail[0][tsColIdx]);
-      if (oldest && oldest.getTime() < cutoff.getTime()) {
-        var header = readSheetSlice(sheet, 1, 1, lastCol, colSpec);
-        return { rows: header.concat(tail), off: startRow - 2, mode: 'tail' + n + '/' + lastRow };
-      }
+      var header = readSheetSlice(sheet, 1, 1, lastCol, colSpec);
+      return { rows: header.concat(tail), off: startRow - 2, mode: 'rows' + n + '/' + lastRow };
     }
   }
   // The row count rides along in `mode`: when a read still falls back to `full`
@@ -642,7 +646,7 @@ function todayStr() {
 }
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-16-r18';
+var THEORY_API_BUILD = '2026-09-16-r19';
 var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
 
 function logTheoryApiTiming(phase, method, action, startedAt) {

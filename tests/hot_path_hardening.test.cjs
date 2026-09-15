@@ -373,49 +373,50 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
   const big = env.sheet('big'); fill(big, 6000, 120);      // 6000 rows over 120 days (50/day)
   const read = (sh, cutoffDaysAgo) => env.ctx.readRowsSince(sh, 0, new Date(now - cutoffDaysAgo * DAY));
 
-  const recent = read(big, 10);                            // needs the last ~10 days = ~500 rows
-  check('a recent cutoff is served by the 1000-row tail alone', () => {
-    assert.equal(recent.mode, 'tail1000/6001', 'mode carries the sheet size, so a fallback is never a guess');
-    assert.equal(recent.rows.length, 1001, 'header + tail');
-    assert.equal(big.fullReads, 0);
-    assert.deepEqual(recent.rows[0], ['תאריך', 'מזהה', 'שם'], 'header preserved');
-    assert.equal(recent.rows[recent.rows.length - 1][1], 'id5999', 'newest row is in hand');
-    const oldest = new Date(recent.rows[1][0]).getTime();
-    assert.ok(oldest < now - 10 * DAY, 'the tail reaches past the cutoff');
+  // The boundary is found exactly (one timestamp-column read), never estimated:
+  // both earlier guesses — a fixed ladder, then a row-rate extrapolation — fell
+  // through to `full` on the live 107,614-row sheet.
+  const exactRows = (sheet, daysAgo) => sheet.rows.slice(1).filter(r => r[0].getTime() >= now - daysAgo * DAY).length;
+  for (const daysAgo of [10, 50, 95]) {
+    const r = read(big, daysAgo);
+    check(`a ${daysAgo}-day cutoff reads exactly the rows at or after it`, () => {
+      assert.match(r.mode, /^rows(\d+)\/6001$/, 'mode carries the count and the sheet size: ' + r.mode);
+      const n = Number(/^rows(\d+)\//.exec(r.mode)[1]);
+      assert.equal(n, exactRows(big, daysAgo), 'not one row more than needed');
+      assert.equal(r.rows.length, n + 1, 'header + exactly those rows');
+      assert.deepEqual(r.rows[0], ['תאריך', 'מזהה', 'שם'], 'header preserved');
+      assert.equal(r.rows[r.rows.length - 1][1], 'id5999', 'newest row is in hand');
+      assert.equal(big.fullReads, 0, 'the whole sheet is never fetched');
+      assert.ok(r.rows[1][0].getTime() >= now - daysAgo * DAY, 'nothing older than the cutoff came along');
+    });
+  }
+  check('a row index survives the offset, so callers can still write back', () => {
+    const r = read(big, 10);
+    // rows[i] is sheet row (i + 1 + off); the mock array is 0-based, so that is
+    // index (i + off). i = 1 → the first row handed back.
+    assert.equal(big.rows[1 + r.off][1], r.rows[1][1], 'rows[i] is sheet row (i + 1 + off)');
   });
-  check('every row at or after the cutoff is present in the tail', () => {
-    const cutoff = now - 10 * DAY;
-    const expected = big.rows.slice(1).filter(r => r[0].getTime() >= cutoff).length;
-    const got = recent.rows.slice(1).filter(r => r[0].getTime() >= cutoff).length;
-    assert.equal(got, expected);
-  });
-  const wider = read(big, 50);       // 50 days ≈ 2500 rows: the probe window cannot see that far
-  check('a wider window is sized from the observed row-rate, not from a ladder', () => {
-    assert.match(wider.mode, /^tail(\d+)\/6001$/);
-    const n = Number(/^tail(\d+)\//.exec(wider.mode)[1]);
-    assert.ok(n > 2500 && n < 6000, 'enough to reach the cutoff, still less than the sheet: ' + n);
-    assert.equal(big.fullReads, 0);
-    const cutoff = now - 50 * DAY;
-    assert.equal(wider.rows.slice(1).filter(r => r[0].getTime() >= cutoff).length,
-      big.rows.slice(1).filter(r => r[0].getTime() >= cutoff).length, 'nothing in range was left behind');
-  });
-  const ancient = read(big, 100);    // 100 days ≈ 5000 rows: with the margin this exceeds the sheet
-  check('a cutoff that needs most of the sheet reads it whole, without a wasted tail', () => {
-    assert.equal(ancient.mode, 'full/6001'); assert.equal(ancient.rows.length, 6001); assert.equal(big.fullReads, 1);
-  });
-  // The shape that broke the ladder: 'תוצאות תרגול' = 107,614 rows (reported by
-  // r17's own mode string). A month-deep cutoff must still not read it all.
+  // The shape that broke both guesses: 'תוצאות תרגול' = 107,614 rows.
   check('at the real sheet scale a 32-day cutoff reads a fraction, not everything', () => {
     const huge = env.sheet('huge'); fill(huge, 20000, 110);   // same rows-per-day ratio, kept testable
     huge.fullReads = 0;
     const r = env.ctx.readRowsSince(huge, 0, new Date(now - 32 * DAY));
-    assert.match(r.mode, /^tail\d+\/20001$/, 'must not fall back to full: ' + r.mode);
-    const n = Number(/^tail(\d+)\//.exec(r.mode)[1]);
-    assert.ok(n < 20000 / 2, 'well under half the sheet: ' + n);
+    assert.match(r.mode, /^rows\d+\/20001$/, 'must not fall back to full: ' + r.mode);
+    assert.equal(Number(/^rows(\d+)\//.exec(r.mode)[1]), exactRows(huge, 32));
+    assert.ok(Number(/^rows(\d+)\//.exec(r.mode)[1]) < 20000 / 2, 'well under half the sheet');
     assert.equal(huge.fullReads, 0);
-    const cutoff = now - 32 * DAY;
-    assert.equal(r.rows.slice(1).filter(x => x[0].getTime() >= cutoff).length,
-      huge.rows.slice(1).filter(x => x[0].getTime() >= cutoff).length);
+  });
+  check('an unparseable date is kept, never silently dropped', () => {
+    const junk = env.sheet('junk'); fill(junk, 1500, 300);
+    junk.rows[400][0] = '';                    // array index 400 = sheet row 401, far older than the cutoff
+    const r = env.ctx.readRowsSince(junk, 0, new Date(now - 5 * DAY));
+    assert.match(r.mode, /^rows\d+\/1501$/);
+    assert.equal(r.off, 401 - 2, 'the read starts AT the unreadable row, not after it');
+    assert.equal(r.rows[1][0], '', 'and it is the first row handed back');
+  });
+  check('nothing in range returns the header alone, not the sheet', () => {
+    const r = env.ctx.readRowsSince(big, 0, new Date(now + 10 * DAY));
+    assert.equal(r.mode, 'none/6001'); assert.equal(r.rows.length, 1); assert.equal(big.fullReads, 0);
   });
   const small = env.sheet('small'); fill(small, 200, 400);
   check('a small sheet is simply read whole', () => {
@@ -460,16 +461,21 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
       wideT.rows.push(wide.rows[0].slice());
       for (let i = 0; i < 1500; i++) wideT.rows.push([new Date(now - (1500 - i) * 3600000), 'S' + i, 'n', 'C', 'exam', 'B', 1, 2, 3, '', '', '', 'he', blob, blob, '05']);
       const t = env.ctx.readRowsSince(wideT, 0, new Date(now - 2 * DAY), SPEC);
-      assert.match(t.mode, /^tail\d+\/1501$/);
+      assert.match(t.mode, /^rows\d+\/1501$/);
       assert.equal(t.rows[0][0], 'תאריך'); assert.equal(t.rows[0][15], 'טלפון');
       assert.equal(t.rows[0][13], '', 'skipped in the header exactly as in the body');
     });
   }
-  check('an unparseable oldest row disables the tail (correctness over speed)', () => {
+  check('an unparseable date anchors the read at itself, without reading the sheet', () => {
+    // Under the old ladder this rejected the tail and read all 1500 rows. The
+    // exact scan keeps the unreadable row — it is the topmost row that may
+    // matter — and reads from there down, nothing above it.
     const odd = env.sheet('odd'); fill(odd, 1500, 30); odd.rows[odd.rows.length - 1000][0] = 'not a date';
+    odd.fullReads = 0;
     const r = read(odd, 1);
-    assert.equal(r.mode, 'full/1501', 'the 1000-tail is rejected; a 4000-tail would be the whole sheet, so it reads whole');
-    assert.equal(r.rows.length, 1501); assert.equal(odd.fullReads, 1);
+    assert.equal(r.mode, 'rows1000/1501');
+    assert.equal(r.rows.length, 1001); assert.equal(odd.fullReads, 0);
+    assert.equal(r.rows[1][0], 'not a date', 'the row we could not read is the first one kept');
   });
   // The commander handler must route both heavy reads through it, bounded by
   // prevFrom (results) and prevFrom - 31 days (practice).
