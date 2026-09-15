@@ -139,6 +139,36 @@ function readTail(sheet, tsColIdx) {
 function readPendingTail() { return readTail(getSheet('ממתינים'), 4); }   // col E = זמן הרשמה
 function readResultsTail() { return readTail(getSheet('תוצאות'), 0); }    // col A = תאריך
 
+// r16: read only the rows a date-bounded caller can use.
+// Every heavy aggregation skips rows older than some lower bound - the commander
+// dashboard ignores results before prevFrom and practice rows more than 30 days
+// before any such result - yet each read the whole sheet: 'אבחון' 15/09 showed
+// practice-commander at 20-27s on every one of 12 dashboard opens. Take the tail
+// first. The guard is the oldest row in hand: sheets here are append-only in
+// time order, so only when that row is strictly older than `cutoff` can nothing
+// relevant sit above it. Otherwise grow once (x4), then read everything. The
+// result is correct whatever the sheet's size or a day's row count - the size
+// only decides how often the cheap path wins. `mode` goes into the diag trail.
+function readRowsSince(sheet, tsColIdx, cutoff) {
+  var lastRow = sheet.getLastRow(), lastCol = sheet.getLastColumn();
+  var bounded = cutoff instanceof Date && !isNaN(cutoff.getTime());
+  if (bounded && lastCol >= 1) {
+    var sizes = [TAIL_ROWS, TAIL_ROWS * 4];
+    for (var s = 0; s < sizes.length; s++) {
+      var n = sizes[s];
+      if (lastRow - 1 <= n) break;                      // the tail would be the whole sheet
+      var startRow = lastRow - n + 1;
+      var tail = sheet.getRange(startRow, 1, n, lastCol).getValues();
+      var oldest = parseSheetDateTime(tail[0][tsColIdx]);
+      if (oldest && oldest.getTime() < cutoff.getTime()) {
+        var header = sheet.getRange(1, 1, 1, lastCol).getValues();
+        return { rows: header.concat(tail), off: startRow - 2, mode: 'tail' + n };
+      }
+    }
+  }
+  return { rows: sheet.getDataRange().getValues(), off: 0, mode: 'full' };
+}
+
 // ========== Nightly archive of ממתינים (perf) ==========
 // Every live-path reader of ממתינים filters by the current sessionCode; the only
 // history reader is the commander wait-time stat, which reads the archive too.
@@ -550,7 +580,7 @@ function todayStr() {
 }
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-16-r15';
+var THEORY_API_BUILD = '2026-09-16-r16';
 var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
 
 function logTheoryApiTiming(phase, method, action, startedAt) {
@@ -5647,10 +5677,22 @@ function handleCommanderDashboard(p) {
   dateTo.setHours(23, 59, 59, 999);
 
   // Read results
+  // r16: both big reads below have a provable lower date bound. This handler
+  // looks at a result only when its date is >= prevFrom (the trend window that
+  // precedes the requested one), and at a practice row only within 30 days
+  // before such a result. So rows older than prevFrom (results) or prevFrom-30d
+  // (practice) can never reach the output; readRowsSince stops reading there.
+  // One extra day of margin on each covers the two date parsers disagreeing on
+  // a boundary row. prevFrom is computed here, before the reads, and reused by
+  // the trend logic further down - keep the two in step.
+  var DAY_MS = 86400000;
+  var prevFrom = (dateFrom && dateTo && dateFrom.getTime && dateTo.getTime)
+    ? new Date(dateFrom.getTime() - (dateTo.getTime() - dateFrom.getTime()) - 1) : null;
   diagMark('sheet:results-commander');
   var resSheet = getSheet('תוצאות');
-  var resData = resSheet.getDataRange().getValues();
-  diagMark('sheet:results-commander-done');
+  var resRead = readRowsSince(resSheet, 0, prevFrom ? new Date(prevFrom.getTime() - DAY_MS) : null);
+  var resData = resRead.rows;
+  diagMark('sheet:results-commander-done:' + resRead.mode);
 
   // Read practice results too — we'll join real-exam outcomes against the
   // practice history of the same name+license to surface a "did practice
@@ -5659,8 +5701,9 @@ function handleCommanderDashboard(p) {
   // license. Note that this is best-effort: identical names will collapse.
   diagMark('sheet:practice-commander');
   var practiceSheet = getSheet('תוצאות תרגול');
-  var practiceData = practiceSheet.getDataRange().getValues();
-  diagMark('sheet:practice-commander-done');
+  var practiceRead = readRowsSince(practiceSheet, 0, prevFrom ? new Date(prevFrom.getTime() - 31 * DAY_MS) : null);
+  var practiceData = practiceRead.rows;
+  diagMark('sheet:practice-commander-done:' + practiceRead.mode);
 
   // Class → site map (from כיתות) — practice rows store the class code, not the
   // site, so this lets the name+site fallback match scope by base.
@@ -5732,7 +5775,9 @@ function handleCommanderDashboard(p) {
   // powers the ▲▼ trend badges on the KPI cards (this period vs the last one).
   var prevOverall = { total: 0, passed: 0, failed: 0, disqualified: 0, reattempts: 0 };
   var prevWindowMs = dateTo.getTime() - dateFrom.getTime();
-  var prevFrom = new Date(dateFrom.getTime() - prevWindowMs - 1);
+  // prevFrom itself is computed above, before the sheet reads, because it
+  // bounds how much of תוצאות / תוצאות תרגול readRowsSince has to fetch.
+  if (!prevFrom) prevFrom = new Date(dateFrom.getTime() - prevWindowMs - 1);
   // Integrity flags (current window only). Definitions mirror the per-row
   // badges in the examiner results table, so commander totals always match
   // what the examiner sees row-by-row.

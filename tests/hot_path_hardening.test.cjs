@@ -353,6 +353,71 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
 }
 
 
+// ---- 7b. date-bounded reads: readRowsSince ---------------------------------
+// The commander dashboard never looks at a result older than prevFrom, nor at a
+// practice row more than 30 days before such a result - yet it read both sheets
+// whole ('אבחון' 15/09: practice-commander 20-27s x12). readRowsSince must read
+// only the tail when the tail provably reaches past the cutoff, grow when it
+// does not, and never depend on the sheet's size for correctness.
+{
+  const env = environment(banks);
+  const DAY = 24 * 60 * 60 * 1000, now = env.clock.t;
+  const fill = (sh, count, spanDays) => {                // oldest first, one row per step
+    sh.rows.push(['תאריך', 'מזהה', 'שם']);
+    for (let i = 0; i < count; i++) sh.rows.push([new Date(now - spanDays * DAY + (i * spanDays * DAY) / count), 'id' + i, 'n' + i]);
+  };
+  const big = env.sheet('big'); fill(big, 6000, 120);      // 6000 rows over 120 days (50/day)
+  const read = (sh, cutoffDaysAgo) => env.ctx.readRowsSince(sh, 0, new Date(now - cutoffDaysAgo * DAY));
+
+  const recent = read(big, 10);                            // needs the last ~10 days = ~500 rows
+  check('a recent cutoff is served by the 1000-row tail alone', () => {
+    assert.equal(recent.mode, 'tail1000');
+    assert.equal(recent.rows.length, 1001, 'header + tail');
+    assert.equal(big.fullReads, 0);
+    assert.deepEqual(recent.rows[0], ['תאריך', 'מזהה', 'שם'], 'header preserved');
+    assert.equal(recent.rows[recent.rows.length - 1][1], 'id5999', 'newest row is in hand');
+    const oldest = new Date(recent.rows[1][0]).getTime();
+    assert.ok(oldest < now - 10 * DAY, 'the tail reaches past the cutoff');
+  });
+  check('every row at or after the cutoff is present in the tail', () => {
+    const cutoff = now - 10 * DAY;
+    const expected = big.rows.slice(1).filter(r => r[0].getTime() >= cutoff).length;
+    const got = recent.rows.slice(1).filter(r => r[0].getTime() >= cutoff).length;
+    assert.equal(got, expected);
+  });
+  const wider = read(big, 50);                             // ~2500 rows: tail1000 fails, tail4000 covers
+  check('a wider window grows the tail once instead of reading everything', () => {
+    assert.equal(wider.mode, 'tail4000'); assert.equal(wider.rows.length, 4001); assert.equal(big.fullReads, 0);
+  });
+  const ancient = read(big, 100);                          // ~5000 rows: beyond both tails
+  check('a cutoff the tails cannot reach falls back to the full read', () => {
+    assert.equal(ancient.mode, 'full'); assert.equal(ancient.rows.length, 6001); assert.equal(big.fullReads, 1);
+  });
+  const small = env.sheet('small'); fill(small, 200, 400);
+  check('a small sheet is simply read whole', () => {
+    const r = read(small, 1); assert.equal(r.mode, 'full'); assert.equal(r.rows.length, 201); assert.equal(r.off, 0);
+  });
+  check('no usable cutoff means a full read, never a guess', () => {
+    assert.equal(env.ctx.readRowsSince(big, 0, null).mode, 'full');
+    assert.equal(env.ctx.readRowsSince(big, 0, new Date(NaN)).mode, 'full');
+  });
+  check('an unparseable oldest row disables the tail (correctness over speed)', () => {
+    const odd = env.sheet('odd'); fill(odd, 1500, 30); odd.rows[odd.rows.length - 1000][0] = 'not a date';
+    const r = read(odd, 1);
+    assert.equal(r.mode, 'full', 'the 1000-tail is rejected; a 4000-tail would be the whole sheet, so it reads whole');
+    assert.equal(r.rows.length, 1501); assert.equal(odd.fullReads, 1);
+  });
+  // The commander handler must route both heavy reads through it, bounded by
+  // prevFrom (results) and prevFrom - 31 days (practice).
+  const src = fs.readFileSync(path.join(__dirname, '..', 'external_exam_apps_script.js'), 'utf8');
+  const cmd = src.slice(src.indexOf('function handleCommanderDashboard('), src.indexOf('\nfunction ', src.indexOf('function handleCommanderDashboard(') + 10));
+  check('the commander dashboard reads results and practice through readRowsSince', () => {
+    assert.ok(/readRowsSince\(resSheet, 0, prevFrom \? new Date\(prevFrom\.getTime\(\) - DAY_MS\)/.test(cmd));
+    assert.ok(/readRowsSince\(practiceSheet, 0, prevFrom \? new Date\(prevFrom\.getTime\(\) - 31 \* DAY_MS\)/.test(cmd));
+    assert.equal((cmd.match(/getSheet\('תוצאות( תרגול)?'\)\.getDataRange\(\)/g) || []).length, 0, 'no bare full read of either sheet remains');
+  });
+}
+
 // ---- 8. report question-metadata resolver: cache, not Drive -----------------
 // The 'אבחון' sheet showed commanderDashboard spending 30-60 of its 33-70s on
 // Drive reads of the question banks - every language, twice. The per-license
