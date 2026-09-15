@@ -550,7 +550,7 @@ function todayStr() {
 }
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-16-r13';
+var THEORY_API_BUILD = '2026-09-16-r14';
 var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
 
 function logTheoryApiTiming(phase, method, action, startedAt) {
@@ -5607,19 +5607,23 @@ function handleCommanderDashboard(p) {
   diagMark('sheet:results-commander');
   var resSheet = getSheet('תוצאות');
   var resData = resSheet.getDataRange().getValues();
+  diagMark('sheet:results-commander-done');
 
   // Read practice results too — we'll join real-exam outcomes against the
   // practice history of the same name+license to surface a "did practice
   // before exam predict success?" metric. The student app stores its own
   // "מזהה תלמיד" (not the national ID), so we match only on full name +
   // license. Note that this is best-effort: identical names will collapse.
+  diagMark('sheet:practice-commander');
   var practiceSheet = getSheet('תוצאות תרגול');
   var practiceData = practiceSheet.getDataRange().getValues();
+  diagMark('sheet:practice-commander-done');
 
   // Class → site map (from כיתות) — practice rows store the class code, not the
   // site, so this lets the name+site fallback match scope by base.
   var pClassSiteMap = {};
   try {
+    diagMark('sheet:classes-commander');
     var pClassData = getSheet('כיתות').getDataRange().getValues();
     for (var pcs = 1; pcs < pClassData.length; pcs++) {
       pClassSiteMap[String(pClassData[pcs][0]).trim()] = String(pClassData[pcs][7] || '').trim();
@@ -6189,6 +6193,7 @@ function handleCommanderDashboard(p) {
   // legacy rows resolve when their exam language comes up. Cache makes the
   // repeated loads cheap (~300ms warm per language).
   var topicWrong = {};
+  diagMark('compute:commander-resolvers');
   var topicWrongByLic = {};
   // Shared across BOTH resolver loops below: without it each language was
   // resolved twice per request (see questionMetaForLanguage).

@@ -6388,7 +6388,14 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       examinerId: examinerData.id,
       dateFrom: dateFrom,
       dateTo: dateTo
-    }).then(function(resp) {
+      // This report aggregates the whole results + practice history, so it is
+      // the slowest read in the system: measured 2026-09-15 at 28-30s even
+      // after its Drive reads were removed (47-102s before that). The default
+      // 30s deadline sat exactly on that number, so a working report was being
+      // reported to the commander as "שגיאת תקשורת". Give it room while the
+      // remaining cost is traced (the 'אבחון' phase trail), rather than
+      // failing a request that would have succeeded a second later.
+    }, 90000).then(function(resp) {
       console.log('[CMD] response', resp);
       document.getElementById('cmdLoading').style.display = 'none';
       if (resp.status === 'ok') {
