@@ -550,7 +550,7 @@ function todayStr() {
 }
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-16-r12';
+var THEORY_API_BUILD = '2026-09-16-r13';
 var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
 
 function logTheoryApiTiming(phase, method, action, startedAt) {
@@ -4475,9 +4475,16 @@ function getDiagnosticsSheet() {
 // The per-license pools already hold the same question objects (id, text,
 // category, imageUrl) and live in CacheService, so the union of the five pools
 // answers both loops. Two guards keep it honest:
-//   - a missing pool falls back to Drive (never a partial answer);
-//   - the union is compared against the translation index's question count, so
-//     a question belonging to no license type cannot silently disappear.
+//   - all five pools must be present and non-empty; a missing or unreadable one
+//     falls back to Drive, so a partial union is never returned.
+// MEASURED 2026-09-15 against the real banks (local copies verified identical
+// to production by comparing pool sizes with the warmup log): EVERY question of
+// a language belongs to at least one license, so five present pools ARE the
+// whole bank - he/ar/fr/es/am union 1694 of 1694, ru 1693 of 1693, en 1700 of
+// 1700. An earlier version of this guard compared the union against the
+// translation index count (1700 = the union ACROSS languages) and so rejected
+// every language except English, sending them all back to Drive. Do not
+// reintroduce a cross-language total as a per-language expectation.
 // The memo makes a language cost at most one resolution per request.
 function questionMetaForLanguage(lang, memo) {
   var safeLang;
@@ -4486,23 +4493,16 @@ function questionMetaForLanguage(lang, memo) {
   var rows = null;
   try {
     var cache = CacheService.getScriptCache();
-    var expected = 0;
-    try {
-      var meta = JSON.parse(cache.get(QUESTION_CACHE_PREFIX + 'tx_meta') || 'null');
-      expected = (meta && meta.count) ? meta.count : 0;
-    } catch (eMeta) { expected = 0; }
-    if (expected > 0) {
-      var licenses = Object.keys(EXAM_STRUCTURE_SERVER), seen = {}, out = [];
-      for (var c = 0; c < licenses.length; c++) {
-        var pool = readQuestionCacheRecord(cache, QUESTION_CACHE_PREFIX + 'pool_' + safeLang + '_' + licenses[c], QUESTION_POOL_MAX_PARTS);
-        if (!Array.isArray(pool) || !pool.length) { out = null; break; }
-        for (var i = 0; i < pool.length; i++) {
-          var q = pool[i];
-          if (q && q.id && !seen[q.id]) { seen[q.id] = true; out.push(q); }
-        }
+    var licenses = Object.keys(EXAM_STRUCTURE_SERVER), seen = {}, out = [];
+    for (var c = 0; c < licenses.length; c++) {
+      var pool = readQuestionCacheRecord(cache, QUESTION_CACHE_PREFIX + 'pool_' + safeLang + '_' + licenses[c], QUESTION_POOL_MAX_PARTS);
+      if (!Array.isArray(pool) || !pool.length) { out = null; break; }
+      for (var i = 0; i < pool.length; i++) {
+        var q = pool[i];
+        if (q && q.id && !seen[q.id]) { seen[q.id] = true; out.push(q); }
       }
-      if (out && out.length >= expected) rows = out;
     }
+    if (out && out.length) rows = out;
   } catch (eCache) { rows = null; }
   if (!rows) rows = loadQuestionsForLanguageServer(safeLang);   // marks drive:<lang> itself
   if (memo) memo[safeLang] = rows;

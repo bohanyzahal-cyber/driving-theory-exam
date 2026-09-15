@@ -336,14 +336,20 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
     assert.equal(cold.length, banks.he.length, 'the full bank, not a partial union');
   });
 
-  // Same guard when the translation index (the expected-count source) is gone.
+  // The five pools ARE the whole bank of a language (measured against the real
+  // banks: every question belongs to at least one license). Coverage must NOT
+  // be judged against the translation index's count - that is the union ACROSS
+  // languages (1700) and exceeds a single language's bank (he 1694, ru 1693),
+  // which once sent every language except English back to Drive.
   const noIndex = environment(banks);
   noIndex.ctx.warmupQuestionCaches();
   const beforeNoIndex = { ...noIndex.reads };
   noIndex.cache.remove('qv2_tx_meta');
-  noIndex.ctx.questionMetaForLanguage('ru', {});
-  check('without the index to verify coverage it also falls back to Drive', () =>
-    assert.equal(noIndex.reads.ru, beforeNoIndex.ru + 1));
+  const stillCached = noIndex.ctx.questionMetaForLanguage('ru', {});
+  check('a language whose bank is smaller than the cross-language index still uses the cache', () => {
+    assert.deepEqual(noIndex.reads, beforeNoIndex, 'no Drive read');
+    assert.equal(stillCached.length, 300);
+  });
 }
 
 console.log(`\n${checks} checks passed`);
