@@ -866,6 +866,112 @@ test('examinee.html: a confirmed deploy never reloads a registered examinee', as
   }
 });
 
+// ===== 16/09/2026: the dashboard poll fired the full combined report =====
+// updateCompletedList() runs on every examinerDashboard poll (5s, 2s while a
+// result syncs) and called checkSiteCombinedAvailability() each time — the FULL
+// siteCombinedReport, since 2026-06-01, from the first completed result to the
+// end of the session. Nobody opened a combined report on 16/09, yet 'אבחון'
+// recorded two at 18s and 66s. Verbatim pre-fix probe kept to prove the harness
+// reproduces the storm before trusting it on the fix.
+const SITE_PROBE_BEFORE_16_09 = String.raw`  function checkSiteCombinedAvailability() {
+    var btn = document.getElementById('siteCombinedBtn');
+    if (!btn) return;
+    if (!sessionCode || !examinerData || !examinerData.id) { btn.style.display = 'none'; return; }
+    apiGet({
+      action: 'siteCombinedReport',
+      examinerId: examinerData.id,
+      token: examinerToken,
+      sessionCode: sessionCode
+    }).then(function(data) {
+      if (!data || data.status !== 'ok' || !Array.isArray(data.sessions) || data.sessions.length <= 1) {
+        btn.style.display = 'none';
+        return;
+      }
+      // Cache the payload — generateSiteCombinedReport reuses it to avoid
+      // a second round-trip when the user clicks.
+      window._siteCombinedCache = data;
+      var others = data.sessions.length - 1;
+      btn.innerHTML = '📊 דו"ח משותף לאתר (' + data.sessions.length + ' סשנים, +' + others + ')';
+      btn.style.display = '';
+    }).catch(function() { btn.style.display = 'none'; });
+  }
+`;
+function siteProbePage(code, { reply } = {}) {
+  let now = 1_000_000;
+  const calls = [];
+  const btn = { style: { display: 'none' }, innerHTML: '' };
+  const opened = [];
+  const ctx = {
+    console: quiet, Promise, Array, JSON,
+    Date: class extends Date { static now() { return now; } },
+    sessionCode: 'SESS0001', examinerData: { id: '111' }, examinerToken: 'tok',
+    document: { getElementById: id => (id === 'siteCombinedBtn' ? btn : null) },
+    escHtml: v => String(v), buildSiteCombinedReportHtml: d => '<report sessions=' + (d.sessions || []).length + '>',
+    alert() {},
+    apiGet: (params, timeoutMs) => { calls.push({ params, timeoutMs, at: now }); return reply ? reply(params) : new Promise(() => {}); },
+  };
+  ctx.window = ctx;
+  ctx.window.open = () => { const doc = { html: '', open() { this.html = ''; }, write(h) { this.html += h; }, close() {} }; opened.push(doc); return { document: doc }; };
+  vm.createContext(ctx); vm.runInContext(code, ctx);
+  return { ctx, calls, btn, opened, advance: ms => { now += ms; }, setSession: s => { ctx.sessionCode = s; } };
+}
+const currentSiteProbeCode = () => {
+  const src = examiner.replace(/\r/g, '');
+  const a = src.indexOf('  var SITE_COMBINED_PROBE_MIN_MS');
+  const e = src.indexOf('  // Builds the HTML for the combined report.', a);
+  assert.ok(a > 0 && e > a, 'probe + click handler located');
+  return src.slice(a, e);
+};
+const settle = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+const twoSessions = () => Promise.resolve({ status: 'ok', sessions: [{ code: 'SESS0001' }, { code: 'OTHER' }], results: [] });
+
+test('site probe: the harness reproduces the 16/09 storm on the pre-fix code', async () => {
+  const page = siteProbePage(SITE_PROBE_BEFORE_16_09, { reply: twoSessions });
+  for (let poll = 0; poll < 60; poll++) { page.ctx.checkSiteCombinedAvailability(); await settle(); page.advance(5000); }
+  assert.equal(page.calls.length, 60, 'five minutes of 5-second polls = sixty full combined reports');
+});
+test('site probe: five minutes of polling sends ONE report, not sixty', async () => {
+  const page = siteProbePage(currentSiteProbeCode(), { reply: twoSessions });
+  for (let poll = 0; poll < 60; poll++) { page.ctx.checkSiteCombinedAvailability(); await settle(); page.advance(5000); }
+  assert.equal(page.calls.length, 1);
+  assert.equal(page.btn.style.display, '', 'and the button is still shown');
+});
+test('site probe: never a second request while one is still out', async () => {
+  const page = siteProbePage(currentSiteProbeCode());        // reply never resolves
+  for (let poll = 0; poll < 200; poll++) { page.ctx.checkSiteCombinedAvailability(); page.advance(5000); }
+  assert.equal(page.calls.length, 1, '1000 seconds of polls against a hung request still = 1');
+});
+test('site probe: re-asks after 10 minutes, and at once for a new session', async () => {
+  const page = siteProbePage(currentSiteProbeCode(), { reply: twoSessions });
+  page.ctx.checkSiteCombinedAvailability(); await settle();
+  page.advance(9 * 60 * 1000); page.ctx.checkSiteCombinedAvailability(); await settle();
+  assert.equal(page.calls.length, 1, 'not before 10 minutes');
+  page.advance(61 * 1000); page.ctx.checkSiteCombinedAvailability(); await settle();
+  assert.equal(page.calls.length, 2, 'again after 10 minutes');
+  page.setSession('SESS0002'); page.ctx.checkSiteCombinedAvailability(); await settle();
+  assert.equal(page.calls.length, 3, 'a different session is asked immediately');
+  assert.equal(page.calls[2].params.sessionCode, 'SESS0002');
+});
+test('site probe: a transient failure does not hide a button that was showing', async () => {
+  let fail = false;
+  const page = siteProbePage(currentSiteProbeCode(), { reply: () => (fail ? Promise.reject(new Error('net')) : twoSessions()) });
+  page.ctx.checkSiteCombinedAvailability(); await settle();
+  assert.equal(page.btn.style.display, '');
+  fail = true; page.advance(11 * 60 * 1000); page.ctx.checkSiteCombinedAvailability(); await settle();
+  assert.equal(page.btn.style.display, '', 'still shown');
+});
+test('combined report click: opens the window first, then always fetches fresh with a 90s deadline', async () => {
+  let resolve;
+  const page = siteProbePage(currentSiteProbeCode(), { reply: p => new Promise(r => { resolve = r; }) });
+  page.ctx.window.generateSiteCombinedReport();
+  assert.equal(page.opened.length, 1, 'window opened synchronously inside the click (popup blockers)');
+  assert.match(page.opened[0].html, /טוען/, 'showing a loading message');
+  assert.equal(page.calls.length, 1); assert.equal(page.calls[0].timeoutMs, 90000);
+  resolve({ status: 'ok', sessions: [{ code: 'A' }, { code: 'B' }, { code: 'C' }], results: [] }); await settle();
+  assert.match(page.opened[0].html, /<report sessions=3>/, 'the fresh report replaced the loading message');
+  assert.equal(page.ctx._siteCombinedCache, undefined, 'no stale payload is kept for next time');
+});
+
 test('all inline client scripts and both service workers parse', () => {
   for (const [name, html] of [['examiner.html', examiner], ['examinee.html', examinee]]) {
     let count = 0;

@@ -2839,10 +2839,9 @@
     document.getElementById('statRate').textContent = total > 0 ? Math.round((passCount / total) * 100) + '%' : '0%';
     document.getElementById('statsBar').style.display = 'flex';
     document.getElementById('bulkActions').style.display = 'flex';
-    // Probe whether other sessions exist at this site/day. If the response
-    // includes more than just our own session, surface the combined-report
-    // button. Cheap to call — runs once per dashboard render after we have
-    // results to show, and gracefully no-ops if unauthorized.
+    // Probe whether other sessions exist at this site/day, to decide whether to
+    // show the combined-report button. NOT cheap and NOT once — see the guard
+    // inside checkSiteCombinedAvailability for what this used to cost.
     checkSiteCombinedAvailability();
   }
 
@@ -2850,27 +2849,56 @@
   // Calls the server with the current session code; if the response holds
   // multiple sessions, exposes the button with the count. Any error (token,
   // not-authorized, missing session) keeps the button hidden.
+  //
+  // 16/09/2026 — this ran on EVERY dashboard render, i.e. on every
+  // examinerDashboard poll (5s, 2s while a result syncs), from an examiner's
+  // first completed result to the end of the session, since 2026-06-01. Each
+  // run is the FULL siteCombinedReport (sessions + examiners + results reads;
+  // measured 18-81s under load). One examiner sent ~1,000 of them per exam
+  // morning; when a run outlived the 30s client deadline the server kept going
+  // and the next poll started another on top of it. On 16/09 nobody opened a
+  // combined report, yet 'אבחון' recorded two of them at 18s and 66s — that is
+  // how it was found. It is also why the 360s kills clustered at end-of-exam
+  // time: that is when the most examiners have results, so the most probes run.
+  // The button only matters once another session exists at the site, which
+  // changes rarely: ask at most every 10 minutes per session, never while a
+  // previous ask is still out, and never cache the payload for the click (the
+  // click fetches fresh — a 10-minute-old report would miss results).
+  var SITE_COMBINED_PROBE_MIN_MS = 10 * 60 * 1000;
+  var siteCombinedProbe = { session: '', at: 0, inFlight: false };
   function checkSiteCombinedAvailability() {
     var btn = document.getElementById('siteCombinedBtn');
     if (!btn) return;
     if (!sessionCode || !examinerData || !examinerData.id) { btn.style.display = 'none'; return; }
+    if (siteCombinedProbe.session !== sessionCode) {
+      siteCombinedProbe = { session: sessionCode, at: 0, inFlight: false };
+      btn.style.display = 'none';
+    }
+    if (siteCombinedProbe.inFlight) return;
+    if (siteCombinedProbe.at && Date.now() - siteCombinedProbe.at < SITE_COMBINED_PROBE_MIN_MS) return;
+    var probe = siteCombinedProbe;
+    probe.inFlight = true;
+    probe.at = Date.now();
     apiGet({
       action: 'siteCombinedReport',
       examinerId: examinerData.id,
       token: examinerToken,
       sessionCode: sessionCode
     }).then(function(data) {
+      probe.inFlight = false;
+      if (probe !== siteCombinedProbe) return;          // the session changed meanwhile
       if (!data || data.status !== 'ok' || !Array.isArray(data.sessions) || data.sessions.length <= 1) {
         btn.style.display = 'none';
         return;
       }
-      // Cache the payload — generateSiteCombinedReport reuses it to avoid
-      // a second round-trip when the user clicks.
-      window._siteCombinedCache = data;
       var others = data.sessions.length - 1;
       btn.innerHTML = '📊 דו"ח משותף לאתר (' + data.sessions.length + ' סשנים, +' + others + ')';
       btn.style.display = '';
-    }).catch(function() { btn.style.display = 'none'; });
+    }).catch(function() {
+      // A transient failure says nothing about the site — keep whatever the
+      // button last showed instead of hiding it for the next 10 minutes.
+      probe.inFlight = false;
+    });
   }
 
   // Build and open the combined-site report in a new window. Uses the cached
@@ -2878,31 +2906,32 @@
   // re-fetches. The report is rendered as a standalone HTML page so the
   // examiner can print, save as PDF, or share via the OS share sheet.
   window.generateSiteCombinedReport = function() {
-    function render(data) {
-      var html = buildSiteCombinedReportHtml(data);
-      var w = window.open('', '_blank');
-      if (!w) {
-        alert('לא הצלחתי לפתוח חלון. אפשר חלונות קופצים ונסה שוב.');
-        return;
-      }
-      w.document.open();
-      w.document.write(html);
-      w.document.close();
+    // Always fresh: the availability probe no longer caches a payload (it runs
+    // at most every 10 minutes, so a cached copy would miss recent results).
+    // The window is opened HERE, synchronously inside the click, so a popup
+    // blocker still treats it as user-initiated; the report is written into it
+    // when the data arrives. 90s because this report is measured at 18-81s.
+    var w = window.open('', '_blank');
+    if (!w) {
+      alert('לא הצלחתי לפתוח חלון. אפשר חלונות קופצים ונסה שוב.');
+      return;
     }
-    if (window._siteCombinedCache) { render(window._siteCombinedCache); return; }
+    var show = function(html) { try { w.document.open(); w.document.write(html); w.document.close(); } catch (e) {} };
+    show('<p dir="rtl" style="font-family:sans-serif;padding:24px;font-size:16px;">⏳ טוען דו"ח משותף לאתר… זה יכול לקחת עד דקה.</p>');
     apiGet({
       action: 'siteCombinedReport',
       examinerId: examinerData.id,
       token: examinerToken,
       sessionCode: sessionCode
-    }).then(function(data) {
+    }, 90000).then(function(data) {
       if (!data || data.status !== 'ok') {
-        alert(data && data.message ? data.message : 'שגיאה בטעינת דו"ח משותף');
+        show('<p dir="rtl" style="font-family:sans-serif;padding:24px;color:#b91c1c;">' + escHtml(data && data.message ? data.message : 'שגיאה בטעינת דו"ח משותף') + '</p>');
         return;
       }
-      window._siteCombinedCache = data;
-      render(data);
-    }).catch(function() { alert('שגיאת תקשורת'); });
+      show(buildSiteCombinedReportHtml(data));
+    }).catch(function() {
+      show('<p dir="rtl" style="font-family:sans-serif;padding:24px;color:#b91c1c;">שגיאת תקשורת — סגור את החלון ונסה שוב.</p>');
+    });
   };
 
   // Builds the HTML for the combined report. Structure mirrors the single-
