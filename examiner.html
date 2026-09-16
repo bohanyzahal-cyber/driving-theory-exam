@@ -6376,8 +6376,30 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
   };
 
   function initCommanderDashboard() {
-    // Load default (daily)
-    fetchCommanderData('daily');
+    // Deliberately does NOT fetch. An examiner who is also a commander lands on
+    // this screen at every login and every page restore — so the heaviest read
+    // in the system (measured 27-94s on 2026-09-15: the whole results history
+    // plus 26,775 practice rows) was taking a ~50-second execution slot
+    // AUTOMATICALLY, for someone who had only come to open an exam session.
+    // That is the same contention that pushed examinerDashboard to 78.6s the
+    // same morning. Asking for the report is now one deliberate click.
+    // switchToCommander() calls fetchCommanderData directly, so a commander who
+    // navigates here on purpose still gets the data immediately.
+    var el = document.getElementById('cmdLoading');
+    if (!el) { fetchCommanderData('daily'); return; }
+    el.style.display = 'block';
+    el.style.color = '#64748b';
+    el.innerHTML = '';
+    var msg = document.createElement('div');
+    msg.style.cssText = 'margin-bottom:10px;';
+    msg.textContent = 'הדוח כבד ולוקח כחצי דקה. אל תטען אותו בזמן שכיתה מתחילה מבחן.';
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.style.cssText = 'padding:8px 20px;font-size:14px;font-weight:800;background:#1a73e8;color:#fff;border:none;border-radius:8px;cursor:pointer;';
+    btn.textContent = '📊 הצג נתונים יומיים';
+    btn.addEventListener('click', function() { fetchCommanderData('daily'); });
+    el.appendChild(msg);
+    el.appendChild(btn);
   }
 
   window.fetchCommanderData = function(period) {
