@@ -1123,7 +1123,16 @@
     });
   }
 
-  function apiGet(params) {
+  // timeoutMs is forwarded, not ignored. It used to be missing here while the
+  // commander-dashboard call already passed `90000` as a second argument — so
+  // JavaScript dropped it silently and every request kept the 30s default. The
+  // report was measured finishing server-side in 22-65s, meaning anything but
+  // the very cheapest daily window was shown to the commander as
+  // "שגיאת תקשורת: Request timed out" while the server had actually answered.
+  // Aborting the fetch never stops the Apps Script execution, so a longer
+  // deadline costs the server nothing — it only decides whether we keep the
+  // answer we already paid for. examinee.html has always had this parameter.
+  function apiGet(params, timeoutMs) {
     // Auto-attach token and examinerId for authenticated requests (skip for login/verifyLogin)
     if (examinerToken && examinerData && !params.token && params.action !== 'login' && params.action !== 'verifyLogin') {
       params.token = examinerToken;
@@ -1135,7 +1144,7 @@
       if (params.hasOwnProperty(k)) qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
     }
     qs.push('_t=' + Date.now());
-    return fetchJsonWithTimeout(API_URL + '?' + qs.join('&'), { cache: 'no-store' }).then(function(data) {
+    return fetchJsonWithTimeout(API_URL + '?' + qs.join('&'), { cache: 'no-store' }, timeoutMs).then(function(data) {
       if (data && data.tokenExpired && params.action !== 'login') {
         alert('פג תוקף ההתחברות — יש להתחבר מחדש');
         logout();
@@ -1144,7 +1153,10 @@
     });
   }
 
-  function apiPost(data) {
+  // Same signature as apiGet on purpose — no call site passes a timeout today,
+  // so this changes nothing now; it exists so the next one that does is not
+  // silently dropped the way the commander dashboard's 90s was.
+  function apiPost(data, timeoutMs) {
     var payload = data || {};
     if (!payload.origin) payload.origin = API_ORIGIN;
     // Auto-attach examiner credentials (mirror of apiGet behaviour) so any
@@ -1158,7 +1170,7 @@
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
       body: JSON.stringify(payload)
-    });
+    }, timeoutMs);
   }
 
   // Upload result HTML to the exam-results Cloudflare Worker.
