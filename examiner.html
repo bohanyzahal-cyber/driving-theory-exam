@@ -7944,10 +7944,34 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
   // own ETag/Last-Modified — HEAD bypasses the SW) and show a banner + auto-reload
   // after a grace period, so the examiner always runs the current version without
   // manually refreshing. Zero maintenance — no version file to bump.
+  //
+  // 16/09/2026 — THIS BLOCK TOOK THE EXAMINERS DOWN. From ~09:30 every examiner
+  // in an exam was bounced to the login screen, and pages that came back then
+  // reloaded themselves without end, showing "גרסה חדשה זמינה" — while NO deploy
+  // had happened since 07:57 (GitHub's deployment list proves it). Examiners had
+  // to fall back to paper. Three defects, each enough on its own:
+  //  1. The same build carries two ETag spellings: "6aaa21d2-76fe0" (identity)
+  //     and W/"6aaa21d2-76fe0" (gzip) — measured live that day. Comparing them
+  //     as strings calls one build two versions whenever an edge or a mobile
+  //     carrier's proxy hands back the other variant.
+  //  2. Error pages counted: a 5xx, a captive portal or a proxy response has its
+  //     own tag and was read as "new version". (The service worker DOES intercept
+  //     this HEAD — the old comment above claiming otherwise was wrong.)
+  //  3. It reloaded mid-exam, and every reload re-runs login + dashboard reads,
+  //     so a whole site flipping at once became a burst on the Apps Script that
+  //     timed out the logins themselves ("שגיאת תקשורת" on the login screen).
+  // Now: tags are normalised and only taken from a 200; a change must be seen
+  // on two consecutive polls; and an open session never reloads by itself.
   (function() {
     if (!window.fetch) return;
-    var baseTag = null, notified = false;
-    var tagOf = function(r) { return r.headers.get('ETag') || r.headers.get('Last-Modified') || null; };
+    var baseTag = null, pendingTag = null, notified = false;
+    // ETag only, weak prefix and quotes stripped. No Last-Modified fallback:
+    // mixing the two header sources is itself a way to see two "versions".
+    var tagOf = function(r) {
+      if (!r || !r.ok) return null;
+      var e = r.headers.get('ETag');
+      return e ? String(e).replace(/^W\//, '').replace(/"/g, '').trim() || null : null;
+    };
     var probe = function(cb) {
       fetch(location.pathname, { method: 'HEAD', cache: 'no-store' })
         .then(function(r) { cb(tagOf(r)); }).catch(function() { cb(null); });
@@ -7956,15 +7980,23 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     setInterval(function() {
       if (notified) return;
       probe(function(t) {
-        if (!t || !baseTag || t === baseTag) return;
+        if (!t) return;                                   // no trustworthy answer this time
+        if (!baseTag) { baseTag = t; return; }            // first good answer is the base
+        if (t === baseTag) { pendingTag = null; return; } // same build
+        // One differing answer proves nothing. A real deploy is still there on
+        // the next poll, two minutes later, with the same tag.
+        if (pendingTag !== t) { pendingTag = t; return; }
         notified = true;
         var b = document.createElement('div');
         b.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;background:#1a73e8;color:#fff;padding:12px 16px;text-align:center;font-size:15px;font-weight:700;box-shadow:0 -2px 10px rgba(0,0,0,.2);';
-        b.innerHTML = '🔄 גרסה חדשה זמינה — מתעדכן אוטומטית… <button id="swUpdNow" style="margin-right:10px;padding:6px 16px;font-weight:800;background:#fff;color:#1a73e8;border:none;border-radius:8px;cursor:pointer;">רענן עכשיו</button>';
+        b.innerHTML = (sessionCode ? '🔄 גרסה חדשה זמינה — אפשר לרענן אחרי הבחינה ' : '🔄 גרסה חדשה זמינה — מתעדכן אוטומטית… ') + '<button id="swUpdNow" style="margin-right:10px;padding:6px 16px;font-weight:800;background:#fff;color:#1a73e8;border:none;border-radius:8px;cursor:pointer;">רענן עכשיו</button>';
         document.body.appendChild(b);
         var btn = document.getElementById('swUpdNow');
         if (btn) btn.addEventListener('click', function() { location.reload(); });
-        setTimeout(function() { location.reload(); }, 60000);  // grace period to finish an action
+        // Never pull an examiner out of a running exam session on our own: the
+        // banner stays and "רענן עכשיו" works, but only an idle page (login,
+        // setup, commander screens) reloads automatically.
+        if (!sessionCode) setTimeout(function() { if (!sessionCode) location.reload(); }, 60000);
       });
     }, 120000);  // check every 2 min
   })();

@@ -713,6 +713,159 @@ test('retrying after a failure recovers the session list', async () => {
   assert.equal(shown(page).cards, 1, 'and the real session took its place');
 });
 
+// ===== 16/09/2026: the examiner self-update check took the examiners down =====
+// From ~09:30 every examiner in an exam was thrown to the login screen, and the
+// pages that came back reloaded forever under "גרסה חדשה זמינה" — with NO deploy
+// since 07:57. Measured that day: GitHub Pages serves ONE build as
+// "6aaa21d2-76fe0" (identity) or W/"6aaa21d2-76fe0" (gzip). The check compared
+// them as strings, trusted error responses, and reloaded mid-exam.
+// The verbatim pre-fix block is kept here so the harness is proven to REPRODUCE
+// the incident — a test that only passes on the new code proves nothing.
+const UPDATE_CHECK_BEFORE_16_09 = String.raw`(function() {
+    if (!window.fetch) return;
+    var baseTag = null, notified = false;
+    var tagOf = function(r) { return r.headers.get('ETag') || r.headers.get('Last-Modified') || null; };
+    var probe = function(cb) {
+      fetch(location.pathname, { method: 'HEAD', cache: 'no-store' })
+        .then(function(r) { cb(tagOf(r)); }).catch(function() { cb(null); });
+    };
+    probe(function(t) { baseTag = t; });
+    setInterval(function() {
+      if (notified) return;
+      probe(function(t) {
+        if (!t || !baseTag || t === baseTag) return;
+        notified = true;
+        var b = document.createElement('div');
+        b.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;background:#1a73e8;color:#fff;padding:12px 16px;text-align:center;font-size:15px;font-weight:700;box-shadow:0 -2px 10px rgba(0,0,0,.2);';
+        b.innerHTML = '🔄 גרסה חדשה זמינה — מתעדכן אוטומטית… <button id="swUpdNow" style="margin-right:10px;padding:6px 16px;font-weight:800;background:#fff;color:#1a73e8;border:none;border-radius:8px;cursor:pointer;">רענן עכשיו</button>';
+        document.body.appendChild(b);
+        var btn = document.getElementById('swUpdNow');
+        if (btn) btn.addEventListener('click', function() { location.reload(); });
+        setTimeout(function() { location.reload(); }, 60000);  // grace period to finish an action
+      });
+    }, 120000);  // check every 2 min
+  })();`;
+function currentUpdateCheck() {
+  const src = examiner.replace(/\r/g, '');   // the working copy is CRLF on Windows
+  const a = src.indexOf('(function() {\n    if (!window.fetch) return;');
+  const t = src.indexOf('// check every 2 min', a);
+  const e = src.indexOf('})();', t) + 5;
+  assert.ok(a > 0 && t > a && e > t, 'update-check block located in examiner.html');
+  return src.slice(a, e);
+}
+// Runs the real block against a scripted sequence of HEAD answers, on a fake clock.
+function runUpdateCheck(code, answers, { session = '', globals = {} } = {}) {
+  let now = 0, reloads = 0, banners = 0; const jobs = []; const banner = {};
+  const queue = answers.slice();
+  const ctx = {
+    ...globals,
+    window: { fetch: true }, String, Promise, sessionCode: session,
+    fetch: () => {
+      const a = queue.length ? queue.shift() : null;
+      if (!a || a.fail) return Promise.reject(new Error('network'));
+      return Promise.resolve({ ok: a.status === undefined ? true : a.status >= 200 && a.status < 300,
+        headers: { get: n => (n === 'ETag' ? (a.etag || null) : n === 'Last-Modified' ? (a.lm || null) : null) } });
+    },
+    location: { pathname: '/driving-theory-exam/examiner.html', reload() { reloads++; } },
+    document: { createElement: () => { const el = { style: {} }; Object.defineProperty(el, 'innerHTML', { set(v) { banner.html = v; }, get() { return banner.html; } }); return el; },
+      body: { appendChild() { banners++; } }, getElementById: () => null, querySelector: () => null },
+    setInterval: (fn, ms) => { jobs.push({ at: now + ms, fn, every: ms }); },
+    setTimeout: (fn, ms) => { jobs.push({ at: now + ms, fn, every: 0 }); },
+  };
+  vm.createContext(ctx); vm.runInContext(code, ctx);
+  const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+  return (async () => {
+    await settle();                                     // the base probe
+    const until = 2 * 60 * 60 * 1000;                   // two hours of an open dashboard
+    for (let guard = 0; guard < 10000; guard++) {
+      if (reloads) break;                               // a real reload tears the page (and this timer) down
+      jobs.sort((x, y) => x.at - y.at);
+      const j = jobs[0];
+      if (!j || j.at > until) break;
+      jobs.shift(); now = j.at; j.fn(); await settle();
+      if (j.every) jobs.push({ at: now + j.every, fn: j.fn, every: j.every });
+    }
+    return { reloads, banners, banner: banner.html || '' };
+  })();
+}
+const IDENTITY = { etag: '"6aaa21d2-76fe0"' }, GZIP = { etag: 'W/"6aaa21d2-76fe0"' };
+const flapping = n => Array.from({ length: n }, (_, i) => (i % 2 ? GZIP : IDENTITY));
+
+test('update check: the harness reproduces the 16/09 incident on the pre-fix code', async () => {
+  // base = identity, first poll = gzip spelling of the SAME build
+  const r = await runUpdateCheck(UPDATE_CHECK_BEFORE_16_09, [IDENTITY, GZIP]);
+  assert.equal(r.banners, 1, 'old code announced a "new version" that did not exist');
+  assert.equal(r.reloads, 1, 'and reloaded the examiner out of the dashboard');
+  const mid = await runUpdateCheck(UPDATE_CHECK_BEFORE_16_09, [IDENTITY, GZIP], { session: 'LIVE0001' });
+  assert.equal(mid.reloads, 1, 'even in the middle of an open exam session');
+  const err = await runUpdateCheck(UPDATE_CHECK_BEFORE_16_09, [IDENTITY, { status: 503, etag: '"edge-error-page"' }]);
+  assert.equal(err.reloads, 1, 'and an error page counted as a new version too');
+});
+test('update check: one build in two ETag spellings is never a new version', async () => {
+  const r = await runUpdateCheck(currentUpdateCheck(), flapping(80));
+  assert.equal(r.banners, 0); assert.equal(r.reloads, 0);
+});
+test('update check: error responses and network failures are ignored', async () => {
+  const noise = [IDENTITY];
+  for (let i = 0; i < 30; i++) noise.push(i % 3 === 0 ? { status: 503, etag: '"edge-error"' } : i % 3 === 1 ? { fail: true } : { status: 404, etag: '"not-found"' });
+  const r = await runUpdateCheck(currentUpdateCheck(), noise);
+  assert.equal(r.banners, 0); assert.equal(r.reloads, 0);
+});
+test('update check: a single odd answer between two good ones does not reload', async () => {
+  const r = await runUpdateCheck(currentUpdateCheck(), [IDENTITY, IDENTITY, { etag: '"deploy-xyz"' }, IDENTITY, IDENTITY, GZIP, IDENTITY]);
+  assert.equal(r.banners, 0); assert.equal(r.reloads, 0);
+});
+test('update check: a real deploy is still picked up, and an idle page reloads', async () => {
+  const NEW = { etag: '"6aab0000-77000"' }, NEW_GZ = { etag: 'W/"6aab0000-77000"' };
+  const r = await runUpdateCheck(currentUpdateCheck(), [IDENTITY, GZIP, NEW, NEW_GZ, NEW]);
+  assert.equal(r.banners, 1, 'seen on two consecutive polls (in either spelling) = a real deploy');
+  assert.equal(r.reloads, 1, 'no session open, so the page updates itself');
+});
+test('update check: a real deploy never pulls an examiner out of an open session', async () => {
+  const NEW = { etag: '"6aab0000-77000"' };
+  const r = await runUpdateCheck(currentUpdateCheck(), [IDENTITY, NEW, NEW, NEW], { session: 'LIVE0001' });
+  assert.equal(r.banners, 1, 'the examiner is told');
+  assert.equal(r.reloads, 0, 'but the dashboard is not reloaded under them');
+  assert.match(r.banner, /אחרי הבחינה/, 'and the banner no longer claims it is updating automatically');
+});
+
+// The same defect lived in all four pages; one push re-stamps every file's ETag
+// on GitHub Pages, so every page must be safe before that push goes out.
+for (const [name, globals] of [
+  ['teacher.html', {}],
+  ['student.html', {}],
+  ['examinee.html', { examInProgress: false, examSubmitted: false, examineeData: null }],
+]) {
+  const pageSrc = fs.readFileSync(path.join(app, name), 'utf8').replace(/\r/g, '');
+  const a = pageSrc.indexOf('===== Auto-update:');
+  const f = pageSrc.indexOf('(function() {', a);
+  const t = pageSrc.indexOf('// check every 2 min', f);
+  const blk = pageSrc.slice(f, pageSrc.indexOf('})();', t) + 5);
+  test(name + ': update check ignores ETag spelling flips and error pages', async () => {
+    assert.ok(a > 0 && f > a && t > f, 'block located');
+    const flap = await runUpdateCheck(blk, flapping(80), { globals });
+    assert.equal(flap.reloads, 0, 'one build in two spellings is not a new version');
+    const noise = [IDENTITY];
+    for (let i = 0; i < 30; i++) noise.push(i % 2 ? { status: 503, etag: '"edge-error"' } : { fail: true });
+    assert.equal((await runUpdateCheck(blk, noise, { globals })).reloads, 0, 'errors are not versions');
+  });
+  test(name + ': update check still reloads an idle page on a real deploy', async () => {
+    const NEW = { etag: '"6aab0000-77000"' };
+    const r = await runUpdateCheck(blk, [IDENTITY, NEW, NEW, NEW, NEW], { globals });
+    assert.equal(r.reloads, 1, 'a confirmed deploy reaches an idle page exactly once');
+  });
+}
+test('examinee.html: a confirmed deploy never reloads a registered examinee', async () => {
+  const pageSrc = fs.readFileSync(path.join(app, 'examinee.html'), 'utf8').replace(/\r/g, '');
+  const a = pageSrc.indexOf('===== Auto-update:'), f = pageSrc.indexOf('(function() {', a);
+  const blk = pageSrc.slice(f, pageSrc.indexOf('})();', pageSrc.indexOf('// check every 2 min', f)) + 5);
+  const NEW = { etag: '"6aab0000-77000"' };
+  for (const globals of [{ examInProgress: true, examSubmitted: false, examineeData: null },
+    { examInProgress: false, examSubmitted: false, examineeData: { idNumber: '123456789' } }]) {
+    assert.equal((await runUpdateCheck(blk, [IDENTITY, NEW, NEW, NEW], { globals })).reloads, 0);
+  }
+});
+
 test('all inline client scripts and both service workers parse', () => {
   for (const [name, html] of [['examiner.html', examiner], ['examinee.html', examinee]]) {
     let count = 0;

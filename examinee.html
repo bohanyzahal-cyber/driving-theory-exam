@@ -5285,8 +5285,14 @@
   // file to bump.
   (function() {
     if (!window.fetch) return;
-    var baseTag = null;
-    var tagOf = function(r) { return r.headers.get('ETag') || r.headers.get('Last-Modified') || null; };
+    var baseTag = null, pendingTag = null;
+    // 16/09/2026 (see examiner.html): one build is served as "x-y" OR W/"x-y" and
+    // error/proxy responses carry their own tags -- compare the normalised ETag of a 200 only.
+    var tagOf = function(r) {
+      if (!r || !r.ok) return null;
+      var e = r.headers.get('ETag');
+      return e ? String(e).replace(/^W\//, '').replace(/"/g, '').trim() || null : null;
+    };
     var probe = function(cb) {
       fetch(location.pathname, { method: 'HEAD', cache: 'no-store' })
         .then(function(r) { cb(tagOf(r)); }).catch(function() { cb(null); });
@@ -5294,7 +5300,10 @@
     probe(function(t) { baseTag = t; });
     setInterval(function() {
       probe(function(t) {
-        if (!t || !baseTag || t === baseTag) return;   // unchanged / unknown
+        if (!t) return;                                   // no trustworthy answer
+        if (!baseTag) { baseTag = t; return; }            // first good answer is the base
+        if (t === baseTag) { pendingTag = null; return; } // same build
+        if (pendingTag !== t) { pendingTag = t; return; } // a real deploy is still there next poll
         if (examInProgress || examSubmitted) return;    // never disrupt an exam / pending submit
         // Also never reload a REGISTERED examinee — waiting for approval, or
         // approved and about to press start. The reload survived the exam but
