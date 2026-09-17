@@ -4310,16 +4310,82 @@ function warmupQuestionCaches(options) {
 //    blind run — and on 15/09 a test examinee met "נסה שוב" at exam start.
 // This runs every hour. It asks questionCacheStatus() (every pool and shard
 // present, one real pool and shard decoded — about a second) and rebuilds only
-// when the cache is not ready, or when the last COMPLETE warmup is older than
-// WARMUP_REFRESH_AFTER_MS. Pools live 6h (21600s); refreshing past 4h at an
-// hourly tick finishes by ~5h at the latest, an hour before anything expires.
-// Early eviction is repaired within the hour, and the one-shot rebuild that a
-// live cache miss already requests still covers the minutes in between.
-var WARMUP_REFRESH_AFTER_MS = 4 * 60 * 60 * 1000;
+// when the cache is not ready, or when a refresh is due. Early eviction is
+// repaired within the hour, and the one-shot rebuild that a live cache miss
+// already requests still covers the minutes in between.
+//
+// It must not collide with the other scheduled work (operator, same day: "check
+// it doesn't overlap in run time with other functions"). Measured in the code:
+//  - archiveOldPendingRows, daily in the 01:00 hour, holds the SCRIPT LOCK for
+//    its whole run — up to 4.5 minutes. Every pool build claims a lease under
+//    that lock with tryLock(200), so a warmup inside that window fails all 35.
+//  - rebuildAtRiskCache, daily in the 03:00 hour, is a heavy practice-sheet job.
+//  - rebuildMissingQuestionCaches, a one-shot a live cache miss schedules, would
+//    fight a warmup for the same pool leases.
+// So: no work at all in the quiet hours; skip a tick while someone holds the
+// script lock (the archive can spill past 02:00); skip while a one-shot rebuild
+// is pending.
+//
+// WHEN to refresh is decided by looking ahead, not by a fixed list of hours.
+// A first version refreshed in fixed hours with a 5h safety net; its own 48-hour
+// simulation went cold at 05:00 — the timer missed the 00:00 refresh hour and the
+// 03:00 quiet hour then blocked the safety net until the cache had expired.
+// Fixed hours cannot survive a skipped run next to a quiet window. Instead every
+// tick asks: what is the LONGEST I may have to wait before a tick can rebuild
+// again — skipping quiet hours, assuming Apps Script drops WARMUP_ASSUME_MISSED_TICKS
+// of those ticks, plus the hour timer's drift? If the cache could expire within
+// that wait, rebuild now. That rebuilds at ~3h15m age by day and earlier before
+// the night windows (~2h15m at 02:00 and 23:00, ~1h15m at 00:00). 07:00 is also a
+// pre-exam refresh, so the morning cache is freshly built and verified.
+var WARMUP_QUIET_HOURS = [1, 3];
+var WARMUP_CACHE_TTL_MS = 6 * 60 * 60 * 1000;    // pools and index are written with 21600s
+var WARMUP_EXPIRY_BUFFER_MS = 15 * 60 * 1000;
+// An hour timer lands within ~15 min of its minute, but two ticks can drift in
+// opposite directions — one 15 min early, the next 15 min late — so the spacing
+// can exceed whole hours by 30 min. (15 here left a 9-minute margin in the
+// three-day simulation.)
+var WARMUP_TICK_DRIFT_MS = 30 * 60 * 1000;
+var WARMUP_ASSUME_MISSED_TICKS = 1;              // survive Apps Script skipping a run
+var WARMUP_PREEXAM_HOUR = 7;
+var WARMUP_REFRESH_MIN_AGE_MS = 60 * 60 * 1000;  // do not redo a build from the previous hour
+var WARMUP_REBUILD_RUNNING_MS = 6 * 60 * 1000;   // a one-shot rebuild cannot outlive the 6-min kill
 var WARMUP_ENSURE_FUNCTION = 'ensureQuestionCachesWarm';
 
+// Worst-case wait from a tick in `hour` until a later tick can rebuild: walk
+// forward hour by hour, counting only non-quiet hours, until 1 + the assumed
+// missed ticks of them have passed; add the timer's drift.
+function warmupWorstWaitMs(hour) {
+  var needed = 1 + WARMUP_ASSUME_MISSED_TICKS, h = hour, steps = 0;
+  while (needed > 0 && steps < 48) {
+    h = (h + 1) % 24; steps++;
+    if (WARMUP_QUIET_HOURS.indexOf(h) < 0) needed--;
+  }
+  return steps * 60 * 60 * 1000 + WARMUP_TICK_DRIFT_MS;
+}
+
 function ensureQuestionCachesWarm() {
-  var t0 = Date.now(), status = null, statusError = '';
+  var t0 = Date.now();
+  var hour = Number(Utilities.formatDate(new Date(), 'Asia/Jerusalem', 'H'));
+  if (WARMUP_QUIET_HOURS.indexOf(hour) >= 0) {
+    var quietHour = 'skipped: ' + hour + ':00 belongs to the nightly ' + (hour === 1 ? 'archiveOldPendingRows' : 'rebuildAtRiskCache');
+    Logger.log('[ENSURE] ' + quietHour);
+    return quietHour;
+  }
+  var probe = LockService.getScriptLock();
+  if (!probe.tryLock(100)) {
+    Logger.log('[ENSURE] skipped: another job holds the script lock');
+    return 'skipped: another job holds the script lock';
+  }
+  probe.releaseLock();
+  try {
+    var pending = JSON.parse(PropertiesService.getScriptProperties().getProperty(QUESTION_CACHE_PREFIX + QUESTION_REBUILD_FLAG) || 'null');
+    if (pending && pending.at && Date.now() - pending.at < WARMUP_REBUILD_RUNNING_MS) {
+      Logger.log('[ENSURE] skipped: a one-shot rebuild is already repairing (' + pending.resource + ')');
+      return 'skipped: a one-shot rebuild is already repairing';
+    }
+  } catch (ePending) {}
+
+  var status = null, statusError = '';
   try { status = questionCacheStatus(); } catch (eStatus) { statusError = (eStatus && eStatus.message) || String(eStatus); }
   var state = readWarmupState();
   var ageMs = typeof state.lastCompleteAt === 'number' ? Date.now() - state.lastCompleteAt : null;
@@ -4327,7 +4393,11 @@ function ensureQuestionCachesWarm() {
   if (!status) reason = 'status check failed' + (statusError ? ' (' + statusError + ')' : '');
   else if (!status.ready) reason = 'cache not ready: ' + status.missingOrMixedKeys + ' missing/mixed keys, ' + status.decodeFailures + ' decode failures';
   else if (ageMs === null) reason = 'no complete warmup on record';
-  else if (ageMs >= WARMUP_REFRESH_AFTER_MS) reason = 'last complete warmup ' + Math.round(ageMs / 60000) + ' min ago';
+  else if (hour === WARMUP_PREEXAM_HOUR && ageMs >= WARMUP_REFRESH_MIN_AGE_MS) reason = 'pre-exam refresh (' + hour + ':00 hour)';
+  else if (ageMs + warmupWorstWaitMs(hour) >= WARMUP_CACHE_TTL_MS - WARMUP_EXPIRY_BUFFER_MS) {
+    reason = 'age ' + Math.round(ageMs / 60000) + ' min could outlive the cache before the next safe tick (worst wait ' +
+      Math.round(warmupWorstWaitMs(hour) / 60000) + ' min)';
+  }
   if (!reason) {
     // Nothing to rebuild — still record killed executions promptly instead of
     // waiting hours for the next full warmup to sweep them.

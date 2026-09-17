@@ -96,7 +96,11 @@ function environment(banks) {
       ungzip: b => blob(zlib.gunzipSync(Buffer.from(b.getBytes()))),
       base64Encode: b => Buffer.from(b).toString('base64'),
       base64Decode: s => [...Buffer.from(s, 'base64')],
-      formatDate: () => new RealDate(clock.t).toISOString(),
+      // 'H' in a time zone is what ensureQuestionCachesWarm asks for; every other
+      // caller keeps the old behaviour (an ISO stamp of the fake clock).
+      formatDate: (d, tz, fmt) => fmt === 'H'
+        ? String(Number(new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', hourCycle: 'h23' }).format(new RealDate(d ? d.getTime() : clock.t))))
+        : new RealDate(clock.t).toISOString(),
       sleep: ms => { clock.t += ms; }
     },
     DriveApp: { getFolderById: () => ({ getFilesByName: file => {
@@ -556,89 +560,208 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
 
 // ---- 10. the cache keeps itself warm: nobody runs the warmup by hand -------
 // 2026-09-17, the operator: "I don't want to run the warmup by hand every day,
-// and not several times a day." The hand-made 4-hour trigger rebuilt blindly and
-// never looked; an hourly ensureQuestionCachesWarm verifies and repairs.
+// and not several times a day" — then: "check it doesn't overlap in run time with
+// other functions". The hourly ensureQuestionCachesWarm verifies and repairs,
+// stays out of the nightly archive (01:00, holds the script lock up to 4.5 min),
+// the at-risk job (03:00) and a pending one-shot rebuild, and decides WHEN to
+// refresh by looking ahead to its next safe chance. (A fixed-hours first version
+// went cold at 05:00 in this very simulation — kept as the lesson below.)
 {
-  const HOUR = 3600 * 1000;
-  const env = environment(banks);
-  const first = env.ctx.ensureQuestionCachesWarm();
-  check('hourly check: a cold cache is rebuilt', () => {
-    assert.match(first, /^rebuilt \(cache not ready/);
-    assert.equal(env.ctx.questionCacheStatus().ready, true);
-  });
-  env.clock.t += 30 * 60 * 1000;
-  const readsBefore = { ...env.reads };
-  const quiet = env.ctx.ensureQuestionCachesWarm();
-  check('hourly check: a warm, fresh cache costs no rebuild and no Drive read', () => {
-    assert.match(quiet, /^warm: \d+ keys ready, last complete warmup 3\d min ago/);
-    assert.deepEqual(env.reads, readsBefore);
-  });
-  env.cache.remove('qv2_pool_he_B_meta');                  // CacheService evicts early sometimes
-  const repaired = env.ctx.ensureQuestionCachesWarm();
-  check('hourly check: an evicted pool is repaired at the next tick', () => {
-    assert.match(repaired, /^rebuilt \(cache not ready: \d+ missing/);
-    assert.equal(env.ctx.questionCacheStatus().ready, true);
-  });
-  env.clock.t += 4 * HOUR + 60 * 1000;
-  const refreshed = env.ctx.ensureQuestionCachesWarm();
-  check('hourly check: past 4 hours it refreshes, before the 6-hour TTL can expire', () =>
-    assert.match(refreshed, /^rebuilt \(last complete warmup 24\d min ago\)/));
+  const HOUR = 3600 * 1000, MIN = 60 * 1000;
+  const ilHour = t => Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jerusalem', hour: '2-digit', hourCycle: 'h23' }).format(new Date(t)));
+  const ilMinute = t => Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jerusalem', minute: '2-digit' }).format(new Date(t)));
+  const at = (env, hh, mm = 10) => {                          // move the clock FORWARD to Israel hh:mm
+    env.clock.t = Math.floor(env.clock.t / MIN) * MIN + MIN;
+    for (let i = 0; i < 49 * 60 && !(ilHour(env.clock.t) === hh && ilMinute(env.clock.t) === mm); i++) env.clock.t += MIN;
+    assert.equal(ilHour(env.clock.t), hh, 'clock positioned');
+  };
+  const drive = env => Object.values(env.reads).reduce((a, b) => a + b, 0);
+  const setAge = (env, minutes) => {
+    const s = JSON.parse(env.properties.get('qv2_warmup_state'));
+    s.lastCompleteAt = env.clock.t - minutes * MIN;
+    env.properties.set('qv2_warmup_state', JSON.stringify(s));
+  };
 
-  // A PARTIAL run must not reset the age: some of its pools are still old.
+  const env = environment(banks);
+  check('worst wait looks past the quiet hours and one skipped run', () => {
+    const w = h => env.ctx.warmupWorstWaitMs(h) / MIN;
+    assert.equal(w(12), 150, 'daytime: two hours + two ticks of opposite drift');
+    assert.equal(w(22), 150);
+    assert.equal(w(23), 210, '00 then quiet 01 then 02');
+    assert.equal(w(2), 210, 'quiet 03, then 04 and 05');
+    assert.equal(w(0), 270, 'quiet 01, 02, quiet 03, 04');
+  });
+
+  at(env, 9);
+  const cold = env.ctx.ensureQuestionCachesWarm();
+  check('hourly check: a cold cache is rebuilt', () => {
+    assert.match(cold, /^rebuilt \(cache not ready/);
+    assert.equal(env.ctx.questionCacheStatus().ready, true);
+  });
+  at(env, 9, 40);
+  let before = drive(env);
+  check('hourly check: a warm, fresh cache costs no rebuild and no Drive read', () => {
+    assert.match(env.ctx.ensureQuestionCachesWarm(), /^warm: \d+ keys ready/);
+    assert.equal(drive(env), before);
+  });
+  at(env, 10);
+  env.cache.remove('qv2_pool_he_B_meta');                    // CacheService evicts early sometimes
+  check('hourly check: an evicted pool is repaired at the next tick', () => {
+    assert.match(env.ctx.ensureQuestionCachesWarm(), /^rebuilt \(cache not ready: \d+ missing/);
+    assert.equal(env.ctx.questionCacheStatus().ready, true);
+  });
+
+  at(env, 12, 30); setAge(env, 150); before = drive(env);
+  check('daytime: a 2.5-hour-old cache is left alone (it outlasts the worst wait)', () => {
+    assert.match(env.ctx.ensureQuestionCachesWarm(), /^warm: /);
+    assert.equal(drive(env), before);
+  });
+  at(env, 13, 30); setAge(env, 200);
+  check('daytime: past ~3h15m it refreshes before the cache could expire', () =>
+    assert.match(env.ctx.ensureQuestionCachesWarm(), /^rebuilt \(age 200 min could outlive the cache before the next safe tick \(worst wait 150 min\)\)/));
+  // Each jump below crosses more than 6 hours with no ticks, so the cache really
+  // has expired and "not ready" would (correctly) win — build it first, then
+  // pretend it is older, to test the age rule itself.
+  at(env, 2, 20); env.ctx.warmupQuestionCaches(); setAge(env, 150);
+  check('02:00: the SAME 2.5-hour age that was left alone at 12:30 refreshes, because 03:00 is quiet', () =>
+    assert.match(env.ctx.ensureQuestionCachesWarm(), /^rebuilt \(age 150 min .*worst wait 210 min/));
+  at(env, 0, 20); env.ctx.warmupQuestionCaches(); setAge(env, 80);
+  check('00:00: refreshes at ~1h15m ahead of the 01:00 and 03:00 windows', () =>
+    assert.match(env.ctx.ensureQuestionCachesWarm(), /^rebuilt \(age 80 min .*worst wait 270 min/));
+  at(env, 7, 20); env.ctx.warmupQuestionCaches(); setAge(env, 70);
+  check('07:00: the pre-exam refresh rebuilds a cache older than an hour', () =>
+    assert.match(env.ctx.ensureQuestionCachesWarm(), /^rebuilt \(pre-exam refresh \(7:00 hour\)\)/));
+
+  // ---- overlap guards ----
+  const night = environment(banks);                            // COLD: the strongest reason to work
+  at(night, 1, 20); before = drive(night);
+  check('01:00 hour (nightly archive): no work at all, even with a cold cache', () => {
+    assert.match(night.ctx.ensureQuestionCachesWarm(), /^skipped: 1:00 belongs to the nightly archiveOldPendingRows/);
+    assert.equal(drive(night), before);
+  });
+  at(night, 3, 20);
+  check('03:00 hour (at-risk job): no work at all', () => {
+    assert.match(night.ctx.ensureQuestionCachesWarm(), /^skipped: 3:00 belongs to the nightly rebuildAtRiskCache/);
+    assert.equal(drive(night), before);
+  });
+  at(night, 4, 2);                                             // e.g. the archive overrunning into the next hour
+  const otherJobLock = night.ctx.LockService.getScriptLock();
+  otherJobLock.tryLock(5000);
+  check('script lock held by another job: skip the tick', () => {
+    assert.match(night.ctx.ensureQuestionCachesWarm(), /^skipped: another job holds the script lock/);
+    assert.equal(drive(night), before);
+  });
+  otherJobLock.releaseLock();
+  night.properties.set('qv2_rebuild_pending', JSON.stringify({ at: night.clock.t - 1 * MIN, resource: 'pool_he_B' }));
+  check('a one-shot rebuild already repairing: skip rather than fight it for leases', () => {
+    assert.match(night.ctx.ensureQuestionCachesWarm(), /^skipped: a one-shot rebuild is already repairing/);
+    assert.equal(drive(night), before);
+  });
+  night.clock.t += 7 * MIN;                                     // flag left behind by a killed rebuild
+  check('a stale rebuild flag (older than the 6-min kill) no longer blocks the repair', () =>
+    assert.match(night.ctx.ensureQuestionCachesWarm(), /^rebuilt \(cache not ready/));
+
   const partialEnv = environment(banks);
-  partialEnv.ctx.warmupQuestionCaches();                    // complete: stamps lastCompleteAt
+  partialEnv.ctx.warmupQuestionCaches();
   const stamped = JSON.parse(partialEnv.properties.get('qv2_warmup_state')).lastCompleteAt;
   partialEnv.clock.t += 2 * HOUR;
-  partialEnv.ctx.warmupQuestionCaches({ budgetMs: 20000 }); // far too small → PARTIAL
+  partialEnv.ctx.warmupQuestionCaches({ budgetMs: 20000 });
   check('a PARTIAL warmup does not count as a refresh', () =>
     assert.equal(JSON.parse(partialEnv.properties.get('qv2_warmup_state')).lastCompleteAt, stamped));
-}
-{
-  // Two days of an hour timer, firing at a different minute every hour the way
-  // Apps Script's does. After the first tick the cache must be ready at EVERY
-  // tick — i.e. it never went cold in between — with a bounded rebuild count.
-  const HOUR = 3600 * 1000, MIN = 60 * 1000;
-  const env = environment(banks);
-  const base = env.clock.t;
-  let rebuilds = 0; const coldAt = [];
-  for (let h = 0; h < 48; h++) {
-    const target = base + h * HOUR + ((h * 37) % 50) * MIN;   // 0-49 min into the hour
-    if (env.clock.t < target) env.clock.t = target;
-    if (h > 0 && !env.ctx.questionCacheStatus().ready) coldAt.push(h);
-    if (/^rebuilt/.test(env.ctx.ensureQuestionCachesWarm())) rebuilds++;
-  }
-  check('48 hours of hourly ticks: the cache is never found cold after the first', () =>
-    assert.deepEqual(coldAt, [], 'cold at hour(s) ' + coldAt.join(',')));
-  check('48 hours of hourly ticks: rebuilds stay about one per 4-5 hours', () =>
-    assert.ok(rebuilds >= 9 && rebuilds <= 13, 'rebuilds=' + rebuilds));
 
-  // The simulation must be able to FAIL, or "never cold" proves nothing: with a
-  // refresh threshold past the 6h TTL the cache really does go cold between ticks.
-  const broken = environment(banks);
-  broken.ctx.WARMUP_REFRESH_AFTER_MS = 6.5 * HOUR;
-  const bBase = broken.clock.t; const bCold = [];
-  for (let h = 0; h < 48; h++) {
-    const target = bBase + h * HOUR + ((h * 37) % 50) * MIN;
-    if (broken.clock.t < target) broken.clock.t = target;
-    if (h > 0 && !broken.ctx.questionCacheStatus().ready) bCold.push(h);
-    broken.ctx.ensureQuestionCachesWarm();
-  }
-  check('the 48-hour simulation detects a broken refresh rule (it is not vacuous)', () =>
-    assert.ok(bCold.length > 0, 'a 6.5h threshold should leave the cache cold at some tick'));
+  // ---- three days of the real hour timer ----
+  // Apps Script's hour timer keeps roughly one minute each hour with ±15 min of
+  // drift, and now and then drops a run. The schedule here drifts every tick and
+  // DROPS runs exactly where it hurts most: the 00:00 tick before the 01:00 quiet
+  // hour, the 02:00 tick between the two quiet hours, the 04:00 tick right after
+  // one, and a daytime tick. Requirement: after the first tick the cache is ready
+  // at every tick, no rebuild ever starts at 01:00 or 03:00, and the count stays
+  // sane.
+  // Days are ISRAEL CALENDAR days. (A first version counted days from the
+  // simulation's 04:33 start, which silently put the 02:00 and 04:00 drops on the
+  // SAME night — two dropped runs in a row, beyond the design's assumption; that
+  // case is now its own scenario below.)
+  const ilDate = t => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem' }).format(new Date(t));
+  const simulate = (dropRule, tweak, hours = 96) => {
+    const e = environment(banks);
+    if (tweak) tweak(e.ctx);
+    const base = e.clock.t, dates = [];
+    const out = { cold: [], quietRebuilds: [], rebuilds: 0, ticks: 0, minMarginMin: Infinity, examMorningAges: [] };
+    const seenMorning = new Set();
+    for (let h = 0; h < hours; h++) {
+      const drift = ((h * 7919) % 31) - 15;                      // deterministic −15..+15 min
+      e.clock.t = Math.max(e.clock.t, base + h * HOUR + drift * MIN);
+      const hr = ilHour(e.clock.t), date = ilDate(e.clock.t);
+      if (!dates.includes(date)) dates.push(date);
+      const day = dates.indexOf(date);                           // 0 = the start date
+      if (dropRule(day, hr)) continue;
+      out.ticks++;
+      const st = JSON.parse(e.properties.get('qv2_warmup_state') || '{}');
+      if (out.ticks > 1) {
+        if (!e.ctx.questionCacheStatus().ready) out.cold.push('day' + day + ' ' + hr + ':00');
+        if (st.lastCompleteAt) out.minMarginMin = Math.min(out.minMarginMin, 360 - (e.clock.t - st.lastCompleteAt) / MIN);
+      }
+      if (hr === 8 && !seenMorning.has(day) && st.lastCompleteAt) {  // what the 08:30 exams find
+        seenMorning.add(day);
+        out.examMorningAges.push(Math.round((e.clock.t - st.lastCompleteAt) / MIN));
+      }
+      const result = e.ctx.ensureQuestionCachesWarm();
+      if (/^rebuilt/.test(result)) {
+        out.rebuilds++;
+        if ([1, 3].includes(hr)) out.quietRebuilds.push(hr + ':00');
+      }
+    }
+    return out;
+  };
+  // One dropped run at a time, placed where it hurts most: the 00:00 tick before
+  // the 01:00 quiet hour, the 02:00 tick between the quiet hours, the 04:00 tick
+  // right after one — each on its own night — plus a daytime tick every day.
+  const oneDropAtATime = (day, hr) => (day === 1 && hr === 0) || (day === 2 && hr === 2) || (day === 3 && hr === 4) || hr === 10;
+  const days = simulate(oneDropAtATime);
+  check('4 days, drift and one dropped run at a time: the cache is never found cold', () =>
+    assert.deepEqual(days.cold, [], 'cold at ' + days.cold.join(', ')));
+  check('4 days: at no tick is the cache within 15 minutes of expiring', () =>
+    assert.ok(days.minMarginMin >= 15, 'tightest margin ' + Math.round(days.minMarginMin) + ' min'));
+  check('4 days: no rebuild ever starts during the 01:00 archive or the 03:00 at-risk job', () =>
+    assert.deepEqual(days.quietRebuilds, []));
+  check('4 days: every exam morning finds a cache built within the last 2.5 hours', () => {
+    assert.ok(days.examMorningAges.length >= 3, 'mornings seen: ' + days.examMorningAges.length);
+    assert.ok(days.examMorningAges.every(a => a <= 150), 'ages at the 08:00 tick: ' + days.examMorningAges.join(', '));
+  });
+  check('4 days: rebuilds stay between five and ten a day', () =>
+    assert.ok(days.rebuilds >= 20 && days.rebuilds <= 40, 'rebuilds=' + days.rebuilds + ' over ' + days.ticks + ' ticks'));
+
+  // Beyond the design assumption: TWO runs dropped in a row around the 03:00
+  // quiet hour (02:00 and 04:00 on the same night). Not promised a 15-minute
+  // margin — but it must still never go cold.
+  const twoInARow = simulate((day, hr) => day === 1 && (hr === 2 || hr === 4));
+  check('beyond the assumption — two dropped runs in a row across a quiet hour: still never cold', () =>
+    assert.deepEqual(twoInARow.cold, [], 'cold at ' + twoInARow.cold.join(', ') + ' (tightest ' + Math.round(twoInARow.minMarginMin) + ' min)'));
+
+  // The simulation must be able to FAIL, or "never cold" proves nothing. Two
+  // realistic bugs: no allowance for a dropped run, and a look-ahead that forgets
+  // the quiet hours (the fixed-hours lesson). Each must be caught.
+  const brittle = simulate(oneDropAtATime, ctx => { ctx.WARMUP_ASSUME_MISSED_TICKS = 0; });
+  check('the simulation catches a schedule that cannot survive a dropped run (not vacuous)', () =>
+    assert.ok(brittle.cold.length > 0 || brittle.minMarginMin < 15,
+      'cold=' + brittle.cold.length + ' tightest margin=' + Math.round(brittle.minMarginMin)));
+  const blind = simulate(oneDropAtATime, ctx => { ctx.warmupWorstWaitMs = () => 2 * HOUR + 30 * MIN; });
+  check('the simulation catches a look-ahead that ignores the quiet hours (not vacuous)', () =>
+    assert.ok(blind.cold.length > 0 || blind.minMarginMin < 15,
+      'cold=' + blind.cold.length + ' tightest margin=' + Math.round(blind.minMarginMin)));
 }
 {
   const env = environment(banks);
   const fake = fn => ({ getHandlerFunction: () => fn });
-  env.triggers.push(fake('warmupQuestionCaches'));          // the hand-made 4-hour one
-  env.triggers.push(fake('rebuildMissingQuestionCaches'));  // a live miss's one-shot
-  env.triggers.push(fake('archiveOldPendingRows'));         // unrelated daily job
+  env.triggers.push(fake('warmupQuestionCaches'));            // the hand-made 4-hour one
+  env.triggers.push(fake('rebuildMissingQuestionCaches'));    // a live miss's one-shot
+  env.triggers.push(fake('archiveOldPendingRows'));           // unrelated daily job
   const msg = env.ctx.installWarmupTriggers();
   const handlers = () => env.triggers.map(t => t.getHandlerFunction()).sort();
   check('install: replaces the hand-made warmup trigger with one hourly check', () => {
     assert.deepEqual(handlers(), ['archiveOldPendingRows', 'ensureQuestionCachesWarm', 'rebuildMissingQuestionCaches']);
     assert.equal(env.triggers.find(t => t.getHandlerFunction() === 'ensureQuestionCachesWarm').everyHours, 1);
     assert.match(msg, /removed 1 old trigger\(s\) \[warmupQuestionCaches\]/);
-    assert.match(msg, /first check → rebuilt/);
   });
   env.ctx.installWarmupTriggers();
   check('install: running it again still leaves exactly one hourly check', () =>
