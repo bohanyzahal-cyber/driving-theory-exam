@@ -104,7 +104,11 @@ function environment(banks) {
       return { hasNext: () => !!banks[lang], next: () => ({ getBlob: () => { reads[lang] = (reads[lang] || 0) + 1; clock.t += 3000; return blob(JSON.stringify(banks[lang])); } }) };
     } }) },
     ScriptApp: {
-      newTrigger: fn => ({ timeBased: () => ({ after: () => ({ create: () => { if (ctx.__failTriggers) { triggerFailures++; throw new Error('trigger quota'); } triggerCreates++; const t = { fn, getHandlerFunction: () => fn }; triggers.push(t); return t; } }) }) }),
+      newTrigger: fn => ({ timeBased: () => ({
+        after: () => ({ create: () => { if (ctx.__failTriggers) { triggerFailures++; throw new Error('trigger quota'); } triggerCreates++; const t = { fn, getHandlerFunction: () => fn }; triggers.push(t); return t; } }),
+        // recurring hour timer (installWarmupTriggers); kept out of triggerCreates, which counts one-shot rebuilds
+        everyHours: n => ({ create: () => { const t = { fn, everyHours: n, getHandlerFunction: () => fn }; triggers.push(t); return t; } })
+      }) }),
       getProjectTriggers: () => triggers.slice(),
       deleteTrigger: t => { const i = triggers.indexOf(t); if (i >= 0) triggers.splice(i, 1); }
     },
@@ -548,6 +552,97 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
     assert.deepEqual(noIndex.reads, beforeNoIndex, 'no Drive read');
     assert.equal(stillCached.length, 300);
   });
+}
+
+// ---- 10. the cache keeps itself warm: nobody runs the warmup by hand -------
+// 2026-09-17, the operator: "I don't want to run the warmup by hand every day,
+// and not several times a day." The hand-made 4-hour trigger rebuilt blindly and
+// never looked; an hourly ensureQuestionCachesWarm verifies and repairs.
+{
+  const HOUR = 3600 * 1000;
+  const env = environment(banks);
+  const first = env.ctx.ensureQuestionCachesWarm();
+  check('hourly check: a cold cache is rebuilt', () => {
+    assert.match(first, /^rebuilt \(cache not ready/);
+    assert.equal(env.ctx.questionCacheStatus().ready, true);
+  });
+  env.clock.t += 30 * 60 * 1000;
+  const readsBefore = { ...env.reads };
+  const quiet = env.ctx.ensureQuestionCachesWarm();
+  check('hourly check: a warm, fresh cache costs no rebuild and no Drive read', () => {
+    assert.match(quiet, /^warm: \d+ keys ready, last complete warmup 3\d min ago/);
+    assert.deepEqual(env.reads, readsBefore);
+  });
+  env.cache.remove('qv2_pool_he_B_meta');                  // CacheService evicts early sometimes
+  const repaired = env.ctx.ensureQuestionCachesWarm();
+  check('hourly check: an evicted pool is repaired at the next tick', () => {
+    assert.match(repaired, /^rebuilt \(cache not ready: \d+ missing/);
+    assert.equal(env.ctx.questionCacheStatus().ready, true);
+  });
+  env.clock.t += 4 * HOUR + 60 * 1000;
+  const refreshed = env.ctx.ensureQuestionCachesWarm();
+  check('hourly check: past 4 hours it refreshes, before the 6-hour TTL can expire', () =>
+    assert.match(refreshed, /^rebuilt \(last complete warmup 24\d min ago\)/));
+
+  // A PARTIAL run must not reset the age: some of its pools are still old.
+  const partialEnv = environment(banks);
+  partialEnv.ctx.warmupQuestionCaches();                    // complete: stamps lastCompleteAt
+  const stamped = JSON.parse(partialEnv.properties.get('qv2_warmup_state')).lastCompleteAt;
+  partialEnv.clock.t += 2 * HOUR;
+  partialEnv.ctx.warmupQuestionCaches({ budgetMs: 20000 }); // far too small → PARTIAL
+  check('a PARTIAL warmup does not count as a refresh', () =>
+    assert.equal(JSON.parse(partialEnv.properties.get('qv2_warmup_state')).lastCompleteAt, stamped));
+}
+{
+  // Two days of an hour timer, firing at a different minute every hour the way
+  // Apps Script's does. After the first tick the cache must be ready at EVERY
+  // tick — i.e. it never went cold in between — with a bounded rebuild count.
+  const HOUR = 3600 * 1000, MIN = 60 * 1000;
+  const env = environment(banks);
+  const base = env.clock.t;
+  let rebuilds = 0; const coldAt = [];
+  for (let h = 0; h < 48; h++) {
+    const target = base + h * HOUR + ((h * 37) % 50) * MIN;   // 0-49 min into the hour
+    if (env.clock.t < target) env.clock.t = target;
+    if (h > 0 && !env.ctx.questionCacheStatus().ready) coldAt.push(h);
+    if (/^rebuilt/.test(env.ctx.ensureQuestionCachesWarm())) rebuilds++;
+  }
+  check('48 hours of hourly ticks: the cache is never found cold after the first', () =>
+    assert.deepEqual(coldAt, [], 'cold at hour(s) ' + coldAt.join(',')));
+  check('48 hours of hourly ticks: rebuilds stay about one per 4-5 hours', () =>
+    assert.ok(rebuilds >= 9 && rebuilds <= 13, 'rebuilds=' + rebuilds));
+
+  // The simulation must be able to FAIL, or "never cold" proves nothing: with a
+  // refresh threshold past the 6h TTL the cache really does go cold between ticks.
+  const broken = environment(banks);
+  broken.ctx.WARMUP_REFRESH_AFTER_MS = 6.5 * HOUR;
+  const bBase = broken.clock.t; const bCold = [];
+  for (let h = 0; h < 48; h++) {
+    const target = bBase + h * HOUR + ((h * 37) % 50) * MIN;
+    if (broken.clock.t < target) broken.clock.t = target;
+    if (h > 0 && !broken.ctx.questionCacheStatus().ready) bCold.push(h);
+    broken.ctx.ensureQuestionCachesWarm();
+  }
+  check('the 48-hour simulation detects a broken refresh rule (it is not vacuous)', () =>
+    assert.ok(bCold.length > 0, 'a 6.5h threshold should leave the cache cold at some tick'));
+}
+{
+  const env = environment(banks);
+  const fake = fn => ({ getHandlerFunction: () => fn });
+  env.triggers.push(fake('warmupQuestionCaches'));          // the hand-made 4-hour one
+  env.triggers.push(fake('rebuildMissingQuestionCaches'));  // a live miss's one-shot
+  env.triggers.push(fake('archiveOldPendingRows'));         // unrelated daily job
+  const msg = env.ctx.installWarmupTriggers();
+  const handlers = () => env.triggers.map(t => t.getHandlerFunction()).sort();
+  check('install: replaces the hand-made warmup trigger with one hourly check', () => {
+    assert.deepEqual(handlers(), ['archiveOldPendingRows', 'ensureQuestionCachesWarm', 'rebuildMissingQuestionCaches']);
+    assert.equal(env.triggers.find(t => t.getHandlerFunction() === 'ensureQuestionCachesWarm').everyHours, 1);
+    assert.match(msg, /removed 1 old trigger\(s\) \[warmupQuestionCaches\]/);
+    assert.match(msg, /first check → rebuilt/);
+  });
+  env.ctx.installWarmupTriggers();
+  check('install: running it again still leaves exactly one hourly check', () =>
+    assert.equal(env.triggers.filter(t => t.getHandlerFunction() === 'ensureQuestionCachesWarm').length, 1));
 }
 
 console.log(`\n${checks} checks passed`);

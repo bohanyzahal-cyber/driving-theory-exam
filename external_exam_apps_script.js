@@ -646,7 +646,7 @@ function todayStr() {
 }
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-16-r20';
+var THEORY_API_BUILD = '2026-09-17-r21';
 var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
 
 function logTheoryApiTiming(phase, method, action, startedAt) {
@@ -4133,13 +4133,10 @@ function handleCancelFailOnClose(data) {
 // in PARTIAL is normal and means the next scheduled run continues from the
 // cursor it reports; only ERROR lines need attention.
 //
-// Setup (one-time): in Apps Script editor →
-//   Triggers (clock icon, left sidebar) → Add Trigger
-//   Function: warmupQuestionCaches
-//   Event source: Time-driven
-//   Type: Hour timer
-//   Every: 4 hours
-//   Save (you'll be asked to authorize)
+// Setup (one-time): do NOT add a trigger for this function by hand any more.
+// Run installWarmupTriggers() once from the editor instead — it replaces any
+// hand-made warmupQuestionCaches trigger with an hourly ensureQuestionCachesWarm,
+// which verifies the cache and calls this function only when it is needed.
 //
 // Check the returned cache verification, not only the trigger's completion.
 function warmupQuestionCaches(options) {
@@ -4282,6 +4279,10 @@ function warmupQuestionCaches(options) {
     state.langIdx = (idx + 1) % TX_LANGS.length;
     langsBuilt++;
   }
+  // Only a run that rebuilt every language counts as a refresh: the hourly
+  // ensureQuestionCachesWarm measures the cache's age from this stamp, and a
+  // PARTIAL run left some pools at their old age.
+  if (!partial && langsBuilt === TX_LANGS.length) state.lastCompleteAt = Date.now();
   writeWarmupState(state);
 
   summary.push('persistent cache budget: <=' + QUESTION_CACHE_RESERVED_KEYS + ' keys (pools + translation shards; banks are not cached); individual values <81KB');
@@ -4296,6 +4297,71 @@ function warmupQuestionCaches(options) {
     (partial ? ' (the next scheduled run continues from there)' : ''));
   Logger.log('warmupQuestionCaches complete:\n' + summary.join('\n'));
   return summary;
+}
+
+// ========== Keep the question cache warm with nobody touching it ==========
+// 2026-09-17, from the operator: "I don't want to run the warmup by hand every
+// day, and not several times a day." He had been, because the automatic path
+// could not be trusted:
+//  - the only warmup trigger was added by hand in the editor ("every 4 hours"),
+//    so nothing in the code knew whether it existed or when it ran;
+//  - it rebuilt blindly and never LOOKED at the cache, so pools evicted early
+//    (CacheService does not promise the full 6h) stayed missing until the next
+//    blind run — and on 15/09 a test examinee met "נסה שוב" at exam start.
+// This runs every hour. It asks questionCacheStatus() (every pool and shard
+// present, one real pool and shard decoded — about a second) and rebuilds only
+// when the cache is not ready, or when the last COMPLETE warmup is older than
+// WARMUP_REFRESH_AFTER_MS. Pools live 6h (21600s); refreshing past 4h at an
+// hourly tick finishes by ~5h at the latest, an hour before anything expires.
+// Early eviction is repaired within the hour, and the one-shot rebuild that a
+// live cache miss already requests still covers the minutes in between.
+var WARMUP_REFRESH_AFTER_MS = 4 * 60 * 60 * 1000;
+var WARMUP_ENSURE_FUNCTION = 'ensureQuestionCachesWarm';
+
+function ensureQuestionCachesWarm() {
+  var t0 = Date.now(), status = null, statusError = '';
+  try { status = questionCacheStatus(); } catch (eStatus) { statusError = (eStatus && eStatus.message) || String(eStatus); }
+  var state = readWarmupState();
+  var ageMs = typeof state.lastCompleteAt === 'number' ? Date.now() - state.lastCompleteAt : null;
+  var reason = '';
+  if (!status) reason = 'status check failed' + (statusError ? ' (' + statusError + ')' : '');
+  else if (!status.ready) reason = 'cache not ready: ' + status.missingOrMixedKeys + ' missing/mixed keys, ' + status.decodeFailures + ' decode failures';
+  else if (ageMs === null) reason = 'no complete warmup on record';
+  else if (ageMs >= WARMUP_REFRESH_AFTER_MS) reason = 'last complete warmup ' + Math.round(ageMs / 60000) + ' min ago';
+  if (!reason) {
+    // Nothing to rebuild — still record killed executions promptly instead of
+    // waiting hours for the next full warmup to sweep them.
+    try { diagSweep(null); } catch (eSweep) {}
+    var quiet = 'warm: ' + status.presentKeys + ' keys ready, last complete warmup ' + Math.round(ageMs / 60000) +
+      ' min ago (' + (Date.now() - t0) + 'ms)';
+    Logger.log('[ENSURE] ' + quiet);
+    return quiet;
+  }
+  Logger.log('[ENSURE] rebuilding — ' + reason);
+  var summary = warmupQuestionCaches();
+  return 'rebuilt (' + reason + '): ' + summary[summary.length - 1];
+}
+
+// Run ONCE from the Apps Script editor. Safe to run again: it always leaves
+// exactly one hourly ensureQuestionCachesWarm trigger. It removes hand-made
+// warmupQuestionCaches triggers (they would double the work), leaves every
+// other trigger alone — including the one-shot rebuildMissingQuestionCaches
+// triggers a live cache miss creates — and warms the cache right away.
+function installWarmupTriggers() {
+  var removed = [], triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    var fn = triggers[i].getHandlerFunction();
+    if (fn === 'warmupQuestionCaches' || fn === WARMUP_ENSURE_FUNCTION) {
+      ScriptApp.deleteTrigger(triggers[i]);
+      removed.push(fn);
+    }
+  }
+  ScriptApp.newTrigger(WARMUP_ENSURE_FUNCTION).timeBased().everyHours(1).create();
+  var first = ensureQuestionCachesWarm();
+  var msg = 'installWarmupTriggers: removed ' + removed.length + ' old trigger(s) [' + removed.join(', ') +
+    ']; created one hourly ' + WARMUP_ENSURE_FUNCTION + '; first check → ' + first;
+  Logger.log(msg);
+  return msg;
 }
 
 // ---- Warmup budget, resume cursor and one-time legacy sweep ---------------
