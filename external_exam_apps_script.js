@@ -249,6 +249,7 @@ var PENDING_TERMINAL = { completed: 1, disqualified: 1, dq_confirmed: 1, cancell
 function archiveOldPendingRows() {
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(5000)) { Logger.log('archive: another run holds the lock'); return; }
+  markJobRunning('archiveOldPendingRows', true);   // the lock already keeps the cache check away; the flag names it
   var t0 = Date.now();
   var BUDGET_MS = 4.5 * 60 * 1000;   // stay under the 6-min ceiling; the rest moves next run
   try {
@@ -301,6 +302,7 @@ function archiveOldPendingRows() {
     }
     Logger.log('archive: moved ' + moved + ' rows in ' + (Date.now() - t0) + 'ms');
   } finally {
+    markJobRunning('archiveOldPendingRows', false);
     lock.releaseLock();
   }
 }
@@ -4322,22 +4324,58 @@ function warmupQuestionCaches(options) {
 //  - rebuildAtRiskCache, daily in the 03:00 hour, is a heavy practice-sheet job.
 //  - rebuildMissingQuestionCaches, a one-shot a live cache miss schedules, would
 //    fight a warmup for the same pool leases.
-// So: no work at all in the quiet hours; skip a tick while someone holds the
-// script lock (the archive can spill past 02:00); skip while a one-shot rebuild
-// is pending.
+// Overlap is avoided by looking at what is RUNNING, not at the clock: skip the
+// tick while another job holds the script lock (the archive does, for its whole
+// run), while a nightly job's running flag is fresh (rebuildAtRiskCache takes no
+// lock, so it raises one), and while a one-shot rebuild is pending. A first
+// version instead declared the 01:00 and 03:00 HOURS off-limits. Sweeping the
+// timer's minute in the simulation showed why that is wrong: a timer at :58 with
+// ±15 min drift lands two consecutive ticks inside one hour, so an hour-wide
+// window swallowed two ticks and the cache went cold (margin −182 min at :58).
+// The jobs themselves are minutes long; only the minutes are skipped now.
 //
 // WHEN to refresh is decided by looking ahead, not by a fixed list of hours.
-// A first version refreshed in fixed hours with a 5h safety net; its own 48-hour
-// simulation went cold at 05:00 — the timer missed the 00:00 refresh hour and the
-// 03:00 quiet hour then blocked the safety net until the cache had expired.
-// Fixed hours cannot survive a skipped run next to a quiet window. Instead every
-// tick asks: what is the LONGEST I may have to wait before a tick can rebuild
-// again — skipping quiet hours, assuming Apps Script drops WARMUP_ASSUME_MISSED_TICKS
-// of those ticks, plus the hour timer's drift? If the cache could expire within
-// that wait, rebuild now. That rebuilds at ~3h15m age by day and earlier before
-// the night windows (~2h15m at 02:00 and 23:00, ~1h15m at 00:00). 07:00 is also a
-// pre-exam refresh, so the morning cache is freshly built and verified.
-var WARMUP_QUIET_HOURS = [1, 3];
+// (Fixed hours with a 5h safety net were tried first; that simulation went cold
+// at 05:00 after one dropped run next to a protected hour.) Every tick asks: what
+// is the LONGEST I may have to wait before a tick can rebuild again — skipping
+// hours that may not start a refresh, assuming Apps Script drops
+// WARMUP_ASSUME_MISSED_TICKS of the ticks, and assuming the tick that finally
+// does the work lands as late in its hour as the drift allows? If the cache
+// could expire within that wait, rebuild now.
+//
+// The ONLY hour that may not START a scheduled refresh is 08 (operator: "and if
+// exams start at 8?"). A rebuild rewrites pools one by one and an examinee whose
+// exam starts on the pool being written gets a short wait-and-retry; a 07:50 tick
+// drifting +15 min runs at 08:05, where a 07:00-only pre-exam rule no longer
+// applies. So the pre-exam refresh may run in the 06:00 or 07:00 hour, the
+// look-ahead treats 08 as unable to refresh, and a cache that is actually broken
+// is still repaired in 08 (that is worse than a rebuild).
+// The nightly jobs get NO hour of their own here: a :58 timer landed three ticks
+// in a row inside "their" hours (01:58, 03:12, 03:55) and the cache went cold at
+// 05:09 — the third hour-wide rule to fail this simulation. Their running flag
+// and the script lock keep the check away for the minutes they actually run.
+var WARMUP_NO_SCHEDULED_REFRESH_HOURS = [8];
+var WARMUP_EXAM_START_HOURS = [8];
+var WARMUP_PREEXAM_HOURS = [6, 7];
+var WARMUP_PREEXAM_MIN_AGE_MS = 90 * 60 * 1000;
+var WARMUP_JOB_FLAG = 'job_running';
+var WARMUP_JOB_FLAG_MS = 6 * 60 * 1000;          // no job outlives the 6-minute kill
+
+// Nightly jobs raise this while they run, so the hourly check stays out of their
+// way for exactly as long as they take. A stale flag (a killed job) expires.
+function markJobRunning(name, running) {
+  try {
+    var props = PropertiesService.getScriptProperties(), key = QUESTION_CACHE_PREFIX + WARMUP_JOB_FLAG;
+    if (running) props.setProperty(key, JSON.stringify({ name: name, at: Date.now() }));
+    else props.deleteProperty(key);
+  } catch (e) {}
+}
+function runningJobName() {
+  try {
+    var flag = JSON.parse(PropertiesService.getScriptProperties().getProperty(QUESTION_CACHE_PREFIX + WARMUP_JOB_FLAG) || 'null');
+    return (flag && flag.at && Date.now() - flag.at < WARMUP_JOB_FLAG_MS) ? String(flag.name || 'job') : '';
+  } catch (e) { return ''; }
+}
 var WARMUP_CACHE_TTL_MS = 6 * 60 * 60 * 1000;    // pools and index are written with 21600s
 var WARMUP_EXPIRY_BUFFER_MS = 15 * 60 * 1000;
 // An hour timer lands within ~15 min of its minute, but two ticks can drift in
@@ -4346,30 +4384,34 @@ var WARMUP_EXPIRY_BUFFER_MS = 15 * 60 * 1000;
 // three-day simulation.)
 var WARMUP_TICK_DRIFT_MS = 30 * 60 * 1000;
 var WARMUP_ASSUME_MISSED_TICKS = 1;              // survive Apps Script skipping a run
-var WARMUP_PREEXAM_HOUR = 7;
-var WARMUP_REFRESH_MIN_AGE_MS = 60 * 60 * 1000;  // do not redo a build from the previous hour
 var WARMUP_REBUILD_RUNNING_MS = 6 * 60 * 1000;   // a one-shot rebuild cannot outlive the 6-min kill
 var WARMUP_ENSURE_FUNCTION = 'ensureQuestionCachesWarm';
 
+// Can a tick in this hour START a scheduled or age-based rebuild?
+function warmupCanRefreshInHour(h) {
+  return WARMUP_NO_SCHEDULED_REFRESH_HOURS.indexOf(h) < 0;
+}
+
 // Worst-case wait from a tick in `hour` until a later tick can rebuild: walk
-// forward hour by hour, counting only non-quiet hours, until 1 + the assumed
-// missed ticks of them have passed; add the timer's drift.
+// forward hour by hour, counting only hours that may refresh, until 1 + the
+// assumed missed ticks of them have passed. The tick that does the work may land
+// anywhere in its hour, so count that whole hour too, plus the timer's drift.
 function warmupWorstWaitMs(hour) {
   var needed = 1 + WARMUP_ASSUME_MISSED_TICKS, h = hour, steps = 0;
   while (needed > 0 && steps < 48) {
     h = (h + 1) % 24; steps++;
-    if (WARMUP_QUIET_HOURS.indexOf(h) < 0) needed--;
+    if (warmupCanRefreshInHour(h)) needed--;
   }
-  return steps * 60 * 60 * 1000 + WARMUP_TICK_DRIFT_MS;
+  return (steps + 1) * 60 * 60 * 1000 + WARMUP_TICK_DRIFT_MS;
 }
 
 function ensureQuestionCachesWarm() {
   var t0 = Date.now();
   var hour = Number(Utilities.formatDate(new Date(), 'Asia/Jerusalem', 'H'));
-  if (WARMUP_QUIET_HOURS.indexOf(hour) >= 0) {
-    var quietHour = 'skipped: ' + hour + ':00 belongs to the nightly ' + (hour === 1 ? 'archiveOldPendingRows' : 'rebuildAtRiskCache');
-    Logger.log('[ENSURE] ' + quietHour);
-    return quietHour;
+  var job = runningJobName();
+  if (job) {
+    Logger.log('[ENSURE] skipped: ' + job + ' is running');
+    return 'skipped: ' + job + ' is running';
   }
   var probe = LockService.getScriptLock();
   if (!probe.tryLock(100)) {
@@ -4392,9 +4434,9 @@ function ensureQuestionCachesWarm() {
   var reason = '';
   if (!status) reason = 'status check failed' + (statusError ? ' (' + statusError + ')' : '');
   else if (!status.ready) reason = 'cache not ready: ' + status.missingOrMixedKeys + ' missing/mixed keys, ' + status.decodeFailures + ' decode failures';
-  else if (ageMs === null) reason = 'no complete warmup on record';
-  else if (hour === WARMUP_PREEXAM_HOUR && ageMs >= WARMUP_REFRESH_MIN_AGE_MS) reason = 'pre-exam refresh (' + hour + ':00 hour)';
-  else if (ageMs + warmupWorstWaitMs(hour) >= WARMUP_CACHE_TTL_MS - WARMUP_EXPIRY_BUFFER_MS) {
+  else if (ageMs === null) reason = 'no complete warmup on record';   // e.g. the first run after deploy: establish the stamp
+  else if (WARMUP_PREEXAM_HOURS.indexOf(hour) >= 0 && ageMs >= WARMUP_PREEXAM_MIN_AGE_MS) reason = 'pre-exam refresh (' + hour + ':00 hour)';
+  else if (warmupCanRefreshInHour(hour) && ageMs + warmupWorstWaitMs(hour) >= WARMUP_CACHE_TTL_MS - WARMUP_EXPIRY_BUFFER_MS) {
     reason = 'age ' + Math.round(ageMs / 60000) + ' min could outlive the cache before the next safe tick (worst wait ' +
       Math.round(warmupWorstWaitMs(hour) / 60000) + ' min)';
   }
@@ -4403,7 +4445,8 @@ function ensureQuestionCachesWarm() {
     // waiting hours for the next full warmup to sweep them.
     try { diagSweep(null); } catch (eSweep) {}
     var quiet = 'warm: ' + status.presentKeys + ' keys ready, last complete warmup ' + Math.round(ageMs / 60000) +
-      ' min ago (' + (Date.now() - t0) + 'ms)';
+      ' min ago' + (WARMUP_EXAM_START_HOURS.indexOf(hour) >= 0 ? ', exam start hour — no scheduled rebuild' : '') +
+      ' (' + (Date.now() - t0) + 'ms)';
     Logger.log('[ENSURE] ' + quiet);
     return quiet;
   }
@@ -7879,6 +7922,11 @@ function computeAtRiskAll(opts) {
 // model build never lands during exam/practice hours. Dashboards then READ this
 // cache instead of rebuilding — no per-request model build, no midday load.
 function rebuildAtRiskCache() {
+  markJobRunning('rebuildAtRiskCache', true);   // keeps the hourly cache check out of the way (see ensureQuestionCachesWarm)
+  try { return rebuildAtRiskCacheInner(); }
+  finally { markJobRunning('rebuildAtRiskCache', false); }
+}
+function rebuildAtRiskCacheInner() {
   var res = computeAtRiskAll({ lookbackDays: 30 });
   var sheet = getSheet('חיזוי סיכון');
   var lastRow = sheet.getLastRow();

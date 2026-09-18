@@ -561,15 +561,21 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
 // ---- 10. the cache keeps itself warm: nobody runs the warmup by hand -------
 // 2026-09-17, the operator: "I don't want to run the warmup by hand every day,
 // and not several times a day" — then: "check it doesn't overlap in run time with
-// other functions". The hourly ensureQuestionCachesWarm verifies and repairs,
-// stays out of the nightly archive (01:00, holds the script lock up to 4.5 min),
-// the at-risk job (03:00) and a pending one-shot rebuild, and decides WHEN to
-// refresh by looking ahead to its next safe chance. (A fixed-hours first version
-// went cold at 05:00 in this very simulation — kept as the lesson below.)
+// other functions" — then: "and if exams start at 8?". The hourly
+// ensureQuestionCachesWarm verifies and repairs; stays out of a RUNNING job
+// (script lock, job flag, pending one-shot rebuild); never starts a scheduled
+// refresh in the 01/03 nightly-job hours or the 08 exam-start hour; and decides
+// WHEN to refresh by looking ahead to its next safe chance.
+// Two earlier designs died in this section: fixed refresh hours (cold at 05:00
+// after one dropped run), and hour-wide hard skips (cold at a :58 timer — two
+// consecutive ticks land in one hour and a whole-hour skip swallows both). Hence
+// the sweep over timer minutes below.
 {
   const HOUR = 3600 * 1000, MIN = 60 * 1000;
-  const ilHour = t => Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jerusalem', hour: '2-digit', hourCycle: 'h23' }).format(new Date(t)));
-  const ilMinute = t => Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jerusalem', minute: '2-digit' }).format(new Date(t)));
+  const il = (t, opts) => new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jerusalem', hourCycle: 'h23', ...opts }).format(new Date(t));
+  const ilHour = t => Number(il(t, { hour: '2-digit' }));
+  const ilMinute = t => Number(il(t, { minute: '2-digit' }));
+  const ilDate = t => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem' }).format(new Date(t));
   const at = (env, hh, mm = 10) => {                          // move the clock FORWARD to Israel hh:mm
     env.clock.t = Math.floor(env.clock.t / MIN) * MIN + MIN;
     for (let i = 0; i < 49 * 60 && !(ilHour(env.clock.t) === hh && ilMinute(env.clock.t) === mm); i++) env.clock.t += MIN;
@@ -583,19 +589,18 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
   };
 
   const env = environment(banks);
-  check('worst wait looks past the quiet hours and one skipped run', () => {
+  check('worst wait counts only hours that may refresh, one dropped run, and a late-landing tick', () => {
     const w = h => env.ctx.warmupWorstWaitMs(h) / MIN;
-    assert.equal(w(12), 150, 'daytime: two hours + two ticks of opposite drift');
-    assert.equal(w(22), 150);
-    assert.equal(w(23), 210, '00 then quiet 01 then 02');
-    assert.equal(w(2), 210, 'quiet 03, then 04 and 05');
-    assert.equal(w(0), 270, 'quiet 01, 02, quiet 03, 04');
+    assert.equal(w(12), 210, 'daytime: 13, 14 + the working tick\'s own hour + drift');
+    assert.equal(w(0), 210, 'the nightly-job hours are ordinary hours for scheduling');
+    assert.equal(w(2), 210);
+    assert.equal(w(7), 270, '08 may not (exam start), 09, 10');
+    assert.equal(w(6), 270, '07, 08 may not, 09');
   });
 
   at(env, 9);
-  const cold = env.ctx.ensureQuestionCachesWarm();
   check('hourly check: a cold cache is rebuilt', () => {
-    assert.match(cold, /^rebuilt \(cache not ready/);
+    assert.match(env.ctx.ensureQuestionCachesWarm(), /^rebuilt \(cache not ready/);
     assert.equal(env.ctx.questionCacheStatus().ready, true);
   });
   at(env, 9, 40);
@@ -610,56 +615,71 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
     assert.match(env.ctx.ensureQuestionCachesWarm(), /^rebuilt \(cache not ready: \d+ missing/);
     assert.equal(env.ctx.questionCacheStatus().ready, true);
   });
-
-  at(env, 12, 30); setAge(env, 150); before = drive(env);
-  check('daytime: a 2.5-hour-old cache is left alone (it outlasts the worst wait)', () => {
+  at(env, 12, 30); setAge(env, 120); before = drive(env);
+  check('daytime: a 2-hour-old cache is left alone (it outlasts the worst wait)', () => {
     assert.match(env.ctx.ensureQuestionCachesWarm(), /^warm: /);
     assert.equal(drive(env), before);
   });
-  at(env, 13, 30); setAge(env, 200);
-  check('daytime: past ~3h15m it refreshes before the cache could expire', () =>
-    assert.match(env.ctx.ensureQuestionCachesWarm(), /^rebuilt \(age 200 min could outlive the cache before the next safe tick \(worst wait 150 min\)\)/));
+  at(env, 13, 30); setAge(env, 140);
+  check('daytime: past ~2h15m it refreshes before the cache could expire', () =>
+    assert.match(env.ctx.ensureQuestionCachesWarm(), /^rebuilt \(age 140 min could outlive the cache before the next safe tick \(worst wait 210 min\)\)/));
   // Each jump below crosses more than 6 hours with no ticks, so the cache really
   // has expired and "not ready" would (correctly) win — build it first, then
   // pretend it is older, to test the age rule itself.
-  at(env, 2, 20); env.ctx.warmupQuestionCaches(); setAge(env, 150);
-  check('02:00: the SAME 2.5-hour age that was left alone at 12:30 refreshes, because 03:00 is quiet', () =>
-    assert.match(env.ctx.ensureQuestionCachesWarm(), /^rebuilt \(age 150 min .*worst wait 210 min/));
-  at(env, 0, 20); env.ctx.warmupQuestionCaches(); setAge(env, 80);
-  check('00:00: refreshes at ~1h15m ahead of the 01:00 and 03:00 windows', () =>
-    assert.match(env.ctx.ensureQuestionCachesWarm(), /^rebuilt \(age 80 min .*worst wait 270 min/));
-  at(env, 7, 20); env.ctx.warmupQuestionCaches(); setAge(env, 70);
-  check('07:00: the pre-exam refresh rebuilds a cache older than an hour', () =>
+  at(env, 2, 20); env.ctx.warmupQuestionCaches(); setAge(env, 120); before = drive(env);
+  check('02:00: the night is scheduled like the day — a 2-hour-old cache is left alone', () => {
+    assert.match(env.ctx.ensureQuestionCachesWarm(), /^warm: /);
+    assert.equal(drive(env), before);
+  });
+  at(env, 6, 20); env.ctx.warmupQuestionCaches(); setAge(env, 100);
+  check('06:00: the pre-exam refresh rebuilds a cache older than 90 minutes', () =>
+    assert.match(env.ctx.ensureQuestionCachesWarm(), /^rebuilt \(pre-exam refresh \(6:00 hour\)\)/));
+  at(env, 7, 20); setAge(env, 100);
+  check('07:00: so does the second pre-exam hour, if 06:00 did not', () =>
     assert.match(env.ctx.ensureQuestionCachesWarm(), /^rebuilt \(pre-exam refresh \(7:00 hour\)\)/));
 
-  // ---- overlap guards ----
-  const night = environment(banks);                            // COLD: the strongest reason to work
-  at(night, 1, 20); before = drive(night);
-  check('01:00 hour (nightly archive): no work at all, even with a cold cache', () => {
-    assert.match(night.ctx.ensureQuestionCachesWarm(), /^skipped: 1:00 belongs to the nightly archiveOldPendingRows/);
-    assert.equal(drive(night), before);
+  // ---- the 08:00 exam start wave ----
+  at(env, 8, 5); setAge(env, 230); before = drive(env);
+  check('08:00 exam start hour: an age that would rebuild at any other hour does NOT rebuild', () => {
+    assert.match(env.ctx.ensureQuestionCachesWarm(), /^warm: .*exam start hour — no scheduled rebuild/);
+    assert.equal(drive(env), before);
   });
-  at(night, 3, 20);
-  check('03:00 hour (at-risk job): no work at all', () => {
-    assert.match(night.ctx.ensureQuestionCachesWarm(), /^skipped: 3:00 belongs to the nightly rebuildAtRiskCache/);
-    assert.equal(drive(night), before);
+  env.cache.remove('qv2_pool_ru_C_meta');
+  check('08:00 exam start hour: a cache that is actually BROKEN is still repaired', () => {
+    assert.match(env.ctx.ensureQuestionCachesWarm(), /^rebuilt \(cache not ready/);
+    assert.equal(env.ctx.questionCacheStatus().ready, true);
   });
-  at(night, 4, 2);                                             // e.g. the archive overrunning into the next hour
-  const otherJobLock = night.ctx.LockService.getScriptLock();
-  otherJobLock.tryLock(5000);
-  check('script lock held by another job: skip the tick', () => {
-    assert.match(night.ctx.ensureQuestionCachesWarm(), /^skipped: another job holds the script lock/);
-    assert.equal(drive(night), before);
+
+  // ---- the nightly jobs: avoided by what is RUNNING, not by the hour ----
+  at(env, 1, 20); env.ctx.warmupQuestionCaches(); setAge(env, 200);
+  check('01:20, the archive long finished: a 200-minute-old cache refreshes like at any hour', () =>
+    assert.match(env.ctx.ensureQuestionCachesWarm(), /^rebuilt \(age 200 min .*worst wait 210 min/));
+  at(env, 3, 2); env.ctx.markJobRunning('rebuildAtRiskCache', true); env.cache.remove('qv2_pool_fr_D_meta'); before = drive(env);
+  check('while rebuildAtRiskCache is running (its flag): skip, even with a broken cache', () => {
+    assert.match(env.ctx.ensureQuestionCachesWarm(), /^skipped: rebuildAtRiskCache is running/);
+    assert.equal(drive(env), before);
+  });
+  env.clock.t += 7 * MIN;                                     // a killed job never cleared its flag
+  check('a stale job flag (older than the 6-min kill) no longer blocks', () =>
+    assert.match(env.ctx.ensureQuestionCachesWarm(), /^rebuilt \(cache not ready/));
+  const otherJobLock = env.ctx.LockService.getScriptLock();
+  otherJobLock.tryLock(5000); before = drive(env);
+  check('script lock held by another job (the archive): skip the tick', () => {
+    assert.match(env.ctx.ensureQuestionCachesWarm(), /^skipped: another job holds the script lock/);
+    assert.equal(drive(env), before);
   });
   otherJobLock.releaseLock();
-  night.properties.set('qv2_rebuild_pending', JSON.stringify({ at: night.clock.t - 1 * MIN, resource: 'pool_he_B' }));
-  check('a one-shot rebuild already repairing: skip rather than fight it for leases', () => {
-    assert.match(night.ctx.ensureQuestionCachesWarm(), /^skipped: a one-shot rebuild is already repairing/);
-    assert.equal(drive(night), before);
+  env.properties.set('qv2_rebuild_pending', JSON.stringify({ at: env.clock.t - 1 * MIN, resource: 'pool_he_B' }));
+  check('a one-shot rebuild already repairing: skip rather than fight it for leases', () =>
+    assert.match(env.ctx.ensureQuestionCachesWarm(), /^skipped: a one-shot rebuild is already repairing/));
+  env.clock.t += 7 * MIN;
+  check('a stale rebuild flag (older than the 6-min kill) no longer blocks', () =>
+    assert.match(env.ctx.ensureQuestionCachesWarm(), /^(warm|rebuilt)/));
+  check('the nightly jobs raise and clear their running flag', () => {
+    env.ctx.rebuildAtRiskCacheInner = () => { assert.equal(env.ctx.runningJobName(), 'rebuildAtRiskCache'); return { computed: 0 }; };
+    env.ctx.rebuildAtRiskCache();
+    assert.equal(env.ctx.runningJobName(), '', 'cleared afterwards');
   });
-  night.clock.t += 7 * MIN;                                     // flag left behind by a killed rebuild
-  check('a stale rebuild flag (older than the 6-min kill) no longer blocks the repair', () =>
-    assert.match(night.ctx.ensureQuestionCachesWarm(), /^rebuilt \(cache not ready/));
 
   const partialEnv = environment(banks);
   partialEnv.ctx.warmupQuestionCaches();
@@ -669,86 +689,114 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
   check('a PARTIAL warmup does not count as a refresh', () =>
     assert.equal(JSON.parse(partialEnv.properties.get('qv2_warmup_state')).lastCompleteAt, stamped));
 
-  // ---- three days of the real hour timer ----
+  // ---- four days of the real hour timer, for several timer minutes ----
   // Apps Script's hour timer keeps roughly one minute each hour with ±15 min of
-  // drift, and now and then drops a run. The schedule here drifts every tick and
-  // DROPS runs exactly where it hurts most: the 00:00 tick before the 01:00 quiet
-  // hour, the 02:00 tick between the two quiet hours, the 04:00 tick right after
-  // one, and a daytime tick. Requirement: after the first tick the cache is ready
-  // at every tick, no rebuild ever starts at 01:00 or 03:00, and the count stays
-  // sane.
-  // Days are ISRAEL CALENDAR days. (A first version counted days from the
-  // simulation's 04:33 start, which silently put the 02:00 and 04:00 drops on the
-  // SAME night — two dropped runs in a row, beyond the design's assumption; that
-  // case is now its own scenario below.)
-  const ilDate = t => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem' }).format(new Date(t));
-  const simulate = (dropRule, tweak, hours = 96) => {
+  // drift, and now and then drops a run. The minute the timer was created at is
+  // not ours to choose, so the simulation sweeps it — a timer near :00 lands two
+  // consecutive ticks inside one hour, the case that broke the previous design.
+  // The archive runs 01:05–01:10 holding the script lock; the at-risk job runs
+  // 03:02–03:05 with its flag. Days are Israel calendar days.
+  const simulate = ({ timerMinute, dropRule, tweak, days = 4 }) => {
     const e = environment(banks);
     if (tweak) tweak(e.ctx);
+    while (ilMinute(e.clock.t) !== timerMinute) e.clock.t += MIN;
     const base = e.clock.t, dates = [];
-    const out = { cold: [], quietRebuilds: [], rebuilds: 0, ticks: 0, minMarginMin: Infinity, examMorningAges: [] };
+    const out = { cold: [], quietRebuilds: [], examStartRebuilds: [], overlaps: [], rebuilds: 0, ticks: 0, minMarginMin: Infinity, examMorningAges: [] };
     const seenMorning = new Set();
-    for (let h = 0; h < hours; h++) {
+    let jobLock = null;
+    for (let h = 0; h < days * 24; h++) {
       const drift = ((h * 7919) % 31) - 15;                      // deterministic −15..+15 min
       e.clock.t = Math.max(e.clock.t, base + h * HOUR + drift * MIN);
-      const hr = ilHour(e.clock.t), date = ilDate(e.clock.t);
+      const hr = ilHour(e.clock.t), mn = ilMinute(e.clock.t), date = ilDate(e.clock.t);
       if (!dates.includes(date)) dates.push(date);
-      const day = dates.indexOf(date);                           // 0 = the start date
-      if (dropRule(day, hr)) continue;
+      const day = dates.indexOf(date);
+      // A dropped run is ONE scheduled execution that never happened, so drop by
+      // the hour the tick was SCHEDULED for. (Dropping by the hour it landed in
+      // deleted two ticks per "drop" at a :58 timer — a failure the real timer
+      // cannot produce.) Job windows, the exam hour and every decision still use
+      // the landed time.
+      if (dropRule(day, ilHour(base + h * HOUR))) continue;
       out.ticks++;
+      // the nightly jobs, exactly where they run
+      const archiveRunning = hr === 1 && mn >= 5 && mn < 10, atRiskRunning = hr === 3 && mn >= 2 && mn < 5;
+      if (archiveRunning) { jobLock = e.ctx.LockService.getScriptLock(); jobLock.tryLock(1); e.ctx.markJobRunning('archiveOldPendingRows', true); }
+      if (atRiskRunning) e.ctx.markJobRunning('rebuildAtRiskCache', true);
       const st = JSON.parse(e.properties.get('qv2_warmup_state') || '{}');
       if (out.ticks > 1) {
-        if (!e.ctx.questionCacheStatus().ready) out.cold.push('day' + day + ' ' + hr + ':00');
+        if (!e.ctx.questionCacheStatus().ready && !archiveRunning && !atRiskRunning) out.cold.push('day' + day + ' ' + hr + ':' + mn);
         if (st.lastCompleteAt) out.minMarginMin = Math.min(out.minMarginMin, 360 - (e.clock.t - st.lastCompleteAt) / MIN);
       }
-      if (hr === 8 && !seenMorning.has(day) && st.lastCompleteAt) {  // what the 08:30 exams find
+      // What the 08:30 exam wave finds: the cache's age AT 08:30, read at the first
+      // tick after it (no rebuild can have happened in between). Not "a tick in
+      // hour 8" — a :58 timer may land no tick there at all, and that is fine.
+      if (!seenMorning.has(day) && (hr > 8 || (hr === 8 && mn >= 30)) && st.lastCompleteAt) {
         seenMorning.add(day);
-        out.examMorningAges.push(Math.round((e.clock.t - st.lastCompleteAt) / MIN));
+        const at0830 = e.clock.t - ((hr - 8) * 60 + (mn - 30)) * MIN;
+        out.examMorningAges.push(Math.round((at0830 - st.lastCompleteAt) / MIN));
       }
       const result = e.ctx.ensureQuestionCachesWarm();
+      if ((archiveRunning || atRiskRunning) && !/^skipped: (archiveOldPendingRows|rebuildAtRiskCache|another job)/.test(result)) out.overlaps.push('day' + day + ' ' + hr + ':' + mn + ' ' + result.slice(0, 40));
+      if (archiveRunning) { e.ctx.markJobRunning('archiveOldPendingRows', false); jobLock.releaseLock(); }
+      if (atRiskRunning) e.ctx.markJobRunning('rebuildAtRiskCache', false);
       if (/^rebuilt/.test(result)) {
         out.rebuilds++;
-        if ([1, 3].includes(hr)) out.quietRebuilds.push(hr + ':00');
+        if (hr === 8) out.examStartRebuilds.push('day' + day + ' ' + result.slice(0, 40));
       }
     }
     return out;
   };
-  // One dropped run at a time, placed where it hurts most: the 00:00 tick before
-  // the 01:00 quiet hour, the 02:00 tick between the quiet hours, the 04:00 tick
-  // right after one — each on its own night — plus a daytime tick every day.
-  const oneDropAtATime = (day, hr) => (day === 1 && hr === 0) || (day === 2 && hr === 2) || (day === 3 && hr === 4) || hr === 10;
-  const days = simulate(oneDropAtATime);
-  check('4 days, drift and one dropped run at a time: the cache is never found cold', () =>
-    assert.deepEqual(days.cold, [], 'cold at ' + days.cold.join(', ')));
-  check('4 days: at no tick is the cache within 15 minutes of expiring', () =>
-    assert.ok(days.minMarginMin >= 15, 'tightest margin ' + Math.round(days.minMarginMin) + ' min'));
-  check('4 days: no rebuild ever starts during the 01:00 archive or the 03:00 at-risk job', () =>
-    assert.deepEqual(days.quietRebuilds, []));
-  check('4 days: every exam morning finds a cache built within the last 2.5 hours', () => {
-    assert.ok(days.examMorningAges.length >= 3, 'mornings seen: ' + days.examMorningAges.length);
-    assert.ok(days.examMorningAges.every(a => a <= 150), 'ages at the 08:00 tick: ' + days.examMorningAges.join(', '));
-  });
-  check('4 days: rebuilds stay between five and ten a day', () =>
-    assert.ok(days.rebuilds >= 20 && days.rebuilds <= 40, 'rebuilds=' + days.rebuilds + ' over ' + days.ticks + ' ticks'));
+  // One dropped run at a time, where it hurts most: the 00 tick before the 01
+  // job, the 02 tick between the two jobs, the 04 tick after them, the 06
+  // pre-exam tick — each on its own night — plus a daytime tick every day.
+  const oneDropAtATime = (day, hr) => (day === 1 && hr === 0) || (day === 2 && hr === 2) || (day === 3 && (hr === 4 || hr === 6)) || hr === 10;
+  const twoInARow = (day, hr) => day === 1 && (hr === 2 || hr === 4);
+  const TIMER_MINUTES = [5, 33, 52, 58];
+  const sweep = [];
+  for (const timerMinute of TIMER_MINUTES) {
+    const r = simulate({ timerMinute, dropRule: oneDropAtATime });
+    sweep.push({ timerMinute, ...r });
+  }
+  const label = r => 'timer :' + String(r.timerMinute).padStart(2, '0');
+  check('4 days × timer minutes 05/33/52/58, drift and one dropped run at a time: never cold', () =>
+    assert.deepEqual(sweep.filter(r => r.cold.length).map(r => label(r) + ' cold at ' + r.cold.join(', ')), []));
+  check('4 days × timer minutes: at no tick is the cache within 15 minutes of expiring', () =>
+    assert.deepEqual(sweep.filter(r => r.minMarginMin < 15).map(r => label(r) + ' tightest ' + Math.round(r.minMarginMin) + ' min'), []));
+  check('4 days × timer minutes: never runs on top of the archive or the at-risk job', () =>
+    assert.deepEqual(sweep.flatMap(r => r.overlaps.map(o => label(r) + ' ' + o)), []));
+  check('4 days × timer minutes: no rebuild ever starts inside the 08:00 exam start wave', () =>
+    assert.deepEqual(sweep.flatMap(r => r.examStartRebuilds.map(o => label(r) + ' ' + o)), []));
+  check('4 days × timer minutes: every exam morning finds a cache built within the last 2.5 hours', () =>
+    assert.deepEqual(sweep.filter(r => r.examMorningAges.length < 3 || r.examMorningAges.some(a => a > 150)).map(r => label(r) + ' ages ' + r.examMorningAges.join(',')), []));
+  check('4 days × timer minutes: rebuilds stay under twelve a day', () =>
+    assert.deepEqual(sweep.filter(r => r.rebuilds > 48 || r.rebuilds < 16).map(r => label(r) + ' rebuilds=' + r.rebuilds), []));
 
-  // Beyond the design assumption: TWO runs dropped in a row around the 03:00
-  // quiet hour (02:00 and 04:00 on the same night). Not promised a 15-minute
-  // margin — but it must still never go cold.
-  const twoInARow = simulate((day, hr) => day === 1 && (hr === 2 || hr === 4));
-  check('beyond the assumption — two dropped runs in a row across a quiet hour: still never cold', () =>
-    assert.deepEqual(twoInARow.cold, [], 'cold at ' + twoInARow.cold.join(', ') + ' (tightest ' + Math.round(twoInARow.minMarginMin) + ' min)'));
+  // Beyond the design assumption: TWO runs dropped in a row across a nightly job
+  // (02 and 04 on the same night). Not promised a 15-minute margin — but it must
+  // still never go cold, at any timer minute.
+  const beyond = TIMER_MINUTES.map(timerMinute => ({ timerMinute, ...simulate({ timerMinute, dropRule: twoInARow }) }));
+  check('beyond the assumption — two dropped runs in a row across a nightly job: still never cold', () =>
+    assert.deepEqual(beyond.filter(r => r.cold.length).map(r => label(r) + ' cold at ' + r.cold.join(', ')), []));
 
-  // The simulation must be able to FAIL, or "never cold" proves nothing. Two
-  // realistic bugs: no allowance for a dropped run, and a look-ahead that forgets
-  // the quiet hours (the fixed-hours lesson). Each must be caught.
-  const brittle = simulate(oneDropAtATime, ctx => { ctx.WARMUP_ASSUME_MISSED_TICKS = 0; });
-  check('the simulation catches a schedule that cannot survive a dropped run (not vacuous)', () =>
-    assert.ok(brittle.cold.length > 0 || brittle.minMarginMin < 15,
-      'cold=' + brittle.cold.length + ' tightest margin=' + Math.round(brittle.minMarginMin)));
-  const blind = simulate(oneDropAtATime, ctx => { ctx.warmupWorstWaitMs = () => 2 * HOUR + 30 * MIN; });
-  check('the simulation catches a look-ahead that ignores the quiet hours (not vacuous)', () =>
-    assert.ok(blind.cold.length > 0 || blind.minMarginMin < 15,
-      'cold=' + blind.cold.length + ' tightest margin=' + Math.round(blind.minMarginMin)));
+  // The simulation must be able to FAIL, or "never cold" proves nothing. Three
+  // realistic bugs, each of which must be caught at some timer minute:
+  // no allowance for a dropped run; a look-ahead that ignores the hours that may
+  // not refresh; and the previous design's hour-wide blackout.
+  const fails = tweak => TIMER_MINUTES.some(timerMinute => { const r = simulate({ timerMinute, dropRule: oneDropAtATime, tweak }); return r.cold.length > 0 || r.minMarginMin < 15; });
+  check('the sweep catches a look-ahead that only reaches the next tick — no allowance for a dropped run or a late landing (not vacuous)', () =>
+    assert.ok(fails(ctx => {
+      ctx.warmupWorstWaitMs = hour => { let h = hour, steps = 0; do { h = (h + 1) % 24; steps++; } while (!ctx.warmupCanRefreshInHour(h) && steps < 48); return steps * HOUR + 30 * MIN; };
+    })));
+  // (A fixed 150-minute look-ahead is NOT caught — the design carries that much
+  // slack on purpose; a mutation the sweep cannot see is not used as a check.)
+  check('the sweep catches a look-ahead that assumes the very next tick will refresh (not vacuous)', () =>
+    assert.ok(fails(ctx => { ctx.warmupWorstWaitMs = () => 90 * MIN; })));
+  check('the sweep catches the previous design — hour-wide blackouts at 01 and 03 (not vacuous)', () =>
+    assert.ok(fails(ctx => {
+      const real = ctx.ensureQuestionCachesWarm;
+      ctx.ensureQuestionCachesWarm = () => { const h = Number(ctx.Utilities.formatDate(new ctx.Date(), 'Asia/Jerusalem', 'H')); return [1, 3].includes(h) ? 'skipped: hour blackout' : real(); };
+    })));
+  check('the sweep catches the design before this one — 01 and 03 as no-scheduled-refresh hours (not vacuous)', () =>
+    assert.ok(fails(ctx => { ctx.WARMUP_NO_SCHEDULED_REFRESH_HOURS = [1, 3, 8]; })));
 }
 {
   const env = environment(banks);
