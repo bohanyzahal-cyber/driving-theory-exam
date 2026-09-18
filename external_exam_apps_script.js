@@ -1657,6 +1657,7 @@ function _normalizeNameForHideList(s) {
 }
 
 function handleListActiveExaminers(p) {
+  diagMark('sheet:examiners-list');   // 17/09: 196s for this one small read
   var sheet = getSheet('בוחנים');
   var data = sheet.getDataRange().getValues();
   var hideSet = {};
@@ -2468,6 +2469,10 @@ function handleGetExamStatus(p) {
   if (!p.sessionCode || !p.idNumber) return jsonResponse({ status: 'error', message: 'חסר מזהה' });
   var rlErr = requireRateLimit('getExamStatus', String(p.sessionCode || '') + '_' + normalizeId(p.idNumber), 60, 60);
   if (rlErr) return rlErr;
+  // 17/09/2026: one of these polls ran 354s and was killed, others 58-93s, with
+  // nothing here but a 1000-row tail read and a small extensions read. Marks
+  // (free under 8s) so the next stall says WHERE — spreadsheet, cache or before.
+  diagMark('sheet:pending-status');
   var data = readPendingTail().rows;   // read-only: no row-index writes here
   for (var i = data.length - 1; i >= 1; i--) {
     if (String(data[i][0]).trim() === String(p.sessionCode).trim() && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
@@ -2490,6 +2495,7 @@ function handleGetExamStatus(p) {
 // Examiner-authenticated only (mirrors handleDisqualify path A).
 function sumExtraMinutes(sessionCode, idNumber) {
   try {
+    diagMark('sheet:extensions-status');   // a second spreadsheet round-trip on EVERY exam-status poll
     var d = getSheet('הארכות זמן').getDataRange().getValues();
     var total = 0;
     for (var i = 1; i < d.length; i++) {
@@ -8533,8 +8539,14 @@ function handleTeacherClassDetails(p) {
   }
 
   // Get practice results for these students
+  // 17/09/2026: this ran 13 times in the exam window (19-32s each) — every call
+  // is a full read of the 107k-row practice sheet, and it uses the JSON columns
+  // so neither a date bound nor column pruning applies. Marked so its share of
+  // the contention on the shared spreadsheet is measured, not assumed.
+  diagMark('sheet:practice-class');
   var resSheet = getSheet('תוצאות תרגול');
   var resData = resSheet.getDataRange().getValues();
+  diagMark('sheet:practice-class-done');
   var studentResults = {};
   for (var r = 1; r < resData.length; r++) {
     var rSid = String(resData[r][1]).trim();
