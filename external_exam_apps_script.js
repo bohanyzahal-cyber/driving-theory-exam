@@ -160,6 +160,52 @@ function readTail(sheet, tsColIdx) {
 function readPendingTail() { return readTail(getSheet('ממתינים'), 4); }   // col E = זמן הרשמה
 function readResultsTail() { return readTail(getSheet('תוצאות'), 0); }    // col A = תאריך
 
+// ---- Per-session snapshot of 'ממתינים' for the two read-only pollers (r23) ----
+// checkApproval and getExamStatus are the most frequent requests of an exam
+// morning (every waiting phone every 5-20 s, every phone in the exam every
+// 10-20 s), and each paid a tail read of 'ממתינים' — three Sheets round trips.
+// On 17/09 the stalls were single Sheets calls hanging ~93 s, about one call in
+// a hundred; every round trip removed is a lottery ticket not bought. A
+// session's rows are cached for PENDING_SNAPSHOT_SEC (a status can reach the
+// phone that much later — under one poll interval). The writes an examinee
+// waits for (register, approve, reject, reset) drop the snapshot, and a row
+// missing from a cached snapshot is re-read from the sheet before "not found"
+// is answered: the examinee page treats "not found" on reload as a dead
+// registration and sends the soldier back to the code screen.
+// The examiner dashboard keeps reading the sheet itself: it writes by row index.
+var PENDING_SNAPSHOT_SEC = 4;
+var PENDING_SNAPSHOT_PREFIX = 'pendsnap_';
+function pendingSnapshotKey(sessionCode) {
+  return QUESTION_CACHE_PREFIX + PENDING_SNAPSHOT_PREFIX + String(sessionCode || '').trim();
+}
+// Returns { rows, cached }. rows[0] is a header placeholder so the callers'
+// `i >= 1` loops stay exactly as they were.
+function pendingRowsForSession(sessionCode, fresh) {
+  var key = pendingSnapshotKey(sessionCode), cache = null;
+  if (!fresh) {
+    try {
+      cache = CacheService.getScriptCache();
+      var hit = cache.get(key);
+      if (hit) {
+        var parsed = JSON.parse(hit);
+        if (parsed && parsed.length) return { rows: [[]].concat(parsed), cached: true };
+      }
+    } catch (eGet) { cache = null; }
+  }
+  var all = readPendingTail().rows, mine = [], want = String(sessionCode || '').trim();
+  for (var i = 1; i < all.length; i++) {
+    if (String(all[i][0]).trim() === want) mine.push(all[i]);
+  }
+  try {
+    if (!cache) cache = CacheService.getScriptCache();
+    cache.put(key, JSON.stringify(mine), PENDING_SNAPSHOT_SEC);
+  } catch (ePut) {}
+  return { rows: [[]].concat(mine), cached: false };
+}
+function invalidatePendingSnapshot(sessionCode) {
+  try { CacheService.getScriptCache().remove(pendingSnapshotKey(sessionCode)); } catch (e) {}
+}
+
 // r16: read only the rows a date-bounded caller can use.
 // Every heavy aggregation skips rows older than some lower bound - the commander
 // dashboard ignores results before prevFrom and practice rows more than 30 days
@@ -402,22 +448,33 @@ function generateToken() {
   return (Utilities.getUuid() + Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
 }
 
+// r23: a valid verdict is cached for TOKEN_VERDICT_CACHE_SEC. Every examiner
+// poll (2-5 s) used to re-read the whole 'בוחנים' sheet just to check a token
+// that had been valid a few seconds earlier. Only positives are cached: a token
+// that was just created must be usable at once, and one that was evicted or
+// expired may linger for at most a minute.
+var TOKEN_VERDICT_CACHE_SEC = 60;
 function verifyToken(examinerId, token) {
   if (!examinerId || !token) return false;
+  var key = QUESTION_CACHE_PREFIX + 'tok_' + normalizeId(examinerId) + '_' + String(token).slice(0, 80), cache = null;
+  try { cache = CacheService.getScriptCache(); if (cache.get(key) === '1') return true; } catch (eGet) { cache = null; }
   var sheet = getSheet('בוחנים');
   var data = sheet.getDataRange().getValues();
+  var valid = false;
   for (var i = 1; i < data.length; i++) {
     if (normalizeId(data[i][1]) === normalizeId(examinerId)) {
       var storedTokens = String(data[i][6] || '').split(',');
       var expiry = data[i][7];
-      if (storedTokens.indexOf(token) === -1) return false;
-      if (!expiry) return false;
+      if (storedTokens.indexOf(token) === -1) break;
+      if (!expiry) break;
       var expiryDate = expiry instanceof Date ? expiry : new Date(expiry);
-      if (new Date() > expiryDate) return false;
-      return true;
+      if (new Date() > expiryDate) break;
+      valid = true;
+      break;
     }
   }
-  return false;
+  if (valid) { try { if (!cache) cache = CacheService.getScriptCache(); cache.put(key, '1', TOKEN_VERDICT_CACHE_SEC); } catch (ePut) {} }
+  return valid;
 }
 
 function requireToken(p) {
@@ -671,7 +728,7 @@ function todayStr() {
 }
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-19-r22';
+var THEORY_API_BUILD = '2026-09-19-r23';
 var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
 
 function logTheoryApiTiming(phase, method, action, startedAt) {
@@ -1989,6 +2046,7 @@ function handleRegisterExaminee(p) {
     '',                       // Q (16): אזהרה אחרונה — נכתב ע"י warning
     p.site || ''              // R (17): אתר — האתר שהנבחן בחר (מארח/אורח), לתצוגה חיה לבוחן
   ]);
+  invalidatePendingSnapshot(p.sessionCode);   // r23: the first poll must find the new row
   return jsonResponse({ status: 'ok', examineeToken: examineeToken });
 }
 
@@ -2020,7 +2078,16 @@ function handleCheckApproval(p) {
   var rlErr = requireRateLimit('checkApproval', String(p.sessionCode || '') + '_' + normalizeId(p.idNumber), 60, 60);
   if (rlErr) return rlErr;
   var BASE_EXAM_MINUTES = 40;
-  var data = readPendingTail().rows;   // read-only: no row-index writes here
+  // r23: served from the per-session snapshot (pendingRowsForSession); a row
+  // missing from a cached snapshot is re-read from the sheet before "not found".
+  var snap = pendingRowsForSession(p.sessionCode);
+  var found = scanApprovalRows(snap.rows, p, BASE_EXAM_MINUTES);
+  if (!found && snap.cached) found = scanApprovalRows(pendingRowsForSession(p.sessionCode, true).rows, p, BASE_EXAM_MINUTES);
+  return found || jsonResponse({ status: 'error', message: 'לא נמצא רישום' });
+}
+
+// The scan handleCheckApproval used to run inline — unchanged; null = no active row.
+function scanApprovalRows(data, p, BASE_EXAM_MINUTES) {
   for (var i = data.length - 1; i >= 1; i--) {
     if (String(data[i][0]).trim() === String(p.sessionCode).trim() && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
       var approval = String(data[i][5] || 'waiting').trim();
@@ -2064,7 +2131,7 @@ function handleCheckApproval(p) {
       return jsonResponse(response);
     }
   }
-  return jsonResponse({ status: 'error', message: 'לא נמצא רישום' });
+  return null;
 }
 
 function handleApproveExaminee(p) {
@@ -2092,6 +2159,7 @@ function handleApproveExaminee(p) {
       if (timeExt) sheet.getRange(i + 1, 11).setValue(timeExt);  // column K = הארכת זמן
       if (audioMode) sheet.getRange(i + 1, 10).setValue(audioMode);  // column J = שמע
       SpreadsheetApp.flush();
+      invalidatePendingSnapshot(p.sessionCode);   // r23
       return jsonResponse({ status: 'ok' });
     }
   }
@@ -2117,6 +2185,7 @@ function handleRejectExaminee(p) {
     if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber) && String(data[i][5]).trim() === 'waiting') {
       sheet.getRange(i + 1, 6).setValue('rejected');
       SpreadsheetApp.flush();
+      invalidatePendingSnapshot(p.sessionCode);   // r23
       return jsonResponse({ status: 'ok' });
     }
   }
@@ -2173,14 +2242,7 @@ function handleExaminerDashboard(p) {
   // Sum of mid-exam time grants per examinee (minutes) — extends the stale/timeout
   // threshold below and is shown as a badge in the active list. One read, by id.
   var extraMinById = {};
-  try {
-    var extData = getSheet('הארכות זמן').getDataRange().getValues();
-    for (var exr = 1; exr < extData.length; exr++) {
-      if (String(extData[exr][1]).trim() !== code) continue;
-      var exk = normalizeId(extData[exr][2]);
-      extraMinById[exk] = (extraMinById[exk] || 0) + (Number(extData[exr][4]) || 0);
-    }
-  } catch (e) {}
+  try { extraMinById = extraMinutesBySession(code); } catch (e) {}   // r23: cached 30 s, dropped by addExamTime
 
   // ---- Pre-built indexes (perf) ----------------------------------------------
   // handleExaminerDashboard runs every 5s per examiner. The old code re-scanned
@@ -2508,7 +2570,14 @@ function handleGetExamStatus(p) {
   // nothing here but a 1000-row tail read and a small extensions read. Marks
   // (free under 8s) so the next stall says WHERE — spreadsheet, cache or before.
   diagMark('sheet:pending-status');
-  var data = readPendingTail().rows;   // read-only: no row-index writes here
+  // r23: per-session snapshot, see pendingRowsForSession; a missing row is re-read
+  var snap = pendingRowsForSession(p.sessionCode);
+  var found = scanExamStatusRows(snap.rows, p);
+  if (!found && snap.cached) found = scanExamStatusRows(pendingRowsForSession(p.sessionCode, true).rows, p);
+  return found || jsonResponse({ status: 'ok', examStatus: 'not_found' });
+}
+
+function scanExamStatusRows(data, p) {
   for (var i = data.length - 1; i >= 1; i--) {
     if (String(data[i][0]).trim() === String(p.sessionCode).trim() && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
       var storedToken = String((data[i].length > 12 ? data[i][12] : '') || '').trim();
@@ -2518,7 +2587,7 @@ function handleGetExamStatus(p) {
       return jsonResponse({ status: 'ok', examStatus: String(data[i][5] || '').trim(), extraMinutes: sumExtraMinutes(p.sessionCode, p.idNumber) });
     }
   }
-  return jsonResponse({ status: 'ok', examStatus: 'not_found' });
+  return null;
 }
 
 // ===== Mid-exam time addition (security evacuation / technical / medical) =====
@@ -2528,18 +2597,30 @@ function handleGetExamStatus(p) {
 //   - the examinee extends examDeadline (idempotently: start + base + sum)
 //   - the dashboard pushes back the stale/timeout-fail threshold by the same sum
 // Examiner-authenticated only (mirrors handleDisqualify path A).
+// r23: the grants of a session are read once per EXTRA_MINUTES_CACHE_SEC and
+// served to every getExamStatus poll and every dashboard poll from the cache;
+// handleAddExamTime drops the entry, so a new grant is visible at once.
+var EXTRA_MINUTES_CACHE_SEC = 30;
+function extraMinutesKey(sessionCode) { return QUESTION_CACHE_PREFIX + 'extmin_' + String(sessionCode || '').trim(); }
+// { normalizedId: minutes } for one session
+function extraMinutesBySession(sessionCode) {
+  var key = extraMinutesKey(sessionCode), cache = null;
+  try { cache = CacheService.getScriptCache(); var hit = cache.get(key); if (hit) return JSON.parse(hit); } catch (eGet) { cache = null; }
+  diagMark('sheet:extensions');
+  var d = getSheet('הארכות זמן').getDataRange().getValues(), map = {}, want = String(sessionCode || '').trim();
+  for (var i = 1; i < d.length; i++) {
+    if (String(d[i][1]).trim() !== want) continue;
+    var k = normalizeId(d[i][2]);
+    map[k] = (map[k] || 0) + (Number(d[i][4]) || 0);
+  }
+  try { if (!cache) cache = CacheService.getScriptCache(); cache.put(key, JSON.stringify(map), EXTRA_MINUTES_CACHE_SEC); } catch (ePut) {}
+  return map;
+}
+function invalidateExtraMinutes(sessionCode) {
+  try { CacheService.getScriptCache().remove(extraMinutesKey(sessionCode)); } catch (e) {}
+}
 function sumExtraMinutes(sessionCode, idNumber) {
-  try {
-    diagMark('sheet:extensions-status');   // a second spreadsheet round-trip on EVERY exam-status poll
-    var d = getSheet('הארכות זמן').getDataRange().getValues();
-    var total = 0;
-    for (var i = 1; i < d.length; i++) {
-      if (String(d[i][1]).trim() === String(sessionCode).trim() && normalizeId(d[i][2]) === normalizeId(idNumber)) {
-        total += Number(d[i][4]) || 0;
-      }
-    }
-    return total;
-  } catch (e) { return 0; }
+  try { return extraMinutesBySession(sessionCode)[normalizeId(idNumber)] || 0; } catch (e) { return 0; }
 }
 
 function handleAddExamTime(p) {
@@ -2580,6 +2661,7 @@ function handleAddExamTime(p) {
   } catch (e) {}
 
   getSheet('הארכות זמן').appendRow([new Date(), p.sessionCode, p.idNumber, name, minutes, reason, examinerName]);
+  invalidateExtraMinutes(p.sessionCode);   // r23: the next status poll must see the grant
 
   return jsonResponse({ status: 'ok', addedMinutes: minutes, totalExtraMinutes: sumExtraMinutes(p.sessionCode, p.idNumber) });
 }
@@ -2820,6 +2902,7 @@ function handleResetExaminee(p) {
     return jsonResponse({ status: 'error', message: 'לא נמצא נבחן פעיל לאיפוס' });
   }
   SpreadsheetApp.flush();
+  invalidatePendingSnapshot(p.sessionCode);   // r23
   return jsonResponse({ status: 'ok', resetCount: resetCount });
 }
 

@@ -68,6 +68,7 @@ function environment(banks) {
         const self = this;
         return {
           setValues() {}, setFontWeight() {},
+          setValue(v) { const r = self.rows[startRow - 1]; if (r) r[startCol - 1] = v; return this; },
           getValues() {
             const out = self.rows.slice(startRow - 1, startRow - 1 + (numRows || 1)).map(r => (r || []).slice(startCol - 1, startCol - 1 + (numCols || 1)));
             self.cellsRead += out.length * (numCols || 1);   // what the read actually costs
@@ -116,7 +117,7 @@ function environment(banks) {
       getProjectTriggers: () => triggers.slice(),
       deleteTrigger: t => { const i = triggers.indexOf(t); if (i >= 0) triggers.splice(i, 1); }
     },
-    SpreadsheetApp: { getActiveSpreadsheet: () => ({ getSheetByName: n => sheets.get(n) || null, insertSheet: n => sheet(n) }) },
+    SpreadsheetApp: { flush() {}, getActiveSpreadsheet: () => ({ getSheetByName: n => sheets.get(n) || null, insertSheet: n => sheet(n) }) },
     ContentService: { MimeType: { JSON: 'application/json' }, createTextOutput: s => ({ _s: s, setMimeType() { return this; }, getContent() { return this._s; } }) },
     MimeType: { JSON: 'application/json' }
   };
@@ -334,6 +335,85 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
     check('readTail marks the read mode it used', () => assert.match(env.ctx.DIAG_EXEC.notes.join(' '), /tail:small\/\d+/));
     env.ctx.DIAG_EXEC = null;
   }
+}
+
+// ---- 6c. r23: the small reads every poll paid, now cached ----------------------
+// The two examinee pollers paid a tail read of 'ממתינים' each, every examiner
+// poll re-read 'בוחנים' to verify its token, and getExamStatus re-read
+// 'הארכות זמן'. On 17/09 the stalls were single Sheets calls hanging ~93 s, about
+// one call in a hundred — every round trip removed is a ticket not bought. The
+// caches must never answer "not found" from a stale snapshot, and the writes an
+// examinee waits for must drop the snapshot.
+{
+  const env = environment(banks);
+  const pend = env.sheet('ממתינים');
+  pend.appendRow(['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסייה', 'דרגה', 'שמע', 'הארכה', 'התחלה', 'טוקן']);
+  pend.appendRow(['S1', '111111111', 'א', '', '2026-09-19T05:00:00.000Z', 'waiting', 'he', '', 'B', 'off', '', '', '']);
+  pend.appendRow(['S1', '222222222', 'ב', '', '2026-09-19T05:00:00.000Z', 'in_exam', 'he', '', 'B', 'off', '', '', '']);
+  pend.appendRow(['S2', '333333333', 'ג', '', '2026-09-19T05:00:00.000Z', 'waiting', 'he', '', 'B', 'off', '', '', '']);
+  const ext = env.sheet('הארכות זמן');
+  ext.appendRow(['תאריך', 'קוד סשן', 'ת.ז.', 'שם', 'דקות', 'סיבה', 'בוחן']);
+  ext.appendRow([new Date(env.clock.t), 'S1', '222222222', 'ב', 10, 'טכני', 'בוחן']);
+  const examiners = env.sheet('בוחנים');
+  examiners.appendRow(['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'מספר', 'תפקיד', 'טוקנים', 'תוקף']);
+  examiners.appendRow(['בוחן', '900000001', '', 'כן', '7', 'בוחן', 'tokA,tokB', new Date(env.clock.t + 86400000).toISOString()]);
+  const approval = id => env.json(env.ctx.handleCheckApproval({ sessionCode: 'S1', idNumber: id }));
+  const status = id => env.json(env.ctx.handleGetExamStatus({ sessionCode: 'S1', idNumber: id }));
+  const extReads0 = ext.fullReads;   // the very first status poll below reads the grants once; nothing after it should
+
+  let reads = pend.fullReads;
+  const a1 = approval('111111111'), a2 = approval('111111111'), s1 = status('222222222');
+  check('r23: consecutive pollers of one session share one read of ממתינים', () => {
+    assert.equal(a1.approval, 'waiting'); assert.equal(a2.approval, 'waiting'); assert.equal(s1.examStatus, 'in_exam');
+    assert.equal(pend.fullReads - reads, 1);
+  });
+  check('r23: the snapshot is per session', () => {
+    assert.equal(env.json(env.ctx.handleCheckApproval({ sessionCode: 'S2', idNumber: '333333333' })).approval, 'waiting');
+  });
+  // a stale snapshot must never produce "not found": plant one without the new row
+  env.cache.put('qv2_pendsnap_S1', JSON.stringify([['S1', '111111111', 'א', '', '', 'waiting', 'he', '', 'B', 'off', '', '', '']]), 4);
+  pend.appendRow(['S1', '444444444', 'ד', '', '2026-09-19T05:10:00.000Z', 'waiting', 'he', '', 'B', 'off', '', '', '']);
+  reads = pend.fullReads;
+  const fresh = approval('444444444');
+  check('r23: a row missing from the snapshot is re-read from the sheet, never answered "not found"', () => {
+    assert.equal(fresh.approval, 'waiting'); assert.equal(pend.fullReads - reads, 1);
+  });
+  check('r23: a truly unknown examinee still gets "not found"', () => assert.equal(approval('555555555').status, 'error'));
+  env.ctx.verifyExaminerForSession = () => true;
+  env.json(env.ctx.handleApproveExaminee({ sessionCode: 'S1', idNumber: '111111111' }));
+  check('r23: approval is visible on the very next poll — the write dropped the snapshot', () => assert.equal(approval('111111111').approval, 'approved'));
+  const reg = env.json(env.ctx.handleRegisterExaminee({ sessionCode: 'S1', idNumber: '666666666', fullName: 'ו', license: 'B' }));
+  check('r23: a fresh registration is found on its first poll', () => {
+    assert.equal(reg.status, 'ok'); assert.equal(approval('666666666').approval, 'waiting');
+  });
+  approval('111111111'); reads = pend.fullReads; env.clock.t += 5000; approval('111111111');
+  check('r23: after 4 s the snapshot expires and the sheet is read again', () => assert.equal(pend.fullReads - reads, 1));
+
+  const e1 = status('222222222'), e2 = status('222222222');
+  check('r23: extra minutes come from a 30 s per-session cache', () => {
+    assert.equal(e1.extraMinutes, 10); assert.equal(e2.extraMinutes, 10); assert.equal(ext.fullReads - extReads0, 1);
+  });
+  const realVerifyToken = env.ctx.verifyToken;
+  env.ctx.verifyToken = () => true;
+  const added = env.json(env.ctx.handleAddExamTime({ sessionCode: 'S1', idNumber: '222222222', examinerId: '900000001', token: 'x', minutes: 5, reason: 'רפואי' }));
+  check('r23: addExamTime drops the cache — the new total is visible at once', () => {
+    assert.equal(added.status, 'ok'); assert.equal(added.totalExtraMinutes, 15);
+    assert.equal(status('222222222').extraMinutes, 15);
+  });
+  env.ctx.verifyToken = realVerifyToken;
+
+  reads = examiners.fullReads;
+  const v1 = env.ctx.verifyToken('900000001', 'tokA'), v2 = env.ctx.verifyToken('900000001', 'tokA');
+  check('r23: a valid examiner token is verified once a minute, not once a poll', () => {
+    assert.equal(v1, true); assert.equal(v2, true); assert.equal(examiners.fullReads - reads, 1);
+  });
+  reads = examiners.fullReads;
+  const bad1 = env.ctx.verifyToken('900000001', 'nope'), bad2 = env.ctx.verifyToken('900000001', 'nope');
+  check('r23: an invalid token is never cached', () => {
+    assert.equal(bad1, false); assert.equal(bad2, false); assert.equal(examiners.fullReads - reads, 2);
+  });
+  env.clock.t += 61000; reads = examiners.fullReads; env.ctx.verifyToken('900000001', 'tokA');
+  check('r23: after 60 s the verdict is re-read', () => assert.equal(examiners.fullReads - reads, 1));
 }
 
 // ---- 6b. result submission must not touch Drive -----------------------------
