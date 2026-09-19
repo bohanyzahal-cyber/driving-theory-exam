@@ -83,8 +83,55 @@ function getSpreadsheet() {
   return _spreadsheetHandle;
 }
 
+// ---- Practice/teacher data lives in its OWN spreadsheet (r24, review B1) ----
+// Teachers' class details were full reads of a 107,900-row sheet on the very
+// document the exam pollers read and write, and a practice evening alone
+// reached the platform's rejection threshold (16/09 19:46, 98 executions alive).
+// The document is the unit of contention, so the seven practice/teacher sheets
+// move to a second spreadsheet whose id is kept in the Script Property
+// PRACTICE_SPREADSHEET_ID. Until that property is set (migratePracticeSpreadsheet
+// sets it after a verified copy) everything still comes from the active
+// spreadsheet — this code is safe to deploy before migrating, and
+// rollbackPracticeSpreadsheet() points everything back.
+var PRACTICE_SPREADSHEET_PROPERTY = 'PRACTICE_SPREADSHEET_ID';
+var PRACTICE_MIGRATING_PROPERTY = 'PRACTICE_MIGRATING';
+var PRACTICE_SHEET_NAMES = ['תוצאות תרגול', 'כיתות', 'תלמידי כיתות', 'מורים', 'התקדמות תלמידים', 'כיתות שנמחקו', 'חיזוי סיכון'];
+var PRACTICE_RETIRED_PREFIX = '_migrated_';
+function isPracticeSheetName(name) { return PRACTICE_SHEET_NAMES.indexOf(String(name || '')) >= 0; }
+var _practiceHandle = null, _practiceIdChecked = false, _practiceId = '';
+function getPracticeSpreadsheetId() {
+  if (!_practiceIdChecked) {
+    _practiceIdChecked = true;
+    try { _practiceId = String(PropertiesService.getScriptProperties().getProperty(PRACTICE_SPREADSHEET_PROPERTY) || '').trim(); }
+    catch (e) { _practiceId = ''; }
+  }
+  return _practiceId;
+}
+function getPracticeSpreadsheet() {
+  var id = getPracticeSpreadsheetId();
+  if (!id) return getSpreadsheet();
+  if (!_practiceHandle) {
+    _practiceHandle = SpreadsheetApp.openById(id);
+    diagMark('ss:open-practice');
+  }
+  return _practiceHandle;
+}
+function spreadsheetFor(name) {
+  return isPracticeSheetName(name) ? getPracticeSpreadsheet() : getSpreadsheet();
+}
+// While migratePracticeSpreadsheet copies the sheets, a practice write would land
+// in the old document and be lost; the practice/teacher write handlers answer a
+// retryable maintenance error for the minutes the copy takes.
+function practiceWriteGuard() {
+  try {
+    if (String(PropertiesService.getScriptProperties().getProperty(PRACTICE_MIGRATING_PROPERTY) || '') !== '1') return null;
+  } catch (e) { return null; }
+  return jsonResponse({ status: 'error', code: 'practice_maintenance', retryable: true, waitSec: 60,
+    message: 'מערכת התרגול בתחזוקה של כמה דקות — נסה שוב בעוד דקה.' });
+}
+
 function getSheet(name) {
-  var ss = getSpreadsheet();
+  var ss = spreadsheetFor(name);
   var sheet = ss.getSheetByName(name);
   if (!sheet) {
     sheet = ss.insertSheet(name);
@@ -98,7 +145,145 @@ function getSheet(name) {
 }
 
 function getSheetIfExists(name) {
-  return getSpreadsheet().getSheetByName(name);
+  return spreadsheetFor(name).getSheetByName(name);
+}
+
+// ---- Migration: run from the editor, in this order, see docs/OPERATIONS.md ----
+// practiceMigrationPreflight  (read-only; also triggers the one-time permission prompt)
+// migratePracticeSpreadsheet  (at a quiet hour; copies, verifies, cuts over; resumable)
+// verifyPracticeMigration     (right after; every sheet must say ok)
+// retirePracticeSheetsFromExamSpreadsheet (a day later: renames the old copies away)
+// rollbackPracticeSpreadsheet (any time: points everything back to the exam spreadsheet)
+function practiceMigrationPreflight() {
+  var src = getSpreadsheet(), lines = [], id = getPracticeSpreadsheetId(), migrating = '';
+  try { migrating = String(PropertiesService.getScriptProperties().getProperty(PRACTICE_MIGRATING_PROPERTY) || ''); } catch (e) {}
+  lines.push('practice spreadsheet id: ' + (id || '(not set — the practice sheets still live in the exam spreadsheet)'));
+  lines.push('migrating flag: ' + (migrating === '1' ? 'ON (practice writes are being refused)' : 'off'));
+  for (var i = 0; i < PRACTICE_SHEET_NAMES.length; i++) {
+    var s = src.getSheetByName(PRACTICE_SHEET_NAMES[i]);
+    lines.push(PRACTICE_SHEET_NAMES[i] + ': ' + (s ? s.getLastRow() + ' rows × ' + s.getLastColumn() + ' cols' : 'missing in the exam spreadsheet'));
+  }
+  var refs = practiceCrossReferences(src);
+  lines.push(refs.length ? 'CROSS-SHEET FORMULAS — handle these before migrating: ' + refs.join('; ')
+    : 'no formulas reference sheets across the practice/exam boundary');
+  var out = lines.join('\n'); Logger.log(out); return out;
+}
+// Formulas in exam sheets that name a practice sheet (or the reverse) would break
+// once the sheets live in different files. Sheets above 20,000 rows are not
+// scanned (the practice results are script-written rows, never formulas).
+function practiceCrossReferences(ss) {
+  var refs = [], sheets = ss.getSheets(), examNames = [];
+  for (var key in SHEET_HEADERS) { if (Object.prototype.hasOwnProperty.call(SHEET_HEADERS, key) && !isPracticeSheetName(key)) examNames.push(key); }
+  examNames.push(DIAG_SHEET);
+  for (var i = 0; i < sheets.length; i++) {
+    var sh = sheets[i], name = sh.getName(), lookFor = isPracticeSheetName(name) ? examNames : PRACTICE_SHEET_NAMES;
+    if (sh.getLastRow() < 1 || sh.getLastColumn() < 1) continue;
+    if (sh.getLastRow() > 20000) { refs.push(name + ': not scanned (' + sh.getLastRow() + ' rows)'); continue; }
+    var formulas = sh.getDataRange().getFormulas();
+    for (var r = 0; r < formulas.length && refs.length < 30; r++) {
+      for (var c = 0; c < formulas[r].length; c++) {
+        var f = formulas[r][c]; if (!f) continue;
+        for (var k = 0; k < lookFor.length; k++) {
+          if (f.indexOf(lookFor[k]) >= 0) { refs.push(name + '!R' + (r + 1) + 'C' + (c + 1) + ' → ' + lookFor[k]); break; }
+        }
+      }
+    }
+  }
+  return refs;
+}
+function migratePracticeSpreadsheet() {
+  var props = PropertiesService.getScriptProperties(), lines = [];
+  if (getPracticeSpreadsheetId()) return 'already migrated to ' + getPracticeSpreadsheetId() + ' — run verifyPracticeMigration; rollbackPracticeSpreadsheet undoes it';
+  var src = getSpreadsheet(), pendingKey = PRACTICE_SPREADSHEET_PROPERTY + '_PENDING';
+  var pendingId = String(props.getProperty(pendingKey) || '').trim(), target = null;
+  if (pendingId) {
+    try { target = SpreadsheetApp.openById(pendingId); lines.push('resuming into ' + pendingId); } catch (eOpen) { target = null; }
+  }
+  if (!target) {
+    target = SpreadsheetApp.create('תרגול ומורים — נתונים (מ-' + Utilities.formatDate(new Date(), 'Asia/Jerusalem', 'yyyy-MM-dd') + ')');
+    props.setProperty(pendingKey, target.getId());
+    lines.push('created ' + target.getUrl());
+  }
+  props.setProperty(PRACTICE_MIGRATING_PROPERTY, '1');
+  var ok = true;
+  try {
+    for (var i = 0; i < PRACTICE_SHEET_NAMES.length; i++) {
+      var name = PRACTICE_SHEET_NAMES[i], s = src.getSheetByName(name);
+      if (!s) { lines.push(name + ': not in the exam spreadsheet, skipped'); continue; }
+      var existing = target.getSheetByName(name);
+      if (existing && existing.getLastRow() === s.getLastRow()) { lines.push(name + ': already copied (' + s.getLastRow() + ' rows)'); continue; }
+      if (existing) { target.deleteSheet(existing); lines.push(name + ': incomplete copy removed'); }
+      var t0 = Date.now();
+      var copy = s.copyTo(target);
+      copy.setName(name);
+      var rowsSrc = s.getLastRow(), rowsDst = copy.getLastRow();
+      lines.push(name + ': copied ' + rowsDst + '/' + rowsSrc + ' rows in ' + (Date.now() - t0) + ' ms');
+      if (rowsDst !== rowsSrc) ok = false;
+    }
+    var sheets = target.getSheets();
+    if (sheets.length > 1) {
+      for (var j = 0; j < sheets.length; j++) {
+        if (!isPracticeSheetName(sheets[j].getName()) && sheets[j].getLastRow() <= 1) { target.deleteSheet(sheets[j]); lines.push('removed the empty default sheet'); break; }
+      }
+    }
+  } catch (e) { ok = false; lines.push('ERROR: ' + (e && e.message ? e.message : e)); }
+  if (ok) {
+    props.setProperty(PRACTICE_SPREADSHEET_PROPERTY, target.getId());
+    props.deleteProperty(pendingKey);
+    lines.push('CUT OVER: practice/teacher sheets are now served from ' + target.getUrl());
+  } else {
+    lines.push('NOT cut over — fix the errors above and run again (it resumes where it stopped)');
+  }
+  props.deleteProperty(PRACTICE_MIGRATING_PROPERTY);
+  _practiceIdChecked = false; _practiceHandle = null;
+  var out = lines.join('\n'); Logger.log(out); return out;
+}
+function verifyPracticeMigration() {
+  var id = getPracticeSpreadsheetId();
+  if (!id) return 'not migrated: PRACTICE_SPREADSHEET_ID is not set';
+  var src = getSpreadsheet(), dst = SpreadsheetApp.openById(id), lines = ['practice spreadsheet: ' + dst.getUrl()], bad = 0;
+  for (var i = 0; i < PRACTICE_SHEET_NAMES.length; i++) {
+    var name = PRACTICE_SHEET_NAMES[i], s = src.getSheetByName(name), d = dst.getSheetByName(name);
+    if (!s) { lines.push(name + ': ' + (d ? 'only in the new spreadsheet (' + d.getLastRow() + ' rows)' : 'in neither')); continue; }
+    if (!d) { bad++; lines.push(name + ': MISSING in the new spreadsheet'); continue; }
+    var rs = s.getLastRow(), rd = d.getLastRow(), same = rs === rd;
+    if (same && rs > 0) {
+      var lastS = JSON.stringify(s.getRange(rs, 1, 1, s.getLastColumn()).getValues()[0]);
+      var lastD = JSON.stringify(d.getRange(rd, 1, 1, d.getLastColumn()).getValues()[0]);
+      same = lastS === lastD;
+    }
+    if (!same) bad++;
+    lines.push(name + ': ' + (same ? 'ok' : 'MISMATCH') + ' (exam copy ' + rs + ' rows, new ' + rd + ' rows)');
+  }
+  lines.push(bad ? 'MISMATCHES: ' + bad + ' — expected only if practice traffic already wrote to the new spreadsheet' : 'ALL OK');
+  var out = lines.join('\n'); Logger.log(out); return out;
+}
+function retirePracticeSheetsFromExamSpreadsheet() {
+  var id = getPracticeSpreadsheetId();
+  if (!id) return 'not migrated — nothing to retire';
+  var src = getSpreadsheet(), dst = SpreadsheetApp.openById(id), lines = [], renamed = 0;
+  for (var i = 0; i < PRACTICE_SHEET_NAMES.length; i++) {
+    var name = PRACTICE_SHEET_NAMES[i], s = src.getSheetByName(name);
+    if (!s) continue;
+    if (!dst.getSheetByName(name)) { lines.push(name + ': kept — the new spreadsheet has no such sheet'); continue; }
+    s.setName(PRACTICE_RETIRED_PREFIX + name); renamed++;
+    lines.push(name + ': renamed to ' + PRACTICE_RETIRED_PREFIX + name);
+  }
+  lines.push(renamed + ' sheet(s) renamed; delete them by hand once a week of practice has run cleanly — that is when the exam spreadsheet actually shrinks');
+  var out = lines.join('\n'); Logger.log(out); return out;
+}
+function rollbackPracticeSpreadsheet() {
+  var props = PropertiesService.getScriptProperties(), src = getSpreadsheet(), lines = [];
+  var id = getPracticeSpreadsheetId();
+  props.deleteProperty(PRACTICE_SPREADSHEET_PROPERTY);
+  props.deleteProperty(PRACTICE_MIGRATING_PROPERTY);
+  for (var i = 0; i < PRACTICE_SHEET_NAMES.length; i++) {
+    var retired = src.getSheetByName(PRACTICE_RETIRED_PREFIX + PRACTICE_SHEET_NAMES[i]);
+    if (retired && !src.getSheetByName(PRACTICE_SHEET_NAMES[i])) { retired.setName(PRACTICE_SHEET_NAMES[i]); lines.push(PRACTICE_SHEET_NAMES[i] + ': restored from ' + PRACTICE_RETIRED_PREFIX); }
+  }
+  _practiceIdChecked = false; _practiceHandle = null;
+  lines.push('rolled back: practice sheets are served from the exam spreadsheet again' + (id ? ' (rows written to ' + id + ' since the cut-over are NOT copied back)' : ''));
+  var out = lines.join('\n'); Logger.log(out); return out;
 }
 
 // ========== Tail reads for append-only sheets (perf) ==========
@@ -728,7 +913,7 @@ function todayStr() {
 }
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-19-r23';
+var THEORY_API_BUILD = '2026-09-19-r24';
 var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
 
 function logTheoryApiTiming(phase, method, action, startedAt) {
@@ -3473,7 +3658,7 @@ function handleRegisterExamQuestions(data) {
   // count so submitResult can flag results scored from unverified data.
   var examSheet;
   try { examSheet = getSheet('מבחנים'); } catch(e) {
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var ss = getSpreadsheet();
     examSheet = ss.insertSheet('מבחנים');
     examSheet.appendRow(['קוד סשן', 'ת.ז.', 'שאלות JSON', 'זמן רישום', 'שפה', 'שגויות לא מאומתות']);
   }
@@ -7455,7 +7640,7 @@ function generateClassCode() {
 function getDeletedClassMap() {
   var map = {};
   try {
-    var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('כיתות שנמחקו');
+    var sheet = getSheetIfExists('כיתות שנמחקו');
     if (!sheet) return map;
     var data = sheet.getDataRange().getValues();
     for (var i = 1; i < data.length; i++) {
@@ -7495,6 +7680,7 @@ function resolveClassInfo(classCode, classMap, deletedMap) {
 }
 
 function handleTeacherLogin(p) {
+  var maintenance = practiceWriteGuard(); if (maintenance) return maintenance;   // r24
   var sheet = getSheet('מורים');
   var data = sheet.getDataRange().getValues();
   var matchedRows = [];
@@ -8178,7 +8364,7 @@ function handleTeacherAtRiskList(p) {
   var buildSummary = null;
   try { buildSummary = JSON.parse(props.getProperty('atRisk_summary') || 'null'); } catch (eBS) { buildSummary = null; }
 
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('חיזוי סיכון');
+  var sheet = getSheetIfExists('חיזוי סיכון');
   if (!sheet || sheet.getLastRow() < 2) {
     return jsonResponse({ status: 'ok', data: {
       computedAt: computedAt, notComputed: true,
@@ -8250,7 +8436,7 @@ function handleExaminerForecast(p) {
 
   var props = PropertiesService.getScriptProperties();
   var computedAt = props.getProperty('atRisk_computedAt') || null;
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('חיזוי סיכון');
+  var sheet = getSheetIfExists('חיזוי סיכון');
   if (!sheet || sheet.getLastRow() < 2) {
     return jsonResponse({ status: 'ok', data: { computedAt: computedAt, notComputed: true, cohortForecast: null, examDayForecast: null } });
   }
@@ -8552,6 +8738,7 @@ function handleAdminDashboard(p) {
 }
 
 function handleTeacherCreateClass(p) {
+  var maintenance = practiceWriteGuard(); if (maintenance) return maintenance;   // r24
   var code = generateClassCode();
   var className = p.className || 'כיתה חדשה';
   var license = p.license || 'B';
@@ -8573,6 +8760,7 @@ function handleTeacherCreateClass(p) {
 }
 
 function handleTeacherCloseClass(p) {
+  var maintenance = practiceWriteGuard(); if (maintenance) return maintenance;   // r24
   var sheet = getSheet('כיתות');
   var data = sheet.getDataRange().getValues();
   for (var i = 1; i < data.length; i++) {
@@ -8586,6 +8774,7 @@ function handleTeacherCloseClass(p) {
 }
 
 function handleTeacherDeleteClass(p) {
+  var maintenance = practiceWriteGuard(); if (maintenance) return maintenance;   // r24
   var classCode = String(p.classCode || '').trim();
   if (!classCode) return jsonResponse({ status: 'error', message: 'חסר קוד כיתה' });
 
@@ -8645,6 +8834,7 @@ function handleTeacherDeleteClass(p) {
 }
 
 function handleTeacherRemoveStudent(p) {
+  var maintenance = practiceWriteGuard(); if (maintenance) return maintenance;   // r24
   var sheet = getSheet('תלמידי כיתות');
   var data = sheet.getDataRange().getValues();
   // Verify teacher owns this class
@@ -8848,6 +9038,7 @@ function handleTeacherExportData(p) {
 }
 
 function handleStudentJoinClass(p) {
+  var maintenance = practiceWriteGuard(); if (maintenance) return maintenance;   // r24
   var classCode = String(p.classCode || '').trim().toUpperCase();
   var studentName = String(p.studentName || '').trim();
   var studentId = String(p.studentId || '').trim();
@@ -8901,6 +9092,7 @@ function handleStudentJoinClass(p) {
 }
 
 function handleSubmitPracticeResult(p) {
+  var maintenance = practiceWriteGuard(); if (maintenance) return maintenance;   // r24
   var studentId = String(p.studentId || '').trim();
   var classCode = String(p.classCode || '').trim();
   // Rate limit: cap public practice-result writes so the תוצאות תרגול sheet (which
@@ -8950,6 +9142,7 @@ function handleLoadStudentProgress(p) {
 }
 
 function handleSaveStudentProgress(p) {
+  var maintenance = practiceWriteGuard(); if (maintenance) return maintenance;   // r24
   var name = String(p.studentName || '').trim();
   var classCode = String(p.classCode || '').trim().toUpperCase();
   if (!name || !classCode) {

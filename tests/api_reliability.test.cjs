@@ -67,7 +67,7 @@ test('health&deep=1 times one cell of our own document and reports a failure ins
   const { ctx } = runtime();
   ctx.getSheet = () => ({ getRange: () => ({ getValue: () => 'x' }) });
   const ok = ctx.doGet({ parameter: { action: 'health', deep: '1', origin: 'examinee-app' } });
-  assert.equal(ok.status, 'ok'); assert.equal(ok.build, '2026-09-19-r23'); assert.equal(ok.deep, true);
+  assert.equal(ok.status, 'ok'); assert.equal(ok.build, '2026-09-19-r24'); assert.equal(ok.deep, true);
   assert.ok(typeof ok.sheetMs === 'number' && ok.sheetMs >= 0); assert.equal(ok.sheetError, '');
   assert.ok(typeof ok.totalMs === 'number' && ok.totalMs >= ok.sheetMs);
   ctx.getSheet = () => { throw new Error('document unavailable'); };
@@ -80,7 +80,7 @@ test('health identifies build without Sheets, Drive or private parameters', () =
   ctx.getSheet = () => { throw new Error('health must not access Sheets'); };
   const result = ctx.doGet({ parameter: { action: 'health', origin: 'examinee-app', token: 'DO_NOT_LOG_ME' } });
   assert.equal(result.status, 'ok');
-  assert.equal(result.build, '2026-09-19-r23');
+  assert.equal(result.build, '2026-09-19-r24');
   assert.equal(logs.length, 2);
   assert.ok(logs[0].includes('"phase":"start"'));
   assert.ok(logs[1].includes('"phase":"end"'));

@@ -41,7 +41,7 @@ function environment(banks) {
   const clock = { t: 1757900000000 };
   const entries = new Map();
   const properties = new Map([['QUESTIONS_DRIVE_FOLDER_ID', 'fixture-folder']]);
-  const logs = [], reads = {}, triggers = [], sheets = new Map();
+  const logs = [], reads = {}, triggers = [];
   let held = false, triggerCreates = 0, triggerFailures = 0;
 
   const RealDate = Date;
@@ -57,9 +57,25 @@ function environment(banks) {
     removeAll(keys) { for (const key of keys) entries.delete(key); }
   };
   const blob = data => { const bytes = typeof data === 'string' ? Buffer.from(data, 'utf8') : Buffer.from(data); return { getBytes: () => [...bytes], getDataAsString: () => bytes.toString('utf8') }; };
-  function sheet(name) {
-    if (!sheets.has(name)) sheets.set(name, {
-      name, rows: [], fullReads: 0, cellsRead: 0,
+  // r24: several spreadsheets. 'active' is the exam spreadsheet the script is
+  // bound to; openById/create serve the practice spreadsheet and the migration.
+  const spreadsheets = new Map();
+  function makeSpreadsheet(id, ssName) {
+    const ss = { id, ssName, sheets: new Map(),
+      getId: () => id, getName: () => ssName, getUrl: () => 'https://docs.google.com/spreadsheets/d/' + id,
+      getSheetByName: n => ss.sheets.get(n) || null,
+      insertSheet: n => makeSheet(ss, n),
+      getSheets: () => [...ss.sheets.values()],
+      deleteSheet: sh => { ss.sheets.delete(sh.name); } };
+    spreadsheets.set(id, ss);
+    return ss;
+  }
+  function makeSheet(ss, name) {
+    if (!ss.sheets.has(name)) ss.sheets.set(name, {
+      name, parent: ss, rows: [], fullReads: 0, cellsRead: 0,
+      getName() { return this.name; },
+      setName(n) { ss.sheets.delete(this.name); this.name = n; ss.sheets.set(n, this); return this; },
+      copyTo(target) { const c = makeSheet(target, 'Copy of ' + this.name); c.rows = this.rows.map(r => r.slice()); return c; },
       appendRow(r) { this.rows.push(r); },
       getLastRow() { return this.rows.length; },
       getLastColumn() { return this.rows.reduce((w, r) => Math.max(w, r.length), 0); },
@@ -76,10 +92,15 @@ function environment(banks) {
           }
         };
       },
-      getDataRange() { const self = this; return { getValues() { self.fullReads++; self.cellsRead += self.rows.length * self.getLastColumn(); return self.rows; } }; }
+      getDataRange() { const self = this; return {
+        getValues() { self.fullReads++; self.cellsRead += self.rows.length * self.getLastColumn(); return self.rows; },
+        getFormulas() { return self.rows.map(r => r.map(() => '')); } }; }
     });
-    return sheets.get(name);
+    return ss.sheets.get(name);
   }
+  const active = makeSpreadsheet('active', 'exam');
+  const sheets = active.sheets;
+  function sheet(name) { return makeSheet(active, name); }
   const ctx = {
     Date: FakeDate,
     Logger: { log: s => logs.push(String(s)) },
@@ -117,13 +138,15 @@ function environment(banks) {
       getProjectTriggers: () => triggers.slice(),
       deleteTrigger: t => { const i = triggers.indexOf(t); if (i >= 0) triggers.splice(i, 1); }
     },
-    SpreadsheetApp: { flush() {}, getActiveSpreadsheet: () => ({ getSheetByName: n => sheets.get(n) || null, insertSheet: n => sheet(n) }) },
+    SpreadsheetApp: { flush() {}, getActiveSpreadsheet: () => active,
+      openById: id => { const ss = spreadsheets.get(id); if (!ss) throw new Error('no spreadsheet ' + id); return ss; },
+      create: ssName => makeSpreadsheet('ss' + (spreadsheets.size + 1), ssName) },
     ContentService: { MimeType: { JSON: 'application/json' }, createTextOutput: s => ({ _s: s, setMimeType() { return this; }, getContent() { return this._s; } }) },
     MimeType: { JSON: 'application/json' }
   };
   vm.createContext(ctx); vm.runInContext(source, ctx);
   ctx.lookupCorrectIndex = (id, lang) => (id + LANGS.indexOf(lang)) % 4;
-  return { ctx, cache, entries, properties, logs, reads, clock, triggers, sheets, sheet,
+  return { ctx, cache, entries, properties, logs, reads, clock, triggers, sheets, sheet, spreadsheets,
     triggerCreates: () => triggerCreates, triggerFailures: () => triggerFailures,
     pools: () => [...entries.keys()].filter(k => /^qv2_pool_.+_meta$/.test(k)).length,
     poolGen: (lang, lic) => { const m = cache.get(`qv2_pool_${lang}_${lic}_meta`); return m ? JSON.parse(m).g : null; },
@@ -414,6 +437,83 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
   });
   env.clock.t += 61000; reads = examiners.fullReads; env.ctx.verifyToken('900000001', 'tokA');
   check('r23: after 60 s the verdict is re-read', () => assert.equal(examiners.fullReads - reads, 1));
+}
+
+// ---- 6d. r24: practice/teacher sheets in their own spreadsheet ---------------
+// The document is the unit of contention: teachers' full reads of the 107k-row
+// practice sheet and the practice evenings' bursts hit the same document the
+// exam pollers read and write. Routing by sheet name, a maintenance guard for
+// the minutes of the copy, and a resumable, verified, reversible migration.
+{
+  const env = environment(banks);
+  env.sheet('כיתות').appendRow(['קוד כיתה', 'שם כיתה', 'מורה ת.ז.', 'שם מורה', 'דרגה', 'אתר', 'פעילה']);
+  env.sheet('כיתות').appendRow(['C1', 'כיתה', '1', 'מ', 'B', '', 'כן']);
+  env.sheet('תוצאות תרגול').appendRow(['תאריך', 'ת.ז.', 'שם', 'כיתה']);
+  env.sheet('תוצאות תרגול').appendRow(['19/09/2026', '1', 'א', 'C1']);
+  env.sheet('ממתינים').appendRow(['h']);
+  env.sheet('Sheet1');                                        // what a brand-new spreadsheet also carries
+  check('r24: before the migration every sheet comes from the exam spreadsheet', () => {
+    assert.equal(env.ctx.getSheet('כיתות').parent.getId(), 'active');
+    assert.equal(env.ctx.getSheet('ממתינים').parent.getId(), 'active');
+  });
+  const pre = env.ctx.practiceMigrationPreflight();
+  check('r24: the preflight lists the practice sheets and finds no cross-sheet formulas', () => {
+    assert.match(pre, /כיתות: 2 rows/); assert.match(pre, /no formulas reference/); assert.match(pre, /not set/);
+  });
+  env.properties.set('PRACTICE_MIGRATING', '1');
+  const refused = env.json(env.ctx.handleSubmitPracticeResult({ studentId: '1', classCode: 'C1', score: 1, total: 1, percent: 100 }));
+  env.properties.delete('PRACTICE_MIGRATING');
+  check('r24: a practice write during the copy is refused with a retryable answer, not lost into the old sheet', () => {
+    assert.equal(refused.code, 'practice_maintenance'); assert.equal(refused.retryable, true);
+    assert.equal(env.sheets.get('תוצאות תרגול').rows.length, 2);
+  });
+  const report = env.ctx.migratePracticeSpreadsheet();
+  const targetId = env.properties.get('PRACTICE_SPREADSHEET_ID');
+  check('r24: the migration copies every practice sheet, cuts over and clears its flags', () => {
+    assert.ok(targetId, 'property set'); assert.match(report, /CUT OVER/);
+    assert.equal(env.properties.has('PRACTICE_MIGRATING'), false); assert.equal(env.properties.has('PRACTICE_SPREADSHEET_ID_PENDING'), false);
+    const target = env.spreadsheets.get(targetId);
+    assert.deepEqual([...target.sheets.keys()].sort(), ['כיתות', 'תוצאות תרגול'].sort());
+    assert.deepEqual(target.sheets.get('תוצאות תרגול').rows, env.sheets.get('תוצאות תרגול').rows);
+  });
+  check('r24: verify right after the copy says ALL OK', () => assert.match(env.ctx.verifyPracticeMigration(), /ALL OK/));
+  env.ctx._practiceIdChecked = false; env.ctx._practiceHandle = null;   // a fresh execution
+  check('r24: after the cut-over practice sheets come from the new spreadsheet and exam sheets from the old one', () => {
+    assert.equal(env.ctx.getSheet('כיתות').parent.getId(), targetId);
+    assert.equal(env.ctx.getSheet('ממתינים').parent.getId(), 'active');
+    assert.equal(env.ctx.getSheetIfExists('חיזוי סיכון'), null);
+    assert.equal(env.ctx.getSheet('חיזוי סיכון').parent.getId(), targetId, 'a practice sheet that did not exist is created in the new spreadsheet');
+  });
+  const written = env.json(env.ctx.handleSubmitPracticeResult({ studentId: '2', classCode: 'C1', score: 1, total: 1, percent: 100 }));
+  check('r24: a practice result now lands in the new spreadsheet only', () => {
+    assert.equal(written.status, 'ok');
+    assert.equal(env.spreadsheets.get(targetId).sheets.get('תוצאות תרגול').rows.length, 3);
+    assert.equal(env.sheets.get('תוצאות תרגול').rows.length, 2);
+  });
+  check('r24: a second migrate call refuses to run again', () => assert.match(env.ctx.migratePracticeSpreadsheet(), /already migrated/));
+  const retire = env.ctx.retirePracticeSheetsFromExamSpreadsheet();
+  check('r24: retiring renames the old copies out of the way', () => {
+    assert.match(retire, /2 sheet\(s\) renamed/);
+    assert.ok(env.sheets.has('_migrated_כיתות')); assert.equal(env.sheets.has('כיתות'), false);
+  });
+  const back = env.ctx.rollbackPracticeSpreadsheet();
+  check('r24: rollback restores the old sheets and routes everything to the exam spreadsheet again', () => {
+    assert.match(back, /rolled back/);
+    assert.ok(env.sheets.has('כיתות')); assert.equal(env.properties.has('PRACTICE_SPREADSHEET_ID'), false);
+    assert.equal(env.ctx.getSheet('כיתות').parent.getId(), 'active');
+  });
+  // a copy interrupted half-way resumes instead of starting over
+  const env2 = environment(banks);
+  env2.sheet('כיתות').appendRow(['h']); env2.sheet('כיתות').appendRow(['C1']);
+  env2.sheet('מורים').appendRow(['h']); env2.sheet('מורים').appendRow(['t']);
+  const half = env2.ctx.SpreadsheetApp.create('half');
+  env2.sheet('כיתות').copyTo(half).setName('כיתות');                 // completed in a previous run
+  env2.properties.set('PRACTICE_SPREADSHEET_ID_PENDING', half.getId());
+  const resumed = env2.ctx.migratePracticeSpreadsheet();
+  check('r24: an interrupted migration resumes into the same spreadsheet', () => {
+    assert.match(resumed, /resuming into/); assert.match(resumed, /כיתות: already copied/); assert.match(resumed, /מורים: copied 2\/2/);
+    assert.equal(env2.properties.get('PRACTICE_SPREADSHEET_ID'), half.getId());
+  });
 }
 
 // ---- 6b. result submission must not touch Drive -----------------------------
