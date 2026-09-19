@@ -60,6 +60,7 @@ function environment(banks) {
   // r24: several spreadsheets. 'active' is the exam spreadsheet the script is
   // bound to; openById/create serve the practice spreadsheet and the migration.
   const spreadsheets = new Map();
+  const rangeWrites = { on: false };
   function makeSpreadsheet(id, ssName) {
     const ss = { id, ssName, sheets: new Map(),
       getId: () => id, getName: () => ssName, getUrl: () => 'https://docs.google.com/spreadsheets/d/' + id,
@@ -80,10 +81,23 @@ function environment(banks) {
       getLastRow() { return this.rows.length; },
       getLastColumn() { return this.rows.reduce((w, r) => Math.max(w, r.length), 0); },
       // readTail slices with getRange(startRow, 1, numRows, numCols)
+      getMaxRows() { return Math.max(1000, this.rows.length); },
+      getMaxColumns() { return Math.max(26, this.getLastColumn()); },
+      insertRowsAfter() {}, insertColumnsAfter() {},
       getRange(startRow, startCol, numRows, numCols) {
         const self = this;
         return {
-          setValues() {}, setFontWeight() {},
+          // header writes stay a no-op for the older tests; the migration tests
+          // switch on real writes with env.enableRangeWrites()
+          setValues(vals) {
+            if (!rangeWrites.on) return this;
+            for (let i = 0; i < vals.length; i++) {
+              const r = self.rows[startRow - 1 + i] || (self.rows[startRow - 1 + i] = []);
+              for (let j = 0; j < vals[i].length; j++) r[startCol - 1 + j] = vals[i][j];
+            }
+            return this;
+          },
+          setFontWeight() {},
           setValue(v) { const r = self.rows[startRow - 1]; if (r) r[startCol - 1] = v; return this; },
           getValues() {
             const out = self.rows.slice(startRow - 1, startRow - 1 + (numRows || 1)).map(r => (r || []).slice(startCol - 1, startCol - 1 + (numCols || 1)));
@@ -147,6 +161,7 @@ function environment(banks) {
   vm.createContext(ctx); vm.runInContext(source, ctx);
   ctx.lookupCorrectIndex = (id, lang) => (id + LANGS.indexOf(lang)) % 4;
   return { ctx, cache, entries, properties, logs, reads, clock, triggers, sheets, sheet, spreadsheets,
+    enableRangeWrites: () => { rangeWrites.on = true; },
     triggerCreates: () => triggerCreates, triggerFailures: () => triggerFailures,
     pools: () => [...entries.keys()].filter(k => /^qv2_pool_.+_meta$/.test(k)).length,
     poolGen: (lang, lic) => { const m = cache.get(`qv2_pool_${lang}_${lic}_meta`); return m ? JSON.parse(m).g : null; },
@@ -467,10 +482,22 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
     assert.equal(refused.code, 'practice_maintenance'); assert.equal(refused.retryable, true);
     assert.equal(env.sheets.get('תוצאות תרגול').rows.length, 2);
   });
+  env.enableRangeWrites();
+  // first run out of time before the first chunk: nothing cut over, flag stays on
+  env.ctx.MIGRATION_BUDGET_MS = -1;
+  const partial = env.ctx.migratePracticeSpreadsheet();
+  check('r24: a run that hits its time budget leaves the flag on and asks to be re-run', () => {
+    assert.match(partial, /out of time/); assert.match(partial, /NOT cut over yet/);
+    assert.equal(env.properties.get('PRACTICE_MIGRATING'), '1');
+    assert.equal(env.properties.has('PRACTICE_SPREADSHEET_ID'), false);
+    assert.ok(env.properties.get('PRACTICE_SPREADSHEET_ID_PENDING'));
+  });
+  env.ctx.MIGRATION_BUDGET_MS = 270000;
   const report = env.ctx.migratePracticeSpreadsheet();
   const targetId = env.properties.get('PRACTICE_SPREADSHEET_ID');
-  check('r24: the migration copies every practice sheet, cuts over and clears its flags', () => {
-    assert.ok(targetId, 'property set'); assert.match(report, /CUT OVER/);
+  check('r24: the migration copies every practice sheet in chunks, cuts over and clears its flags', () => {
+    assert.ok(targetId, 'property set'); assert.match(report, /CUT OVER/); assert.match(report, /resuming into/);
+    assert.match(report, /תוצאות תרגול: copied 2\/2 rows in chunks/);
     assert.equal(env.properties.has('PRACTICE_MIGRATING'), false); assert.equal(env.properties.has('PRACTICE_SPREADSHEET_ID_PENDING'), false);
     const target = env.spreadsheets.get(targetId);
     assert.deepEqual([...target.sheets.keys()].sort(), ['כיתות', 'תוצאות תרגול'].sort());
@@ -504,6 +531,7 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
   });
   // a copy interrupted half-way resumes instead of starting over
   const env2 = environment(banks);
+  env2.enableRangeWrites();
   env2.sheet('כיתות').appendRow(['h']); env2.sheet('כיתות').appendRow(['C1']);
   env2.sheet('מורים').appendRow(['h']); env2.sheet('מורים').appendRow(['t']);
   const half = env2.ctx.SpreadsheetApp.create('half');
@@ -511,7 +539,8 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
   env2.properties.set('PRACTICE_SPREADSHEET_ID_PENDING', half.getId());
   const resumed = env2.ctx.migratePracticeSpreadsheet();
   check('r24: an interrupted migration resumes into the same spreadsheet', () => {
-    assert.match(resumed, /resuming into/); assert.match(resumed, /כיתות: already copied/); assert.match(resumed, /מורים: copied 2\/2/);
+    assert.match(resumed, /resuming into/); assert.match(resumed, /כיתות: already copied/); assert.match(resumed, /מורים: copied 2\/2 rows in chunks/);
+    assert.equal(env2.properties.has('PRACTICE_MIGRATING'), false);
     assert.equal(env2.properties.get('PRACTICE_SPREADSHEET_ID'), half.getId());
   });
 }

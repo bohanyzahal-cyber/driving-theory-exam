@@ -205,39 +205,77 @@ function migratePracticeSpreadsheet() {
     props.setProperty(pendingKey, target.getId());
     lines.push('created ' + target.getUrl());
   }
+  // Practice writes stay refused from the first run until the cut-over (the flag
+  // is cleared below only on success, or by rollbackPracticeSpreadsheet).
   props.setProperty(PRACTICE_MIGRATING_PROPERTY, '1');
-  var ok = true;
+  var ok = true, complete = true, deadline = Date.now() + MIGRATION_BUDGET_MS;
   try {
     for (var i = 0; i < PRACTICE_SHEET_NAMES.length; i++) {
       var name = PRACTICE_SHEET_NAMES[i], s = src.getSheetByName(name);
       if (!s) { lines.push(name + ': not in the exam spreadsheet, skipped'); continue; }
       var existing = target.getSheetByName(name);
-      if (existing && existing.getLastRow() === s.getLastRow()) { lines.push(name + ': already copied (' + s.getLastRow() + ' rows)'); continue; }
-      if (existing) { target.deleteSheet(existing); lines.push(name + ': incomplete copy removed'); }
-      var t0 = Date.now();
-      var copy = s.copyTo(target);
-      copy.setName(name);
-      var rowsSrc = s.getLastRow(), rowsDst = copy.getLastRow();
-      lines.push(name + ': copied ' + rowsDst + '/' + rowsSrc + ' rows in ' + (Date.now() - t0) + ' ms');
-      if (rowsDst !== rowsSrc) ok = false;
+      if (existing && s.getLastRow() > 0 && existing.getLastRow() === s.getLastRow()) { lines.push(name + ': already copied (' + s.getLastRow() + ' rows)'); continue; }
+      if (!copySheetInChunks(s, target, name, deadline, lines)) { complete = false; break; }
     }
-    var sheets = target.getSheets();
-    if (sheets.length > 1) {
-      for (var j = 0; j < sheets.length; j++) {
-        if (!isPracticeSheetName(sheets[j].getName()) && sheets[j].getLastRow() <= 1) { target.deleteSheet(sheets[j]); lines.push('removed the empty default sheet'); break; }
+    if (complete) {
+      var sheets = target.getSheets();
+      if (sheets.length > 1) {
+        for (var j = 0; j < sheets.length; j++) {
+          if (!isPracticeSheetName(sheets[j].getName()) && sheets[j].getLastRow() <= 1) { target.deleteSheet(sheets[j]); lines.push('removed the empty default sheet'); break; }
+        }
+      }
+      for (var v = 0; v < PRACTICE_SHEET_NAMES.length; v++) {
+        var sv = src.getSheetByName(PRACTICE_SHEET_NAMES[v]), dv = target.getSheetByName(PRACTICE_SHEET_NAMES[v]);
+        if (sv && (!dv || dv.getLastRow() !== sv.getLastRow())) { ok = false; lines.push(PRACTICE_SHEET_NAMES[v] + ': row count differs after the copy'); }
       }
     }
   } catch (e) { ok = false; lines.push('ERROR: ' + (e && e.message ? e.message : e)); }
-  if (ok) {
+  if (ok && complete) {
     props.setProperty(PRACTICE_SPREADSHEET_PROPERTY, target.getId());
     props.deleteProperty(pendingKey);
+    props.deleteProperty(PRACTICE_MIGRATING_PROPERTY);
     lines.push('CUT OVER: practice/teacher sheets are now served from ' + target.getUrl());
+  } else if (!complete) {
+    lines.push('NOT cut over yet — run migratePracticeSpreadsheet again to continue (practice writes stay refused until the cut-over)');
   } else {
-    lines.push('NOT cut over — fix the errors above and run again (it resumes where it stopped)');
+    lines.push('NOT cut over — fix the errors above and run again (it resumes where it stopped; rollbackPracticeSpreadsheet abandons it)');
   }
-  props.deleteProperty(PRACTICE_MIGRATING_PROPERTY);
   _practiceIdChecked = false; _practiceHandle = null;
   var out = lines.join('\n'); Logger.log(out); return out;
+}
+// Sheet.copyTo() failed on the 109,491-row practice sheet ("Unable to load
+// document" on the exam spreadsheet, 19/09/2026 20:25) — the same document that
+// stalls single reads on exam mornings cannot be materialised whole for a copy.
+// So the rows are copied MIGRATION_CHUNK_ROWS at a time, values only (these are
+// script-written data sheets: no formulas, formatting does not matter). The
+// target's row count is the progress marker, so a run that stops on the time
+// budget continues from where it left off; append-only sources that grew in
+// between simply get their new rows copied too.
+var MIGRATION_CHUNK_ROWS = 4000;
+var MIGRATION_BUDGET_MS = 270000;   // 4.5 of the 6 minutes; the run stops cleanly and is re-run
+function copySheetInChunks(src, target, name, deadline, lines) {
+  var rowsSrc = src.getLastRow(), cols = src.getLastColumn();
+  var dst = target.getSheetByName(name) || target.insertSheet(name);
+  var done = dst.getLastRow();
+  if (done > rowsSrc) { target.deleteSheet(dst); dst = target.insertSheet(name); done = 0; }
+  if (rowsSrc === 0) { lines.push(name + ': empty, nothing to copy'); return true; }
+  if (dst.getMaxRows() < rowsSrc) dst.insertRowsAfter(dst.getMaxRows(), rowsSrc - dst.getMaxRows());
+  if (dst.getMaxColumns() < cols) dst.insertColumnsAfter(dst.getMaxColumns(), cols - dst.getMaxColumns());
+  var t0 = Date.now(), startedAt = done;
+  while (done < rowsSrc) {
+    if (Date.now() > deadline) {
+      SpreadsheetApp.flush();
+      lines.push(name + ': ' + done + '/' + rowsSrc + ' rows so far (' + (done - startedAt) + ' this run, ' + (Date.now() - t0) + ' ms) — out of time');
+      return false;
+    }
+    var n = Math.min(MIGRATION_CHUNK_ROWS, rowsSrc - done);
+    var values = src.getRange(done + 1, 1, n, cols).getValues();
+    dst.getRange(done + 1, 1, n, cols).setValues(values);
+    done += n;
+  }
+  SpreadsheetApp.flush();
+  lines.push(name + ': copied ' + done + '/' + rowsSrc + ' rows in chunks (' + (done - startedAt) + ' this run, ' + (Date.now() - t0) + ' ms)');
+  return true;
 }
 function verifyPracticeMigration() {
   var id = getPracticeSpreadsheetId();
@@ -278,6 +316,7 @@ function rollbackPracticeSpreadsheet() {
   var id = getPracticeSpreadsheetId();
   props.deleteProperty(PRACTICE_SPREADSHEET_PROPERTY);
   props.deleteProperty(PRACTICE_MIGRATING_PROPERTY);
+  props.deleteProperty(PRACTICE_SPREADSHEET_PROPERTY + '_PENDING');   // a new migration starts a fresh spreadsheet
   for (var i = 0; i < PRACTICE_SHEET_NAMES.length; i++) {
     var retired = src.getSheetByName(PRACTICE_RETIRED_PREFIX + PRACTICE_SHEET_NAMES[i]);
     if (retired && !src.getSheetByName(PRACTICE_SHEET_NAMES[i])) { retired.setName(PRACTICE_SHEET_NAMES[i]); lines.push(PRACTICE_SHEET_NAMES[i] + ': restored from ' + PRACTICE_RETIRED_PREFIX); }
