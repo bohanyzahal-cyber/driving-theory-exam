@@ -63,6 +63,18 @@ test('cache construction contention is retryable through the real question handl
   assert.equal(reply.waitSec, 3);
 });
 
+test('health&deep=1 times one cell of our own document and reports a failure instead of throwing', () => {
+  const { ctx } = runtime();
+  ctx.getSheet = () => ({ getRange: () => ({ getValue: () => 'x' }) });
+  const ok = ctx.doGet({ parameter: { action: 'health', deep: '1', origin: 'examinee-app' } });
+  assert.equal(ok.status, 'ok'); assert.equal(ok.build, '2026-09-19-r22'); assert.equal(ok.deep, true);
+  assert.ok(typeof ok.sheetMs === 'number' && ok.sheetMs >= 0); assert.equal(ok.sheetError, '');
+  assert.ok(typeof ok.totalMs === 'number' && ok.totalMs >= ok.sheetMs);
+  ctx.getSheet = () => { throw new Error('document unavailable'); };
+  const bad = ctx.doGet({ parameter: { action: 'health', deep: '1', origin: 'examinee-app' } });
+  assert.equal(bad.status, 'ok'); assert.equal(bad.sheetMs, -1); assert.match(bad.sheetError, /document unavailable/);
+});
+
 test('health identifies build without Sheets, Drive or private parameters', () => {
   const { ctx, logs } = runtime();
   ctx.getSheet = () => { throw new Error('health must not access Sheets'); };

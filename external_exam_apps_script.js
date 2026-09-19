@@ -722,6 +722,18 @@ function doGet(e) {
     if (originErr) return originErr;
 
     if (action === 'health') {
+      if (String(p.deep || '') === '1') {
+        // health&deep=1 (2026-09-19, review action 7): the plain health does no
+        // work at all, so it can only say "Google is slow". This one also reads a
+        // single cell of OUR document and reports that time separately, so a
+        // watchdog can tell "our document stalls" from "Google's front door
+        // stalls" every minute of an exam morning (tools/exam_watchdog.gs).
+        var deepT0 = Date.now(), sheetMs = -1, sheetError = '';
+        try { getSheet('אתרים').getRange(1, 1).getValue(); sheetMs = Date.now() - deepT0; }
+        catch (eDeep) { sheetError = String(eDeep && eDeep.message ? eDeep.message : eDeep).slice(0, 120); }
+        return jsonResponse({ status: 'ok', build: THEORY_API_BUILD, deep: true, sheetMs: sheetMs, sheetError: sheetError,
+          totalMs: Date.now() - apiStartedAt });
+      }
       return jsonResponse({ status: 'ok', build: THEORY_API_BUILD });
     }
 
