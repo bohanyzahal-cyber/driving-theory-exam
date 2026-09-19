@@ -163,8 +163,9 @@ function practiceMigrationPreflight() {
     var s = src.getSheetByName(PRACTICE_SHEET_NAMES[i]);
     lines.push(PRACTICE_SHEET_NAMES[i] + ': ' + (s ? s.getLastRow() + ' rows × ' + s.getLastColumn() + ' cols' : 'missing in the exam spreadsheet'));
   }
-  var refs = practiceCrossReferences(src);
-  lines.push(refs.length ? 'CROSS-SHEET FORMULAS — handle these before migrating: ' + refs.join('; ')
+  var scan = practiceCrossReferences(src);
+  if (scan.skipped.length) lines.push('not scanned for formulas (script-written rows, too large): ' + scan.skipped.join(', '));
+  lines.push(scan.refs.length ? 'CROSS-SHEET FORMULAS — handle these before migrating: ' + scan.refs.join('; ')
     : 'no formulas reference sheets across the practice/exam boundary');
   var out = lines.join('\n'); Logger.log(out); return out;
 }
@@ -172,13 +173,13 @@ function practiceMigrationPreflight() {
 // once the sheets live in different files. Sheets above 20,000 rows are not
 // scanned (the practice results are script-written rows, never formulas).
 function practiceCrossReferences(ss) {
-  var refs = [], sheets = ss.getSheets(), examNames = [];
+  var refs = [], skipped = [], sheets = ss.getSheets(), examNames = [];
   for (var key in SHEET_HEADERS) { if (Object.prototype.hasOwnProperty.call(SHEET_HEADERS, key) && !isPracticeSheetName(key)) examNames.push(key); }
   examNames.push(DIAG_SHEET);
   for (var i = 0; i < sheets.length; i++) {
     var sh = sheets[i], name = sh.getName(), lookFor = isPracticeSheetName(name) ? examNames : PRACTICE_SHEET_NAMES;
     if (sh.getLastRow() < 1 || sh.getLastColumn() < 1) continue;
-    if (sh.getLastRow() > 20000) { refs.push(name + ': not scanned (' + sh.getLastRow() + ' rows)'); continue; }
+    if (sh.getLastRow() > 20000) { skipped.push(name + ' (' + sh.getLastRow() + ' rows)'); continue; }
     var formulas = sh.getDataRange().getFormulas();
     for (var r = 0; r < formulas.length && refs.length < 30; r++) {
       for (var c = 0; c < formulas[r].length; c++) {
@@ -189,7 +190,7 @@ function practiceCrossReferences(ss) {
       }
     }
   }
-  return refs;
+  return { refs: refs, skipped: skipped };
 }
 function migratePracticeSpreadsheet() {
   var props = PropertiesService.getScriptProperties(), lines = [];
