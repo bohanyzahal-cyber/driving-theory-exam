@@ -83,7 +83,9 @@ const helper = src => section(src, '  var API_TIMEOUT_MS = 30000;', '  function 
 // poll section reaches it at call time; contexts pin the jitter to identity so the
 // fake clock stays exact, and the real jitter is tested on its own below.
 const pollHelpers = src => section(src, '  // ===== Poll pacing', '  // ===== end poll pacing');
-function withPacing(ctx, src) { load(ctx, pollHelpers(src)); ctx.jitterMs = ms => ms; }
+// The pacing block asks the transport-health block (next to fetchJsonWithTimeout)
+// whether the backend is degraded, so the helper section is loaded first.
+function withPacing(ctx, src) { load(ctx, helper(src)); load(ctx, pollHelpers(src)); ctx.jitterMs = ms => ms; }
 
 for (const [name, src] of [['examiner', examiner], ['examinee', examinee]]) {
   test(name + ': deadline includes a stalled response body and ignores a late body', async () => {
@@ -1071,4 +1073,102 @@ test('exam-status poll forwards the 60s deadline, backs off ×1.5 on failure and
   gate.resolve({ status: 'ok', examStatus: 'in_exam', extraMinutes: 0 }); await drain(); assert.equal(ctx.examStatusDelayMs, 10000);
   assert.deepEqual(jittered, [15000, 10000]);
   ctx.stopExamStatusPoll(); assert.equal(timer.jobs.size, 0);
+});
+
+// ===== 2026-09-18 review, action 2: a non-JSON / non-200 answer is a degraded backend =====
+// Google's own HTML error page, or a 404/5xx from its front door, must slow the
+// whole fleet to 30-60 s and must never be read as "reload", "new version" or
+// "session expired". A remembered login is discarded only on the server's own
+// tokenExpired verdict — on 16/09 every transient failure at boot sent the
+// examiner to the password screen.
+for (const [name, src] of [['examiner', examiner], ['examinee', examinee]]) {
+  test(name + ': non-JSON and non-200 answers mark the backend degraded, a JSON answer clears it, timeouts and network errors leave it alone', async () => {
+    let answer;
+    const { ctx, timer } = context({ fetch: () => answer() });
+    load(ctx, helper(src));
+    const call = () => ctx.fetchJsonWithTimeout('synthetic', {}, 100).then(v => ({ v }), e => ({ e }));
+    const page = body => () => Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(body) });
+    answer = page('<html>Google error</html>');
+    let r = await call(); assert.equal(r.e.name, 'SyntaxError'); assert.equal(r.e.transport, 'nonjson'); assert.equal(ctx.isBackendDegraded(), true);
+    answer = page('{"status":"ok"}');
+    r = await call(); assert.equal(r.v.status, 'ok'); assert.equal(ctx.isBackendDegraded(), false, 'a JSON answer clears the state');
+    answer = () => Promise.resolve({ ok: false, status: 503, text: () => Promise.resolve('') });
+    r = await call(); assert.equal(r.e.message, 'HTTP 503'); assert.equal(r.e.transport, 'http'); assert.equal(r.e.status, 503); assert.equal(ctx.isBackendDegraded(), true);
+    answer = page('{"status":"ok"}'); await call(); assert.equal(ctx.isBackendDegraded(), false);
+    answer = () => Promise.reject(new TypeError('Failed to fetch'));
+    r = await call(); assert.equal(r.e.name, 'TypeError'); assert.equal(ctx.isBackendDegraded(), false, 'a network error says nothing about the backend');
+    answer = () => new Promise(() => {});
+    const pending = call(); await drain(); await timer.advance(100); r = await pending;
+    assert.equal(r.e.name, 'TimeoutError'); assert.equal(ctx.isBackendDegraded(), false, 'a timeout says nothing about the backend');
+  });
+}
+test('dashboard slows to 30-60s on a degraded backend, tells the examiner not to reload, and steps down once JSON is back', async () => {
+  let body = '<html>Google error</html>';
+  const { ctx, timer, nodes } = dashboardContext();
+  ctx.fetch = () => Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(body) });
+  ctx.apiGet = (params, timeoutMs) => ctx.fetchJsonWithTimeout('synthetic', {}, timeoutMs);
+  const banner = nodes.get('offlineBanner');
+  ctx.startDashboardPolling(); await drain();
+  assert.equal(ctx.failedPolls, 1); assert.equal(ctx.dashPollDelayMs, 30000, 'first degraded answer: straight to the 30s floor');
+  assert.equal(banner.classList.values.has('show'), true, 'shown at once, not after three failures');
+  assert.ok(banner.textContent.includes('אין צורך לרענן'), 'the banner says not to reload');
+  await timer.advance(30000); assert.equal(ctx.dashPollDelayMs, 45000);
+  await timer.advance(45000); assert.equal(ctx.dashPollDelayMs, 60000, 'capped at 60s');
+  body = '{"status":"ok","pending":[],"active":[],"completed":[]}';
+  await timer.advance(60000);
+  assert.equal(ctx.failedPolls, 0); assert.equal(banner.classList.values.has('show'), false);
+  assert.equal(ctx.dashPollDelayMs, 40000, 'recovery steps down from 60s; it does not snap to 5s');
+  ctx.stopDashboardPolling(); assert.equal(timer.jobs.size, 0);
+});
+test('dashboard still needs three plain failures before the offline banner, with the offline text', async () => {
+  const { ctx, nodes } = dashboardContext(() => Promise.reject(new TypeError('Failed to fetch')));
+  for (let i = 0; i < 2; i++) await ctx.pollDashboard();
+  assert.equal(nodes.get('offlineBanner').classList.values.has('show'), false);
+  await ctx.pollDashboard();
+  assert.equal(nodes.get('offlineBanner').classList.values.has('show'), true);
+  assert.ok(nodes.get('offlineBanner').textContent.includes('אין חיבור לשרת'));
+});
+test('approval poll slows to the degraded cadence and tells the examinee not to reload', async () => {
+  const { ctx, timer, nodes } = approvalContext();
+  ctx.fetch = () => Promise.resolve({ ok: false, status: 503, text: () => Promise.resolve('') });
+  ctx.apiGet = (params, timeoutMs) => ctx.fetchJsonWithTimeout('synthetic', {}, timeoutMs);
+  ctx.startApprovalPolling(); await drain();
+  assert.equal(ctx.approvalFailCount, 1); assert.equal(ctx.approvalPollDelayMs, 30000);
+  await timer.advance(30000); await timer.advance(45000);
+  assert.equal(ctx.approvalFailCount, 3); assert.equal(ctx.approvalPollDelayMs, 60000);
+  assert.ok(nodes.get('approvalError').textContent.includes('אין צורך לרענן'));
+  timer.clear(ctx.approvalInterval); ctx.approvalInterval = null; assert.equal(timer.jobs.size, 0);
+});
+function rememberedContext(fetchImpl) {
+  const ui = dom(); const removed = []; let entered = 0;
+  for (const id of ['loginError', 'rememberMe']) ui.element(id);
+  const setup = context({ ...ui, fetch: fetchImpl, API_URL: 'https://synthetic.invalid/exec', API_ORIGIN: 'examiner-app',
+    localStorage: { removeItem: key => removed.push(key) }, enterAsRemembered() { entered++; } });
+  load(setup.ctx, helper(examiner));
+  load(setup.ctx, section(examiner, '  // ===== Remembered login', '  // ===== end remembered login'));
+  return { ...setup, ...ui, removed, entered: () => entered };
+}
+test('a remembered login survives transient failures with a retry in place, and only the server\'s tokenExpired verdict discards it', async () => {
+  let ok = true, body = '<html>Google error</html>';
+  const { ctx, nodes, removed, entered } = rememberedContext(() => Promise.resolve({ ok, status: ok ? 200 : 503, text: () => Promise.resolve(body) }));
+  const creds = { id: '123456789', token: 'synthetic' };
+  assert.equal(await ctx.verifyRememberedLogin(creds), 'retry');
+  assert.deepEqual(removed, [], "Google's HTML page does not delete the saved login");
+  assert.equal(nodes.get('loginError').style.display, 'block');
+  assert.ok(nodes.get('rememberedLoginMsg').textContent.includes('לא הצלחנו לאמת'));
+  // the retry button re-verifies; a JSON error WITHOUT tokenExpired still keeps the login and shows the message
+  body = '{"status":"error","message":"החשבון אינו פעיל"}';
+  nodes.get('rememberedLoginRetry').click(); await drain();
+  assert.deepEqual(removed, []); assert.ok(nodes.get('rememberedLoginMsg').textContent.includes('החשבון אינו פעיל'));
+  // a 503 from Google's front door: same — keep it
+  ok = false; body = ''; nodes.get('rememberedLoginRetry').click(); await drain();
+  assert.deepEqual(removed, []);
+  // the server's verdict discards it
+  ok = true; body = '{"status":"error","message":"פג תוקף ההתחברות","tokenExpired":true}';
+  assert.equal(await ctx.verifyRememberedLogin(creds), 'expired');
+  assert.deepEqual(removed, ['ext_examiner_remember']);
+  // and a healthy answer enters without touching the saved login
+  body = '{"status":"ok","examiner":{"name":"synthetic","id":"123456789","role":"בוחן"}}';
+  assert.equal(await ctx.verifyRememberedLogin(creds), 'ok');
+  assert.equal(entered(), 1); assert.deepEqual(removed, ['ext_examiner_remember']);
 });

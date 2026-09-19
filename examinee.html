@@ -1127,12 +1127,43 @@
       }
       Promise.resolve().then(function() { return fetch(url, opts); }).then(function(response) {
         return response.text().then(function(body) {
-          if (!response.ok) throw new Error('HTTP ' + response.status);
-          return JSON.parse(body);
+          if (!response.ok) {
+            var httpErr = new Error('HTTP ' + response.status);
+            httpErr.name = 'HttpError'; httpErr.transport = 'http'; httpErr.status = response.status;
+            throw httpErr;
+          }
+          try { return JSON.parse(body); }
+          catch (parseErr) {
+            var jsonErr = new Error('Non-JSON response');
+            jsonErr.name = 'SyntaxError'; jsonErr.transport = 'nonjson'; jsonErr.bodyHead = String(body || '').slice(0, 120);
+            throw jsonErr;
+          }
         });
-      }).then(function(data) { finish(null, data); }, function(err) { finish(err); });
+      }).then(function(data) { noteTransport(null); finish(null, data); }, function(err) { noteTransport(err); finish(err); });
     });
   }
+
+  // ===== Transport health (2026-09-18 review, action 2) =====
+  // Our server always answers HTTP 200 with JSON. Anything else — Google's own
+  // HTML error page (a SyntaxError once parsed), a 404/429/5xx from its front
+  // door — means the BACKEND is degraded, not this device's network. Such an
+  // answer is never a "new version" (the update check already ignores non-200)
+  // and never "session expired" (only our JSON carries tokenExpired); and the
+  // whole fleet must slow down instead of re-asking at full speed — the 16/09
+  // storms that reached 119 concurrent executions were the fleet reacting to
+  // failures by retrying and reloading together. Timeouts and network errors
+  // leave the state alone: one ~93 s hang looks exactly like no network.
+  var transportState = 'ok';   // 'ok' | 'degraded' — the last classified answer
+  var transportDegradedSince = 0;
+  function noteTransport(err) {
+    if (!err) { transportState = 'ok'; transportDegradedSince = 0; return; }
+    if (err.transport === 'http' || err.transport === 'nonjson') {
+      if (transportState !== 'degraded') transportDegradedSince = Date.now();
+      transportState = 'degraded';
+    }
+  }
+  function isBackendDegraded() { return transportState === 'degraded'; }
+  // ===== end transport health =====
 
   function apiGet(params, timeoutMs) {
     var qs = ['origin=' + encodeURIComponent(API_ORIGIN)];
@@ -1608,7 +1639,10 @@
       console.log('[APPROVAL] Error (fail #' + approvalFailCount + '):', err);
       updateApprovalDebug('בדיקה #' + pollNum + ' נכשלה', 'שגיאה: ' + String(err).substring(0, 80));
       if (approvalFailCount >= 3) {
-        showApprovalError('בעיית תקשורת עם השרת. נסה לרענן את הדף.');
+        // a degraded backend must not be answered with reloads (the 16/09 storms)
+        showApprovalError(isBackendDegraded()
+          ? 'השרת עמוס כרגע — ממשיכים לנסות אוטומטית. אין צורך לרענן את הדף.'
+          : 'בעיית תקשורת עם השרת. נסה לרענן את הדף.');
       }
     });
   }
@@ -1726,6 +1760,17 @@
     if (worse) return Math.min(Math.round(currentMs * POLL_BACKOFF_FACTOR), maxMs);
     return Math.max(baseMs, Math.round(currentMs / POLL_BACKOFF_FACTOR));
   }
+  // Degraded backend (see isBackendDegraded): the fleet polls every 30-60 s,
+  // jittered, until a JSON answer comes back, then steps down as usual.
+  var POLL_DEGRADED_MIN_MS = 30000;
+  var POLL_DEGRADED_MAX_MS = 60000;
+  function pacePoll(currentMs, baseMs, maxMs, worse) {
+    if (isBackendDegraded()) {
+      var slowed = nextPollDelay(currentMs, baseMs, POLL_DEGRADED_MAX_MS, worse);
+      return Math.min(Math.max(slowed, POLL_DEGRADED_MIN_MS), POLL_DEGRADED_MAX_MS);
+    }
+    return nextPollDelay(currentMs, baseMs, maxMs, worse);
+  }
   // ===== end poll pacing =====
 
   // 2026-08-26: dozens of waiting examinees polling every 5s were a large share
@@ -1757,7 +1802,7 @@
     var reschedule = function() {
       if (approvalInterval === null || myGen !== approvalPollGen) return;  // stopped/restarted meanwhile
       var slow = (Date.now() - t0) > 6000;
-      approvalPollDelayMs = nextPollDelay(approvalPollDelayMs, APPROVAL_POLL_BASE_MS, APPROVAL_POLL_MAX_MS, slow || approvalFailCount > 0);
+      approvalPollDelayMs = pacePoll(approvalPollDelayMs, APPROVAL_POLL_BASE_MS, APPROVAL_POLL_MAX_MS, slow || approvalFailCount > 0);
       approvalInterval = setTimeout(approvalPollTick, jitterMs(approvalPollDelayMs));
     };
     if (p && typeof p.then === 'function') { p.then(reschedule, reschedule); } else { reschedule(); }
@@ -2534,7 +2579,7 @@
         }
       }).catch(function() { failed = true; }).then(function() {
         if (!isCurrent()) return;
-        dqOverturnDelayMs = nextPollDelay(dqOverturnDelayMs, DQ_POLL_BASE_MS, DQ_POLL_MAX_MS, failed || Date.now() - started > 6000);
+        dqOverturnDelayMs = pacePoll(dqOverturnDelayMs, DQ_POLL_BASE_MS, DQ_POLL_MAX_MS, failed || Date.now() - started > 6000);
         // jitter our own wait, but never retry before the wait the server asked for
         dqOverturnInterval = setTimeout(dqOverturnPollTick, Math.max(jitterMs(dqOverturnDelayMs), serverWaitMs));
       });
@@ -3147,7 +3192,7 @@
       .then(function() {
         if (examStatusInterval === null || myGen !== examStatusGen) return;
         var slow = (Date.now() - t0) > 6000;
-        examStatusDelayMs = nextPollDelay(examStatusDelayMs, EXAMSTATUS_POLL_BASE_MS, EXAMSTATUS_POLL_MAX_MS, slow || failed);
+        examStatusDelayMs = pacePoll(examStatusDelayMs, EXAMSTATUS_POLL_BASE_MS, EXAMSTATUS_POLL_MAX_MS, slow || failed);
         examStatusInterval = setTimeout(examStatusPollTick, jitterMs(examStatusDelayMs));
       });
   }

@@ -1116,12 +1116,43 @@
       }
       Promise.resolve().then(function() { return fetch(url, opts); }).then(function(response) {
         return response.text().then(function(body) {
-          if (!response.ok) throw new Error('HTTP ' + response.status);
-          return JSON.parse(body);
+          if (!response.ok) {
+            var httpErr = new Error('HTTP ' + response.status);
+            httpErr.name = 'HttpError'; httpErr.transport = 'http'; httpErr.status = response.status;
+            throw httpErr;
+          }
+          try { return JSON.parse(body); }
+          catch (parseErr) {
+            var jsonErr = new Error('Non-JSON response');
+            jsonErr.name = 'SyntaxError'; jsonErr.transport = 'nonjson'; jsonErr.bodyHead = String(body || '').slice(0, 120);
+            throw jsonErr;
+          }
         });
-      }).then(function(data) { finish(null, data); }, function(err) { finish(err); });
+      }).then(function(data) { noteTransport(null); finish(null, data); }, function(err) { noteTransport(err); finish(err); });
     });
   }
+
+  // ===== Transport health (2026-09-18 review, action 2) =====
+  // Our server always answers HTTP 200 with JSON. Anything else — Google's own
+  // HTML error page (a SyntaxError once parsed), a 404/429/5xx from its front
+  // door — means the BACKEND is degraded, not this device's network. Such an
+  // answer is never a "new version" (the update check already ignores non-200)
+  // and never "session expired" (only our JSON carries tokenExpired); and the
+  // whole fleet must slow down instead of re-asking at full speed — the 16/09
+  // storms that reached 119 concurrent executions were the fleet reacting to
+  // failures by retrying and reloading together. Timeouts and network errors
+  // leave the state alone: one ~93 s hang looks exactly like no network.
+  var transportState = 'ok';   // 'ok' | 'degraded' — the last classified answer
+  var transportDegradedSince = 0;
+  function noteTransport(err) {
+    if (!err) { transportState = 'ok'; transportDegradedSince = 0; return; }
+    if (err.transport === 'http' || err.transport === 'nonjson') {
+      if (transportState !== 'degraded') transportDegradedSince = Date.now();
+      transportState = 'degraded';
+    }
+  }
+  function isBackendDegraded() { return transportState === 'degraded'; }
+  // ===== end transport health =====
 
   // timeoutMs is forwarded, not ignored. It used to be missing here while the
   // commander-dashboard call already passed `90000` as a second argument — so
@@ -1249,7 +1280,9 @@
       }
     }).catch(function() {
       btn.disabled = false; btn.textContent = 'כניסה';
-      errEl.textContent = 'שגיאת תקשורת. נסה שוב.';
+      errEl.textContent = isBackendDegraded()
+        ? 'השרת (Google) עמוס או משיב בשגיאה כרגע. נסה שוב בעוד דקה — אין צורך לרענן את הדף.'
+        : 'שגיאת תקשורת. נסה שוב.';
       errEl.style.display = 'block';
     });
   });
@@ -1940,6 +1973,17 @@
     if (worse) return Math.min(Math.round(currentMs * POLL_BACKOFF_FACTOR), maxMs);
     return Math.max(baseMs, Math.round(currentMs / POLL_BACKOFF_FACTOR));
   }
+  // Degraded backend (see isBackendDegraded): the fleet polls every 30-60 s,
+  // jittered, until a JSON answer comes back, then steps down as usual.
+  var POLL_DEGRADED_MIN_MS = 30000;
+  var POLL_DEGRADED_MAX_MS = 60000;
+  function pacePoll(currentMs, baseMs, maxMs, worse) {
+    if (isBackendDegraded()) {
+      var slowed = nextPollDelay(currentMs, baseMs, POLL_DEGRADED_MAX_MS, worse);
+      return Math.min(Math.max(slowed, POLL_DEGRADED_MIN_MS), POLL_DEGRADED_MAX_MS);
+    }
+    return nextPollDelay(currentMs, baseMs, maxMs, worse);
+  }
   // ===== end poll pacing =====
 
   // ===== Adaptive dashboard polling =====
@@ -1979,10 +2023,10 @@
       var slow = (Date.now() - t0) > 6000;
       var syncingNow = dashSyncSince && (Date.now() - dashSyncSince) < DASH_SYNC_FAST_WINDOW_MS;
       if (slow || failedPolls > 0) {
-        dashPollDelayMs = nextPollDelay(dashPollDelayMs, DASH_POLL_BASE_MS, DASH_POLL_MAX_MS, true);
+        dashPollDelayMs = pacePoll(dashPollDelayMs, DASH_POLL_BASE_MS, DASH_POLL_MAX_MS, true);
       } else if (dashPollDelayMs > DASH_POLL_BASE_MS) {
         // still coming down from a backoff: one step per healthy answer
-        dashPollDelayMs = nextPollDelay(dashPollDelayMs, DASH_POLL_BASE_MS, DASH_POLL_MAX_MS, false);
+        dashPollDelayMs = pacePoll(dashPollDelayMs, DASH_POLL_BASE_MS, DASH_POLL_MAX_MS, false);
       } else {
         dashPollDelayMs = syncingNow ? DASH_POLL_SYNC_MS : DASH_POLL_BASE_MS;
       }
@@ -2005,6 +2049,8 @@
     if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null; }
   }
 
+  var OFFLINE_BANNER_TEXT = 'אין חיבור לשרת. מנסה שוב...';
+  var OFFLINE_BANNER_DEGRADED_TEXT = 'השרת (Google) עמוס או משיב בשגיאה — ממשיכים לנסות אוטומטית כל 30–60 שניות. אין צורך לרענן את הדף או להתחבר מחדש.';
   function pollDashboard() {
     var requestedSession = sessionCode;
     var requestedToken = examinerToken;
@@ -2021,7 +2067,16 @@
     function recordFailure() {
       if (!isCurrent()) return;
       failedPolls++;
-      if (failedPolls >= 3) document.getElementById('offlineBanner').classList.add('show');
+      var banner = document.getElementById('offlineBanner');
+      if (isBackendDegraded()) {
+        // the backend itself answered badly: say so at once, and say what NOT
+        // to do — the 16/09 storms were tablets reloading and logging in again
+        banner.textContent = OFFLINE_BANNER_DEGRADED_TEXT;
+        banner.classList.add('show');
+      } else if (failedPolls >= 3) {
+        banner.textContent = OFFLINE_BANNER_TEXT;
+        banner.classList.add('show');
+      }
     }
     // Returned so the adaptive scheduler (dashboardPollTick) can measure
     // duration and pace the next poll. Handlers below are unchanged.
@@ -7798,6 +7853,64 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     fetchCommanderData('daily');
   };
 
+  // ===== Remembered login (2026-09-18 review, action 2) =====
+  // The saved login used to be discarded on ANY answer that was not ok — a
+  // server hiccup, Google's HTML error page, a rate limit — so a transient
+  // failure at boot put the examiner in front of the password screen (16/09:
+  // every reloaded tablet). Only the server's own verdict (tokenExpired)
+  // discards it now; anything else keeps it and offers a retry in place.
+  var REMEMBERED_LOGIN_RETRY_TEXT = 'לא הצלחנו לאמת את הכניסה השמורה — השרת לא זמין כרגע. ';
+  function verifyRememberedLogin(creds) {
+    var errEl = document.getElementById('loginError');
+    if (errEl) errEl.style.display = 'none';
+    var qs = 'action=verifyLogin&origin=' + encodeURIComponent(API_ORIGIN) + '&examinerId=' + encodeURIComponent(creds.id) + '&token=' + encodeURIComponent(creds.token) + '&_t=' + Date.now();
+    return fetchJsonWithTimeout(API_URL + '?' + qs, { cache: 'no-store' }).then(function(data) {
+      if (data && data.status === 'ok' && data.examiner) { enterAsRemembered(creds, data); return 'ok'; }
+      if (data && data.tokenExpired === true) {
+        // the server's verdict, not a transport accident: the saved token is dead
+        try { localStorage.removeItem('ext_examiner_remember'); } catch(ex) {}
+        return 'expired';
+      }
+      showRememberedLoginRetry(creds, (data && data.message) || '');
+      return 'retry';
+    }).catch(function() { showRememberedLoginRetry(creds, ''); return 'retry'; });
+  }
+  function showRememberedLoginRetry(creds, serverMessage) {
+    var errEl = document.getElementById('loginError');
+    if (!errEl) return;
+    errEl.innerHTML = '<span id="rememberedLoginMsg"></span> <button type="button" id="rememberedLoginRetry" style="margin-right:8px;padding:6px 14px;font-weight:700;border-radius:8px;border:1px solid #1a73e8;background:#fff;color:#1a73e8;cursor:pointer;">נסה שוב</button>';
+    document.getElementById('rememberedLoginMsg').textContent = REMEMBERED_LOGIN_RETRY_TEXT + (serverMessage ? '(' + serverMessage + ') ' : '');
+    document.getElementById('rememberedLoginRetry').addEventListener('click', function() { verifyRememberedLogin(creds); });
+    errEl.style.display = 'block';
+  }
+  // ===== end remembered login =====
+
+  // The success branch of the remembered login, unchanged from the boot block
+  // it was lifted out of (kept outside the section above so that stays testable).
+  function enterAsRemembered(creds, data) {
+    examinerData = data.examiner;
+    examinerToken = creds.token;
+    userRole = examinerData.role || 'בוחן';
+    document.getElementById('topbarInfo').textContent = examinerData.name;
+    document.getElementById('logoutBtn').style.display = 'inline-block';
+    if (userRole === 'מפקד מרכז') {
+      document.querySelector('.topbar h1').textContent = 'לוח בקרה — מפקד מרכז';
+      showScreen('screenCenterCommander');
+      initCenterCommanderDashboard();
+    } else if (userRole === 'מפקד') {
+      document.querySelector('.topbar h1').textContent = 'לוח בקרה — מפקד';
+      showScreen('screenCommander');
+      initCommanderDashboard();
+    } else {
+      document.querySelector('.topbar h1').textContent = 'לוח בקרה — בוחן';
+      document.getElementById('setupExaminerName').textContent = 'שלום, ' + examinerData.name;
+      showScreen('screenSetup');
+      fetchSites();
+      fetchActiveExaminers();
+      fetchPreviousSessions();
+    }
+  }
+
   // ========== Auto-restore on page load ==========
   if (loadState() && examinerToken) {
     userRole = (examinerData && examinerData.role) || 'בוחן';
@@ -7839,35 +7952,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
         if (creds.id && creds.token) {
           // Token-based auto-login: verify token with server
           document.getElementById('rememberMe').checked = true;
-          var qs = 'action=verifyLogin&origin=' + encodeURIComponent(API_ORIGIN) + '&examinerId=' + encodeURIComponent(creds.id) + '&token=' + encodeURIComponent(creds.token) + '&_t=' + Date.now();
-          fetch(API_URL + '?' + qs, { cache: 'no-store' }).then(function(r) { return r.json(); }).then(function(data) {
-            if (data && data.status === 'ok' && data.examiner) {
-              examinerData = data.examiner;
-              examinerToken = creds.token;
-              userRole = examinerData.role || 'בוחן';
-              document.getElementById('topbarInfo').textContent = examinerData.name;
-              document.getElementById('logoutBtn').style.display = 'inline-block';
-              if (userRole === 'מפקד מרכז') {
-                document.querySelector('.topbar h1').textContent = 'לוח בקרה — מפקד מרכז';
-                showScreen('screenCenterCommander');
-                initCenterCommanderDashboard();
-              } else if (userRole === 'מפקד') {
-                document.querySelector('.topbar h1').textContent = 'לוח בקרה — מפקד';
-                showScreen('screenCommander');
-                initCommanderDashboard();
-              } else {
-                document.querySelector('.topbar h1').textContent = 'לוח בקרה — בוחן';
-                document.getElementById('setupExaminerName').textContent = 'שלום, ' + examinerData.name;
-                showScreen('screenSetup');
-                fetchSites();
-          fetchActiveExaminers();
-                fetchPreviousSessions();
-              }
-            } else {
-              // Token expired — clear and show login
-              try { localStorage.removeItem('ext_examiner_remember'); } catch(ex) {}
-            }
-          }).catch(function() {});
+          verifyRememberedLogin(creds);
         } else if (creds.id && creds.pass) {
           // Legacy: password-based credentials found — clear them for security, require fresh login
           try { localStorage.removeItem('ext_examiner_remember'); } catch(ex) {}
