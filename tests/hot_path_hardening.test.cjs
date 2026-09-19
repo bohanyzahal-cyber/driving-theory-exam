@@ -275,6 +275,65 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
       assert.equal(propWrites(), 0);
     });
   }
+  // (f) 2026-09-19 (review action 4): the SLOW append leaves the response path
+  // as soon as appends stop being healthy. 17/09 10:43 the append itself hung
+  // 93 s inside a 187 s execution; 16/09 at least seven rows never arrived.
+  {
+    const diag = env.sheet('אבחון');
+    const realAppend = diag.appendRow.bind(diag);
+    const parkedRows = () => [...env.properties.keys()].filter(k => k.startsWith('qv2_diagrow_'));
+    diag.appendRow = r => { env.clock.t += 3000; realAppend(r); };      // one append slower than 2s
+    const before = diag.rows.length;
+    env.ctx.diagBegin('GET'); env.ctx.DIAG_EXEC.t0 = env.clock.t; env.ctx.DIAG_EXEC.action = 'examinerDashboard';
+    env.clock.t += 16000; env.ctx.diagFinish('examinerDashboard', env.clock.t - 16000);
+    check('a slow append still lands, but opens the breaker and leaves nothing parked', () => {
+      assert.equal(diag.rows.length, before + 1);
+      assert.ok(env.cache.get('qv2_diagbreaker'), 'breaker open');
+      assert.deepEqual(parkedRows(), []);
+    });
+    diag.appendRow = realAppend;
+    env.ctx.diagBegin('GET'); env.ctx.DIAG_EXEC.t0 = env.clock.t; env.ctx.DIAG_EXEC.action = 'getExamStatus';
+    env.clock.t += 16000; env.ctx.diagFinish('getExamStatus', env.clock.t - 16000);
+    check('while the breaker is open a SLOW row is parked in properties, not appended', () => {
+      assert.equal(diag.rows.length, before + 1);
+      assert.equal(parkedRows().length, 1);
+    });
+    const flushed = env.ctx.flushDiagnostics();
+    check('the sweep writes the parked row to the sheet and clears it', () => {
+      assert.match(flushed, /1 parked SLOW row\(s\) written/);
+      assert.equal(diag.rows.length, before + 2);
+      assert.equal(diag.rows[before + 1][1], 'SLOW'); assert.equal(diag.rows[before + 1][3], 'getExamStatus');
+      assert.deepEqual(parkedRows(), []);
+    });
+    env.cache.remove('qv2_diagbreaker');
+    env.clock.t += 400000;
+    env.ctx.diagBegin('GET'); env.ctx.DIAG_EXEC.t0 = env.clock.t; env.ctx.DIAG_EXEC.action = 'checkApproval';
+    env.clock.t += 16000; env.ctx.diagFinish('checkApproval', env.clock.t - 16000);
+    check('with the breaker closed again, rows are appended in place as before', () => {
+      assert.equal(diag.rows.length, before + 3); assert.deepEqual(parkedRows(), []);
+    });
+  }
+  // (g) 2026-09-19 (review action 3): the trail marks the document open, the
+  // token read and the tail mode — the three places the 17/09 pre-handler
+  // seconds could have gone, which the old marks could not tell apart.
+  {
+    env.ctx._spreadsheetHandle = null;                       // a fresh execution opens the document again
+    env.ctx.checkOrigin = p => { env.clock.t += 20000; return realCheckOrigin(p); };
+    const out = env.json(env.ctx.doGet({ parameter: { action: 'examinerDashboard', origin: 'examiner-app', sessionCode: 'S1', examinerId: '1', token: 'x' } }));
+    env.ctx.checkOrigin = realCheckOrigin;
+    check('a slow examiner request marks ss:open and auth:token before its handler', () => {
+      assert.equal(out.tokenExpired, true);
+      const rows = env.sheet('אבחון').rows, row = rows[rows.length - 1];
+      assert.equal(row[3], 'examinerDashboard');
+      assert.match(row[6], /ss:open@\d+ auth:token@\d+/);
+    });
+    env.ctx.diagBegin('GET'); env.ctx.DIAG_EXEC.t0 = env.clock.t;
+    const results = env.sheet('תוצאות');
+    for (let i = results.rows.length; i < 5; i++) results.appendRow(['2026-09-19T00:00:00.000Z', 'row' + i]);
+    env.ctx.readTail(results, 0);
+    check('readTail marks the read mode it used', () => assert.match(env.ctx.DIAG_EXEC.notes.join(' '), /tail:small\/\d+/));
+    env.ctx.DIAG_EXEC = null;
+  }
 }
 
 // ---- 6b. result submission must not touch Drive -----------------------------
@@ -594,8 +653,8 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
     assert.equal(w(12), 210, 'daytime: 13, 14 + the working tick\'s own hour + drift');
     assert.equal(w(0), 210, 'the nightly-job hours are ordinary hours for scheduling');
     assert.equal(w(2), 210);
-    assert.equal(w(7), 270, '08 may not (exam start), 09, 10');
-    assert.equal(w(6), 270, '07, 08 may not, 09');
+    assert.equal(w(7), 390, '08-10 may not (exam hours, r22), 11, 12');
+    assert.equal(w(6), 390, '07, 08-10 may not, 11');
   });
 
   at(env, 9);
@@ -639,8 +698,11 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
     assert.match(env.ctx.ensureQuestionCachesWarm(), /^rebuilt \(pre-exam refresh \(7:00 hour\)\)/));
 
   // ---- the 08:00 exam start wave ----
-  at(env, 8, 5); setAge(env, 230); before = drive(env);
-  check('08:00 exam start hour: an age that would rebuild at any other hour does NOT rebuild', () => {
+  at(env, 8, 5); setAge(env, 230);
+  check('08:05 — a 07:50 tick that drifted late: the refresh still runs, it ends before the 08:30 wave', () =>
+    assert.match(env.ctx.ensureQuestionCachesWarm(), /^rebuilt \(age 230 min/));
+  at(env, 8, 20); setAge(env, 230); before = drive(env);
+  check('08:20 exam start hour: an age that would rebuild at any other hour does NOT rebuild', () => {
     assert.match(env.ctx.ensureQuestionCachesWarm(), /^warm: .*exam start hour — no scheduled rebuild/);
     assert.equal(drive(env), before);
   });
@@ -740,7 +802,7 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
       if (atRiskRunning) e.ctx.markJobRunning('rebuildAtRiskCache', false);
       if (/^rebuilt/.test(result)) {
         out.rebuilds++;
-        if (hr === 8) out.examStartRebuilds.push('day' + day + ' ' + result.slice(0, 40));
+        if ((hr === 8 && mn >= 15) || hr === 9 || hr === 10) out.examStartRebuilds.push('day' + day + ' ' + result.slice(0, 40));
       }
     }
     return out;
@@ -763,7 +825,7 @@ const check = (label, fn) => { fn(); checks++; console.log('ok  ' + label); };
     assert.deepEqual(sweep.filter(r => r.minMarginMin < 15).map(r => label(r) + ' tightest ' + Math.round(r.minMarginMin) + ' min'), []));
   check('4 days × timer minutes: never runs on top of the archive or the at-risk job', () =>
     assert.deepEqual(sweep.flatMap(r => r.overlaps.map(o => label(r) + ' ' + o)), []));
-  check('4 days × timer minutes: no rebuild ever starts inside the 08:00 exam start wave', () =>
+  check('4 days × timer minutes: no rebuild ever starts inside the exam hours 08:15-10:59 (r22; 08:00-08:14 is the drifted 07 tick)', () =>
     assert.deepEqual(sweep.flatMap(r => r.examStartRebuilds.map(o => label(r) + ' ' + o)), []));
   check('4 days × timer minutes: every exam morning finds a cache built within the last 2.5 hours', () =>
     assert.deepEqual(sweep.filter(r => r.examMorningAges.length < 3 || r.examMorningAges.some(a => a > 150)).map(r => label(r) + ' ages ' + r.examMorningAges.join(',')), []));

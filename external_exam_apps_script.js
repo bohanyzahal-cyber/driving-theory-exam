@@ -71,8 +71,20 @@ function isExaminerSelfTest(name, id, excl) {
   return !!(nk && excl.names[nk]);           // name match — fuzzy fallback
 }
 
+// One spreadsheet handle per execution, and the first open is marked: on 17/09
+// an examinerDashboard spent 84.8 s before its first sheet mark, and the trail
+// could not say whether opening the document or reading 'בוחנים' took it.
+var _spreadsheetHandle = null;
+function getSpreadsheet() {
+  if (!_spreadsheetHandle) {
+    _spreadsheetHandle = SpreadsheetApp.getActiveSpreadsheet();
+    diagMark('ss:open');
+  }
+  return _spreadsheetHandle;
+}
+
 function getSheet(name) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ss = getSpreadsheet();
   var sheet = ss.getSheetByName(name);
   if (!sheet) {
     sheet = ss.insertSheet(name);
@@ -86,7 +98,7 @@ function getSheet(name) {
 }
 
 function getSheetIfExists(name) {
-  return SpreadsheetApp.getActiveSpreadsheet().getSheetByName(name);
+  return getSpreadsheet().getSheetByName(name);
 }
 
 // ========== Tail reads for append-only sheets (perf) ==========
@@ -122,17 +134,26 @@ function parseSheetDateTime(v) {
 function readTail(sheet, tsColIdx) {
   var lastRow = sheet.getLastRow();
   var lastCol = sheet.getLastColumn();
+  // The mode is marked so the 'אבחון' trail says which read the caller paid
+  // for: tail:small/<rows> (sheet fits in one tail), tail:<TAIL_ROWS>/<rows>, or
+  // tail:full/<rows> when the 48-hour guard fired — a burst period can push a
+  // live session above the last 1000 rows and turn every poll into a full read.
   if (lastRow - 1 <= TAIL_ROWS || lastCol < 1) {
-    return { rows: sheet.getDataRange().getValues(), off: 0 };
+    var small = sheet.getDataRange().getValues();
+    diagMark('tail:small/' + lastRow);
+    return { rows: small, off: 0 };
   }
   var startRow = lastRow - TAIL_ROWS + 1;
   var tail = sheet.getRange(startRow, 1, TAIL_ROWS, lastCol).getValues();
   var oldest = parseSheetDateTime(tail[0][tsColIdx]);
   if (!oldest || (Date.now() - oldest.getTime()) < TAIL_MAX_AGE_HOURS * 3600 * 1000) {
     // Tail might not cover a live session (burst day / unparseable timestamp).
-    return { rows: sheet.getDataRange().getValues(), off: 0 };
+    var full = sheet.getDataRange().getValues();
+    diagMark('tail:full/' + lastRow);
+    return { rows: full, off: 0 };
   }
   var header = sheet.getRange(1, 1, 1, lastCol).getValues();
+  diagMark('tail:' + TAIL_ROWS + '/' + lastRow);
   return { rows: header.concat(tail), off: startRow - 2 };
 }
 
@@ -400,7 +421,9 @@ function verifyToken(examinerId, token) {
 }
 
 function requireToken(p) {
-  if (!verifyToken(p.examinerId, p.token)) {
+  var valid = verifyToken(p.examinerId, p.token);
+  diagMark('auth:token');   // a full 'בוחנים' read, paid by every examiner poll before its handler starts
+  if (!valid) {
     return jsonResponse({ status: 'error', message: 'טוקן לא תקין — יש להתחבר מחדש', tokenExpired: true });
   }
   return null;
@@ -648,7 +671,7 @@ function todayStr() {
 }
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-17-r21';
+var THEORY_API_BUILD = '2026-09-19-r22';
 var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
 
 function logTheoryApiTiming(phase, method, action, startedAt) {
@@ -4360,8 +4383,15 @@ function warmupQuestionCaches(options) {
 // in a row inside "their" hours (01:58, 03:12, 03:55) and the cache went cold at
 // 05:09 — the third hour-wide rule to fail this simulation. Their running flag
 // and the script lock keep the check away for the minutes they actually run.
-var WARMUP_NO_SCHEDULED_REFRESH_HOURS = [8];
-var WARMUP_EXAM_START_HOURS = [8];
+// 2026-09-19 (review action 5): 09 and 10 joined 08. With 08 alone the age rule
+// started a full rebuild at ~10:50 on exam days (07:50 pre-exam refresh + 3 h of
+// look-ahead) — inside the results wave, leases and all. 11 stays free on
+// purpose: the timer-minute sweep showed that protecting up to 12 goes cold at
+// 12:43–13:13 when a :58 timer's 07 tick drifts into 08 and the 06:43 refresh
+// has to last until the 12 tick; with 11 free the day's refresh lands at
+// ~11:45–12:15 instead, after the morning's exam starts are over.
+var WARMUP_NO_SCHEDULED_REFRESH_HOURS = [8, 9, 10];
+var WARMUP_EXAM_START_HOURS = [8, 9, 10];
 var WARMUP_PREEXAM_HOURS = [6, 7];
 var WARMUP_PREEXAM_MIN_AGE_MS = 90 * 60 * 1000;
 var WARMUP_JOB_FLAG = 'job_running';
@@ -4397,6 +4427,17 @@ var WARMUP_ENSURE_FUNCTION = 'ensureQuestionCachesWarm';
 function warmupCanRefreshInHour(h) {
   return WARMUP_NO_SCHEDULED_REFRESH_HOURS.indexOf(h) < 0;
 }
+// A tick that lands in the first minutes of the first protected hour is the
+// previous hour's tick, drifted late (a 07:50 timer runs at 08:05). It may still
+// refresh: the rebuild ends well before the 08:30 wave, and refusing it left the
+// cache 9 minutes from expiry at 12:xx in the timer-minute sweep (06 tick
+// dropped, 07 tick drifted into 08, nothing allowed until 11). The look-ahead
+// keeps counting the whole hour as unable to refresh — that stays conservative.
+var WARMUP_DRIFTED_TICK_MINUTES = 15;
+function warmupCanRefreshNow(h, m) {
+  if (warmupCanRefreshInHour(h)) return true;
+  return h === WARMUP_NO_SCHEDULED_REFRESH_HOURS[0] && m < WARMUP_DRIFTED_TICK_MINUTES;
+}
 
 // Worst-case wait from a tick in `hour` until a later tick can rebuild: walk
 // forward hour by hour, counting only hours that may refresh, until 1 + the
@@ -4414,6 +4455,7 @@ function warmupWorstWaitMs(hour) {
 function ensureQuestionCachesWarm() {
   var t0 = Date.now();
   var hour = Number(Utilities.formatDate(new Date(), 'Asia/Jerusalem', 'H'));
+  var minute = new Date().getUTCMinutes();   // Israel is a whole number of hours from UTC
   var job = runningJobName();
   if (job) {
     Logger.log('[ENSURE] skipped: ' + job + ' is running');
@@ -4442,7 +4484,7 @@ function ensureQuestionCachesWarm() {
   else if (!status.ready) reason = 'cache not ready: ' + status.missingOrMixedKeys + ' missing/mixed keys, ' + status.decodeFailures + ' decode failures';
   else if (ageMs === null) reason = 'no complete warmup on record';   // e.g. the first run after deploy: establish the stamp
   else if (WARMUP_PREEXAM_HOURS.indexOf(hour) >= 0 && ageMs >= WARMUP_PREEXAM_MIN_AGE_MS) reason = 'pre-exam refresh (' + hour + ':00 hour)';
-  else if (warmupCanRefreshInHour(hour) && ageMs + warmupWorstWaitMs(hour) >= WARMUP_CACHE_TTL_MS - WARMUP_EXPIRY_BUFFER_MS) {
+  else if (warmupCanRefreshNow(hour, minute) && ageMs + warmupWorstWaitMs(hour) >= WARMUP_CACHE_TTL_MS - WARMUP_EXPIRY_BUFFER_MS) {
     reason = 'age ' + Math.round(ageMs / 60000) + ' min could outlive the cache before the next safe tick (worst wait ' +
       Math.round(warmupWorstWaitMs(hour) / 60000) + ' min)';
   }
@@ -4754,22 +4796,73 @@ function diagFinish(action, startedAt) {
       try { PropertiesService.getScriptProperties().deleteProperty(QUESTION_CACHE_PREFIX + 'diag_' + DIAG_EXEC.id); } catch (eDel) {}
     }
     if (elapsed >= DIAG_SLOW_MS) {
-      getDiagnosticsSheet().appendRow([nowISO(), 'SLOW', DIAG_EXEC.method, action || DIAG_EXEC.action || '', elapsed,
+      diagRecordRow(DIAG_EXEC.id, [nowISO(), 'SLOW', DIAG_EXEC.method, action || DIAG_EXEC.action || '', elapsed,
         DIAG_EXEC.phase || '', DIAG_EXEC.notes.join(' ')]);
     }
   } catch (e) { /* never throw into the response path */ }
   finally { DIAG_EXEC = null; }
 }
 
+// A SLOW row used to be appended to the document straight from the response
+// path of the slow request itself — one more write to the very document that
+// had just stalled. 17/09 10:43: the append itself hung ~93 s (187 s execution,
+// 92.9 s row); 16/09 morning: at least seven rows of 45-279 s executions never
+// arrived, so the sheet read "healthy" at the worst moment. Now the row is
+// parked in ScriptProperties first (a different service), and appended in
+// place only while appends are healthy: one append that fails or takes longer
+// than DIAG_APPEND_SLOW_MS opens a breaker for DIAG_APPEND_BREAKER_SEC, and the
+// rows wait for the hourly sweep (or flushDiagnostics() from the editor).
+var DIAG_ROW_PREFIX = 'diagrow_';
+var DIAG_APPEND_BREAKER_KEY = 'diagbreaker';
+var DIAG_APPEND_BREAKER_SEC = 300;
+var DIAG_APPEND_SLOW_MS = 2000;
+function diagRecordRow(id, row) {
+  var key = QUESTION_CACHE_PREFIX + DIAG_ROW_PREFIX + id, parked = false;
+  try { PropertiesService.getScriptProperties().setProperty(key, JSON.stringify(row)); parked = true; } catch (eProp) {}
+  var cache = null, breakerOpen = false;
+  try { cache = CacheService.getScriptCache(); breakerOpen = !!cache.get(QUESTION_CACHE_PREFIX + DIAG_APPEND_BREAKER_KEY); } catch (eGet) {}
+  if (breakerOpen) return 'parked';
+  var t0 = Date.now(), appended = false;
+  try { getDiagnosticsSheet().appendRow(row); appended = true; } catch (eAppend) {}
+  if (!appended || Date.now() - t0 > DIAG_APPEND_SLOW_MS) {
+    try { if (cache) cache.put(QUESTION_CACHE_PREFIX + DIAG_APPEND_BREAKER_KEY, String(Date.now()), DIAG_APPEND_BREAKER_SEC); } catch (ePut) {}
+  }
+  if (appended && parked) { try { PropertiesService.getScriptProperties().deleteProperty(key); } catch (eDel) {} }
+  return appended ? 'appended' : 'parked';
+}
+
+// Run from the editor during an exam morning if 'אבחון' looks empty while the
+// dashboards are slow: writes the parked SLOW rows and records killed executions.
+function flushDiagnostics() {
+  var r = diagSweep(null);
+  var msg = 'flushDiagnostics: ' + r.flushed + ' parked SLOW row(s) written, ' + r.swept + ' killed-execution marker(s) recorded';
+  Logger.log(msg);
+  return msg;
+}
+
 // Called by the warmup: markers older than DIAG_STALE_MS belong to executions
 // that never finished (killed at 360s, or crashed) - record where they were.
 function diagSweep(summary) {
-  var swept = 0;
+  var swept = 0, flushed = 0;
   try {
     var props = PropertiesService.getScriptProperties(), all = props.getProperties(), prefix = QUESTION_CACHE_PREFIX + 'diag_';
+    var rowPrefix = QUESTION_CACHE_PREFIX + DIAG_ROW_PREFIX;
     var sheet = null;
     for (var key in all) {
-      if (!Object.prototype.hasOwnProperty.call(all, key) || key.indexOf(prefix) !== 0) continue;
+      if (!Object.prototype.hasOwnProperty.call(all, key)) continue;
+      if (key.indexOf(rowPrefix) === 0) {
+        // a SLOW row parked while the append breaker was open (diagRecordRow)
+        var row = null;
+        try { row = JSON.parse(all[key]); } catch (eRow) {}
+        if (row && row.length) {
+          if (!sheet) sheet = getDiagnosticsSheet();
+          sheet.appendRow(row);
+          flushed++;
+        }
+        props.deleteProperty(key);
+        continue;
+      }
+      if (key.indexOf(prefix) !== 0) continue;
       var entry = null;
       try { entry = JSON.parse(all[key]); } catch (e) {}
       if (entry && entry.t && Date.now() - entry.t < DIAG_STALE_MS) continue; // still running, leave it
@@ -4782,8 +4875,8 @@ function diagSweep(summary) {
       swept++;
     }
   } catch (e) { if (summary) summary.push('diagnostics sweep: skipped (' + (e && e.message ? e.message : e) + ')'); }
-  if (summary) summary.push('diagnostics sweep: ' + swept + ' stale marker(s) recorded');
-  return swept;
+  if (summary) summary.push('diagnostics sweep: ' + swept + ' stale marker(s) recorded, ' + flushed + ' parked row(s) flushed');
+  return { swept: swept, flushed: flushed };
 }
 
 function getDiagnosticsSheet() {
@@ -7239,7 +7332,9 @@ function verifyTeacherToken(teacherId, token) {
 }
 
 function requireTeacherToken(p) {
-  if (!verifyTeacherToken(p.teacherId, p.token)) {
+  var valid = verifyTeacherToken(p.teacherId, p.token);
+  diagMark('auth:teacher');
+  if (!valid) {
     return jsonResponse({ status: 'error', message: 'טוקן לא תקין — יש להתחבר מחדש', tokenExpired: true });
   }
   return null;
