@@ -79,6 +79,11 @@ function context(extra = {}, timer = new Timers()) {
 }
 function load(ctx, code) { vm.runInContext(code, ctx); }
 const helper = src => section(src, '  var API_TIMEOUT_MS = 30000;', '  function apiGet(');
+// 2026-09-18 poll pacing block (jitter, gradual recovery, 60s poll deadline). Every
+// poll section reaches it at call time; contexts pin the jitter to identity so the
+// fake clock stays exact, and the real jitter is tested on its own below.
+const pollHelpers = src => section(src, '  // ===== Poll pacing', '  // ===== end poll pacing');
+function withPacing(ctx, src) { load(ctx, pollHelpers(src)); ctx.jitterMs = ms => ms; }
 
 for (const [name, src] of [['examiner', examiner], ['examinee', examinee]]) {
   test(name + ': deadline includes a stalled response body and ignores a late body', async () => {
@@ -115,6 +120,7 @@ function dashboardContext(apiGet) {
     updatePendingList() {}, updateActiveList() {}, updateCompletedList() {} });
   setup.ctx.window = setup.ctx;
   load(setup.ctx, section(examiner, '  var DASH_POLL_BASE_MS', '  // ========== Pending list'));
+  withPacing(setup.ctx, examiner);
   return { ...setup, ...ui };
 }
 test('dashboard counts server errors and only a successful response clears the warning', async () => {
@@ -191,6 +197,7 @@ function approvalContext(apiGet) {
     notifyApprovedToExaminee() {}, showInstructions() {}, sessionData: {} });
   load(setup.ctx, section(examinee, '  function doCheckApproval()', '  function showApprovalError(msg)'));
   load(setup.ctx, section(examinee, '  var APPROVAL_POLL_BASE_MS', '  // Translation files are no longer'));
+  withPacing(setup.ctx, examinee);
   return { ...setup, ...ui };
 }
 test('approval counts repeated server errors and stops on approval without overlapping the first poll', async () => {
@@ -320,6 +327,7 @@ function dqContext(apiGet) {
   const setup = context({ apiGet, sessionCode: 'TEST00', examineeData: { idNumber: 'SYNTHETIC' }, examineeToken: 'synthetic',
     examRetryWaitSeconds: data => Number(data && data.waitSec) || 0, restoreExamFromSuspended() {}, showFinalDQScreen() {} });
   load(setup.ctx, section(examinee, '  var dqOverturnInterval = null;', '  function showFinalDQScreen()'));
+  withPacing(setup.ctx, examinee);
   return setup;
 }
 test('DQ polling never overlaps, backs off on failure and stops immediately on an overturn', async () => {
@@ -981,4 +989,86 @@ test('all inline client scripts and both service workers parse', () => {
     assert.ok(count > 0);
   }
   for (const name of ['sw-examiner.js', 'sw-examinee.js']) new vm.Script(fs.readFileSync(path.join(app, name), 'utf8'), { filename: name });
+});
+
+// ===== 2026-09-18 review, action 1: poll pacing — jitter, gradual recovery, 60s poll deadline =====
+// A fleet released by one server stall used to re-arrive as a single burst
+// (no randomness anywhere in the poll loops, and one fast answer snapped every
+// device back to its base interval at the same moment). Polls also abandoned
+// the server at 30s and asked again while the abandoned execution kept running.
+for (const [name, src] of [['examiner', examiner], ['examinee', examinee]]) {
+  test(name + ': poll jitter stays within ±30% and varies; backoff steps up to the cap and down to the base', () => {
+    const { ctx } = context(); load(ctx, pollHelpers(src));
+    const seen = new Set();
+    for (let i = 0; i < 300; i++) {
+      const v = ctx.jitterMs(10000);
+      assert.ok(Number.isInteger(v) && v >= 7000 && v <= 13000, 'jitter within ±30%: ' + v);
+      seen.add(v);
+    }
+    assert.ok(seen.size > 10, 'jitter is random, not a constant');
+    assert.equal(ctx.POLL_TIMEOUT_MS, 60000);
+    let d = 5000; const up = [], down = [];
+    for (let i = 0; i < 5; i++) { d = ctx.nextPollDelay(d, 5000, 20000, true); up.push(d); }
+    assert.deepEqual(up, [7500, 11250, 16875, 20000, 20000], 'backoff ×1.5 capped at the max');
+    for (let i = 0; i < 5; i++) { d = ctx.nextPollDelay(d, 5000, 20000, false); down.push(d); }
+    assert.deepEqual(down, [13333, 8889, 5926, 5000, 5000], 'recovery ÷1.5 floored at the base');
+  });
+}
+test('dashboard forwards the 60s poll deadline, jitters every wait and comes down from a backoff one step at a time', async () => {
+  let deadline = null, gate = deferred(); const jittered = [];
+  const { ctx, timer } = dashboardContext((params, timeoutMs) => { deadline = timeoutMs; return gate.promise; });
+  ctx.jitterMs = ms => { jittered.push(ms); return ms; };
+  const ok = { status: 'ok', pending: [], active: [], completed: [] };
+  ctx.startDashboardPolling(); await drain();
+  assert.equal(deadline, 60000, 'polls get the 60s deadline, not the 30s action default');
+  await timer.advance(7000); gate.resolve(ok); await drain(); assert.equal(ctx.dashPollDelayMs, 7500, 'a 7s answer is slow: ×1.5');
+  gate = deferred(); await timer.advance(7500); await timer.advance(7000); gate.resolve(ok); await drain(); assert.equal(ctx.dashPollDelayMs, 11250);
+  gate = deferred(); await timer.advance(11250); gate.resolve(ok); await drain(); assert.equal(ctx.dashPollDelayMs, 7500, 'a fast answer steps down; it no longer snaps to 5s');
+  gate = deferred(); await timer.advance(7500); gate.resolve(ok); await drain(); assert.equal(ctx.dashPollDelayMs, 5000);
+  assert.deepEqual(jittered, [7500, 11250, 7500, 5000], 'every scheduled wait went through the jitter');
+  ctx.stopDashboardPolling(); assert.equal(timer.jobs.size, 0);
+});
+test('approval poll forwards the 60s deadline, jitters every wait and steps back down after slow answers', async () => {
+  let deadline = null, gate = deferred(), calls = 0; const jittered = [];
+  const { ctx, timer } = approvalContext((params, timeoutMs) => { calls++; deadline = timeoutMs; return gate.promise; });
+  ctx.jitterMs = ms => { jittered.push(ms); return ms; };
+  const waiting = { status: 'ok', approval: 'waiting' };
+  ctx.startApprovalPolling(); await drain();
+  assert.equal(calls, 1); assert.equal(deadline, 60000);
+  await timer.advance(7000); gate.resolve(waiting); await drain(); assert.equal(ctx.approvalPollDelayMs, 7500);
+  gate = deferred(); await timer.advance(7500); assert.equal(calls, 2); await timer.advance(7000); gate.resolve(waiting); await drain(); assert.equal(ctx.approvalPollDelayMs, 11250);
+  gate = deferred(); await timer.advance(11250); assert.equal(calls, 3); gate.resolve(waiting); await drain(); assert.equal(ctx.approvalPollDelayMs, 7500);
+  gate = deferred(); await timer.advance(7500); assert.equal(calls, 4); gate.resolve(waiting); await drain(); assert.equal(ctx.approvalPollDelayMs, 5000);
+  assert.deepEqual(jittered, [7500, 11250, 7500, 5000]);
+  timer.clear(ctx.approvalInterval); ctx.approvalInterval = null; assert.equal(timer.jobs.size, 0);
+});
+test('DQ polling forwards the 60s deadline and never retries before the wait the server asked for, even at the shortest jitter', async () => {
+  let pending = deferred(), calls = 0, deadline = null;
+  const { ctx, timer } = dqContext((params, timeoutMs) => { calls++; deadline = timeoutMs; return pending.promise; });
+  ctx.jitterMs = ms => Math.round(ms * 0.7);   // the shortest draw the page can make
+  ctx.startDQOverturnPolling(); await timer.advance(3000); assert.equal(calls, 1); assert.equal(deadline, 60000);
+  pending.resolve({ status: 'error', waitSec: 6 }); await drain(); pending = deferred();
+  await timer.advance(5999); assert.equal(calls, 1, 'server-requested wait wins over the jittered backoff');
+  await timer.advance(1); assert.equal(calls, 2);
+  pending.resolve({ status: 'ok', approval: 'dq_confirmed' }); await drain();
+  assert.equal(timer.jobs.size, 0); assert.equal(ctx.dqOverturnInterval, null);
+});
+function examStatusContext(apiGet) {
+  const setup = context({ apiGet, sessionCode: 'TEST00', examineeData: { idNumber: 'SYNTHETIC' }, examineeToken: 'synthetic',
+    examInProgress: true, examSubmitted: false, tabSwitchDQConfirmed: false, applyExtraMinutes() {}, showDQScreen() {},
+    localStorage: { setItem() {} } });
+  load(setup.ctx, section(examinee, '  var EXAMSTATUS_POLL_BASE_MS', '  var resizeDebounceTimer'));
+  withPacing(setup.ctx, examinee);
+  return setup;
+}
+test('exam-status poll forwards the 60s deadline, backs off ×1.5 on failure and steps back down on a healthy answer', async () => {
+  let deadline = null, gate = deferred(), calls = 0; const jittered = [];
+  const { ctx, timer } = examStatusContext((params, timeoutMs) => { calls++; deadline = timeoutMs; return gate.promise; });
+  ctx.jitterMs = ms => { jittered.push(ms); return ms; };
+  ctx.startExamStatusPoll(); await timer.advance(10000); assert.equal(calls, 1); assert.equal(deadline, 60000);
+  gate.resolve({ status: 'error' }); await drain(); assert.equal(ctx.examStatusDelayMs, 15000);
+  gate = deferred(); await timer.advance(15000); assert.equal(calls, 2);
+  gate.resolve({ status: 'ok', examStatus: 'in_exam', extraMinutes: 0 }); await drain(); assert.equal(ctx.examStatusDelayMs, 10000);
+  assert.deepEqual(jittered, [15000, 10000]);
+  ctx.stopExamStatusPoll(); assert.equal(timer.jobs.size, 0);
 });

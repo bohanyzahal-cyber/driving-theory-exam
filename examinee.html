@@ -1556,7 +1556,7 @@
       action: 'checkApproval',
       sessionCode: sessionCode,
       idNumber: polledId
-    }).then(function(data) {
+    }, POLL_TIMEOUT_MS).then(function(data) {
       // Guard: discard stale response if examinee changed (race condition)
       if (!isCurrent()) {
         console.log('[APPROVAL] Discarding stale response for ' + polledId + ' (current: ' + examineeData.idNumber + ')');
@@ -1697,13 +1697,45 @@
   }
 
   // ===== Adaptive approval polling =====
+  // ===== Poll pacing (shared by every poll loop) =====
+  // 2026-09-18 review of the 15-17/09 exam days, action 1. Pacing only —
+  // nothing here changes what a poll does with its answer.
+  //  1. jitter: every scheduled wait is multiplied by a random factor in
+  //     [1-POLL_JITTER, 1+POLL_JITTER]. The poll loops had no randomness at
+  //     all, so a fleet released by one server stall (two executions ended
+  //     47 ms apart on 17/09) re-arrived at the server as one burst.
+  //  2. gradual recovery: a slow or failed answer still grows the wait ×1.5
+  //     up to the max, but a healthy answer now steps it DOWN by the same
+  //     factor instead of snapping the whole fleet back to base at once.
+  //  3. poll deadline 60 s (the API default stays 30 s for what the examinee triggers by hand).
+  //     Aborting a fetch never stops the Apps Script execution: a poll
+  //     abandoned at 30 s left an orphan running for another minute while
+  //     this device already asked again. Every fleet-wide slow state measured
+  //     in the Executions log (17/09 08:41 and 12:01, 16/09 10:57) stayed
+  //     under 60 s, so a merely slow answer is now kept; an isolated ~93 s
+  //     hang of one execution is still abandoned and re-asked at 60 s.
+  var POLL_JITTER = 0.3;
+  var POLL_BACKOFF_FACTOR = 1.5;
+  var POLL_TIMEOUT_MS = 60000;
+  function jitterMs(ms) {
+    return Math.round(ms * (1 - POLL_JITTER + 2 * POLL_JITTER * Math.random()));
+  }
+  // worse = the last answer was slow or failed. Up: ×factor, capped at maxMs.
+  // Down: ÷factor, never below baseMs — one step per healthy answer.
+  function nextPollDelay(currentMs, baseMs, maxMs, worse) {
+    if (worse) return Math.min(Math.round(currentMs * POLL_BACKOFF_FACTOR), maxMs);
+    return Math.max(baseMs, Math.round(currentMs / POLL_BACKOFF_FACTOR));
+  }
+  // ===== end poll pacing =====
+
   // 2026-08-26: dozens of waiting examinees polling every 5s were a large share
   // of the request flood that saturated the server's ~30 execution slots on exam
   // mornings (measured: ~5-7 req/s at 08:45, routine requests inflated to 7-9s).
   // Base interval is 8s now, and when the server answers slowly (queuing) or the
   // request fails, the NEXT wait grows ×1.5 up to 20s — waiting clients ease off
-  // a struggling server instead of deepening the spiral. A fast healthy answer
-  // snaps the pace back to 8s. This changes PACING ONLY: approvalFailCount, the
+  // a struggling server instead of deepening the spiral. A healthy answer steps
+  // the pace back down one ×1.5 at a time (2026-09-18, see the poll pacing block
+  // above). This changes PACING ONLY: approvalFailCount, the
   // error banners and every existing behavior of doCheckApproval are untouched.
   // approvalInterval now holds a setTimeout id; clearInterval() clears those too,
   // so every existing "clearInterval(approvalInterval); approvalInterval = null"
@@ -1725,10 +1757,8 @@
     var reschedule = function() {
       if (approvalInterval === null || myGen !== approvalPollGen) return;  // stopped/restarted meanwhile
       var slow = (Date.now() - t0) > 6000;
-      approvalPollDelayMs = (slow || approvalFailCount > 0)
-        ? Math.min(Math.round(approvalPollDelayMs * 1.5), APPROVAL_POLL_MAX_MS)
-        : APPROVAL_POLL_BASE_MS;
-      approvalInterval = setTimeout(approvalPollTick, approvalPollDelayMs);
+      approvalPollDelayMs = nextPollDelay(approvalPollDelayMs, APPROVAL_POLL_BASE_MS, APPROVAL_POLL_MAX_MS, slow || approvalFailCount > 0);
+      approvalInterval = setTimeout(approvalPollTick, jitterMs(approvalPollDelayMs));
     };
     if (p && typeof p.then === 'function') { p.then(reschedule, reschedule); } else { reschedule(); }
   }
@@ -2488,7 +2518,7 @@
         sessionCode: requestedSession,
         idNumber: requestedId,
         examineeToken: requestedToken
-      }).then(function(data) {
+      }, POLL_TIMEOUT_MS).then(function(data) {
         if (!isCurrent()) return;
         if (!data || data.status !== 'ok') {
           failed = true;
@@ -2504,9 +2534,9 @@
         }
       }).catch(function() { failed = true; }).then(function() {
         if (!isCurrent()) return;
-        dqOverturnDelayMs = failed || Date.now() - started > 6000
-          ? Math.min(Math.round(dqOverturnDelayMs * 1.5), DQ_POLL_MAX_MS) : DQ_POLL_BASE_MS;
-        dqOverturnInterval = setTimeout(dqOverturnPollTick, Math.max(dqOverturnDelayMs, serverWaitMs));
+        dqOverturnDelayMs = nextPollDelay(dqOverturnDelayMs, DQ_POLL_BASE_MS, DQ_POLL_MAX_MS, failed || Date.now() - started > 6000);
+        // jitter our own wait, but never retry before the wait the server asked for
+        dqOverturnInterval = setTimeout(dqOverturnPollTick, Math.max(jitterMs(dqOverturnDelayMs), serverWaitMs));
       });
   }
 
@@ -3082,8 +3112,9 @@
   // in-exam examinees are the MAJORITY of connected clients during an exam day,
   // and each used to hit the server every 6s for the whole exam. Base is 10s
   // (an examiner's mid-exam time extension or DQ still lands within ~10s),
-  // growing ×1.5 to 20s while the server is slow/failing, snapping back on a
-  // fast answer. Pacing only — the handler logic is byte-identical.
+  // growing ×1.5 to 20s while the server is slow/failing and stepping back down
+  // one ×1.5 per healthy answer (2026-09-18, see the poll pacing block). Pacing
+  // only — the handler logic is byte-identical.
   var EXAMSTATUS_POLL_BASE_MS = 10000;
   var EXAMSTATUS_POLL_MAX_MS = 20000;
   var examStatusDelayMs = EXAMSTATUS_POLL_BASE_MS;
@@ -3100,7 +3131,7 @@
     }
     var t0 = Date.now();
     var failed = false;
-    apiGet({ action: 'getExamStatus', sessionCode: sessionCode, idNumber: examineeData.idNumber, examineeToken: examineeToken })
+    apiGet({ action: 'getExamStatus', sessionCode: sessionCode, idNumber: examineeData.idNumber, examineeToken: examineeToken }, POLL_TIMEOUT_MS)
       .then(function(data) {
         if (myGen !== examStatusGen || !examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
         if (data && data.status === 'ok') {
@@ -3116,10 +3147,8 @@
       .then(function() {
         if (examStatusInterval === null || myGen !== examStatusGen) return;
         var slow = (Date.now() - t0) > 6000;
-        examStatusDelayMs = (slow || failed)
-          ? Math.min(Math.round(examStatusDelayMs * 1.5), EXAMSTATUS_POLL_MAX_MS)
-          : EXAMSTATUS_POLL_BASE_MS;
-        examStatusInterval = setTimeout(examStatusPollTick, examStatusDelayMs);
+        examStatusDelayMs = nextPollDelay(examStatusDelayMs, EXAMSTATUS_POLL_BASE_MS, EXAMSTATUS_POLL_MAX_MS, slow || failed);
+        examStatusInterval = setTimeout(examStatusPollTick, jitterMs(examStatusDelayMs));
       });
   }
   function startExamStatusPoll() {

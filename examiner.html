@@ -1911,11 +1911,44 @@
     if (bcBtn) bcBtn.style.display = (examinerData && examinerData.role === 'מפקד') ? '' : 'none';
   }
 
+  // ===== Poll pacing (shared by every poll loop) =====
+  // 2026-09-18 review of the 15-17/09 exam days, action 1. Pacing only —
+  // nothing here changes what a poll does with its answer.
+  //  1. jitter: every scheduled wait is multiplied by a random factor in
+  //     [1-POLL_JITTER, 1+POLL_JITTER]. The poll loops had no randomness at
+  //     all, so a fleet released by one server stall (two executions ended
+  //     47 ms apart on 17/09) re-arrived at the server as one burst.
+  //  2. gradual recovery: a slow or failed answer still grows the wait ×1.5
+  //     up to the max, but a healthy answer now steps it DOWN by the same
+  //     factor instead of snapping the whole fleet back to base at once.
+  //  3. poll deadline 60 s (the API default stays 30 s for actions the examiner triggers by hand).
+  //     Aborting a fetch never stops the Apps Script execution: a poll
+  //     abandoned at 30 s left an orphan running for another minute while
+  //     this device already asked again. Every fleet-wide slow state measured
+  //     in the Executions log (17/09 08:41 and 12:01, 16/09 10:57) stayed
+  //     under 60 s, so a merely slow answer is now kept; an isolated ~93 s
+  //     hang of one execution is still abandoned and re-asked at 60 s.
+  var POLL_JITTER = 0.3;
+  var POLL_BACKOFF_FACTOR = 1.5;
+  var POLL_TIMEOUT_MS = 60000;
+  function jitterMs(ms) {
+    return Math.round(ms * (1 - POLL_JITTER + 2 * POLL_JITTER * Math.random()));
+  }
+  // worse = the last answer was slow or failed. Up: ×factor, capped at maxMs.
+  // Down: ÷factor, never below baseMs — one step per healthy answer.
+  function nextPollDelay(currentMs, baseMs, maxMs, worse) {
+    if (worse) return Math.min(Math.round(currentMs * POLL_BACKOFF_FACTOR), maxMs);
+    return Math.max(baseMs, Math.round(currentMs / POLL_BACKOFF_FACTOR));
+  }
+  // ===== end poll pacing =====
+
   // ===== Adaptive dashboard polling =====
   // 2026-08-26 saturation: every open examiner dashboard hit the server each 5s
   // all day. Base is 8s now; while the server answers slowly (queuing) or fails,
   // the NEXT wait grows ×1.5 up to 20s so dashboards ease off instead of
-  // deepening the spiral; a fast healthy answer snaps back to 8s. Pacing only —
+  // deepening the spiral; a healthy answer steps back down one ×1.5 at a time
+  // (2026-09-18: the old snap-back re-synchronised the whole fleet; the poll
+  // pacing block above adds that, the jitter and the 60s poll deadline). Pacing only —
   // pollDashboard itself, failedPolls and the offline banner are unchanged, and
   // manual pollDashboard() calls (right after approve/reject etc.) still fire
   // immediately without touching this chain. dashboardInterval now holds a
@@ -1945,10 +1978,15 @@
       if (dashboardInterval === null || myGen !== dashPollGen) return;  // stopped/restarted meanwhile
       var slow = (Date.now() - t0) > 6000;
       var syncingNow = dashSyncSince && (Date.now() - dashSyncSince) < DASH_SYNC_FAST_WINDOW_MS;
-      dashPollDelayMs = (slow || failedPolls > 0)
-        ? Math.min(Math.round(dashPollDelayMs * 1.5), DASH_POLL_MAX_MS)
-        : (syncingNow ? DASH_POLL_SYNC_MS : DASH_POLL_BASE_MS);
-      dashboardInterval = setTimeout(dashboardPollTick, dashPollDelayMs);
+      if (slow || failedPolls > 0) {
+        dashPollDelayMs = nextPollDelay(dashPollDelayMs, DASH_POLL_BASE_MS, DASH_POLL_MAX_MS, true);
+      } else if (dashPollDelayMs > DASH_POLL_BASE_MS) {
+        // still coming down from a backoff: one step per healthy answer
+        dashPollDelayMs = nextPollDelay(dashPollDelayMs, DASH_POLL_BASE_MS, DASH_POLL_MAX_MS, false);
+      } else {
+        dashPollDelayMs = syncingNow ? DASH_POLL_SYNC_MS : DASH_POLL_BASE_MS;
+      }
+      dashboardInterval = setTimeout(dashboardPollTick, jitterMs(dashPollDelayMs));
     };
     if (p && typeof p.then === 'function') { p.then(reschedule, reschedule); } else { reschedule(); }
   }
@@ -1987,7 +2025,7 @@
     }
     // Returned so the adaptive scheduler (dashboardPollTick) can measure
     // duration and pace the next poll. Handlers below are unchanged.
-    request.promise = apiGet({ action: 'examinerDashboard', sessionCode: requestedSession }).then(function(data) {
+    request.promise = apiGet({ action: 'examinerDashboard', sessionCode: requestedSession }, POLL_TIMEOUT_MS).then(function(data) {
       if (!isCurrent()) return;
       if (data && data.status === 'ok') {
         failedPolls = 0;
