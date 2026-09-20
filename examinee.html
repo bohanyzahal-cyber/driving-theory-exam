@@ -4115,6 +4115,50 @@
     return wrap;
   }
 
+  // ===== Answer order across languages (2026-09-20) =====
+  // The answer key proves that he/ru/am list every question's answers in the
+  // same order, while en/fr/es/ar each carry their own (correct-index agreement
+  // with any other language ~26% — chance level). The shuffle order is fixed at
+  // exam start and applied to whichever language is displayed, so after a switch
+  // between order groups the highlighted position shows a DIFFERENT answer than
+  // the one chosen. Scoring is unaffected: every answer carries langAtAnswer and
+  // the server scores it in that language. The display, however, must not lie:
+  // an answered question keeps the answers as they were seen, and the examinee
+  // may answer again in the current language instead.
+  var ANSWER_ORDER_GROUP = { he: 'he', ru: 'he', am: 'he', en: 'en', fr: 'fr', es: 'es', ar: 'ar' };
+  function sameAnswerOrder(a, b) { return (ANSWER_ORDER_GROUP[a] || a) === (ANSWER_ORDER_GROUP[b] || b); }
+  var FROZEN_ANSWER_TEXT = {
+    he: { note: 'ענית על שאלה זו בשפה אחרת. התשובות מוצגות כפי שראית אותן אז.', again: 'לענות מחדש בשפה הנוכחית' },
+    en: { note: 'You answered this question in another language. The answers are shown as you saw them then.', again: 'Answer again in the current language' },
+    ru: { note: 'Вы ответили на этот вопрос на другом языке. Ответы показаны так, как вы их видели тогда.', again: 'Ответить заново на текущем языке' },
+    ar: { note: 'أجبت عن هذا السؤال بلغة أخرى. الإجابات معروضة كما رأيتها حينها.', again: 'الإجابة من جديد باللغة الحالية' },
+    fr: { note: 'Vous avez répondu à cette question dans une autre langue. Les réponses sont affichées telles que vous les avez vues alors.', again: 'Répondre à nouveau dans la langue actuelle' },
+    es: { note: 'Respondiste esta pregunta en otro idioma. Las respuestas se muestran como las viste entonces.', again: 'Responder de nuevo en el idioma actual' },
+    am: { note: 'ይህን ጥያቄ በሌላ ቋንቋ መልሰዋል። መልሶቹ ያኔ እንዳዩዋቸው ይታያሉ።', again: 'በአሁኑ ቋንቋ እንደገና ይመልሱ' }
+  };
+  function buildFrozenAnswerNotice() {
+    var t = FROZEN_ANSWER_TEXT[getExamLang()] || FROZEN_ANSWER_TEXT.he;
+    var box = document.createElement('div');
+    box.className = 'frozen-answer-notice';
+    box.style.cssText = 'margin:8px 0;padding:10px 12px;border-radius:10px;background:#fff7ed;border:1px solid #fdba74;color:#7c2d12;font-size:14px;line-height:1.5;';
+    var msg = document.createElement('span');
+    msg.textContent = t.note;
+    box.appendChild(msg);
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'frozen-answer-reanswer';
+    b.textContent = t.again;
+    b.style.cssText = 'margin:0 10px;padding:6px 12px;border-radius:8px;border:1px solid #c2410c;background:#fff;color:#c2410c;font-weight:700;cursor:pointer;';
+    b.addEventListener('click', function() {
+      userAnswers[currentIndex] = null;
+      if (typeof saveActiveExam === 'function') saveActiveExam();
+      renderQuestion();
+    });
+    box.appendChild(b);
+    return box;
+  }
+  // ===== end answer order =====
+
   function renderQuestion() {
     var q = activeQuestions[currentIndex];
     var total = activeQuestions.length;
@@ -4142,6 +4186,10 @@
 
     // Previous answer for this question (if going back)
     var prevAnswer = userAnswers[currentIndex];
+    // 2026-09-20: an answer given under a different answer order is shown as it
+    // was seen (see sameAnswerOrder above); the examinee may answer again instead.
+    var frozenAnswers = !!(prevAnswer && prevAnswer.langAtAnswer && !sameAnswerOrder(prevAnswer.langAtAnswer, getExamLang()));
+    if (frozenAnswers) { shuffledAnswers = prevAnswer.shuffledAnswers; shuffledCorrectIndex = prevAnswer.shuffledCorrectIndex; }
 
     // Timer
     var timerBar = document.createElement('div');
@@ -4261,6 +4309,7 @@
     qTextEl.textContent = qText;
     // Set text direction for RTL languages (Arabic, Hebrew) vs LTR
     var examLang = getExamLang();
+    var ansLang = frozenAnswers ? prevAnswer.langAtAnswer : examLang;   // the language the shown answers are in
     if (examLang === 'ar') {
       qTextEl.dir = 'rtl';
     } else if (examLang !== 'he') {
@@ -4302,18 +4351,19 @@
         if (prevAnswer !== null && prevAnswer.chosenIndex === idx) {
           btn.classList.add('selected');
         }
+        if (frozenAnswers) btn.disabled = true;
 
         var prefix = document.createElement('span');
         prefix.className = 'ans-prefix';
-        var displayLabels = (examLang === 'he') ? ANSWER_LABELS : ['A', 'B', 'C', 'D'];
+        var displayLabels = (ansLang === 'he') ? ANSWER_LABELS : ['A', 'B', 'C', 'D'];
         prefix.textContent = displayLabels[idx];
         var ansText = document.createElement('span');
         ansText.className = 'ans-text';
         ansText.textContent = ans;
         // Set text direction for LTR/RTL based on exam language
-        if (examLang === 'ar') {
+        if (ansLang === 'ar') {
           ansText.dir = 'rtl';
-        } else if (examLang !== 'he') {
+        } else if (ansLang !== 'he') {
           ansText.dir = 'ltr';
           ansText.style.textAlign = 'left';
         }
@@ -4321,6 +4371,7 @@
         btn.appendChild(ansText);
 
         btn.addEventListener('click', function() {
+          if (frozenAnswers) return;   // answered under another order — use the notice's button to answer again
           // Deselect all
           var allBtns = card.querySelectorAll('.answer-audio-btn');
           for (var b = 0; b < allBtns.length; b++) allBtns[b].classList.remove('selected');
@@ -4359,6 +4410,7 @@
         answerList.appendChild(li);
       })(idx, shuffledAnswers[idx]);
     }
+    if (frozenAnswers) card.appendChild(buildFrozenAnswerNotice());
     card.appendChild(answerList);
 
     // Navigation buttons

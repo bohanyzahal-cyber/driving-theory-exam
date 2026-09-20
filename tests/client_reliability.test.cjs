@@ -8,6 +8,7 @@ const vm = require('node:vm');
 const app = path.resolve(__dirname, '..');
 const examiner = fs.readFileSync(path.join(app, 'examiner.html'), 'utf8');
 const examinee = fs.readFileSync(path.join(app, 'examinee.html'), 'utf8');
+const student = fs.readFileSync(path.join(app, 'student.html'), 'utf8');
 const quiet = { log() {}, warn() {}, error() {} };
 function section(src, start, end) {
   const i = src.indexOf(start), j = src.indexOf(end, i + start.length);
@@ -1171,4 +1172,52 @@ test('a remembered login survives transient failures with a retry in place, and 
   body = '{"status":"ok","examiner":{"name":"synthetic","id":"123456789","role":"בוחן"}}';
   assert.equal(await ctx.verifyRememberedLogin(creds), 'ok');
   assert.equal(entered(), 1); assert.deepEqual(removed, ['ext_examiner_remember']);
+});
+
+// ===== 2026-09-20: an answer chosen under one answer order is never re-displayed under another =====
+// The answer key: he/ru/am share one order, en/fr/es/ar each have their own. The
+// shuffle is fixed per question and applied to whichever language is shown, so
+// after a switch between order groups the highlighted position showed a different
+// answer than the one chosen (C1 practice, 20/09: "The fan" where "מצמד" was chosen).
+test('answer-order groups: he/ru/am share one order, en/fr/es/ar each have their own (both pages)', () => {
+  for (const [name, src] of [['examinee', examinee], ['student', student]]) {
+    const { ctx } = context({ sessionData: { language: 'he' }, currentLanguage: 'he' });
+    load(ctx, section(src, '// ===== Answer order across languages', '// ===== end answer order'));
+    assert.equal(ctx.sameAnswerOrder('he', 'ru'), true, name); assert.equal(ctx.sameAnswerOrder('he', 'am'), true, name);
+    assert.equal(ctx.sameAnswerOrder('ru', 'am'), true, name); assert.equal(ctx.sameAnswerOrder('en', 'en'), true, name);
+    assert.equal(ctx.sameAnswerOrder('he', 'en'), false, name); assert.equal(ctx.sameAnswerOrder('en', 'fr'), false, name);
+    assert.equal(ctx.sameAnswerOrder('ru', 'ar'), false, name); assert.equal(ctx.sameAnswerOrder('es', 'am'), false, name);
+  }
+});
+test('examinee: the notice speaks the current language and its button clears the answer, saves and re-renders', () => {
+  const ui = dom(); let renders = 0, saves = 0;
+  const { ctx } = context({ ...ui, sessionData: { language: 'en' }, userAnswers: [{ chosenIndex: 1, langAtAnswer: 'he' }], currentIndex: 0,
+    renderQuestion() { renders++; }, saveActiveExam() { saves++; } });
+  load(ctx, section(examinee, '  function getExamLang() {', '  // Get the translation dictionary'));
+  load(ctx, section(examinee, '  // ===== Answer order across languages', '  // ===== end answer order'));
+  const box = ctx.buildFrozenAnswerNotice();
+  assert.ok(box.children[0].textContent.includes('another language'));
+  const btn = box.children[1]; assert.equal(btn.textContent, 'Answer again in the current language');
+  btn.click();
+  assert.equal(ctx.userAnswers[0], null); assert.equal(renders, 1); assert.equal(saves, 1);
+  ctx.sessionData.language = 'ru';
+  assert.ok(ctx.buildFrozenAnswerNotice().children[1].textContent.includes('Ответить'));
+});
+test('student: the notice names the language answered in and offers re-answering only outside immediate mode', () => {
+  const ui = dom(); let renders = 0;
+  const { ctx } = context({ ...ui, currentLanguage: 'en', userAnswers: [{ chosenIndex: 2, langAtAnswer: 'he' }], currentIndex: 0, renderQuestion() { renders++; } });
+  load(ctx, section(student, '// ===== Answer order across languages', '// ===== end answer order'));
+  const locked = ctx.buildFrozenAnswerNotice('he', false);
+  assert.equal(locked.children.length, 1); assert.ok(locked.children[0].textContent.includes('עברית'));
+  const open = ctx.buildFrozenAnswerNotice('he', true);
+  assert.equal(open.children.length, 2); assert.ok(open.children[1].textContent.includes('אנגלית'));
+  open.children[1].click(); assert.equal(ctx.userAnswers[0], null); assert.equal(renders, 1);
+});
+test('both pages record the language each answer was given in and freeze the list when the order differs (source checks)', () => {
+  assert.equal((student.match(/isCorrect:ok,langAtAnswer:currentLanguage\}/g) || []).length, 2, 'student stores langAtAnswer on both answer paths');
+  assert.ok(/if\(frozen\)return;/.test(student), 'student ignores clicks on a frozen list');
+  assert.ok(/buildFrozenAnswerNotice\(prev\.langAtAnswer,!immediateMode\)/.test(student), 'student shows the notice above a frozen list');
+  assert.ok(/langAtAnswer: getExamLang\(\)/.test(examinee), 'examinee stores langAtAnswer');
+  assert.ok(/if \(frozenAnswers\) return;/.test(examinee), 'examinee ignores clicks on a frozen list');
+  assert.ok(/if \(frozenAnswers\) card\.appendChild\(buildFrozenAnswerNotice\(\)\);/.test(examinee), 'examinee shows the notice above a frozen list');
 });
