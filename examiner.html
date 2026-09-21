@@ -1344,9 +1344,17 @@
     return detail;
   }
   function nudgeGateway(detail) {
-    if (!examinerBank || !examinerBank.url || !sessionCode) return;
+    if (!sessionCode) return;
+    // The gateway takes a nudge only with a valid examiner grant (otherwise
+    // anyone could write "disqualified" into what the examinees read). Send
+    // whatever this page holds. When that is missing or about to expire,
+    // fetchBankGrant adopts a usable stored grant on the spot, or asks the
+    // server once (deduped) so the NEXT decision carries a fresh one.
+    var bank = examinerBank;
+    if (!bankGrantUsable(bank)) { fetchBankGrant(false); bank = examinerBank; }
+    if (!bank || !bank.url || !bank.grant) return;
     try {
-      var url = String(examinerBank.url).replace(/\/+$/, '') +
+      var url = String(bank.url).replace(/\/+$/, '') +
                 '/v1/invalidate?sessionCode=' + encodeURIComponent(sessionCode);
       if (detail && detail.idNumber && detail.status) {
         url += '&idNumber=' + encodeURIComponent(detail.idNumber) +
@@ -1355,6 +1363,7 @@
         if (detail.examMinutes > 0) url += '&examMinutes=' + encodeURIComponent(detail.examMinutes);
         if (detail.audio) url += '&audio=' + encodeURIComponent(detail.audio);
       }
+      url += '&grant=' + encodeURIComponent(bank.grant);
       fetch(url, { method: 'POST', mode: 'cors', keepalive: true, cache: 'no-store' })
         .catch(function() {});
     } catch (e) {}

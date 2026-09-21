@@ -17,8 +17,8 @@ Worker עם שני תפקידים (DESIGN_2026-09-21 §3.4 ו‑§11):
 | `GET /v1/bank?grant=…` | scope `exam`/`practice` | המזהים שב‑grant, בכל 7 השפות |
 | `GET /v1/bank?grant=…&ids=1,2,3[&langs=he,en]` | scope `examiner` | עד 60 מזהים; `langs` מסנן שפות |
 | `GET /v1/bank/full?grant=…&lang=he` | scope `examiner` בלבד | הבנק המלא של השפה, כזרם |
-| `POST /v1/invalidate?sessionCode=ABC12345` | — | `{"status":"ok"}` — מוחק את ה‑snapshot של הסשן |
-| `POST /v1/invalidate?sessionCode=…&idNumber=…&status=approved` <br>`[&examMinutes=50&extraMinutes=0&audio=on]` | — | `{"status":"ok","patched":true}` — כותב את ההחלטה **לתוך** ה‑snapshot |
+| `POST /v1/invalidate?grant=…&sessionCode=ABC12345` | scope `examiner` בלבד | `{"status":"ok"}` — מוחק את ה‑snapshot של הסשן |
+| `POST /v1/invalidate?grant=…&sessionCode=…&idNumber=…&status=approved` <br>`[&examMinutes=50&extraMinutes=0&audio=on]` | scope `examiner` בלבד | `{"status":"ok","patched":true}` — כותב את ההחלטה **לתוך** ה‑snapshot |
 
 תשובת הבנק: `{"status":"ok","build":"…","questions":[…],"missing":[…]}` — `questions` הוא
 תוכן `assets/q/<id>.json` **כמות שהוא** (ללא `JSON.parse` בנתיב החם), לפי סדר המזהים;
@@ -35,7 +35,10 @@ Worker עם שני תפקידים (DESIGN_2026-09-21 §3.4 ו‑§11):
 ### `/v1/invalidate` — דחיפה אחרי החלטת בוחן
 
 אחרי אישור/דחייה/איפוס/פסילה/הארכת זמן, דף הבוחן שולח `POST` (fire‑and‑forget, `keepalive`).
-שתי צורות:
+**שתי הצורות דורשות `&grant=` עם אישור בוחן חתום** (scope `examiner` — אותו grant שהדף מקבל
+מ‑`bankGrant` בכניסה). בלי אישור תקף: HTTP 403 `{"status":"error","code":"grant_invalid"}`,
+ושום דבר לא נמחק ולא נכתב. בלי זה כל מי שיודע קוד סשן ות.ז. של נבחן אחר היה יכול להראות
+לו "נפסלת" מהטלפון — ומסך הפסילה מפסיק לסקור. שתי צורות:
 
 **מחיקה (`?sessionCode=X` בלבד).** ה‑Worker מוחק את ה‑snapshot של הסשן מהזיכרון ומשתי רשומות
 ה‑Cache (`snap`, `stale`), כך שהסקר הבא של הנבחן קורא מהשרת מיד במקום לחכות לתום חלון ה‑2

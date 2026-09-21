@@ -32,7 +32,7 @@
  *   GET  /v1/poll?kind=approval|status&sessionCode&idNumber&examineeToken
  *   GET  /v1/bank?grant=…[&ids=1,2&langs=he,en]   — texts for the granted ids
  *   GET  /v1/bank/full?grant=…&lang=he            — a whole language (examiner)
- *   POST /v1/invalidate?sessionCode=X[&idNumber&status&…]
+ *   POST /v1/invalidate?grant=<examiner>&sessionCode=X[&idNumber&status&…]
  *                         — drop the session snapshot, or patch the decision
  *                           straight into it (see `invalidate`)
  *   OPTIONS *             — CORS preflight
@@ -578,6 +578,15 @@ export function createGateway({ fetch, caches, now, env }) {
    * it landed; a plain invalidate keeps its old body exactly.
    */
   async function invalidate(request, url) {
+    // An examiner-only door. A nudge writes a status straight into what the
+    // examinees are answered from: without this check anyone who knows a
+    // session code and a classmate's id could show them "disqualified" or
+    // "rejected" from a phone — and both screens stop polling for good. The
+    // examiner page already holds an examiner-scope grant (bankGrant), so
+    // requiring it costs nothing. Refused = nothing dropped, nothing patched.
+    if (!(await verifyGrant(url.searchParams.get('grant'), ['examiner']))) {
+      return jsonResponse(request, GRANT_INVALID, 403);
+    }
     const session = param(url, 'sessionCode');
     if (!SESSION_RE.test(session)) return badRequest(request, 'קוד סשן לא תקין');
 

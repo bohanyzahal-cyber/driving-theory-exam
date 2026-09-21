@@ -336,8 +336,8 @@ test('a successful decision nudges the gateway; a failed one does not', async ()
   setAnswer(() => ({ status: 'ok' }));
   await ctx.examinerDecision({ action: 'approveExaminee', idNumber: '1' });
   assert.equal(posts.length, 1);
-  assert.equal(posts[0].url, 'https://gateway.example/v1/invalidate?sessionCode=ABC12345&idNumber=1&status=approved',
-    'the nudge carries the decision, so the next poll (<=2 s) already has it');
+  assert.equal(posts[0].url, 'https://gateway.example/v1/invalidate?sessionCode=ABC12345&idNumber=1&status=approved&grant=payload.sig',
+    'the nudge carries the decision, so the next poll (<=2 s) already has it - and the examiner grant the gateway demands');
   assert.equal(posts[0].opts.method, 'POST');
   assert.equal(posts[0].opts.keepalive, true, 'the re-render that follows must not cancel it');
   assert.equal(posts[0].opts.cache, 'no-store');
@@ -372,17 +372,17 @@ test('the approval nudge carries the audio choice and the extended exam length',
 
   await ctx.examinerDecision({ action: 'approveExaminee', sessionCode: 'ABC12345', idNumber: '123456789', examinerId: '111', timeExtension: '1.25', audioMode: 'on' });
   assert.equal(posts[0].url,
-    'https://gateway.example/v1/invalidate?sessionCode=ABC12345&idNumber=123456789&status=approved&examMinutes=50&audio=on',
+    'https://gateway.example/v1/invalidate?sessionCode=ABC12345&idNumber=123456789&status=approved&examMinutes=50&audio=on&grant=payload.sig',
     '+25% is the 50 minutes the server itself computes as round(40 * 1.25)');
 
   await ctx.examinerDecision({ action: 'approveExaminee', sessionCode: 'ABC12345', idNumber: '2', timeExtension: '1.5', audioMode: 'off' });
   assert.equal(posts[1].url,
-    'https://gateway.example/v1/invalidate?sessionCode=ABC12345&idNumber=2&status=approved&examMinutes=60&audio=off',
+    'https://gateway.example/v1/invalidate?sessionCode=ABC12345&idNumber=2&status=approved&examMinutes=60&audio=off&grant=payload.sig',
     '+50% -> 60 minutes, audio explicitly off');
 
   await ctx.examinerDecision({ action: 'approveExaminee', sessionCode: 'ABC12345', idNumber: '3', audioMode: 'off' });
   assert.equal(posts[2].url,
-    'https://gateway.example/v1/invalidate?sessionCode=ABC12345&idNumber=3&status=approved&audio=off',
+    'https://gateway.example/v1/invalidate?sessionCode=ABC12345&idNumber=3&status=approved&audio=off&grant=payload.sig',
     'no extension chosen -> no examMinutes, the examinee keeps the default 40');
 });
 
@@ -390,7 +390,8 @@ test('every other decision nudges with its own status, addExamTime with the runn
   const { ctx, posts, setAnswer } = grantContext(() => ({ status: 'ok', bank: GRANT }));
   await ctx.fetchBankGrant(true);
   setAnswer(() => ({ status: 'ok' }));
-  const query = url => url.slice(url.indexOf('?') + 1);
+  // The grant is always the last parameter; these assertions are about the decision.
+  const query = url => url.slice(url.indexOf('?') + 1).replace(/&grant=payload\.sig$/, '');
 
   for (const [action, status] of [['rejectExaminee', 'rejected'], ['resetExaminee', 'cancelled'],
                                   ['confirmDQ', 'dq_confirmed'], ['overturnDQ', 'in_exam'],
@@ -430,7 +431,7 @@ test('closeSession is about the session, so its nudge names no examinee', async 
   await ctx.fetchBankGrant(true);
   setAnswer(() => ({ status: 'ok' }));
   await ctx.examinerDecision({ action: 'closeSession', sessionCode: 'ABC12345', examinerId: '111' });
-  assert.equal(posts[0].url, 'https://gateway.example/v1/invalidate?sessionCode=ABC12345',
+  assert.equal(posts[0].url, 'https://gateway.example/v1/invalidate?sessionCode=ABC12345&grant=payload.sig',
     'the plain drop it always was - no idNumber, no status');
 });
 
@@ -450,7 +451,37 @@ test('a trailing slash on the gateway url does not become a double slash', async
   await ctx.fetchBankGrant(true);
   setAnswer(() => ({ status: 'ok' }));
   await ctx.examinerDecision({ action: 'closeSession' });
-  assert.equal(posts[0].url, 'https://gateway.example/v1/invalidate?sessionCode=ABC12345');
+  assert.equal(posts[0].url, 'https://gateway.example/v1/invalidate?sessionCode=ABC12345&grant=g');
+});
+
+test('a grant about to expire is still sent, and the next decision is armed with a fresh one', async () => {
+  // 5 minutes left: the gateway would still accept it, so it goes out as is —
+  // and the page asks for a new grant in the background (once, deduped).
+  const dying = { url: 'https://gateway.example', grant: 'dying', exp: EPOCH + 5 * 60 * 1000 };
+  const { ctx, posts, calls, setAnswer, store } = grantContext(() => ({ status: 'ok', bank: GRANT }));
+  ctx.examinerBank = dying;
+  setAnswer(params => params.action === 'bankGrant' ? { status: 'ok', bank: GRANT } : { status: 'ok' });
+  await ctx.examinerDecision({ action: 'disqualify', idNumber: '9' });
+  assert.equal(posts[0].url, 'https://gateway.example/v1/invalidate?sessionCode=ABC12345&idNumber=9&status=disqualified&grant=dying');
+  assert.deepEqual(calls, ['disqualify', 'bankGrant'], 'one refresh request, after the decision itself');
+  await ctx.bankGrantPromise;
+  assert.equal(ctx.examinerBank.grant, GRANT.grant, 'the next nudge carries the fresh grant');
+
+  // The copy in memory is gone but the stored one is fine (a reload, another
+  // tab): it is adopted on the spot and the nudge goes out with it - no request.
+  posts.length = 0; calls.length = 0;
+  ctx.examinerBank = null;
+  await ctx.examinerDecision({ action: 'disqualify', idNumber: '9' });
+  assert.equal(posts[0].url, 'https://gateway.example/v1/invalidate?sessionCode=ABC12345&idNumber=9&status=disqualified&grant=payload.sig');
+  assert.deepEqual(calls, ['disqualify'], 'the stored grant was adopted without asking the server');
+
+  // Nothing at all in hand: no POST into the void, but a refresh is still asked for.
+  posts.length = 0; calls.length = 0;
+  ctx.examinerBank = null; store.delete('ext_examiner_bank');
+  setAnswer(params => params.action === 'bankGrant' ? { status: 'error', code: 'bank_not_configured' } : { status: 'ok' });
+  await ctx.examinerDecision({ action: 'disqualify', idNumber: '9' });
+  assert.equal(posts.length, 0);
+  assert.deepEqual(calls, ['disqualify', 'bankGrant']);
 });
 
 test('without a grant a decision still works - it just does not nudge', async () => {

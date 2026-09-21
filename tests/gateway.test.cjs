@@ -506,7 +506,7 @@ test('bank: no assets binding, or reads that all throw, is a retryable 503', asy
 
 test('/v1/invalidate drops the snapshot, at most once per 2 s', async () => {
   const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
-  const push = () => call(gateway, '/v1/invalidate?sessionCode=' + SESSION, { method: 'POST' });
+  const push = () => call(gateway, '/v1/invalidate?sessionCode=' + SESSION + '&grant=' + examinerGrant(), { method: 'POST' });
 
   await poll(gateway, approvalPoll('900000001'));
   assert.equal(state.calls.length, 1);
@@ -535,7 +535,7 @@ test('/v1/invalidate drops the snapshot, at most once per 2 s', async () => {
   await poll(gateway, approvalPoll('900000001'));
   assert.equal(state.calls.length, 3, 'past the gap the next push works again');
 
-  const junk = await call(gateway, '/v1/invalidate?sessionCode=nope', { method: 'POST' });
+  const junk = await call(gateway, '/v1/invalidate?sessionCode=nope&grant=' + examinerGrant(), { method: 'POST' });
   assert.equal(junk.res.status, 400);
   assert.equal(state.calls.length, 3);
 });
@@ -546,8 +546,38 @@ test('/v1/invalidate drops the snapshot, at most once per 2 s', async () => {
 // confirmed, so it is written straight into the snapshot.
 
 /** The examiner's fire-and-forget POST, optionally carrying the decision. */
-const nudge = (gateway, query) =>
-  call(gateway, '/v1/invalidate?sessionCode=' + SESSION + (query || ''), { method: 'POST' });
+const nudge = (gateway, query, grantStr) =>
+  call(gateway, '/v1/invalidate?sessionCode=' + SESSION + (query || '') +
+    '&grant=' + (grantStr === undefined ? examinerGrant() : grantStr), { method: 'POST' });
+
+test('invalidate is an examiner-only door: no grant, a forged one, another scope or an expired one is refused', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'in_exam' })] });
+  await poll(gateway, statusPoll('900000001'));
+  assert.equal(state.calls.length, 1);
+
+  // What a classmate with the session code and an id could send from a phone.
+  const forged = grant({ s: 'examiner', sub: 'ex:7' }, 'not-the-key');
+  const expired = examinerGrant({ exp: CLOCK0 - 1 });
+  const wrongScope = examGrant([1, 2]);
+  for (const [name, bad] of [['none', ''], ['forged', forged], ['expired', expired], ['exam scope', wrongScope]]) {
+    const { res, body } = await nudge(gateway, '&idNumber=900000001&status=disqualified', bad);
+    assert.equal(res.status, 403, name);
+    assert.deepEqual(body, { status: 'error', code: 'grant_invalid' }, name);
+    const plain = await nudge(gateway, '', bad);
+    assert.equal(plain.res.status, 403, name + ' (plain drop)');
+  }
+
+  // Neither a patch nor a drop happened: the examinee is still in the exam and
+  // the snapshot was not dropped (no extra upstream read).
+  const still = await poll(gateway, statusPoll('900000001'));
+  assert.equal(still.body.examStatus, 'in_exam', 'a refused nudge never reaches the snapshot');
+  assert.equal(state.calls.length, 1, 'and never buys an upstream read either');
+
+  // The real examiner, with the grant the server signed, still gets through.
+  const ok = await nudge(gateway, '&idNumber=900000001&status=disqualified');
+  assert.deepEqual(ok.body, { status: 'ok', patched: true });
+  assert.equal((await poll(gateway, statusPoll('900000001'))).body.examStatus, 'disqualified');
+});
 
 test('a patched approval is answered on the next poll with no upstream read', async () => {
   const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
