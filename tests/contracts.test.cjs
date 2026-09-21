@@ -219,20 +219,13 @@ test('startExam hands the page ids the bank can render, in the server order, and
   assert.equal(env.sheet('ממתינים').rows[1][5], 'in_exam');
 });
 
-// GATEWAY_URL names the Worker that holds the TEXTS, so it can no longer double
-// as the poll kill switch — emptying it would stop exams starting. Turning the
-// polls off must leave the bank alone (OPERATIONS §5).
-test('GATEWAY_POLL_OFF sends the pollers back to Apps Script without taking the bank down', () => {
-  const env = sessionEnv({ GATEWAY_POLL_OFF: '1' });
-  const info = get(env, { action: 'getSessionInfo', sessionCode: SESSION });
-  assert.equal(info.session.gateway.url, '', 'the fleet polls this script directly');
-  const started = startOne(env);
-  assert.equal(started.status, 'ok');
-  assert.equal(started.bank.url, GATEWAY_URL, 'the texts still come from the Worker');
-  const health = get(env, { action: 'health' });
-  assert.deepEqual(health.gateway, { url: true, key: true, pollOff: true });
+// One Worker, always on: health says whether it is wired up, and nothing else
+// decides where the fleet polls (Yossi, 21/09: no partial switches).
+test('health reports the Worker wiring as booleans only', () => {
   const on = get(sessionEnv(), { action: 'health' });
-  assert.deepEqual(on.gateway, { url: true, key: true, pollOff: false });
+  assert.deepEqual(on.gateway, { url: true, key: true });
+  const info = get(sessionEnv(), { action: 'getSessionInfo', sessionCode: SESSION });
+  assert.equal(info.session.gateway.url, GATEWAY_URL, 'the fleet polls the Worker');
 });
 
 test('the grant startExam issues opens exactly those 30 questions in the real Worker', async () => {

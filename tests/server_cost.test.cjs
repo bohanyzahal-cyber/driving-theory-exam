@@ -292,14 +292,9 @@ function envWith(extra, properties) {
   const env2 = envWith({}, { GATEWAY_URL: '' });
   const info2 = env2.json(env2.ctx.handleGetSessionInfo({ sessionCode: SESSION }));
   check('an unset GATEWAY_URL means "poll me directly"', () => assert.equal(info2.session.gateway.url, ''));
-  // ...but clearing it also takes the question texts down, so the switch that
-  // an exam morning may actually pull is the one that only stops the polling.
-  const env3 = envWith({}, { GATEWAY_POLL_OFF: 'true' });
-  const info3 = env3.json(env3.ctx.handleGetSessionInfo({ sessionCode: SESSION }));
-  check('GATEWAY_POLL_OFF stops the polling without touching the bank url', () => {
-    assert.equal(info3.session.gateway.url, '');
-    assert.equal(env3.ctx.bankGrantFor('exam', [1], 'x').url, GATEWAY_URL);
-  });
+  // ...and since r30 clearing it also takes the question texts down: there is
+  // deliberately no partial switch (Yossi, 21/09) — the Worker is required.
+  check('an unset GATEWAY_URL also means no bank grant', () => assert.equal(env2.ctx.bankGrantFor('exam', [1], 'x'), null));
 }
 
 // ---- 6. siteCombinedReport: today is cheap, an old day reads the archive ----

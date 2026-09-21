@@ -131,22 +131,6 @@ function gatewayUrl() {
   catch (e) { return ''; }
 }
 
-// The kill switch had to split in two (DESIGN §11, OPERATIONS §5). Clearing
-// GATEWAY_URL used to mean "poll me directly" — but the same property now names
-// the Worker that serves the question TEXTS, so clearing it stops exams
-// starting at all. GATEWAY_POLL_OFF turns only the POLLING off: the examinees
-// go back to hitting this script, while startExam/startPractice/bankGrant keep
-// issuing grants against the very same url.
-function gatewayPollOff() {
-  var raw = '';
-  try { raw = String(PropertiesService.getScriptProperties().getProperty('GATEWAY_POLL_OFF') || '').trim().toLowerCase(); }
-  catch (e) { return false; }
-  return raw === '1' || raw === 'true' || raw === 'on';
-}
-
-// What getSessionInfo tells the fleet to poll — '' means "poll me directly".
-function gatewayPollUrl() { return gatewayPollOff() ? '' : gatewayUrl(); }
-
 // ---- One 'סשנים' read per execution ----------------------------------------
 // addExamTime and disqualify each read the whole sheet twice — once for the
 // ownership check, once for the session's examiner name (review C R12). The
@@ -283,11 +267,12 @@ function handleGetSessionInfo(p) {
         status: 'ok',
         session: {
           // The client checks `build` to notice an old server behind a new page,
-          // and reads `gateway.url` to decide where the examinee polls. An empty
-          // url means "poll me directly" — set GATEWAY_POLL_OFF for that, with
-          // no Pages push and without taking the question texts down with it.
+          // and reads `gateway.url` to decide where the examinee polls. Since r30
+          // the same Worker also serves the question texts, so the url is not
+          // optional and there is no partial switch: an unreachable Worker makes
+          // the page fall back to direct polling by itself (3 failures, 5 min).
           build: THEORY_API_BUILD,
-          gateway: { url: gatewayPollUrl() },
+          gateway: { url: gatewayUrl() },
           site: data[i][3],
           sites: _sites,
           classroom: data[i][4],

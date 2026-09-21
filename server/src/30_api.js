@@ -206,9 +206,8 @@ function handleHealth(p) {
   // gateway: booleans only. The question texts are served by the Worker against
   // a signed grant, so "is it wired up" is the first thing a deploy check needs
   // — and neither the URL nor the key is ever printed by a public probe.
-  // pollOff is the partial kill switch: the texts still flow, the polls don't.
   var body = { status: 'ok', build: THEORY_API_BUILD, indexIds: questionIndexCount(),
-    gateway: { url: Boolean(gatewayUrl()), key: Boolean(gatewayKey()), pollOff: gatewayPollOff() } };
+    gateway: { url: Boolean(gatewayUrl()), key: Boolean(gatewayKey()) } };
   if (String(p.deep || '') !== '1') return jsonResponse(body);
   var deepT0 = Date.now(), sheetMs = -1, sheetError = '';
   try { getSheet('אתרים').getRange(1, 1).getValue(); sheetMs = Date.now() - deepT0; }
