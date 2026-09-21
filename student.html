@@ -500,9 +500,12 @@
 
 <footer>תרגול תאוריה &copy; 2026</footer>
 
-<!-- questions.js removed — student.html now fetches each practice set from
-     the Apps Script `getExamQuestions` endpoint. See API_URL below. -->
+<!-- Texts come from the STATIC bank in this repo (bank/<lang>.json, via
+     shared/bank.js); the server only picks ids and hands back the encoded
+     correct index per language (startPractice). -->
 
+<script src="shared/transport.js"></script>
+<script src="shared/bank.js"></script>
 <script>
 (function(){'use strict';
 // Full-screen loading overlay — blocks interaction while we wait for the server.
@@ -522,12 +525,11 @@ function showLoadingOverlay(msg){
 }
 function hideLoadingOverlay(){_loadingCount=Math.max(0,_loadingCount-1);if(_loadingCount>0)return;var ov=document.getElementById('_app_loading_overlay');if(ov)ov.style.display='none';}
 
-var TOTAL_QUESTIONS=30,PASS_SCORE=26,BASE_EXAM_MINUTES=40;
+var TOTAL_QUESTIONS=30,BASE_EXAM_MINUTES=40;   // PASS_SCORE removed: one rule, ceil(total*0.86), for every mode (S8)
 var ANSWER_LABELS=['\u05d0','\u05d1','\u05d2','\u05d3'];
 var EXAM_STRUCTURE={'B':{'\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA':7,'\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1':7,'\u05D7\u05D5\u05E7':7,'\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD':9},'1':{'\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA':5,'\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1':5,'\u05D7\u05D5\u05E7':6,'\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD':6,'\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9':8},'C1':{'\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA':5,'\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1':5,'\u05D7\u05D5\u05E7':5,'\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD':5,'\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9':10},'C':{'\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA':5,'\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1':4,'\u05D7\u05D5\u05E7':3,'\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD':4,'\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9':14},'D':{'\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA':4,'\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1':2,'\u05D7\u05D5\u05E7':5,'\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD':4,'\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9':15}};
 var CATEGORY_LABELS={'\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA':'\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA','\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1':'\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1','\u05D7\u05D5\u05E7':'\u05D7\u05D5\u05E7','\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD':'\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD','\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9':'\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9'};
 var CATEGORY_CSS={'\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA':{btnClass:'cat-btn-safety',badgeClass:'cat-badge-safety',qClass:'q-cat-safety'},'\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1':{btnClass:'cat-btn-vehicle',badgeClass:'cat-badge-vehicle',qClass:'q-cat-vehicle'},'\u05D7\u05D5\u05E7':{btnClass:'cat-btn-law',badgeClass:'cat-badge-law',qClass:'q-cat-law'},'\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD':{btnClass:'cat-btn-signs',badgeClass:'cat-badge-signs',qClass:'q-cat-signs'},'\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9':{btnClass:'cat-btn-specific',badgeClass:'cat-badge-specific',qClass:'q-cat-specific'}};
-var TRANSLATION_VARS={'en':'TRANSLATIONS_EN','fr':'TRANSLATIONS_FR','ar':'TRANSLATIONS_AR','es':'TRANSLATIONS_ES','am':'TRANSLATIONS_AM'};
 
 // ===== Copyright notice (console) =====
 try {
@@ -544,7 +546,7 @@ var IMAGE_PROXY_BASE='https://image-proxy.bohanyzahal.workers.dev';
 var currentName='',currentPhone='',currentLicense='B',currentLanguage='he',currentMode='',currentCategory='';
 var currentClassCode='',currentStudentId='';
 var examQuestions=[],currentIndex=0,userAnswers=[],shuffledOrders=[];
-var examDeadline=null,timerInterval=null,immediateMode=false,translationLoaded=false,loadedTranslations={'he':true,'ru':true},answerLocked=false;
+var examDeadline=null,timerInterval=null,immediateMode=false,answerLocked=false;
 var flashcardQuestions=[],flashcardIndex=0,flashcardRevealed=false,flashcardCategory='';
 var examStartTime=null;
 
@@ -555,11 +557,78 @@ var questionParts=[],questionPartIndex=0,currentAudio=null,audioQueue=[];
 var ttsEngine='google',hebrewVoice=null,audioUnlocked=false,audioCtx=null,webspeechConfirmed=false;
 var LANG_LOCALE_MAP={'he':'he-IL','ru':'ru-RU','en':'en-US','fr':'fr-FR','ar':'ar-SA','es':'es-ES','am':'am-ET'};
 
-// Generate or retrieve a persistent student ID
+// ===== D16: progress belongs to a STUDENT, not to a device =====
+// Until now `student_practice_id` was created once per device and the streak /
+// wrong-question / history keys were global, so the second person to use the
+// same tablet inherited the first one's mistakes - and the cloud sync then wrote
+// the merged set back under the NEW name. Everything below is keyed by
+// class + name, and the id itself is derived from them, so a different name on
+// the same device is simply a different student.
+function normKey(s){ return String(s == null ? '' : s).trim().toLowerCase().replace(/\s+/g, ' '); }
+// FNV-1a, 32 bit - short, stable, ES5, and it never has to be reversed.
+function shortHash(str){
+  var h = 0x811c9dc5;
+  for (var i = 0; i < str.length; i++){
+    h ^= str.charCodeAt(i);
+    h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+  }
+  return ('0000000' + h.toString(16)).slice(-8);
+}
+function progressNamespace(){
+  if (!currentName) return '';
+  return shortHash(normKey(currentClassCode) + '|' + normKey(currentName));
+}
+// The un-namespaced key is still the one read/written before a name is known
+// (nothing does), so the fallback is harmless.
+function progressKey(base){
+  var ns = progressNamespace();
+  return ns ? base + '_' + ns : base;
+}
+function readProgress(base, fallback){
+  try { return localStorage.getItem(progressKey(base)) || fallback; } catch(e) { return fallback; }
+}
+function writeProgress(base, value){
+  try { localStorage.setItem(progressKey(base), value); } catch(e) {}
+}
+// One-time move of the old device-wide keys onto the student who is using them
+// now - only for the name that was saved on this device, and only once.
+function migrateLegacyProgress(){
+  try {
+    if (!progressNamespace()) return;
+    if (localStorage.getItem('student_progress_migrated_v1')) return;
+    var savedName = localStorage.getItem('student_name') || '';
+    if (normKey(savedName) !== normKey(currentName)) return;    // a different student: leave the old keys alone
+    var bases = ['student_streak', 'student_wrong_qs', 'student_history', 'student_practice_id'];
+    for (var i = 0; i < bases.length; i++){
+      var legacy = localStorage.getItem(bases[i]);
+      if (legacy === null) continue;
+      if (localStorage.getItem(progressKey(bases[i])) === null) localStorage.setItem(progressKey(bases[i]), legacy);
+      localStorage.removeItem(bases[i]);
+    }
+    localStorage.setItem('student_progress_migrated_v1', '1');
+  } catch(e) {}
+}
+// Deterministic per student: the same name in the same class is the same id on
+// every device, so the class roster does not grow a row per tablet. The server
+// may still hand back an id it already has for this name (joinClass) - that one
+// wins and is stored under the same namespace.
 function getStudentId(){
-  var id=localStorage.getItem('student_practice_id');
-  if(!id){id='S'+Date.now().toString(36)+Math.random().toString(36).substr(2,4);localStorage.setItem('student_practice_id',id);}
-  return id;
+  var stored = readProgress('student_practice_id', '');
+  if (stored) return stored;
+  if (!currentName) return '';
+  return 'S' + shortHash(normKey(currentName) + '@' + normKey(currentClassCode));
+}
+
+// ===== one transport for the whole page =====
+var api = ExamTransport.createApi({ apiUrl: API_URL, origin: API_ORIGIN });
+var API_TIMEOUT_MS = ExamTransport.API_TIMEOUT_MS;
+function practiceErrorText(resp){
+  if (resp && resp.code === 'rate_limited') return '\u05d9\u05d5\u05ea\u05e8 \u05de\u05d3\u05d9 \u05d1\u05e7\u05e9\u05d5\u05ea \u2014 \u05d4\u05de\u05ea\u05df \u05d3\u05e7\u05d4 \u05d5\u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.';
+  if (resp && /Unknown action/i.test(String(resp.message || ''))) return '\u05d4\u05de\u05e2\u05e8\u05db\u05ea \u05de\u05ea\u05e2\u05d3\u05db\u05e0\u05ea \u2014 \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1 \u05d1\u05e2\u05d5\u05d3 \u05d3\u05e7\u05d4';
+  if (resp && resp.message) return resp.message;
+  return ExamTransport.isBackendDegraded()
+    ? '\u05d4\u05e9\u05e8\u05ea \u05e2\u05de\u05d5\u05e1 \u2014 \u05d0\u05d9\u05df \u05e6\u05d5\u05e8\u05da \u05dc\u05e8\u05e2\u05e0\u05df. \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1 \u05d1\u05e2\u05d5\u05d3 \u05d3\u05e7\u05d4.'
+    : '\u05e9\u05d2\u05d9\u05d0\u05ea \u05ea\u05e7\u05e9\u05d5\u05e8\u05ea';
 }
 
 // Join a class
@@ -568,15 +637,15 @@ function joinClass(code,name,studentId,onDone){
   statusEl.style.display='block';
   statusEl.style.color='#64748b';
   statusEl.textContent='מתחבר לכיתה...';
-  fetch(API_URL+'?action=studentJoinClass&origin='+encodeURIComponent(API_ORIGIN)+'&classCode='+encodeURIComponent(code)+'&studentName='+encodeURIComponent(name)+'&studentId='+encodeURIComponent(studentId))
-  .then(function(r){return r.json();})
+  api.get({action:'studentJoinClass',classCode:code,studentName:name,studentId:studentId})
   .then(function(d){
     if(d.status==='ok'){
       // If server returned an existing studentId for this name in this class \u2014 adopt it.
       // This prevents duplicate roster entries when the same student joins from multiple devices.
       if(d.existingStudentId && d.existingStudentId !== studentId){
         try{
-          localStorage.setItem('student_practice_id', d.existingStudentId);
+          currentClassCode = code.toUpperCase();          // namespace the write to the class being joined
+          writeProgress('student_practice_id', d.existingStudentId);
           currentStudentId = d.existingStudentId;
         }catch(e){}
       }
@@ -605,16 +674,18 @@ function joinClass(code,name,studentId,onDone){
   })
   .catch(function(){
     statusEl.style.color='#dc2626';
-    statusEl.textContent='\u2716 שגיאת תקשורת';
+    statusEl.textContent='\u2716 '+practiceErrorText(null);
     if(onDone)onDone();
   });
 }
 
 // Send practice result to backend
+// S8: the verdict travels WITH the result. The server re-derives it (percent >=
+// 86) and both sides now use the same rule, so a 12/15 topic quiz can no longer
+// show \u05e2\u05d1\u05e8 on screen and land as \u05e0\u05db\u05e9\u05dc in the teacher dashboard.
 function sendPracticeResult(resultData){
-  var body=JSON.stringify({
+  api.postNoWait({
     action:'submitPracticeResult',
-    origin:API_ORIGIN,
     studentId:currentStudentId,
     studentName:currentName,
     phone:currentPhone,
@@ -624,55 +695,91 @@ function sendPracticeResult(resultData){
     score:resultData.score,
     total:resultData.total,
     percent:resultData.percent,
+    passed:resultData.passed ? 1 : 0,
     time:resultData.time||'',
     category:resultData.category||'',
     language:currentLanguage,
     wrongDetails:resultData.wrongDetails||'',
     categoryBreakdown:resultData.categoryBreakdown||''
   });
-  fetch(API_URL,{method:'POST',headers:{'Content-Type':'text/plain'},body:body}).catch(function(){});
 }
 
 // ===== Cloud Sync =====
 function syncProgressToCloud(){
   if(!currentClassCode||!currentName)return;
   try{
-    var body=JSON.stringify({action:'saveStudentProgress',origin:API_ORIGIN,studentName:currentName,classCode:currentClassCode,streak:localStorage.getItem('student_streak')||'{}',wrongQs:localStorage.getItem('student_wrong_qs')||'[]',history:localStorage.getItem('student_history')||'[]'});
-    fetch(API_URL,{method:'POST',headers:{'Content-Type':'text/plain'},body:body}).catch(function(){});
+    api.postNoWait({action:'saveStudentProgress',studentName:currentName,classCode:currentClassCode,streak:readProgress('student_streak','{}'),wrongQs:readProgress('student_wrong_qs','[]'),history:readProgress('student_history','[]')});
   }catch(e){}
 }
 function loadProgressFromCloud(callback){
   if(!currentClassCode||!currentName){if(callback)callback();return;}
-  fetch(API_URL+'?action=loadStudentProgress&origin='+encodeURIComponent(API_ORIGIN)+'&studentName='+encodeURIComponent(currentName)+'&classCode='+encodeURIComponent(currentClassCode)).then(function(r){return r.json();}).then(function(d){
+  api.get({action:'loadStudentProgress',studentName:currentName,classCode:currentClassCode}).then(function(d){
     if(d.status!=="ok"||!d.found){if(callback)callback();return;}
-    try{var ls=JSON.parse(localStorage.getItem('student_streak')||'{}');var cs=JSON.parse(d.streak||'{}');if((cs.count||0)>(ls.count||0))localStorage.setItem('student_streak',JSON.stringify(cs));}catch(e){}
-    try{var lw=JSON.parse(localStorage.getItem('student_wrong_qs')||'[]');var cw=JSON.parse(d.wrongQs||'[]');var mg={};for(var i=0;i<lw.length;i++)mg[lw[i].id]=lw[i];for(var j=0;j<cw.length;j++){if(!mg[cw[j].id])mg[cw[j].id]=cw[j];else{mg[cw[j].id].wrongCount=Math.max(mg[cw[j].id].wrongCount||1,cw[j].wrongCount||1);mg[cw[j].id].correctStreak=Math.min(mg[cw[j].id].correctStreak||0,cw[j].correctStreak||0);mg[cw[j].id].lastSeen=Math.max(mg[cw[j].id].lastSeen||0,cw[j].lastSeen||0);}}var arr=[];for(var k in mg)arr.push(mg[k]);if(arr.length>200)arr=arr.slice(-200);localStorage.setItem('student_wrong_qs',JSON.stringify(arr));}catch(e){}
-    try{var lh=JSON.parse(localStorage.getItem('student_history')||'[]');var ch=JSON.parse(d.history||'[]');var seen={};var all=[];function hk(h){return(h.date||'')+'|'+(h.score||0)+'|'+(h.total||0)+'|'+(h.mode||'');}for(var a=0;a<lh.length;a++){var k1=hk(lh[a]);if(!seen[k1]){seen[k1]=true;all.push(lh[a]);}}for(var b=0;b<ch.length;b++){var k2=hk(ch[b]);if(!seen[k2]){seen[k2]=true;all.push(ch[b]);}}if(all.length>50)all=all.slice(-50);localStorage.setItem('student_history',JSON.stringify(all));}catch(e){}
+    try{var ls=JSON.parse(readProgress('student_streak','{}'));var cs=JSON.parse(d.streak||'{}');if((cs.count||0)>(ls.count||0))writeProgress('student_streak',JSON.stringify(cs));}catch(e){}
+    try{var lw=JSON.parse(readProgress('student_wrong_qs','[]'));var cw=JSON.parse(d.wrongQs||'[]');var mg={};for(var i=0;i<lw.length;i++)mg[lw[i].id]=lw[i];for(var j=0;j<cw.length;j++){if(!mg[cw[j].id])mg[cw[j].id]=cw[j];else{mg[cw[j].id].wrongCount=Math.max(mg[cw[j].id].wrongCount||1,cw[j].wrongCount||1);mg[cw[j].id].correctStreak=Math.min(mg[cw[j].id].correctStreak||0,cw[j].correctStreak||0);mg[cw[j].id].lastSeen=Math.max(mg[cw[j].id].lastSeen||0,cw[j].lastSeen||0);}}var arr=[];for(var k in mg)arr.push(mg[k]);if(arr.length>200)arr=arr.slice(-200);writeProgress('student_wrong_qs',JSON.stringify(arr));}catch(e){}
+    try{var lh=JSON.parse(readProgress('student_history','[]'));var ch=JSON.parse(d.history||'[]');var seen={};var all=[];function hk(h){return(h.date||'')+'|'+(h.score||0)+'|'+(h.total||0)+'|'+(h.mode||'');}for(var a=0;a<lh.length;a++){var k1=hk(lh[a]);if(!seen[k1]){seen[k1]=true;all.push(lh[a]);}}for(var b=0;b<ch.length;b++){var k2=hk(ch[b]);if(!seen[k2]){seen[k2]=true;all.push(ch[b]);}}if(all.length>50)all=all.slice(-50);writeProgress('student_history',JSON.stringify(all));}catch(e){}
     if(callback)callback();
   }).catch(function(){if(callback)callback();});
 }
 
 function showScreen(id){var s=document.querySelectorAll('.screen');for(var i=0;i<s.length;i++)s[i].classList.remove('active');var t=document.getElementById(id);if(t)t.classList.add('active');window.scrollTo(0,0);}
 
-function loadTranslationFile(lang,cb){loadedTranslations[lang]=true;translationLoaded=true;if(cb)cb();} // server now returns pre-translated questions
+function classifyCategory(cat){var c=(cat||'').trim();if(/\u05e1\u05e4\u05e6\u05d9\u05e4\u05d9/.test(c))return'\u05e1\u05e4\u05e6\u05d9\u05e4\u05d9';if(/\u05d1\u05d8\u05d9\u05d7\u05d5\u05ea/.test(c))return'\u05d1\u05d8\u05d9\u05d7\u05d5\u05ea';if(/\u05d4\u05db\u05e8\u05ea \u05d4\u05e8\u05db\u05d1/.test(c))return'\u05d4\u05db\u05e8\u05ea \u05d4\u05e8\u05db\u05d1';if(/\u05d7\u05d5\u05e7/.test(c))return'\u05d7\u05d5\u05e7';if(/\u05ea\u05de\u05e8\u05d5\u05e8\u05d9\u05dd/.test(c))return'\u05ea\u05de\u05e8\u05d5\u05e8\u05d9\u05dd';if(/\u05d6\u05db\u05d5\u05ea \u05e7\u05d3\u05d9\u05de\u05d4/.test(c))return'\u05d7\u05d5\u05e7';return'';}
+function categoryClass(cat){var n=classifyCategory(cat);if(n==='\u05d1\u05d8\u05d9\u05d7\u05d5\u05ea')return'q-cat-safety';if(n==='\u05d4\u05db\u05e8\u05ea \u05d4\u05e8\u05db\u05d1')return'q-cat-vehicle';if(n==='\u05d7\u05d5\u05e7')return'q-cat-law';if(n==='\u05ea\u05de\u05e8\u05d5\u05e8\u05d9\u05dd')return'q-cat-signs';if(n==='\u05e1\u05e4\u05e6\u05d9\u05e4\u05d9')return'q-cat-specific';return'';}
 
-function classifyCategory(cat){var c=(cat||'').trim();if(/\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9/.test(c))return'\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9';if(/\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA/.test(c))return'\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA';if(/\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1/.test(c))return'\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1';if(/\u05D7\u05D5\u05E7/.test(c))return'\u05D7\u05D5\u05E7';if(/\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD/.test(c))return'\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD';if(/\u05D6\u05DB\u05D5\u05EA \u05E7\u05D3\u05D9\u05DE\u05D4/.test(c))return'\u05D7\u05D5\u05E7';return'';}
-function categoryClass(cat){var n=classifyCategory(cat);if(n==='\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA')return'q-cat-safety';if(n==='\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1')return'q-cat-vehicle';if(n==='\u05D7\u05D5\u05E7')return'q-cat-law';if(n==='\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD')return'q-cat-signs';if(n==='\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9')return'q-cat-specific';return'';}
-function getTransDict(){var v=TRANSLATION_VARS[currentLanguage];if(v&&window[v])return window[v];return null;}
-function hasTranslation(_q,_lang){return true;} // server delivers in requested language
-function getRuQuestion(_id){return null;} // legacy lookup — server now delivers Russian directly
-function getQText(q){if(currentLanguage==='he')return q.text;if(currentLanguage==='ru'){if(q.language==='ru')return q.text;var rq=getRuQuestion(q.id);if(rq)return rq.text;return q.text;}var d=getTransDict();if(d&&d[q.id])return d[q.id].t;return q.text;}
-function getQAnswers(q){if(currentLanguage==='he')return q.answers;if(currentLanguage==='ru'){if(q.language==='ru')return q.answers;var rq=getRuQuestion(q.id);if(rq)return rq.answers;return q.answers;}var d=getTransDict();if(d&&d[q.id])return d[q.id].a;return q.answers;}
+// ===== questions =====
+// The server sends ids, the blueprint topic and the encoded correct index for
+// ALL SEVEN languages; every text comes from the static bank (bank/<lang>.json)
+// loaded in the browser. That is what makes a language switch mid-practice a
+// local operation - no getQuestionsByIds, no second server round trip, and no
+// way for a slow Apps Script to strand a student half-translated.
 function decodeCI(ci,id){return ci^(id%256);}
-function getQCorrectIndex(q){if(currentLanguage==='he')return decodeCI(q.ci,q.id);if(currentLanguage==='ru'){if(q.language==='ru')return decodeCI(q.ci,q.id);var rq=getRuQuestion(q.id);if(rq)return decodeCI(rq.ci,rq.id);return decodeCI(q.ci,q.id);}var d=getTransDict();if(d&&d[q.id]&&d[q.id].ci!==undefined)return decodeCI(d[q.id].ci,q.id);return decodeCI(q.ci,q.id);}
+function getQText(q){return q.text;}
+function getQAnswers(q){return q.answers;}
+function getQCorrectIndex(q){return decodeCI(q.ci,q.id);}
 
-function getFilteredQuestions(_license,_language){return[];} // stubbed \u2014 server picks now
+// Paints one question in `lang`, falling back to Hebrew for the handful of ids a
+// translated bank does not carry (measured: id 907 is absent from ru, nothing
+// else). The correct index ALWAYS follows the language actually shown.
+function applyLanguageToQuestion(q,lang){
+  var useLang=lang,e=QuestionBank.get(q.id,lang,currentLicense);
+  if(!e&&lang!=='he'){e=QuestionBank.get(q.id,'he',currentLicense);useLang='he';}
+  if(!e)return false;
+  q.text=e.text;q.answers=e.answers;q.imageUrl=QuestionBank.imageUrl(e);
+  q.displayLang=useLang;
+  q.ci=(q.ciByLang&&typeof q.ciByLang[useLang]==='number')?q.ciByLang[useLang]:q.ciByLang&&q.ciByLang.he;
+  return typeof q.ci==='number';
+}
+// Server entry {id, topic, ci:{...}} -> a display question. Returns only the
+// questions the bank could paint, so a missing id never renders as blank.
+function hydrateQuestions(raw,lang){
+  var out=[];
+  for(var i=0;i<raw.length;i++){
+    var r=raw[i];
+    if(!r||typeof r.id!=='number')continue;
+    var q={id:r.id,category:r.topic||'',ciByLang:r.ci||{}};
+    if(applyLanguageToQuestion(q,lang))out.push(q);
+  }
+  return out;
+}
+// Loads the bank of `lang` (and Hebrew as the fallback, only when something is
+// actually missing) and then hydrates.
+function withBank(lang,raw,onOk,onFail){
+  QuestionBank.load(lang).then(function(){
+    var missing=false;
+    for(var i=0;i<raw.length;i++){ if(raw[i]&&!QuestionBank.get(raw[i].id,lang,currentLicense)){missing=true;break;} }
+    if(!missing||lang==='he')return null;
+    return QuestionBank.load('he');
+  }).then(function(){
+    var qs=hydrateQuestions(raw,lang);
+    if(!qs.length){onFail('\u05dc\u05d0 \u05d4\u05e6\u05dc\u05d7\u05ea\u05d9 \u05dc\u05d8\u05e2\u05d5\u05df \u05d0\u05ea \u05d1\u05e0\u05e7 \u05d4\u05e9\u05d0\u05dc\u05d5\u05ea. \u05d1\u05d3\u05d5\u05e7 \u05d7\u05d9\u05d1\u05d5\u05e8 \u05d5\u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.');return;}
+    onOk(qs);
+  }).catch(function(){
+    onFail('\u05dc\u05d0 \u05d4\u05e6\u05dc\u05d7\u05ea\u05d9 \u05dc\u05d8\u05e2\u05d5\u05df \u05d0\u05ea \u05d1\u05e0\u05e7 \u05d4\u05e9\u05d0\u05dc\u05d5\u05ea. \u05d1\u05d3\u05d5\u05e7 \u05d7\u05d9\u05d1\u05d5\u05e8 \u05d5\u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.');
+  });
+}
 
 function shuffle(arr){var a=arr.slice();for(var i=a.length-1;i>0;i--){var j=Math.floor(Math.random()*(i+1));var t=a[i];a[i]=a[j];a[j]=t;}return a;}
-
-function buildExam(_license,_language){return[];} // server-side picker replaces this
-
-function buildCategoryQuiz(_license,_language,_category){return[];} // server-side picker replaces this
 
 function shuffleAnswers(q,qIdx){if(shuffledOrders[qIdx]){var cached=shuffledOrders[qIdx];var freshAnswers=getQAnswers(q);var freshCorrect=getQCorrectIndex(q);cached.answers=cached.order.map(function(idx){return freshAnswers[idx];});cached.correctIndex=cached.order.indexOf(freshCorrect);return cached;}var answers=getQAnswers(q);var correctIdx=getQCorrectIndex(q);var indices=[];for(var i=0;i<answers.length;i++)indices.push(i);for(var i=indices.length-1;i>0;i--){var j=Math.floor(Math.random()*(i+1));var t=indices[i];indices[i]=indices[j];indices[j]=t;}var shuffled=indices.map(function(idx){return answers[idx];});var newCorrect=indices.indexOf(correctIdx);var result={answers:shuffled,correctIndex:newCorrect,order:indices};shuffledOrders[qIdx]=result;return result;}
 
@@ -682,25 +789,29 @@ function updateTimerDisplay(secs){var el=document.getElementById('timerDisplay')
 function stopTimer(){if(timerInterval){clearInterval(timerInterval);timerInterval=null;}examDeadline=null;document.removeEventListener('visibilitychange',onVisTimer);}
 function getTimeRemaining(){if(!examDeadline)return 0;return Math.max(0,Math.ceil((examDeadline-Date.now())/1000));}
 
-function _fetchServerQuestions(extraParams,onOk,onFail){
-  showLoadingOverlay('\u05D8\u05D5\u05E2\u05DF \u05E9\u05D0\u05DC\u05D5\u05EA\u2026');
-  var qs='action=getExamQuestions&license='+encodeURIComponent(currentLicense)+'&language='+encodeURIComponent(currentLanguage)+'&studentId='+encodeURIComponent(currentStudentId||'anon')+'&classCode='+encodeURIComponent(currentClassCode||'')+'&origin=student-app&includeTranslations=true&_t='+Date.now();
-  for(var k in extraParams){if(extraParams.hasOwnProperty(k)){qs+='&'+encodeURIComponent(k)+'='+encodeURIComponent(extraParams[k]);}}
-  fetch(API_URL+'?'+qs,{cache:'no-store'}).then(function(r){return r.json();}).then(function(resp){
-    hideLoadingOverlay();
-    if(!resp||resp.status!=='ok'||!Array.isArray(resp.questions)||resp.questions.length===0){onFail((resp&&resp.message)?resp.message:'\u05E9\u05D2\u05D9\u05D0\u05D4 \u05D1\u05D8\u05E2\u05D9\u05E0\u05EA \u05E9\u05D0\u05DC\u05D5\u05EA');return;}
-    // Cache translations for instant mid-practice language switching
-    if(resp.translations)window._practiceTranslations=resp.translations;
-    onOk(resp.questions);
-  }).catch(function(){hideLoadingOverlay();onFail('\u05E9\u05D2\u05D9\u05D0\u05EA \u05EA\u05E7\u05E9\u05D5\u05E8\u05EA');});
+// startPractice (GET) replaces getExamQuestions AND getQuestionsByIds: one
+// action, ids + topic + the encoded correct index per language, no texts on the
+// wire. mode = exam | category | ids.
+function startPractice(extraParams,onOk,onFail){
+  showLoadingOverlay('\u05d8\u05d5\u05e2\u05df \u05e9\u05d0\u05dc\u05d5\u05ea\u2026');
+  var params={action:'startPractice',language:currentLanguage,license:currentLicense};
+  if(currentClassCode)params.classCode=currentClassCode;
+  if(currentStudentId)params.studentId=currentStudentId;
+  for(var k in extraParams){if(Object.prototype.hasOwnProperty.call(extraParams,k))params[k]=extraParams[k];}
+  api.get(params,API_TIMEOUT_MS).then(function(resp){
+    if(!resp||resp.status!=='ok'||!Array.isArray(resp.questions)||!resp.questions.length){
+      hideLoadingOverlay();onFail(practiceErrorText(resp));return;
+    }
+    withBank(currentLanguage,resp.questions,function(qs){hideLoadingOverlay();onOk(qs);},function(msg){hideLoadingOverlay();onFail(msg);});
+  }).catch(function(){hideLoadingOverlay();onFail(practiceErrorText(null));});
 }
 
 function startExam(){currentMode='exam';immediateMode=false;currentCategory='';currentIndex=0;userAnswers=[];shuffledOrders=[];answerLocked=false;examStartTime=Date.now();
-  _fetchServerQuestions({mode:'exam'},function(qs){examQuestions=qs;for(var i=0;i<examQuestions.length;i++)userAnswers.push(null);showScreen('screenPractice');startTimer();renderQuestion();},function(msg){alert(msg||'\u05DC\u05D0 \u05E0\u05DE\u05E6\u05D0\u05D5 \u05DE\u05E1\u05E4\u05D9\u05E7 \u05E9\u05D0\u05DC\u05D5\u05EA. \u05E0\u05E1\u05D5 \u05E9\u05E4\u05D4/\u05E8\u05D9\u05E9\u05D9\u05D5\u05DF \u05D0\u05D7\u05E8.');});
+  startPractice({mode:'exam'},function(qs){examQuestions=qs;for(var i=0;i<examQuestions.length;i++)userAnswers.push(null);showScreen('screenPractice');startTimer();renderQuestion();},function(msg){alert(msg||'\u05dc\u05d0 \u05e0\u05de\u05e6\u05d0\u05d5 \u05de\u05e1\u05e4\u05d9\u05e7 \u05e9\u05d0\u05dc\u05d5\u05ea. \u05e0\u05e1\u05d5 \u05e9\u05e4\u05d4/\u05e8\u05d9\u05e9\u05d9\u05d5\u05df \u05d0\u05d7\u05e8.');});
 }
 
 function startCategoryQuiz(category){currentMode='category';immediateMode=true;currentCategory=category;currentIndex=0;userAnswers=[];shuffledOrders=[];answerLocked=false;examStartTime=Date.now();
-  _fetchServerQuestions({mode:'category',categoryFilter:category,maxCount:15},function(qs){examQuestions=qs;for(var i=0;i<examQuestions.length;i++)userAnswers.push(null);showScreen('screenPractice');renderQuestion();},function(msg){alert(msg||'\u05DC\u05D0 \u05E0\u05DE\u05E6\u05D0\u05D5 \u05E9\u05D0\u05DC\u05D5\u05EA \u05D1\u05E0\u05D5\u05E9\u05D0 \u05D6\u05D4.');});
+  startPractice({mode:'category',categoryFilter:category,maxCount:15},function(qs){examQuestions=qs;for(var i=0;i<examQuestions.length;i++)userAnswers.push(null);showScreen('screenPractice');renderQuestion();},function(msg){alert(msg||'\u05dc\u05d0 \u05e0\u05de\u05e6\u05d0\u05d5 \u05e9\u05d0\u05dc\u05d5\u05ea \u05d1\u05e0\u05d5\u05e9\u05d0 \u05d6\u05d4.');});
 }
 
 // ===== TTS Engine =====
@@ -845,7 +956,7 @@ function sameAnswerOrder(a,b){return (ANSWER_ORDER_GROUP[a]||a)===(ANSWER_ORDER_
 var LANG_NAMES_HE={he:'עברית',ru:'רוסית',en:'אנגלית',fr:'צרפתית',es:'ספרדית',ar:'ערבית',am:'אמהרית'};
 function buildFrozenAnswerNotice(answerLang,allowReanswer){var box=document.createElement('div');box.className='frozen-answer-notice';box.style.cssText='margin:8px 0;padding:10px 12px;border-radius:10px;background:#fff7ed;border:1px solid #fdba74;color:#7c2d12;font-size:14px;line-height:1.5;';var msg=document.createElement('span');msg.textContent='ענית על שאלה זו ב'+(LANG_NAMES_HE[answerLang]||answerLang)+'. התשובות מוצגות כפי שראית אותן אז, כי סדר התשובות שונה בין השפות.';box.appendChild(msg);if(allowReanswer){var b=document.createElement('button');b.type='button';b.className='frozen-answer-reanswer';b.textContent='לענות מחדש ב'+(LANG_NAMES_HE[currentLanguage]||currentLanguage);b.style.cssText='margin-right:10px;padding:6px 12px;border-radius:8px;border:1px solid #c2410c;background:#fff;color:#c2410c;font-weight:700;cursor:pointer;';b.addEventListener('click',function(){userAnswers[currentIndex]=null;renderQuestion();});box.appendChild(b);}return box;}
 // ===== end answer order =====
-function renderQuestion(){var q=examQuestions[currentIndex],total=examQuestions.length,area=document.getElementById('practiceArea');area.innerHTML='';var qText=getQText(q),sa=shuffleAnswers(q,currentIndex),sAns=sa.answers,sCI=sa.correctIndex,prev=userAnswers[currentIndex];var frozen=(prev!==null&&!!prev.langAtAnswer&&!sameAnswerOrder(prev.langAtAnswer,currentLanguage));if(frozen){sAns=prev.shuffledAnswers;sCI=prev.shuffledCorrectIndex;}var ansLang=frozen?prev.langAtAnswer:currentLanguage;
+function renderQuestion(){var q=examQuestions[currentIndex],total=examQuestions.length,area=document.getElementById('practiceArea');area.innerHTML='';var qText=getQText(q),sa=shuffleAnswers(q,currentIndex),sAns=sa.answers,sCI=sa.correctIndex,prev=userAnswers[currentIndex];var frozen=(prev!==null&&!!prev.langAtAnswer&&!sameAnswerOrder(prev.langAtAnswer,(q.displayLang||currentLanguage)));if(frozen){sAns=prev.shuffledAnswers;sCI=prev.shuffledCorrectIndex;}var ansLang=frozen?prev.langAtAnswer:(q.displayLang||currentLanguage);
 var topBar=document.createElement('div');topBar.className='practice-topbar';var catName=currentMode==='exam'?'\u05DE\u05D1\u05D7\u05DF \u05EA\u05E8\u05D2\u05D5\u05DC':(CATEGORY_LABELS[currentCategory]||'');var badge=document.createElement('span');badge.className='cat-badge';if(currentMode==='exam')badge.classList.add('cat-badge-exam');else{var cs=CATEGORY_CSS[currentCategory];if(cs)badge.classList.add(cs.badgeClass);}badge.textContent=catName;topBar.appendChild(badge);var ctr=document.createElement('span');ctr.className='q-counter';ctr.textContent='\u05E9\u05D0\u05DC\u05D4 '+(currentIndex+1)+' / '+total;topBar.appendChild(ctr);var langSwitch=document.createElement('select');langSwitch.id='examLangSwitcher';langSwitch.className='exam-lang-switcher';var langOpts=[{v:'he',l:'עב'},{v:'ru',l:'RU'},{v:'en',l:'EN'},{v:'ar',l:'عر'},{v:'fr',l:'FR'},{v:'es',l:'ES'},{v:'am',l:'AM'}];for(var li=0;li<langOpts.length;li++){var opt=document.createElement('option');opt.value=langOpts[li].v;opt.textContent=langOpts[li].l;if(langOpts[li].v===currentLanguage)opt.selected=true;langSwitch.appendChild(opt);}langSwitch.addEventListener('change',function(){switchLanguage(this.value);});topBar.appendChild(langSwitch);area.appendChild(topBar);
 
 if(currentMode==='exam'){var tb=document.createElement('div');tb.className='timer-bar';var sec=getTimeRemaining(),mm=Math.floor(sec/60),ss=sec%60;tb.innerHTML='<span class="timer-icon">&#x23F1;&#xFE0F;</span><span class="timer-text" id="timerDisplay">'+(mm<10?'0':'')+mm+':'+(ss<10?'0':'')+ss+'</span>';if(sec<=300)tb.classList.add('warn-time');area.appendChild(tb);}
@@ -882,9 +993,9 @@ if(audioEnabled){
 }
 if(prev!==null&&immediateMode){if(idx===sCI){var io=document.createElement('span');io.className='ans-icon';io.textContent='\u2713';btn.appendChild(io);}if(idx===prev.chosenIndex&&!prev.isCorrect){var ix=document.createElement('span');ix.className='ans-icon';ix.textContent='\u2717';btn.appendChild(ix);}}
 btn.addEventListener('click',function(){if(frozen)return;if(answerLocked)return;if(prev!==null&&immediateMode)return;
-if(immediateMode){answerLocked=true;var ok=idx===sCI;userAnswers[currentIndex]={question:q,chosenIndex:idx,shuffledCorrectIndex:sCI,shuffledAnswers:sAns,isCorrect:ok,langAtAnswer:currentLanguage};var ab=card.querySelectorAll('.answer-btn');for(var b=0;b<ab.length;b++){ab[b].disabled=true;if(b===sCI){ab[b].classList.add('correct');var i1=document.createElement('span');i1.className='ans-icon';i1.textContent='\u2713';ab[b].appendChild(i1);}if(b===idx&&!ok){ab[b].classList.add('wrong');var i2=document.createElement('span');i2.className='ans-icon';i2.textContent='\u2717';ab[b].appendChild(i2);}}var mbs=document.querySelectorAll('.q-map-btn');if(mbs[currentIndex]){mbs[currentIndex].classList.remove('unanswered','current');mbs[currentIndex].classList.add(ok?'answered-correct':'answered-wrong');}
+if(immediateMode){answerLocked=true;var ok=idx===sCI;userAnswers[currentIndex]={question:q,chosenIndex:idx,shuffledCorrectIndex:sCI,shuffledAnswers:sAns,isCorrect:ok,langAtAnswer:(q.displayLang||currentLanguage)};var ab=card.querySelectorAll('.answer-btn');for(var b=0;b<ab.length;b++){ab[b].disabled=true;if(b===sCI){ab[b].classList.add('correct');var i1=document.createElement('span');i1.className='ans-icon';i1.textContent='\u2713';ab[b].appendChild(i1);}if(b===idx&&!ok){ab[b].classList.add('wrong');var i2=document.createElement('span');i2.className='ans-icon';i2.textContent='\u2717';ab[b].appendChild(i2);}}var mbs=document.querySelectorAll('.q-map-btn');if(mbs[currentIndex]){mbs[currentIndex].classList.remove('unanswered','current');mbs[currentIndex].classList.add(ok?'answered-correct':'answered-wrong');}
 if(currentIndex<total-1){var nb=document.createElement('button');nb.className='btn-next-q';nb.textContent='\u05D4\u05D1\u05D0 \u2190';nb.addEventListener('click',function(){answerLocked=false;currentIndex++;renderQuestion();});card.appendChild(nb);}else{var fb=document.createElement('button');fb.className='btn-next-q';fb.style.background='linear-gradient(135deg,#16a34a,#15803d)';fb.textContent='\u05E1\u05D9\u05D9\u05DD \u05EA\u05E8\u05D2\u05D5\u05DC';fb.addEventListener('click',function(){finishExam();});card.appendChild(fb);}
-}else{var ab=card.querySelectorAll('.answer-btn');for(var b=0;b<ab.length;b++)ab[b].classList.remove('selected');btn.classList.add('selected');var ok=idx===sCI;userAnswers[currentIndex]={question:q,chosenIndex:idx,shuffledCorrectIndex:sCI,shuffledAnswers:sAns,isCorrect:ok,langAtAnswer:currentLanguage};var mbs=document.querySelectorAll('.q-map-btn');if(mbs[currentIndex]){mbs[currentIndex].classList.remove('unanswered');mbs[currentIndex].classList.add('answered');}}});
+}else{var ab=card.querySelectorAll('.answer-btn');for(var b=0;b<ab.length;b++)ab[b].classList.remove('selected');btn.classList.add('selected');var ok=idx===sCI;userAnswers[currentIndex]={question:q,chosenIndex:idx,shuffledCorrectIndex:sCI,shuffledAnswers:sAns,isCorrect:ok,langAtAnswer:(q.displayLang||currentLanguage)};var mbs=document.querySelectorAll('.q-map-btn');if(mbs[currentIndex]){mbs[currentIndex].classList.remove('unanswered');mbs[currentIndex].classList.add('answered');}}});
 li.appendChild(btn);al.appendChild(li);})(idx,sAns[idx]);}if(frozen)card.appendChild(buildFrozenAnswerNotice(prev.langAtAnswer,!immediateMode));card.appendChild(al);
 
 if(!immediateMode){var nr=document.createElement('div');nr.className='nav-row';var pb=document.createElement('button');pb.className='nav-btn nav-prev';pb.textContent='\u2192 \u05D4\u05E7\u05D5\u05D3\u05DD';pb.disabled=(currentIndex===0);pb.addEventListener('click',function(){currentIndex--;renderQuestion();});nr.appendChild(pb);
@@ -892,6 +1003,11 @@ if(currentIndex<total-1){var nb=document.createElement('button');nb.className='n
 
 if(immediateMode&&prev!==null){answerLocked=true;if(currentIndex<total-1){var nbr=document.createElement('button');nbr.className='btn-next-q';nbr.textContent='\u05D4\u05D1\u05D0 \u2190';nbr.addEventListener('click',function(){answerLocked=false;currentIndex++;renderQuestion();});card.appendChild(nbr);}else{var ad=true;for(var ai=0;ai<userAnswers.length;ai++){if(userAnswers[ai]===null){ad=false;break;}}if(ad){var fbr=document.createElement('button');fbr.className='btn-next-q';fbr.style.background='linear-gradient(135deg,#16a34a,#15803d)';fbr.textContent='\u05E1\u05D9\u05D9\u05DD \u05EA\u05E8\u05D2\u05D5\u05DC';fbr.addEventListener('click',function(){finishExam();});card.appendChild(fbr);}}}}
 
+// A language switch is LOCAL: load that bank once (SW-cached afterwards),
+// repaint every question from it and take the correct index for the new
+// language out of the map the server already sent. Answers already given keep
+// the exact list they were given on (ANSWER_ORDER_GROUP / the frozen notice),
+// so a switch can never destroy a scored answer.
 function switchLanguage(newLang){
   if(newLang===currentLanguage)return;
   if(typeof stopSpeaking==='function')stopSpeaking();
@@ -901,95 +1017,55 @@ function switchLanguage(newLang){
     document.documentElement.dir=isRTL?'rtl':'ltr';
     document.documentElement.lang=newLang;
     var ls=document.getElementById('examLangSwitcher');if(ls)ls.value=newLang;
-    var activeScreen='';
-    if(document.getElementById('screenPractice').classList.contains('active'))activeScreen='practice';
-    else if(document.getElementById('screenFlashcards')&&document.getElementById('screenFlashcards').classList.contains('active'))activeScreen='flashcard';
-    if(activeScreen==='flashcard'&&typeof renderFlashcard==='function')renderFlashcard();
-    else if(activeScreen==='practice')renderQuestion();
+    var practice=document.getElementById('screenPractice');
+    var cards=document.getElementById('screenFlashcards');
+    if(cards&&cards.classList.contains('active')&&typeof renderFlashcard==='function')renderFlashcard();
+    else if(practice&&practice.classList.contains('active'))renderQuestion();
   }
-  // Flashcards use their own array (flashcardQuestions). Handle the language
-  // switch for card mode here so the cards actually re-translate; the
-  // practice/exam path below (examQuestions) is left exactly as-is.
-  var _fcEl=document.getElementById('screenFlashcards');
-  if(_fcEl&&_fcEl.classList.contains('active')){
-    if(!Array.isArray(flashcardQuestions)||flashcardQuestions.length===0){_finishSwitch();return;}
-    var _fcCache=window._practiceTranslations;
-    if(_fcCache&&_fcCache[newLang]){
-      var _ft=_fcCache[newLang],_fcMissing=false;
-      for(var _fi=0;_fi<flashcardQuestions.length;_fi++){
-        var _ftr=_ft[flashcardQuestions[_fi].id];
-        if(_ftr&&typeof _ftr.ci==='number'){flashcardQuestions[_fi].text=_ftr.t;flashcardQuestions[_fi].answers=_ftr.a;flashcardQuestions[_fi].ci=_ftr.ci;}
-        else{_fcMissing=true;}
-      }
-      if(!_fcMissing){_finishSwitch();return;}
-    }
-    showLoadingOverlay('מתחלף לשפה…');
-    var _fcIds=flashcardQuestions.map(function(q){return q.id;}).join(',');
-    var _fcUrl=API_URL+'?action=getQuestionsByIds&language='+encodeURIComponent(newLang)+'&ids='+encodeURIComponent(_fcIds)+'&studentId='+encodeURIComponent(currentStudentId||'anon')+'&classCode='+encodeURIComponent(currentClassCode||'')+'&origin=student-app&_t='+Date.now();
-    fetch(_fcUrl,{cache:'no-store'}).then(function(r){return r.json();}).then(function(resp){
-      hideLoadingOverlay();
-      if(!resp||resp.status!=='ok'||!Array.isArray(resp.questions)){alert('שגיאה בטעינת שאלות בשפה החדשה');return;}
-      for(var _i=0;_i<flashcardQuestions.length;_i++){
-        var _nq=resp.questions[_i];
-        if(_nq&&_nq.id===flashcardQuestions[_i].id){flashcardQuestions[_i].text=_nq.text;flashcardQuestions[_i].answers=_nq.answers;if(typeof _nq.ci==='number')flashcardQuestions[_i].ci=_nq.ci;if(_nq.imageUrl)flashcardQuestions[_i].imageUrl=_nq.imageUrl;}
-      }
-      _finishSwitch();
-    }).catch(function(){hideLoadingOverlay();alert('שגיאת תקשורת');});
-    return;
-  }
-  // If no exam is active yet, just flip the language locally.
-  if(!Array.isArray(examQuestions)||examQuestions.length===0){_finishSwitch();return;}
-  // Fast path: translations cached at exam start → instant switch, no server call.
-  var _pCache=window._practiceTranslations;
-  if(_pCache&&_pCache[newLang]){
-    var t=_pCache[newLang];var missingAny=false;
-    for(var i=0;i<examQuestions.length;i++){
-      var tr=t[examQuestions[i].id];
-      if(tr&&typeof tr.ci==='number'){
-        examQuestions[i].text=tr.t;
-        examQuestions[i].answers=tr.a;
-        // Translator may have reordered answers per language, so ci must move
-        // with text/answers — otherwise the scorer keeps the previous
-        // language's correct index and marks real-correct picks as wrong.
-        examQuestions[i].ci=tr.ci;
-      }
-      else{missingAny=true;}
-    }
-    // If any translation entry is missing OR lacks ci (older server deploy,
-    // guest auth before the server fix, etc.) fall through to the server
-    // re-fetch path — it always returns a fresh per-language ci.
-    if(!missingAny){_finishSwitch();return;}
-  }
-  // Fallback: re-fetch the same question IDs in the new language from server.
-  showLoadingOverlay('מתחלף לשפה…');
-  var ids=examQuestions.map(function(q){return q.id;}).join(',');
-  var qs='action=getQuestionsByIds&language='+encodeURIComponent(newLang)+'&ids='+encodeURIComponent(ids)+'&studentId='+encodeURIComponent(currentStudentId||'anon')+'&classCode='+encodeURIComponent(currentClassCode||'')+'&origin=student-app&_t='+Date.now();
-  fetch(API_URL+'?'+qs,{cache:'no-store'}).then(function(r){return r.json();}).then(function(resp){
-    hideLoadingOverlay();
-    if(!resp||resp.status!=='ok'||!Array.isArray(resp.questions)){console.warn('[LANG] re-fetch failed',resp);alert('שגיאה בטעינת שאלות בשפה החדשה');return;}
-    for(var i=0;i<examQuestions.length;i++){
-      var nq=resp.questions[i];
-      if(nq&&nq.id===examQuestions[i].id){
-        examQuestions[i].text=nq.text;
-        examQuestions[i].answers=nq.answers;
-        if(typeof nq.ci==='number')examQuestions[i].ci=nq.ci;
-        if(nq.imageUrl)examQuestions[i].imageUrl=nq.imageUrl;
-      }
+  var lists=[];
+  if(Array.isArray(examQuestions)&&examQuestions.length)lists.push(examQuestions);
+  if(Array.isArray(flashcardQuestions)&&flashcardQuestions.length)lists.push(flashcardQuestions);
+  if(!lists.length){_finishSwitch();return;}
+  if(QuestionBank.has(newLang)){repaint();return;}
+  showLoadingOverlay('\u05de\u05ea\u05d7\u05dc\u05e3 \u05dc\u05e9\u05e4\u05d4\u2026');
+  QuestionBank.load(newLang).then(function(){hideLoadingOverlay();repaint();})
+    .catch(function(){hideLoadingOverlay();alert('\u05dc\u05d0 \u05d4\u05e6\u05dc\u05d7\u05ea\u05d9 \u05dc\u05d8\u05e2\u05d5\u05df \u05d0\u05ea \u05d4\u05e9\u05e4\u05d4 \u05d4\u05d6\u05d5. \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.');});
+  function repaint(){
+    for(var l=0;l<lists.length;l++){
+      for(var i=0;i<lists[l].length;i++)applyLanguageToQuestion(lists[l][i],newLang);
     }
     _finishSwitch();
-  }).catch(function(err){hideLoadingOverlay();console.error('[LANG] switchLanguage error',err);alert('שגיאת תקשורת');});
+  }
 }
 function finishExam(){stopTimer();showResults();}
 
 // ===== Streak System =====
-function updateStreak(){try{var today=new Date().toISOString().slice(0,10);var data=JSON.parse(localStorage.getItem('student_streak')||'{}');if(data.lastDate===today)return;var yesterday=new Date(Date.now()-86400000).toISOString().slice(0,10);if(data.lastDate===yesterday){data.count=(data.count||0)+1;}else{data.count=1;}data.lastDate=today;localStorage.setItem('student_streak',JSON.stringify(data));}catch(e){}}
-function renderStreak(){try{var data=JSON.parse(localStorage.getItem('student_streak')||'{}');var banner=document.getElementById('streakBanner');if(!banner)return;var today=new Date().toISOString().slice(0,10);var yesterday=new Date(Date.now()-86400000).toISOString().slice(0,10);var count=data.count||0;if(data.lastDate!==today&&data.lastDate!==yesterday)count=0;if(count<=0){banner.style.display='none';return;}banner.style.display='block';var msgs=['התחלה טובה! המשך כך','יופי! אתה בדרך הנכונה','מדהים! אל תעצור','אלוף! ממשיכים','בלתי ניתן לעצירה!'];var msgIdx=Math.min(Math.floor((count-1)/2),msgs.length-1);banner.innerHTML='<div class="streak-fire">🔥</div><div class="streak-count">'+count+' ימים רצופים!</div><div class="streak-msg">'+msgs[msgIdx]+'</div>';}catch(e){}}
+function updateStreak(){try{var today=new Date().toISOString().slice(0,10);var data=JSON.parse(readProgress('student_streak','{}'));if(data.lastDate===today)return;var yesterday=new Date(Date.now()-86400000).toISOString().slice(0,10);if(data.lastDate===yesterday){data.count=(data.count||0)+1;}else{data.count=1;}data.lastDate=today;writeProgress('student_streak',JSON.stringify(data));}catch(e){}}
+function renderStreak(){try{var data=JSON.parse(readProgress('student_streak','{}'));var banner=document.getElementById('streakBanner');if(!banner)return;var today=new Date().toISOString().slice(0,10);var yesterday=new Date(Date.now()-86400000).toISOString().slice(0,10);var count=data.count||0;if(data.lastDate!==today&&data.lastDate!==yesterday)count=0;if(count<=0){banner.style.display='none';return;}banner.style.display='block';var msgs=['התחלה טובה! המשך כך','יופי! אתה בדרך הנכונה','מדהים! אל תעצור','אלוף! ממשיכים','בלתי ניתן לעצירה!'];var msgIdx=Math.min(Math.floor((count-1)/2),msgs.length-1);banner.innerHTML='<div class="streak-fire">🔥</div><div class="streak-count">'+count+' ימים רצופים!</div><div class="streak-msg">'+msgs[msgIdx]+'</div>';}catch(e){}}
 // ===== Spaced Repetition =====
-function saveWrongQuestions(){try{var wrong=JSON.parse(localStorage.getItem('student_wrong_qs')||'[]');var existingIds={};for(var e=0;e<wrong.length;e++)existingIds[wrong[e].id]=e;for(var i=0;i<userAnswers.length;i++){var q=examQuestions[i];var qId=q.id||(getQText(q)||'').substring(0,50);if(userAnswers[i]&&!userAnswers[i].isCorrect){if(existingIds[qId]!==undefined){wrong[existingIds[qId]].wrongCount=(wrong[existingIds[qId]].wrongCount||1)+1;wrong[existingIds[qId]].lastSeen=Date.now();}else{wrong.push({id:qId,license:currentLicense,category:classifyCategory(q.category),wrongCount:1,correctStreak:0,lastSeen:Date.now()});}}else if(userAnswers[i]&&userAnswers[i].isCorrect){if(existingIds[qId]!==undefined){wrong[existingIds[qId]].correctStreak=(wrong[existingIds[qId]].correctStreak||0)+1;if(wrong[existingIds[qId]].correctStreak>=2){wrong.splice(existingIds[qId],1);}}}}if(wrong.length>200)wrong=wrong.slice(-200);localStorage.setItem('student_wrong_qs',JSON.stringify(wrong));}catch(e){}}
-function getSpacedRepetitionQuestions(license,language,onReady){try{var wrong=JSON.parse(localStorage.getItem('student_wrong_qs')||'[]');var ids=[];for(var w=0;w<wrong.length;w++){if(wrong[w].license===license){var n=parseInt(wrong[w].id,10);if(!isNaN(n))ids.push(n);}}if(ids.length===0){onReady([]);return;}ids=shuffle(ids).slice(0,50);showLoadingOverlay('טוען שאלות…');var qs='action=getQuestionsByIds&language='+encodeURIComponent(language)+'&ids='+encodeURIComponent(ids.join(','))+'&studentId='+encodeURIComponent(currentStudentId||'anon')+'&classCode='+encodeURIComponent(currentClassCode||'')+'&origin=student-app&_t='+Date.now();fetch(API_URL+'?'+qs,{cache:'no-store'}).then(function(r){return r.json();}).then(function(resp){hideLoadingOverlay();if(!resp||resp.status!=='ok'||!Array.isArray(resp.questions)){onReady([]);return;}var matched=resp.questions.filter(function(q){return q&&q.id;});matched=shuffle(matched).slice(0,15);onReady(matched);}).catch(function(){hideLoadingOverlay();alert('שגיאת תקשורת');onReady(null);});}catch(e){onReady([]);}}
+function saveWrongQuestions(){try{var wrong=JSON.parse(readProgress('student_wrong_qs','[]'));var existingIds={};for(var e=0;e<wrong.length;e++)existingIds[wrong[e].id]=e;for(var i=0;i<userAnswers.length;i++){var q=examQuestions[i];var qId=q.id||(getQText(q)||'').substring(0,50);if(userAnswers[i]&&!userAnswers[i].isCorrect){if(existingIds[qId]!==undefined){wrong[existingIds[qId]].wrongCount=(wrong[existingIds[qId]].wrongCount||1)+1;wrong[existingIds[qId]].lastSeen=Date.now();}else{wrong.push({id:qId,license:currentLicense,category:classifyCategory(q.category),wrongCount:1,correctStreak:0,lastSeen:Date.now()});}}else if(userAnswers[i]&&userAnswers[i].isCorrect){if(existingIds[qId]!==undefined){wrong[existingIds[qId]].correctStreak=(wrong[existingIds[qId]].correctStreak||0)+1;if(wrong[existingIds[qId]].correctStreak>=2){wrong.splice(existingIds[qId],1);}}}}if(wrong.length>200)wrong=wrong.slice(-200);writeProgress('student_wrong_qs',JSON.stringify(wrong));}catch(e){}}
+// Spaced repetition: the ids live on this device, so they are what we send -
+// mode=ids returns the topic and the per-language correct index for exactly
+// those questions (<= 50), and the texts come from the bank like everywhere else.
+function getSpacedRepetitionQuestions(license,language,onReady){
+  try{
+    var wrong=JSON.parse(readProgress('student_wrong_qs','[]'));
+    var ids=[];
+    for(var w=0;w<wrong.length;w++){
+      if(wrong[w].license!==license)continue;
+      var n=parseInt(wrong[w].id,10);
+      if(!isNaN(n))ids.push(n);
+    }
+    if(!ids.length){onReady([]);return;}
+    ids=shuffle(ids).slice(0,50);
+    startPractice({mode:'ids',ids:ids.join(',')},function(qs){
+      onReady(shuffle(qs).slice(0,15));
+    },function(msg){alert(msg||practiceErrorText(null));onReady(null);});
+  }catch(e){onReady([]);}
+}
 function saveToHistory(mode, category, score, total, pct, passed, elapsed) {
   try {
-    var history = JSON.parse(localStorage.getItem('student_history') || '[]');
+    var history = JSON.parse(readProgress('student_history', '[]'));
     history.push({
       date: new Date().toLocaleString('he-IL'),
       mode: mode,
@@ -1002,7 +1078,7 @@ function saveToHistory(mode, category, score, total, pct, passed, elapsed) {
       license: currentLicense
     });
     if (history.length > 50) history = history.slice(-50);
-    localStorage.setItem('student_history', JSON.stringify(history));
+    writeProgress('student_history', JSON.stringify(history));
   } catch(e) {}
 }
 
@@ -1010,7 +1086,7 @@ function showHistory() {
   showScreen('screenHistory');
   var area = document.getElementById('historyContent');
   var history = [];
-  try { history = JSON.parse(localStorage.getItem('student_history') || '[]'); } catch(e) {}
+  try { history = JSON.parse(readProgress('student_history', '[]')); } catch(e) {}
   
   if (history.length === 0) {
     area.innerHTML = '<div class="history-empty"><div class="history-empty-icon">📊</div><p>עדיין אין היסטוריית תרגולים.<br>התחל לתרגל כדי לראות את ההתקדמות שלך!</p></div>';
@@ -1066,11 +1142,15 @@ function showHistory() {
 
 window.clearHistory = function() {
   if (confirm('בטוח שרוצה למחוק את כל ההיסטוריה?')) {
-    localStorage.removeItem('student_history');
+    try { localStorage.removeItem(progressKey('student_history')); } catch(e) {}
     showHistory();
   }
 };
-function showResults(){showScreen('screenResults');var area=document.getElementById('resultsArea');area.innerHTML='';var total=examQuestions.length,correct=0;for(var i=0;i<userAnswers.length;i++){if(userAnswers[i]&&userAnswers[i].isCorrect)correct++;}var pct=total>0?Math.round((correct/total)*100):0;var passed=currentMode==='exam'?(correct>=PASS_SCORE):(pct>=80);
+function showResults(){showScreen('screenResults');var area=document.getElementById('resultsArea');area.innerHTML='';var total=examQuestions.length,correct=0;for(var i=0;i<userAnswers.length;i++){if(userAnswers[i]&&userAnswers[i].isCorrect)correct++;}var pct=total>0?Math.round((correct/total)*100):0;
+// S8: the sheet stores \u05e2\u05d1\u05e8 when percent >= 86, so a 12/15 topic quiz used to
+// show \u05e2\u05d1\u05e8 on screen and land as \u05e0\u05db\u05e9\u05dc in the teacher dashboard and the at-risk
+// model. One rule for both modes, the same one the server applies.
+var passed=total>0&&correct>=Math.ceil(total*0.86);
 
 // Send results to backend if enrolled in a class
 try{
@@ -1078,7 +1158,7 @@ try{
   if(examStartTime){var diff=Math.floor((Date.now()-examStartTime)/1000);var mm=Math.floor(diff/60);var ss=diff%60;elapsed=mm+':'+(ss<10?'0':'')+ss;}
   var wrongArr=[];for(var wi=0;wi<userAnswers.length;wi++){if(userAnswers[wi]&&!userAnswers[wi].isCorrect){var wq=examQuestions[wi];wrongArr.push({qNum:wi+1,category:classifyCategory(wq.category),qText:(getQText(wq)||'').substring(0,100)});}}
   var catBd=computeCategoryBreakdown();var catObj={};for(var cb=0;cb<catBd.length;cb++){catObj[catBd[cb].category]={correct:catBd[cb].correct,total:catBd[cb].total};}
-  sendPracticeResult({mode:currentMode,score:correct,total:total,percent:pct,time:elapsed,category:currentCategory,wrongDetails:JSON.stringify(wrongArr),categoryBreakdown:JSON.stringify(catObj)});
+  sendPracticeResult({mode:currentMode,score:correct,total:total,percent:pct,passed:passed,time:elapsed,category:currentCategory,wrongDetails:JSON.stringify(wrongArr),categoryBreakdown:JSON.stringify(catObj)});
 }catch(e){}
 // Save to local history
 var histElapsed='';
@@ -1123,17 +1203,6 @@ if(fcPanel){
 }
 document.getElementById('fcAllBtn').addEventListener('click',function(){startFlashcards('all');});}
 
-function buildFlashcardSet(license,language,category){
-  var pool=getFilteredQuestions(license,language);
-  var seen={};
-  pool=pool.filter(function(q){if(seen[q.id])return false;seen[q.id]=true;return true;});
-  if(category&&category!=='all'){
-    pool=pool.filter(function(q){return classifyCategory(q.category)===category;});
-  }
-  pool=shuffle(pool);
-  return pool.slice(0,Math.min(pool.length,20));
-}
-
 function startFlashcards(category){
   flashcardCategory=category||'all';
   flashcardIndex=0;
@@ -1144,7 +1213,7 @@ function startFlashcards(category){
   // ~20-card study deck client-side so it stays a deck, not a 30-question exam.
   var params={mode:'category',maxCount:20};
   if(flashcardCategory&&flashcardCategory!=='all')params.categoryFilter=flashcardCategory;
-  _fetchServerQuestions(params,function(qs){
+  startPractice(params,function(qs){
     flashcardQuestions=(qs||[]).slice(0,20);
     if(flashcardQuestions.length===0){alert('\u05DC\u05D0 \u05E0\u05DE\u05E6\u05D0\u05D5 \u05E9\u05D0\u05DC\u05D5\u05EA \u05D1\u05E0\u05D5\u05E9\u05D0 \u05D6\u05D4.');return;}
     showScreen('screenFlashcards');
@@ -1284,15 +1353,23 @@ var savedName=localStorage.getItem('student_name')||'';
 if(savedName)document.getElementById('inputName').value=savedName;
 var savedPhone=localStorage.getItem('student_phone')||'';if(savedPhone){var _pin=document.getElementById('inputPhone');if(_pin)_pin.value=savedPhone;}
 if(savedClass){document.getElementById('inputClassCode').value=savedClass;var cn=localStorage.getItem('student_class_name');if(cn){var st=document.getElementById('classStatus');st.style.display='block';st.style.color='#16a34a';st.textContent='\u2714 '+cn;}}
-currentStudentId=getStudentId();
 
 document.getElementById('btnStartWelcome').addEventListener('click',function(){var name=document.getElementById('inputName').value.trim();if(!name){document.getElementById('inputName').style.borderColor='#ef4444';document.getElementById('inputName').focus();return;}document.getElementById('inputName').style.borderColor='#cbd5e1';currentName=name;localStorage.setItem('student_name',name);var _ph=(document.getElementById('inputPhone')||{value:''}).value.trim();currentPhone=_ph;localStorage.setItem('student_phone',_ph);currentLicense=document.getElementById('selectLicense').value;currentLanguage=document.getElementById('selectLanguage').value;
 audioEnabled=document.getElementById('chkAudio').checked;
 if(audioEnabled)initTTS();
 // Handle class code
 var classInput=document.getElementById('inputClassCode').value.trim().toUpperCase();
-var proceedToApp=function(){loadTranslationFile(currentLanguage,function(){document.getElementById('greetingText').textContent='\u05E9\u05DC\u05D5\u05DD, '+currentName+'! \u05DE\u05D4 \u05E0\u05EA\u05E8\u05D2\u05DC \u05D4\u05D9\u05D5\u05DD?';buildCategoryButtons();showScreen('screenModeSelect');renderStreak();try{var wr=JSON.parse(localStorage.getItem('student_wrong_qs')||'[]');var srCard=document.getElementById('cardSpacedRep');if(srCard){if(wr.length>0){srCard.style.display='';document.getElementById('spacedRepDesc').textContent=wr.length+' שאלות שטעית בהן מחכות לך';}else{srCard.style.display='none';}}}catch(e){}});};
-if(classInput&&classInput!==currentClassCode){joinClass(classInput,currentName,currentStudentId,function(){loadProgressFromCloud(proceedToApp);});}
+// D16: every progress key is namespaced by class+name, so the class has to be
+// known BEFORE anything is read or written - but the "did the student type a
+// NEW class code?" test still has to compare against the class we had joined
+// before this click.
+var priorClassCode=currentClassCode;
+currentClassCode=classInput||savedClass||currentClassCode;
+migrateLegacyProgress();
+currentStudentId=getStudentId();
+QuestionBank.load(currentLanguage).catch(function(){});   // warm the bank while the student reads the menu
+var proceedToApp=function(){(function(){document.getElementById('greetingText').textContent='\u05E9\u05DC\u05D5\u05DD, '+currentName+'! \u05DE\u05D4 \u05E0\u05EA\u05E8\u05D2\u05DC \u05D4\u05D9\u05D5\u05DD?';buildCategoryButtons();showScreen('screenModeSelect');renderStreak();try{var wr=JSON.parse(readProgress('student_wrong_qs','[]'));var srCard=document.getElementById('cardSpacedRep');if(srCard){if(wr.length>0){srCard.style.display='';document.getElementById('spacedRepDesc').textContent=wr.length+' שאלות שטעית בהן מחכות לך';}else{srCard.style.display='none';}}}catch(e){}})();};
+if(classInput&&classInput!==priorClassCode){joinClass(classInput,currentName,currentStudentId,function(){loadProgressFromCloud(proceedToApp);});}
 else if(savedClass){currentClassCode=savedClass;loadProgressFromCloud(proceedToApp);}
 else{proceedToApp();}});
 document.getElementById('btnBackToWelcome').addEventListener('click',function(){showScreen('screenWelcome');});
@@ -1325,32 +1402,27 @@ if ('serviceWorker' in navigator) {
 // automatically on a new deploy — but ONLY while idle, never mid-practice
 // (screenPractice active) so a student never loses quiz progress. Zero
 // maintenance — no version file to bump.
+// Update check (D3): version.json carries a content hash per page, so a Pages
+// push that did not change student.html shows nothing at all - no more "every
+// push re-stamps every ETag". The reload itself is unchanged in spirit: a
+// student page that is NOT in the middle of a practice may refresh silently;
+// one that is never does.
 (function() {
   if (!window.fetch) return;
-  var baseTag = null, pendingTag = null;
-  // 16/09/2026 (see examiner.html): one build is served as "x-y" OR W/"x-y" and
-  // error/proxy responses carry their own tags -- compare the normalised ETag of a 200 only.
-  var tagOf = function(r) {
-    if (!r || !r.ok) return null;
-    var e = r.headers.get('ETag');
-    return e ? String(e).replace(/^W\//, '').replace(/"/g, '').trim() || null : null;
-  };
-  var probe = function(cb) {
-    fetch(location.pathname, { method: 'HEAD', cache: 'no-store' })
-      .then(function(r) { cb(tagOf(r)); }).catch(function() { cb(null); });
-  };
-  probe(function(t) { baseTag = t; });
-  setInterval(function() {
-    probe(function(t) {
-      if (!t) return;                                   // no trustworthy answer
-      if (!baseTag) { baseTag = t; return; }            // first good answer is the base
-      if (t === baseTag) { pendingTag = null; return; } // same build
-      if (pendingTag !== t) { pendingTag = t; return; } // a real deploy is still there next poll
-      var ps = document.getElementById('screenPractice');
-      if (ps && ps.classList.contains('active')) return;      // never disrupt an active practice
-      location.reload();
-    });
-  }, 120000);  // check every 2 min
+  ExamTransport.createUpdateCheck({
+    page: 'student.html',
+    intervalMs: 120000,
+    onNewVersion: function() {
+      var tick = setInterval(function() {
+        var ps = document.getElementById('screenPractice');
+        var fc = document.getElementById('screenFlashcards');
+        if (ps && ps.classList.contains('active')) return;
+        if (fc && fc.classList.contains('active')) return;
+        clearInterval(tick);
+        location.reload();
+      }, 30000);
+    }
+  }).start();
 })();
 
 var deferredInstallPrompt = null;

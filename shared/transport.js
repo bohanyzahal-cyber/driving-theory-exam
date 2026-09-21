@@ -41,7 +41,11 @@
   var LOG_MAX_BYTES = 2048;
 
   // ---------- 1. bounded fetch ----------
-  function fetchJsonWithTimeout(url, opts, timeoutMs) {
+  // noteHealth=false is for endpoints that are NOT the exam backend (the
+  // version.json probe on GitHub Pages): a 404 there says nothing about Apps
+  // Script, and letting it mark the backend degraded would slow every poll in
+  // the page to the 30-60 s floor for no reason.
+  function boundedFetch(url, opts, timeoutMs, noteHealth) {
     opts = opts || {};
     return new Promise(function (resolve, reject) {
       var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
@@ -57,7 +61,7 @@
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        noteTransport(err || null);
+        if (noteHealth !== false) noteTransport(err || null);
         if (err) reject(err); else resolve(data);
       }
       Promise.resolve().then(function () { return fetch(url, opts); }).then(function (response) {
@@ -80,6 +84,7 @@
       });
     });
   }
+  function fetchJsonWithTimeout(url, opts, timeoutMs) { return boundedFetch(url, opts, timeoutMs, true); }
 
   // ---------- 2. transport health ----------
   var transportState = 'ok';   // 'ok' | 'degraded'
@@ -118,7 +123,10 @@
   // ---------- 4. poll loop ----------
   // opts: { name, baseMs, maxMs, tick: function() -> Promise|any,
   //         nextDelay: optional function(info) -> ms override (e.g. a 2 s sync cadence),
-  //         onSettled: optional function(info) }
+  //         onSettled: optional function(info),
+  //         onRestart: optional function() — called just before restartIfStuck
+  //           revives the chain, so the page can invalidate its own generation
+  //           counter before the fresh tick captures it }
   // info: { ok, slow, elapsedMs, failed, error, result }
   // tick() rejecting or returning {status:'error'} counts as failed; the loop never dies.
   function createPollLoop(opts) {
@@ -162,6 +170,7 @@
       restartIfStuck: function () {
         if (!running) return false;
         if (inFlight && Date.now() - inFlightSince < POLL_TIMEOUT_MS) return false;
+        if (opts.onRestart) { try { opts.onRestart(); } catch (e) {} }
         this.start();
         return true;
       },
@@ -230,7 +239,9 @@
   function createUpdateCheck(opts) {
     var baseHash = null, pendingHash = null, notified = false, timer = null;
     function probe() {
-      return fetchJsonWithTimeout(opts.versionUrl || 'version.json', { cache: 'no-store' }, 15000)
+      // noteHealth=false: version.json is served by GitHub Pages, not by the
+      // exam backend, so its failures must not degrade the poll pacing.
+      return boundedFetch(opts.versionUrl || 'version.json', { cache: 'no-store' }, 15000, false)
         .then(function (v) { return (v && v.pages && typeof v.pages[opts.page] === 'string') ? { hash: v.pages[opts.page], build: v.build || '' } : null; },
               function () { return null; });
     }

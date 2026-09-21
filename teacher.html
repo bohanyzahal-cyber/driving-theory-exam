@@ -486,6 +486,7 @@
   </div>
 </div>
 
+<script src="shared/transport.js"></script>
 <script>
 (function(){'use strict';
 
@@ -525,21 +526,31 @@ function showScreen(id) {
   window.scrollTo(0, 0);
 }
 
-function apiGet(params) {
-  if (!params.origin) params.origin = API_ORIGIN;
-  var qs = '';
-  for (var k in params) qs += '&' + k + '=' + encodeURIComponent(params[k]);
-  return fetch(API_URL + '?' + qs.substring(1)).then(function(r) { return r.json(); });
-}
+// D6: teacher.html had no request deadline at ALL - a plain fetch(), no
+// AbortController, no timeout, no cache:'no-store', and r.json() on Google's
+// HTML error page threw into a .catch() that only said "\u05e9\u05d2\u05d9\u05d0\u05ea \u05ea\u05e7\u05e9\u05d5\u05e8\u05ea". A hung
+// teacherClassDetails left "\u05d8\u05d5\u05e2\u05df \u05e0\u05ea\u05d5\u05e0\u05d9\u05dd..." on screen forever. Everything now goes
+// through the one shared transport: bounded, classified, no raw fetch left.
+var API_TIMEOUT_MS = ExamTransport.API_TIMEOUT_MS;        // 30s - a teacher is watching
+var HEAVY_TIMEOUT_MS = 90000;                             // class details / commander reports: measured 18-81s
+var api = ExamTransport.createApi({
+  apiUrl: API_URL,
+  origin: API_ORIGIN,
+  decorate: function(params) {
+    if (teacher && teacher.id && !params.teacherId) params.teacherId = teacher.id;
+    if (teacher && teacher.token && !params.token) params.token = teacher.token;
+    return params;
+  }
+});
+function apiGet(params, timeoutMs) { return api.get(params || {}, timeoutMs || API_TIMEOUT_MS); }
+function apiPost(data, timeoutMs) { return api.post(data || {}, timeoutMs || API_TIMEOUT_MS); }
 
-function apiPost(data) {
-  var payload = data || {};
-  if (!payload.origin) payload.origin = API_ORIGIN;
-  return fetch(API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain' },
-    body: JSON.stringify(payload)
-  }).then(function(r) { return r.json(); });
+// One sentence for every failed request, so a busy backend never reads as
+// "reload the page" - the 16/09 reload storms started exactly there.
+function transportErrorText(fallback) {
+  return ExamTransport.isBackendDegraded()
+    ? '\u05d4\u05e9\u05e8\u05ea \u05e2\u05de\u05d5\u05e1 \u2014 \u05d0\u05d9\u05df \u05e6\u05d5\u05e8\u05da \u05dc\u05e8\u05e2\u05e0\u05df. \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1 \u05d1\u05e2\u05d5\u05d3 \u05d3\u05e7\u05d4.'
+    : (fallback || '\u05e9\u05d2\u05d9\u05d0\u05ea \u05ea\u05e7\u05e9\u05d5\u05e8\u05ea \u2014 \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1');
 }
 
 // ===== Auth =====
@@ -572,7 +583,7 @@ function doLogin() {
   .catch(function() {
     btn.disabled = false;
     btn.textContent = 'התחבר';
-    errEl.textContent = 'שגיאת תקשורת — נסה שוב';
+    errEl.textContent = transportErrorText('שגיאת תקשורת — נסה שוב');
     errEl.style.display = 'block';
   });
 }
@@ -624,18 +635,23 @@ function tryAutoLogin() {
   var saved = sessionStorage.getItem('teacher_auth') || localStorage.getItem('teacher_auth');
   if (!saved) return;
   try { teacher = JSON.parse(saved); } catch(e) { return; }
-  // Verify token
+  // D5 (A2 was never applied here): this used to drop the saved login on ANY
+  // answer that was not status:'ok' - including a server error, a rate limit or
+  // Google's HTML error page parsed into nothing. A stored login is deleted only
+  // when the SERVER says the token expired; anything else leaves it alone and we
+  // simply try again later.
   apiGet({ action: 'teacherVerifyLogin', teacherId: teacher.id, token: teacher.token })
   .then(function(d) {
-    if (d.status === 'ok') {
-      onLoggedIn();
-    } else {
+    if (d && d.status === 'ok') { onLoggedIn(); return; }
+    if (d && d.tokenExpired === true) {
       teacher = null;
       sessionStorage.removeItem('teacher_auth');
       localStorage.removeItem('teacher_auth');
+      return;
     }
+    teacher = null;   // keep the stored credentials, just do not enter the app now
   })
-  .catch(function() {});
+  .catch(function(){ teacher = null; });
 }
 
 // ===== Dashboard =====
@@ -656,7 +672,7 @@ function loadDashboard() {
     }
   })
   .catch(function() {
-    list.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><p>שגיאת תקשורת</p></div>';
+    list.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><p>' + escHtml(transportErrorText()) + '</p></div>';
   });
 }
 
@@ -702,7 +718,7 @@ function loadClassDetail(classCode) {
   document.getElementById('studentsContent').innerHTML = '<div class="loading">טוען נתונים...</div>';
   document.getElementById('categoryWeaknessCard').style.display = 'none';
 
-  apiGet({ action: 'teacherClassDetails', classCode: classCode, teacherId: teacher.id, token: teacher.token })
+  apiGet({ action: 'teacherClassDetails', classCode: classCode, teacherId: teacher.id, token: teacher.token }, HEAVY_TIMEOUT_MS)
   .then(function(d) {
     if (d.status === 'ok') {
       currentClassData = d;
@@ -1232,7 +1248,7 @@ window.fetchCommanderData = function(period) {
     token: teacher.token,
     dateFrom: dateFrom,
     dateTo: dateTo
-  }).then(function(resp) {
+  }, HEAVY_TIMEOUT_MS).then(function(resp) {
     document.getElementById('cmdLoading').style.display = 'none';
     if (resp.status === 'ok') {
       cmdData = resp.data;
@@ -1738,45 +1754,36 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw-teacher.js').catch(function() {});
 }
 
-// ===== Auto-update: detect a new deployed version and refresh =====
-// sw-teacher.js is network-first, so a reload always fetches the latest HTML.
-// The dashboard stays open for a long time, so we HEAD-poll our own
-// ETag/Last-Modified (HEAD bypasses the SW) and, on a new deploy, show a banner
-// + auto-reload after a grace period. Skips the reload while a modal is open so
-// in-progress form input isn't lost. Zero maintenance — no version file to bump.
+// ===== Auto-update: BANNER ONLY, never a reload we did not ask for =====
+// 16/09/2026 took the examiners down with an ETag comparison; D4 found the
+// teacher's own version of it reloading 60 s after the banner with a modal
+// guard that had been evaluated once, BEFORE the timer started - so a teacher
+// who opened a dialog inside the grace period lost what was typed in it.
+// Decision 4 of the 21/09 design: examiner and teacher get a banner and a
+// button, and nothing else. The check itself is now version.json (a per-page
+// content hash), so a Pages push that did not change teacher.html shows nothing.
 (function() {
   if (!window.fetch) return;
-  var baseTag = null, pendingTag = null, notified = false;
-  // 16/09/2026 (see examiner.html): one build is served as "x-y" OR W/"x-y" and
-  // error/proxy responses carry their own tags -- compare the normalised ETag of a 200 only.
-  var tagOf = function(r) {
-    if (!r || !r.ok) return null;
-    var e = r.headers.get('ETag');
-    return e ? String(e).replace(/^W\//, '').replace(/"/g, '').trim() || null : null;
-  };
-  var probe = function(cb) {
-    fetch(location.pathname, { method: 'HEAD', cache: 'no-store' })
-      .then(function(r) { cb(tagOf(r)); }).catch(function() { cb(null); });
-  };
-  probe(function(t) { baseTag = t; });
-  setInterval(function() {
-    if (notified) return;
-    probe(function(t) {
-      if (!t) return;                                   // no trustworthy answer
-      if (!baseTag) { baseTag = t; return; }            // first good answer is the base
-      if (t === baseTag) { pendingTag = null; return; } // same build
-      if (pendingTag !== t) { pendingTag = t; return; } // a real deploy is still there next poll
-      if (document.querySelector('.modal-overlay.active')) return; // don't interrupt an open modal
-      notified = true;
+  ExamTransport.createUpdateCheck({
+    page: 'teacher.html',
+    intervalMs: 120000,
+    onNewVersion: function() {
+      if (document.getElementById('teacherUpdateBanner')) return;
       var b = document.createElement('div');
+      b.id = 'teacherUpdateBanner';
       b.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;background:#7c3aed;color:#fff;padding:12px 16px;text-align:center;font-size:15px;font-weight:700;box-shadow:0 -2px 10px rgba(0,0,0,.2);';
-      b.innerHTML = '🔄 גרסה חדשה זמינה — מתעדכן אוטומטית… <button id="swUpdNow" style="margin-right:10px;padding:6px 16px;font-weight:800;background:#fff;color:#7c3aed;border:none;border-radius:8px;cursor:pointer;">רענן עכשיו</button>';
+      var msg = document.createElement('span');
+      msg.textContent = '\ud83d\udd04 \u05d2\u05e8\u05e1\u05d4 \u05d7\u05d3\u05e9\u05d4 \u05d6\u05de\u05d9\u05e0\u05d4 \u2014 \u05d0\u05e4\u05e9\u05e8 \u05dc\u05e8\u05e2\u05e0\u05df \u05db\u05e9\u05e0\u05d5\u05d7 \u05dc\u05da';
+      b.appendChild(msg);
+      var btn = document.createElement('button');
+      btn.id = 'swUpdNow';
+      btn.textContent = '\u05e8\u05e2\u05e0\u05df \u05e2\u05db\u05e9\u05d9\u05d5';
+      btn.style.cssText = 'margin-right:10px;padding:6px 16px;font-weight:800;background:#fff;color:#7c3aed;border:none;border-radius:8px;cursor:pointer;';
+      btn.addEventListener('click', function() { location.reload(); });
+      b.appendChild(btn);
       document.body.appendChild(b);
-      var btn = document.getElementById('swUpdNow');
-      if (btn) btn.addEventListener('click', function() { location.reload(); });
-      setTimeout(function() { location.reload(); }, 60000);  // grace period to finish an action
-    });
-  }, 120000);  // check every 2 min
+    }
+  }).start();
 })();
 
 var deferredInstallPrompt = null;

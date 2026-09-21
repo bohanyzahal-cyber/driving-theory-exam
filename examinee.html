@@ -418,14 +418,21 @@
 
 <footer>מבחן תאוריה חיצוני</footer>
 
+<!-- The two shared client layers, loaded before the inline script which assumes
+     both are present. transport.js owns every bounded fetch, the failure
+     classification, the backend-health state and the poll pacing; bank.js owns
+     the static question bank (bank/<lang>.json). -->
+<script src="shared/transport.js"></script>
+<script src="shared/bank.js"></script>
 <script>
 (function() {
   'use strict';
 
-  // Questions are no longer loaded as a bulk JS file. The Apps Script
-  // `getExamQuestions` action returns only the 30 questions for the current
-  // exam, in the requested language. Bulk download of the full bank from
-  // GitHub Pages is no longer possible.
+  // Question TEXTS are static: they ship with the site as bank/<lang>.json and
+  // are read through QuestionBank. The server hands out only ids, the answer
+  // permutation and the topic (startExam), and keeps the answer key to itself —
+  // so the client never knows which answer is correct, and a language switch is
+  // a local re-render instead of a server call.
 
   // ========== Loading overlay (blocks interaction during server waits) ==========
   // Renders a full-screen spinner + message. Pointer events on the page below
@@ -510,18 +517,14 @@
   var IMAGE_PROXY_BASE = 'https://image-proxy.bohanyzahal.workers.dev';
 
   var TOTAL_QUESTIONS = 30;
-  var PASS_SCORE = 26;
+  // The pass mark lives on the server (ceil(total × 0.86)); the client is never
+  // told the score, so it has no use for it.
   var BASE_EXAM_MINUTES = 40;
   var examTimeMinutes = 40; // may be updated by server (e.g. 50 or 60 for time extensions)
   var ANSWER_LABELS = ['\u05d0', '\u05d1', '\u05d2', '\u05d3'];
 
-  var EXAM_STRUCTURE = {
-    'B':  { '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA': 7, '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1': 7, '\u05D7\u05D5\u05E7': 7, '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD': 9 },
-    '1':  { '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA': 5, '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1': 5, '\u05D7\u05D5\u05E7': 6, '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD': 6, '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9': 8 },
-    'C1': { '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA': 5, '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1': 5, '\u05D7\u05D5\u05E7': 5, '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD': 5, '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9': 10 },
-    'C':  { '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA': 5, '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1': 4, '\u05D7\u05D5\u05E7': 3, '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD': 4, '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9': 14 },
-    'D':  { '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA': 4, '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1': 2, '\u05D7\u05D5\u05E7': 5, '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD': 4, '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9': 15 }
-  };
+  // The 30-question blueprint per licence lives on the server (startExam picks
+  // the ids); the client only displays what it was handed.
 
   var LICENSE_LABELS = { 'B': 'B (פרטי)', '1': '1 (טרקטור)', 'C1': 'C1 (משא קל)', 'C': 'C/E (משא כבד)', 'D': 'D (ציבורי)' };
   var LANG_LABELS = { 'he': 'עברית', 'ru': 'רוסית', 'en': 'אנגלית', 'ar': 'ערבית', 'fr': 'צרפתית', 'es': 'ספרדית', 'am': 'אמהרית' };
@@ -892,14 +895,18 @@
   var activeQuestions = [];
   var currentIndex = 0;
   var userAnswers = [];
-  var shuffledOrders = [];  // stores {order: [], correctIdx: N} per question
+  // {order: [permutation of 0..3], correctIdx: null} per question. The order is
+  // the server's; correctIdx stays null because the client is never told which
+  // answer is right — the server scores from its own key.
+  var shuffledOrders = [];
   var timerInterval = null;
   var timeRemaining = examTimeMinutes * 60;
   var examStartTime = null;
   var examInProgress = false;
   var examSubmitted = false;
-  var examStartConfirmed = false;  // true once the server confirmed markExamStarted (→ in_exam)
-  var approvalInterval = null;
+  // Per-question "answer again in the current language" requests (D11): the
+  // previous answer stays recorded until a new one is actually picked.
+  var reanswerAt = {};
 
   // TTS state
   var speechRate = 0.9;
@@ -917,7 +924,16 @@
   // ========== Session persistence ==========
   // CRITICAL: also use localStorage so state survives tab close / iOS memory pressure.
   // Otherwise examinee loses the waiting screen and tries to re-register, getting blocked.
-  var EXAMINEE_STATE_KEY = 'ext_examinee_state';
+  // D20: the tab's own copy is unambiguous (sessionStorage dies with the tab),
+  // but the localStorage copy outlives the examinee — a fresh tab used to
+  // restore the PREVIOUS person's identity for up to 8 hours, and if their row
+  // was still 'waiting' the next person could walk into their exam. The
+  // localStorage key now carries the id number, and restoring from it always
+  // asks "is this you?" first (see confirmRestoredExaminee).
+  var EXAMINEE_STATE_KEY = 'ext_examinee_state';           // sessionStorage: this tab
+  var EXAMINEE_STATE_PREFIX = 'ext_examinee_state_';       // localStorage: one per examinee
+  function examineeStateKey(id) { return EXAMINEE_STATE_PREFIX + String(id || 'anon'); }
+
   function saveExamineeState(screen) {
     try {
       var payload = JSON.stringify({
@@ -929,29 +945,71 @@
         savedAt: Date.now()
       });
       sessionStorage.setItem(EXAMINEE_STATE_KEY, payload);
-      localStorage.setItem(EXAMINEE_STATE_KEY, payload);
+      localStorage.setItem(examineeStateKey(examineeData && examineeData.idNumber), payload);
     } catch(e) {}
   }
 
-  function loadExamineeState() {
+  function parseExamineeState(raw) {
     try {
-      // Prefer sessionStorage (most recent), fall back to localStorage (after tab close)
-      var saved = sessionStorage.getItem(EXAMINEE_STATE_KEY) || localStorage.getItem(EXAMINEE_STATE_KEY);
-      if (!saved) return null;
-      var parsed = JSON.parse(saved);
+      var parsed = JSON.parse(raw);
       // Discard if older than 8 hours (session lifetime) — prevents stale recovery
-      if (parsed.savedAt && (Date.now() - parsed.savedAt) > 8 * 60 * 60 * 1000) {
-        clearExamineeState();
-        return null;
-      }
+      if (!parsed || (parsed.savedAt && (Date.now() - parsed.savedAt) > 8 * 60 * 60 * 1000)) return null;
       return parsed;
     } catch(e) { return null; }
   }
 
+  // { state, fromLocal } — fromLocal means "another tab or another day wrote
+  // this", which is exactly when the examinee has to confirm it is theirs.
+  function loadExamineeState() {
+    var own = null;
+    try { own = parseExamineeState(sessionStorage.getItem(EXAMINEE_STATE_KEY)); } catch(e) {}
+    if (own) return { state: own, fromLocal: false };
+    var best = null;
+    try {
+      for (var i = 0; i < localStorage.length; i++) {
+        var name = localStorage.key(i);
+        if (!name) continue;
+        if (name.indexOf(EXAMINEE_STATE_PREFIX) !== 0 && name !== EXAMINEE_STATE_KEY) continue;
+        var candidate = parseExamineeState(localStorage.getItem(name));
+        if (!candidate) { try { localStorage.removeItem(name); } catch(e2) {} continue; }
+        if (!best || (candidate.savedAt || 0) > (best.savedAt || 0)) best = candidate;
+      }
+    } catch(e) {}
+    return best ? { state: best, fromLocal: true } : null;
+  }
+
   function clearExamineeState() {
     try { sessionStorage.removeItem(EXAMINEE_STATE_KEY); } catch(e) {}
-    try { localStorage.removeItem(EXAMINEE_STATE_KEY); } catch(e) {}
+    try { localStorage.removeItem(examineeStateKey(examineeData && examineeData.idNumber)); } catch(e) {}
+    try { localStorage.removeItem(EXAMINEE_STATE_KEY); } catch(e) {}   // pre-r25 unscoped key
     try { sessionStorage.removeItem('ext_exam_active'); } catch(e) {}
+  }
+
+  // "האם אתה ...?" — shown before a state written by another tab/day is adopted.
+  function confirmRestoredExaminee(state, onYes, onNo) {
+    var name = (state.examineeData && state.examineeData.fullName) || '';
+    var id = String((state.examineeData && state.examineeData.idNumber) || '');
+    var masked = id ? '****' + id.slice(-4) : '';
+    var box = document.createElement('div');
+    box.id = 'restoreConfirm';
+    box.style.cssText = 'position:fixed;inset:0;z-index:99998;background:rgba(15,23,42,0.92);display:flex;align-items:center;justify-content:center;padding:20px;';
+    box.innerHTML =
+      '<div style="background:#fff;border-radius:16px;padding:26px 28px;max-width:420px;width:100%;text-align:center;box-shadow:0 10px 40px rgba(0,0,0,0.5);">' +
+        '<div style="font-size:42px;margin-bottom:10px;">👤</div>' +
+        '<div style="font-size:19px;font-weight:800;color:#0f172a;margin-bottom:6px;">האם אתה ' + escHtml(name) + '?</div>' +
+        (masked ? '<div style="font-size:15px;color:#475569;margin-bottom:16px;">ת.ז. ' + escHtml(masked) + '</div>' : '') +
+        '<button id="restoreYes" type="button" style="display:block;width:100%;padding:13px;font-size:16px;font-weight:800;background:#16a34a;color:#fff;border:none;border-radius:10px;cursor:pointer;margin-bottom:10px;">כן, המשך</button>' +
+        '<button id="restoreNo" type="button" style="display:block;width:100%;padding:13px;font-size:16px;font-weight:700;background:#e2e8f0;color:#0f172a;border:none;border-radius:10px;cursor:pointer;">לא — נבחן חדש</button>' +
+      '</div>';
+    document.body.appendChild(box);
+    var close = function() { if (box.parentNode) box.parentNode.removeChild(box); };
+    document.getElementById('restoreYes').addEventListener('click', function() { close(); onYes(); });
+    document.getElementById('restoreNo').addEventListener('click', function() {
+      close();
+      try { localStorage.removeItem(examineeStateKey(id)); } catch(e) {}
+      try { localStorage.removeItem(EXAMINEE_STATE_KEY); } catch(e) {}
+      onNo();
+    });
   }
 
   // ========== Active exam state (for resume on refresh) ==========
@@ -1025,7 +1083,8 @@
     examTimeMinutes = BASE_EXAM_MINUTES; // reset to default for next examinee
     timeRemaining = examTimeMinutes * 60;
     stopTimer(); // clears interval, removes visibilitychange listener, resets examDeadline
-    if (approvalInterval) { clearInterval(approvalInterval); approvalInterval = null; }
+    stopApprovalPolling();
+    reanswerAt = {};
     examineeData = { idNumber: '', fullName: '', phone: '', population: '', license: '', language: '' };
     examineeToken = '';
     // Keep sessionCode and sessionData — same session, different examinee
@@ -1098,112 +1157,91 @@
     return true;
   }
 
-  // Bound the complete response, including its body. Abort alone is not enough
-  // on older browsers, so the deadline also rejects the caller's promise.
-  var API_TIMEOUT_MS = 30000;
-  // registerExamQuestions and submitResult each do real Sheet work (read +
-  // append + status flip). Warm, that is ~1s (measured 2026-09-14); but the
-  // FIRST request of a session hits a cold Apps Script container and can run
-  // long. At the old 30s cap a cold register aborted, and the retry wrote a
-  // SECOND מבחנים row. A wider cap lets the slow-but-successful write land once.
-  var CRITICAL_POST_TIMEOUT_MS = 60000;
-  function fetchJsonWithTimeout(url, opts, timeoutMs) {
-    opts = opts || {};
-    return new Promise(function(resolve, reject) {
-      var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-      if (controller) opts.signal = controller.signal;
-      var settled = false;
-      var timer = setTimeout(function() {
-        var err = new Error('Request timed out');
-        err.name = 'TimeoutError';
-        finish(err);
-        if (controller) { try { controller.abort(); } catch(e) {} }
-      }, timeoutMs || API_TIMEOUT_MS);
-      function finish(err, data) {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (err) reject(err); else resolve(data);
-      }
-      Promise.resolve().then(function() { return fetch(url, opts); }).then(function(response) {
-        return response.text().then(function(body) {
-          if (!response.ok) {
-            var httpErr = new Error('HTTP ' + response.status);
-            httpErr.name = 'HttpError'; httpErr.transport = 'http'; httpErr.status = response.status;
-            throw httpErr;
-          }
-          try { return JSON.parse(body); }
-          catch (parseErr) {
-            var jsonErr = new Error('Non-JSON response');
-            jsonErr.name = 'SyntaxError'; jsonErr.transport = 'nonjson'; jsonErr.bodyHead = String(body || '').slice(0, 120);
-            throw jsonErr;
-          }
-        });
-      }).then(function(data) { noteTransport(null); finish(null, data); }, function(err) { noteTransport(err); finish(err); });
+  // ========== Transport ==========
+  // Deadlines, failure classification, backend health and poll pacing all live
+  // in shared/transport.js, shared with the other pages. The page keeps only
+  // the two names the rest of it calls and the decorator that attaches this
+  // examinee's token.
+  // Unattended polls keep a slow answer (the whole fleet stayed under 60 s in
+  // every measured stall) and abandon a hung one; what a person is waiting for
+  // on screen gets the shorter default inside createApi.
+  var POLL_TIMEOUT_MS = ExamTransport.POLL_TIMEOUT_MS;
+  // startExam / submitResult on a cold Apps Script container can run long; at
+  // the old 30 s cap a slow-but-successful write aborted and the retry wrote a
+  // SECOND row.
+  var CRITICAL_POST_TIMEOUT_MS = ExamTransport.CRITICAL_POST_TIMEOUT_MS;
+
+  var api = ExamTransport.createApi({
+    apiUrl: API_URL,
+    origin: API_ORIGIN,
+    decorate: function(params) {
+      if (shouldAttachExamineeToken(params.action) && !params.examineeToken) params.examineeToken = examineeToken;
+      return params;
+    }
+  });
+  function apiGet(params, timeoutMs) { return api.get(params || {}, timeoutMs); }
+  function apiPost(data, timeoutMs) { return api.post(data || {}, timeoutMs); }
+  function apiPostNoWait(data) { return api.postNoWait(data || {}); }
+  function isBackendDegraded() { return ExamTransport.isBackendDegraded(); }
+  // Bounded client-side trace; attached to the next submit / fail-on-close POST
+  // so an exam-day incident finally has the device's side of the story.
+  function logEvent(event, data) { ExamTransport.log(event, data); }
+
+  // ========== Session gateway ==========
+  // getSessionInfo reports whether a Cloudflare Worker fronts the two polls
+  // (empty url = straight to Apps Script). Through the gateway 40 waiting
+  // examinees cost ONE upstream call per session per 3 s instead of 480 Apps
+  // Script executions a minute, so the poll can stay fast.
+  //
+  // Falling back to the direct call is reserved for a gateway that is ITSELF
+  // unreachable (timeout / network / 5xx / non-JSON) three polls in a row, and
+  // then only for five minutes. An {status:'error', code:'upstream_unavailable'}
+  // JSON is a normal failed poll — it means Google is busy behind the gateway,
+  // and answering that by sending the whole fleet straight at Google is exactly
+  // the storm the gateway exists to prevent.
+  function gatewayUrl() { return String((sessionData && sessionData.gateway && sessionData.gateway.url) || ''); }
+  function gatewayPollUrl(kind) {
+    return gatewayUrl().replace(/\/+$/, '') + '/v1/poll?kind=' + kind +
+      '&sessionCode=' + encodeURIComponent(sessionCode) +
+      '&idNumber=' + encodeURIComponent((examineeData && examineeData.idNumber) || '') +
+      '&examineeToken=' + encodeURIComponent(examineeToken || '');
+  }
+  var approvalRoute = null, statusRoute = null;
+  function pollRoute(kind, directCall) {
+    if (!gatewayUrl()) return directCall;
+    var failover = ExamTransport.createFailover({
+      primary: function() { return ExamTransport.fetchJsonWithTimeout(gatewayPollUrl(kind), { cache: 'no-store' }, POLL_TIMEOUT_MS); },
+      fallback: directCall,
+      failuresBeforeFallback: 3,
+      fallbackMs: 300000
     });
+    return function() { return failover.call(); };
   }
+  function directApprovalCall() {
+    return apiGet({ action: 'checkApproval', sessionCode: sessionCode, idNumber: examineeData.idNumber }, POLL_TIMEOUT_MS);
+  }
+  function directStatusCall() {
+    return apiGet({ action: 'getExamStatus', sessionCode: sessionCode, idNumber: examineeData.idNumber, examineeToken: examineeToken }, POLL_TIMEOUT_MS);
+  }
+  function approvalPollCall() {
+    if (!approvalRoute) approvalRoute = pollRoute('approval', directApprovalCall);
+    return approvalRoute();
+  }
+  function statusPollCall() {
+    if (!statusRoute) statusRoute = pollRoute('status', directStatusCall);
+    return statusRoute();
+  }
+  // A new session code may come with a different gateway setting (or none).
+  function resetPollRoutes() { approvalRoute = null; statusRoute = null; }
 
-  // ===== Transport health (2026-09-18 review, action 2) =====
-  // Our server always answers HTTP 200 with JSON. Anything else — Google's own
-  // HTML error page (a SyntaxError once parsed), a 404/429/5xx from its front
-  // door — means the BACKEND is degraded, not this device's network. Such an
-  // answer is never a "new version" (the update check already ignores non-200)
-  // and never "session expired" (only our JSON carries tokenExpired); and the
-  // whole fleet must slow down instead of re-asking at full speed — the 16/09
-  // storms that reached 119 concurrent executions were the fleet reacting to
-  // failures by retrying and reloading together. Timeouts and network errors
-  // leave the state alone: one ~93 s hang looks exactly like no network.
-  var transportState = 'ok';   // 'ok' | 'degraded' — the last classified answer
-  var transportDegradedSince = 0;
-  function noteTransport(err) {
-    if (!err) { transportState = 'ok'; transportDegradedSince = 0; return; }
-    if (err.transport === 'http' || err.transport === 'nonjson') {
-      if (transportState !== 'degraded') transportDegradedSince = Date.now();
-      transportState = 'degraded';
-    }
+  // A server that does not know an action is an OLD server behind a new page
+  // (or the reverse) — never a data error the examinee can fix by re-clicking.
+  function isOutdatedClientResponse(response) {
+    if (!response) return false;
+    if (response.code === 'client_outdated') return true;
+    return /Unknown action/i.test(String(response.message || ''));
   }
-  function isBackendDegraded() { return transportState === 'degraded'; }
-  // ===== end transport health =====
-
-  function apiGet(params, timeoutMs) {
-    var qs = ['origin=' + encodeURIComponent(API_ORIGIN)];
-    if (shouldAttachExamineeToken(params && params.action) && !params.examineeToken) {
-      params.examineeToken = examineeToken;
-    }
-    for (var k in params) {
-      if (params.hasOwnProperty(k)) qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
-    }
-    qs.push('_t=' + Date.now());
-    return fetchJsonWithTimeout(API_URL + '?' + qs.join('&'), { cache: 'no-store' }, timeoutMs);
-  }
-
-  function apiPost(data, timeoutMs) {
-    var payload = data || {};
-    if (!payload.origin) payload.origin = API_ORIGIN;
-    if (shouldAttachExamineeToken(payload.action) && !payload.examineeToken) {
-      payload.examineeToken = examineeToken;
-    }
-    return fetchJsonWithTimeout(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify(payload)
-    }, timeoutMs);
-  }
-
-  // Fire-and-forget POST (no response needed)
-  function apiPostNoWait(data) {
-    var payload = data || {};
-    if (!payload.origin) payload.origin = API_ORIGIN;
-    if (shouldAttachExamineeToken(payload.action) && !payload.examineeToken) {
-      payload.examineeToken = examineeToken;
-    }
-    fetch(API_URL, {
-      method: 'POST',
-      mode: 'no-cors',
-      headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify(payload)
-    }).catch(function() {});
-  }
+  var UPDATING_MESSAGE = 'המערכת מתעדכנת, רענן את הדף.';
 
   // Report a non-DQ anti-cheat WARNING to the server (fire-and-forget) so the
   // examiner dashboard can show suspicious-but-not-disqualified behavior — until
@@ -1222,45 +1260,8 @@
     } catch(e) {}
   }
 
-  // ========== Resilient status-update helper (Bug #4 fix) ==========
-  // markExamStarted updates the examinee's row in "ממתינים" from status
-  // "מאושר" to "במבחן" so the examiner sees who's actually testing. Fire-and-
-  // forget GET used to drop the update silently on any network blip — leaving
-  // examinees stuck as "ממתין" on the examiner's screen even after they took
-  // the exam. Now retried up to 3 times with backoff. Non-blocking: never
-  // delays the exam itself, but eventually reports the right status.
-  // Does NOT participate in anti-cheat — purely operational status reporting.
-  function markExamStartedWithRetry(retries) {
-    if (typeof retries !== 'number') retries = 3;
-    var attempt = 4 - retries;
-    apiGet({
-      action: 'markExamStarted',
-      sessionCode: sessionCode,
-      idNumber: examineeData.idNumber
-    }).then(function(resp) {
-      if (resp && resp.status === 'ok') {
-        examStartConfirmed = true;
-        console.log('[STATUS] markExamStarted ok (attempt ' + attempt + ')');
-      } else {
-        console.warn('[STATUS] markExamStarted server reject (attempt ' + attempt + '):', resp);
-        if (retries > 1) setTimeout(function() { markExamStartedWithRetry(retries - 1); }, 2000 * attempt);
-      }
-    }).catch(function(err) {
-      console.warn('[STATUS] markExamStarted network error (attempt ' + attempt + '):', err);
-      if (retries > 1) setTimeout(function() { markExamStartedWithRetry(retries - 1); }, 2000 * attempt);
-    });
-  }
-
-  // iOS fix: if the exam is running but the server never confirmed markExamStarted
-  // (the call failed or was suspended while the page was backgrounded — common on
-  // iOS), re-fire it when the page returns to the foreground. Otherwise the
-  // examinee stays stuck as 'approved' = "ממתינים" on the examiner's screen for
-  // the whole exam. Gated by examStartConfirmed so it never spams once confirmed.
-  document.addEventListener('visibilitychange', function() {
-    if (document.visibilityState === 'visible' && examInProgress && !examStartConfirmed) {
-      markExamStartedWithRetry(3);
-    }
-  });
+  // markExamStarted is gone: startExam flips the row to in_exam inside the same
+  // execution that hands out the questions, so there is no second call to lose.
 
   // ========== In-page finish-exam confirmation modal (Bug #5 fix) ==========
   // Native confirm() proved unreliable on iOS browsers — it can trigger
@@ -1398,6 +1399,7 @@
       if (data.status === 'ok') {
         sessionCode = code;
         sessionData = data.session;
+        resetPollRoutes();   // this session may front its polls with a different gateway
         // Ensure license is string (Google Sheets may return number for "1")
         sessionData.license = String(sessionData.license || 'B');
         // Save original session language/license as default (for resetForNextExaminee)
@@ -1531,6 +1533,7 @@
         // Capture the server-issued examinee token; all subsequent API calls
         // for this examinee must echo it.
         if (data.examineeToken) examineeToken = data.examineeToken;
+        loadExamBanks(examineeData.language);   // minutes before "start exam" needs them
         saveExamineeState('screenInstructions');
         showScreen('screenInstructions');
         applyUITranslations();
@@ -1541,13 +1544,14 @@
         // This handles: cleared cache, switched browser, re-opened page after navigating away.
         var msg = String(data.message || '');
         if (msg.indexOf('כבר רשום') >= 0 || msg.indexOf('כבר רשומ') >= 0) {
+          loadExamBanks(examineeData.language);
           saveExamineeState('screenInstructions');
           showScreen('screenInstructions');
           applyUITranslations();
           startApprovalPolling();
           return;
         }
-        registerError.textContent = msg || 'שגיאה ברישום';
+        registerError.textContent = isOutdatedClientResponse(data) ? UPDATING_MESSAGE : (msg || 'שגיאה ברישום');
         registerError.style.display = 'block';
       }
     }).catch(function() {
@@ -1557,6 +1561,13 @@
       registerError.style.display = 'block';
     });
   });
+
+  // Start loading the chosen language as soon as it is chosen — by the time the
+  // examiner approves, the texts are already on the device.
+  (function() {
+    var langSel = document.getElementById('langSelect');
+    if (langSel) langSel.addEventListener('change', function() { loadExamBanks(this.value); });
+  })();
 
   // ========== Screen 3: Waiting + Instructions ==========
   var approvalFailCount = 0;
@@ -1583,15 +1594,11 @@
     updateApprovalDebug('בדיקה #' + pollNum + ' | סשן: ' + sessionCode + ' | ת.ז.: ' + polledId);
     // Returned so the adaptive scheduler (approvalPollTick) can measure duration
     // and pace the next poll. All handlers below are unchanged.
-    return apiGet({
-      action: 'checkApproval',
-      sessionCode: sessionCode,
-      idNumber: polledId
-    }, POLL_TIMEOUT_MS).then(function(data) {
+    return approvalPollCall().then(function(data) {
       // Guard: discard stale response if examinee changed (race condition)
       if (!isCurrent()) {
         console.log('[APPROVAL] Discarding stale response for ' + polledId + ' (current: ' + examineeData.idNumber + ')');
-        return;
+        return data;
       }
       console.log('[APPROVAL] Poll #' + pollNum + ' Response:', JSON.stringify(data));
 
@@ -1610,14 +1617,25 @@
           sessionData.audioMode = data.audioMode;
         }
         if (data.approval === 'approved') {
-          clearInterval(approvalInterval); approvalInterval = null;
+          stopApprovalPolling();
           if (data.examMinutes && data.examMinutes > 0) {
             examTimeMinutes = data.examMinutes;
           }
           notifyApprovedToExaminee();
           showInstructions();
+        } else if (data.approval === 'in_exam') {
+          // D14: the row says this examinee is already testing while this device
+          // is still on the instructions screen (re-registered after a reload,
+          // or a second device). Polling forever cannot fix that — the examiner
+          // has to reset or approve them again.
+          stopApprovalPolling();
+          teardownWaitingProtections();
+          document.getElementById('waitingPhase').style.display = 'none';
+          var inExamEl = document.getElementById('rejectedMsg');
+          inExamEl.textContent = 'המבחן שלך כבר התחיל — פנה לבוחן.';
+          inExamEl.style.display = 'block';
         } else if (data.approval === 'rejected') {
-          clearInterval(approvalInterval); approvalInterval = null;
+          stopApprovalPolling();
           teardownWaitingProtections();
           document.getElementById('waitingPhase').style.display = 'none';
           var rejEl = document.getElementById('rejectedMsg');
@@ -1630,11 +1648,16 @@
         updateApprovalDebug('בדיקה #' + pollNum + ' שגיאה', 'תגובה: ' + ((data && data.message) || 'unknown'));
         approvalFailCount++;
         if (approvalFailCount >= 3) {
-          showApprovalError('שגיאת שרת: ' + ((data && data.message) || 'לא ידוע'));
+          showApprovalError(isOutdatedClientResponse(data)
+            ? UPDATING_MESSAGE
+            : 'שגיאת שרת: ' + ((data && data.message) || 'לא ידוע'));
         }
       }
+      // Returned so the poll loop can pace itself: a {status:'error'} answer
+      // (including the gateway's upstream_unavailable) counts as a failed poll.
+      return data;
     }).catch(function(err) {
-      if (!isCurrent()) return;
+      if (!isCurrent()) throw err;
       approvalFailCount++;
       console.log('[APPROVAL] Error (fail #' + approvalFailCount + '):', err);
       updateApprovalDebug('בדיקה #' + pollNum + ' נכשלה', 'שגיאה: ' + String(err).substring(0, 80));
@@ -1644,6 +1667,7 @@
           ? 'השרת עמוס כרגע — ממשיכים לנסות אוטומטית. אין צורך לרענן את הדף.'
           : 'בעיית תקשורת עם השרת. נסה לרענן את הדף.');
       }
+      throw err;   // the loop must see the failure and back off
     });
   }
 
@@ -1730,124 +1754,69 @@
     document.title = '✅ אושרת! חזור למבחן';
   }
 
-  // ===== Adaptive approval polling =====
-  // ===== Poll pacing (shared by every poll loop) =====
-  // 2026-09-18 review of the 15-17/09 exam days, action 1. Pacing only —
-  // nothing here changes what a poll does with its answer.
-  //  1. jitter: every scheduled wait is multiplied by a random factor in
-  //     [1-POLL_JITTER, 1+POLL_JITTER]. The poll loops had no randomness at
-  //     all, so a fleet released by one server stall (two executions ended
-  //     47 ms apart on 17/09) re-arrived at the server as one burst.
-  //  2. gradual recovery: a slow or failed answer still grows the wait ×1.5
-  //     up to the max, but a healthy answer now steps it DOWN by the same
-  //     factor instead of snapping the whole fleet back to base at once.
-  //  3. poll deadline 60 s (the API default stays 30 s for what the examinee triggers by hand).
-  //     Aborting a fetch never stops the Apps Script execution: a poll
-  //     abandoned at 30 s left an orphan running for another minute while
-  //     this device already asked again. Every fleet-wide slow state measured
-  //     in the Executions log (17/09 08:41 and 12:01, 16/09 10:57) stayed
-  //     under 60 s, so a merely slow answer is now kept; an isolated ~93 s
-  //     hang of one execution is still abandoned and re-asked at 60 s.
-  var POLL_JITTER = 0.3;
-  var POLL_BACKOFF_FACTOR = 1.5;
-  var POLL_TIMEOUT_MS = 60000;
-  function jitterMs(ms) {
-    return Math.round(ms * (1 - POLL_JITTER + 2 * POLL_JITTER * Math.random()));
-  }
-  // worse = the last answer was slow or failed. Up: ×factor, capped at maxMs.
-  // Down: ÷factor, never below baseMs — one step per healthy answer.
-  function nextPollDelay(currentMs, baseMs, maxMs, worse) {
-    if (worse) return Math.min(Math.round(currentMs * POLL_BACKOFF_FACTOR), maxMs);
-    return Math.max(baseMs, Math.round(currentMs / POLL_BACKOFF_FACTOR));
-  }
-  // Degraded backend (see isBackendDegraded): the fleet polls every 30-60 s,
-  // jittered, until a JSON answer comes back, then steps down as usual.
-  var POLL_DEGRADED_MIN_MS = 30000;
-  var POLL_DEGRADED_MAX_MS = 60000;
-  function pacePoll(currentMs, baseMs, maxMs, worse) {
-    if (isBackendDegraded()) {
-      var slowed = nextPollDelay(currentMs, baseMs, POLL_DEGRADED_MAX_MS, worse);
-      return Math.min(Math.max(slowed, POLL_DEGRADED_MIN_MS), POLL_DEGRADED_MAX_MS);
-    }
-    return nextPollDelay(currentMs, baseMs, maxMs, worse);
-  }
-  // ===== end poll pacing =====
+  // Poll pacing (jitter, ×1.5 backoff on a slow or failed answer, one step down
+  // per healthy answer, a 30-60 s floor while the backend is degraded) lives in
+  // shared/transport.js — see createPollLoop.
 
-  // 2026-08-26: dozens of waiting examinees polling every 5s were a large share
-  // of the request flood that saturated the server's ~30 execution slots on exam
-  // mornings (measured: ~5-7 req/s at 08:45, routine requests inflated to 7-9s).
-  // Base interval is 8s now, and when the server answers slowly (queuing) or the
-  // request fails, the NEXT wait grows ×1.5 up to 20s — waiting clients ease off
-  // a struggling server instead of deepening the spiral. A healthy answer steps
-  // the pace back down one ×1.5 at a time (2026-09-18, see the poll pacing block
-  // above). This changes PACING ONLY: approvalFailCount, the
-  // error banners and every existing behavior of doCheckApproval are untouched.
-  // approvalInterval now holds a setTimeout id; clearInterval() clears those too,
-  // so every existing "clearInterval(approvalInterval); approvalInterval = null"
-  // stop-site keeps working unchanged.
-  var APPROVAL_POLL_BASE_MS = 5000;  // r6: back to 5s (was 8s while cache reads were failing server-side)
+  // ===== Approval polling =====
+  // Through the gateway a poll costs Apps Script nothing (the Worker coalesces a
+  // whole session into one upstream call per 3 s), so 5 s is free. A DIRECT poll
+  // is one Apps Script execution per waiting examinee — dozens of them were a
+  // large share of the flood that saturated the ~30 execution slots on exam
+  // mornings — so the direct fallback waits 8 s (what e1755c8 set and r6 undid).
+  var APPROVAL_GATEWAY_BASE_MS = 5000;
+  var APPROVAL_DIRECT_BASE_MS = 8000;
   var APPROVAL_POLL_MAX_MS = 20000;
-  var approvalPollDelayMs = APPROVAL_POLL_BASE_MS;
-  // Generation counter: a tick whose request was in flight while polling was
-  // stopped-and-restarted (reset → re-register) must NOT reschedule — that
-  // would run two chains side by side. Each start bumps the generation; a
-  // finalizer from an older generation is a no-op.
+  var approvalLoop = null;
+  // Generation counter: a response still in flight when polling is stopped and
+  // restarted (reset → re-register) must not act on the new examinee's screen.
   var approvalPollGen = 0;
-  var lastApprovalTickAt = 0;
-  function approvalPollTick() {
-    var myGen = approvalPollGen;
-    var t0 = Date.now();
-    lastApprovalTickAt = t0;
-    var p = doCheckApproval();
-    var reschedule = function() {
-      if (approvalInterval === null || myGen !== approvalPollGen) return;  // stopped/restarted meanwhile
-      var slow = (Date.now() - t0) > 6000;
-      approvalPollDelayMs = pacePoll(approvalPollDelayMs, APPROVAL_POLL_BASE_MS, APPROVAL_POLL_MAX_MS, slow || approvalFailCount > 0);
-      approvalInterval = setTimeout(approvalPollTick, jitterMs(approvalPollDelayMs));
-    };
-    if (p && typeof p.then === 'function') { p.then(reschedule, reschedule); } else { reschedule(); }
-  }
-
-  // iOS rescue for the WAITING phase. The approval chain reschedules itself only
-  // when a request settles, so a fetch that iOS kills while the page is frozen
-  // (screen lock, app switch) leaves the promise unsettled and the chain dead —
-  // the examinee then waits for an approval that already happened. Two iPhones
-  // at מחנה עמוס on 15/09/2026 were stuck exactly this way and had to retake the
-  // exam on borrowed devices. The exam phase already had this net (the
-  // markExamStarted visibilitychange handler); the waiting phase had none.
-  // Restart is safe: startApprovalPolling bumps the generation, so a late
-  // finalizer from the dead chain is a no-op and no second chain can form.
-  document.addEventListener('visibilitychange', function() {
-    if (document.visibilityState !== 'visible') return;
-    if (approvalInterval === null || examInProgress) return;   // not waiting for approval
-    if (Date.now() - lastApprovalTickAt < 3000) return;         // a healthy chain just ran; don't pile on
-    console.log('[APPROVAL] page returned to foreground — restarting the approval chain');
-    startApprovalPolling();
-  });
 
   function startApprovalPolling() {
     console.log('[APPROVAL] Starting polling for session=' + sessionCode + ' id=' + examineeData.idNumber);
+    stopApprovalPolling();
     approvalFailCount = 0;
     approvalPollCount = 0;
     approvalPollGen++;
-    if (approvalInterval !== null) clearTimeout(approvalInterval);
     setupWaitingProtections(); // wake-lock + tab-title flash
-    // Immediate first check — don't wait for the first tick
-    approvalPollDelayMs = APPROVAL_POLL_BASE_MS;
-    approvalInterval = -1;
-    approvalPollTick(); // wait for this response before scheduling another check
+    approvalLoop = ExamTransport.createPollLoop({
+      name: 'approval',
+      baseMs: gatewayUrl() ? APPROVAL_GATEWAY_BASE_MS : APPROVAL_DIRECT_BASE_MS,
+      maxMs: APPROVAL_POLL_MAX_MS,
+      tick: doCheckApproval,
+      // The rescue below restarts the chain; bump the generation first so a late
+      // answer from the dead request cannot act on the fresh one's behalf.
+      onRestart: function() { approvalPollGen++; }
+    });
+    approvalLoop.start();   // immediate first check
   }
 
-  // Translation files are no longer fetched from GitHub Pages — the server
-  // (Apps Script getExamQuestions) returns questions already merged into the
-  // requested language. We keep this function as an immediate-callback stub
-  // so the existing call sites don't break.
-  var translationLoaded = true;
-  var loadedTranslations = {'he': true, 'ru': true, 'en': true, 'ar': true, 'fr': true, 'es': true, 'am': true};
-  function loadTranslationFile(lang, callback) {
-    loadedTranslations[lang] = true;
-    translationLoaded = true;
-    if (callback) callback();
+  function stopApprovalPolling() {
+    if (approvalLoop) { approvalLoop.stop(); approvalLoop = null; }
+  }
+
+  // iOS rescue for the WAITING phase. The chain reschedules itself only when a
+  // request settles, so a fetch that iOS kills while the page is frozen (screen
+  // lock, app switch) leaves the promise unsettled and the chain dead — the
+  // examinee then waits for an approval that already happened (two iPhones at
+  // מחנה עמוס, 15/09/2026). restartIfStuck refuses while a request is genuinely
+  // in flight, so four lock/wake cycles during a hang can no longer leave five
+  // live requests from one device (D2).
+  document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState !== 'visible') return;
+    if (!approvalLoop || examInProgress) return;
+    if (approvalLoop.restartIfStuck()) console.log('[APPROVAL] page returned to foreground — restarted a stuck chain');
+  });
+
+  // The question bank is static. Load the exam language (and Hebrew, the
+  // fallback for any id a translation is missing) as soon as the examinee is
+  // registered, and warm the rest in the background while they wait for
+  // approval — minutes before "start exam" needs them.
+  function loadExamBanks(lang) {
+    var wanted = [String(lang || 'he'), 'he'];
+    var loads = [];
+    for (var i = 0; i < wanted.length; i++) loads.push(QuestionBank.load(wanted[i]));
+    return Promise.all(loads.map(function(p) { return p.catch(function(err) { logEvent('bank_load_failed', String(err)); return null; }); }));
   }
 
   function showInstructions() {
@@ -1897,16 +1866,16 @@
       document.getElementById('timeExtNotice').style.display = 'none';
     }
 
-    // Pre-load translation file so it's ready when exam starts
-    loadTranslationFile(sessionData.language || 'he');
+    // The exam language is already loading (registration); warm the others now,
+    // so a mid-exam language switch never waits for the network.
+    QuestionBank.prefetch();
   }
 
   // ========== Change Selection (cancel + go back to registration) ==========
   function cancelAndChangeSelection(e) {
     e.preventDefault();
     if (!confirm(getUIString('changeConfirm'))) return;
-    // Stop approval polling
-    if (approvalInterval) { clearInterval(approvalInterval); approvalInterval = null; }
+    stopApprovalPolling();
     // Cancel registration on server
     apiGet({ action: 'cancelRegistration', sessionCode: sessionCode, idNumber: examineeData.idNumber, phone: examineeData.phone || '' }).then(function() {
       // Restore session defaults
@@ -1945,6 +1914,7 @@
   function examRetryWaitSeconds(response) {
     var seconds = Number(response && response.waitSec);
     if (isFinite(seconds) && seconds > 0) return Math.ceil(seconds);
+    if (isOutdatedClientResponse(response)) return 60;   // a deploy window, not a data error
     return response && (response.rateLimited || response.retryable || response.code === 'question_cache_busy') ? 3 : 0;
   }
 
@@ -1955,12 +1925,14 @@
     if (examStartRetryTimer !== null) { clearTimeout(examStartRetryTimer); examStartRetryTimer = null; }
     var area = document.getElementById('examArea');
     if (!area) return;
+    var outdated = isOutdatedClientResponse(response);
     var temporary = response && (response.rateLimited || response.retryable || response.code === 'question_cache_busy');
     var insufficient = response && response.status === 'ok' && Array.isArray(response.questions) && response.questions.length < TOTAL_QUESTIONS;
-    var title = registrationFailed ? 'לא הצלחנו לרשום את המבחן בשרת.' :
+    var title = outdated ? 'המערכת מתעדכנת — נסה שוב בעוד דקה' :
+      (registrationFailed ? 'לא הצלחנו לרשום את המבחן בשרת.' :
       (temporary ? 'השרת עמוס כרגע. אפשר לנסות שוב בעוד רגע.' :
-      (insufficient ? 'אין מספיק שאלות לשילוב שנבחר. פנה לבוחן.' : 'לא הצלחנו לטעון את המבחן.'));
-    var detail = (response && response.message) || 'בדוק את החיבור ונסה שוב. אם התקלה נמשכת, קרא לבוחן.';
+      (insufficient ? 'אין מספיק שאלות לשילוב שנבחר. פנה לבוחן.' : 'לא הצלחנו לטעון את המבחן.')));
+    var detail = outdated ? UPDATING_MESSAGE : ((response && response.message) || 'בדוק את החיבור ונסה שוב. אם התקלה נמשכת, קרא לבוחן.');
     area.innerHTML = '<div id="examStartError" class="info-banner warn" role="alert" tabindex="-1" style="font-size:15px;text-align:center;">' +
       '<strong>' + escHtml(title) + '</strong><br>' + escHtml(detail) +
       '<p>הפרטים שלך נשמרו כאן. אין צורך להירשם מחדש. המבחן והזמן שלו עדיין לא התחילו.</p>' +
@@ -1989,6 +1961,10 @@
     });
   }
 
+  // ONE call starts the exam: startExam validates the approval, picks the 30
+  // ids (idempotently — a retry after a lost answer returns the identical map),
+  // writes the מבחנים row and flips the row to in_exam. Question TEXTS are not
+  // in the answer; they come from the static bank.
   function doStartExam() {
     // Guard: ensure an examinee is registered
     if (!examineeData.idNumber || examLoadInFlight || examInProgress || examSubmitted) {
@@ -2000,57 +1976,60 @@
       sessionCode: sessionCode, examineeToken: examineeToken };
     examLoadInFlight = true;
 
-    // in_exam is marked two independent ways for resilience: (a) the server
-    // flips approved→in_exam during registerExamQuestions and reports
-    // examStarted; (b) if that didn't land (stale server, or the marking
-    // silently failed), the proactive markExamStartedWithRetry call in
-    // _beginExam re-fires it. The visibilitychange handler is a third net for
-    // iOS background suspension. Reset the flag; register sets it true on success.
-    examStartConfirmed = false;
-
     // Use examinee's chosen license/language (may differ from session defaults)
     var license = String(examineeData.license || sessionData.license || 'B');
     var language = String(examineeData.language || sessionData.language || 'he');
 
-    // Show loading state while server picks the questions
     var examAreaEl = document.getElementById('examArea');
     if (examAreaEl) {
       examAreaEl.innerHTML = '<div class="info-banner" style="font-size:15px;text-align:center;">טוען שאלות...</div>';
     }
     showScreen('screenExam');
     showLoadingOverlay('מכין את המבחן…');
+    logEvent('start_exam', license + '/' + language);
 
-    apiGet({
-      action: 'getExamQuestions',
+    var fail = function(response) {
+      if (!examStartIsCurrent(attempt)) return;
+      examLoadInFlight = false;
+      hideLoadingOverlay();
+      showExamStartError(response, attempt, doStartExam, false);
+    };
+
+    apiPost({
+      action: 'startExam',
       sessionCode: sessionCode,
       idNumber: examineeData.idNumber,
       examineeToken: examineeToken,
       language: language,
-      license: license,
-      includeTranslations: 'true'  // pre-fetch all 7 languages so switches are instant
-    }, 45000).then(function(resp) {
+      license: license
+    }, CRITICAL_POST_TIMEOUT_MS).then(function(resp) {
       if (!examStartIsCurrent(attempt)) return;
-      hideLoadingOverlay();
       // Last audio sync before the exam renders. Covers the gap the approval
       // poll can't: examiner sets audio AFTER approving, when polling has
-      // already stopped but the examinee hasn't pressed "start" yet. Must stay
-      // ahead of _finishStartingExam — that's where initTTS() reads the flag.
+      // already stopped but the examinee hasn't pressed "start" yet.
       if (resp && (resp.audioMode === 'on' || resp.audioMode === 'off')) {
         sessionData.audioMode = resp.audioMode;
       }
-      // Cache translations for instant mid-exam language switching
-      if (resp && resp.translations) window._examTranslations = resp.translations;
       if (!resp || resp.status !== 'ok' || !Array.isArray(resp.questions) || resp.questions.length < TOTAL_QUESTIONS) {
-        examLoadInFlight = false;
-        showExamStartError(resp, attempt, doStartExam, false);
+        fail(resp);
         return;
       }
-      _finishStartingExam(resp.questions, license, language, attempt);
+      if (Number(resp.examMinutes) > 0) examTimeMinutes = Number(resp.examMinutes);
+      // The texts must be here before the first question can be drawn. They
+      // normally arrived at registration; this is the late/offline path.
+      loadExamBanks(language).then(function() {
+        if (!examStartIsCurrent(attempt)) return;
+        if (!QuestionBank.has(language) && !QuestionBank.has('he')) {
+          fail({ retryable: true, waitSec: 5, code: 'bank_unavailable',
+            message: 'לא הצלחנו לטעון את מאגר השאלות. בדוק את החיבור ונסה שוב.' });
+          return;
+        }
+        examLoadInFlight = false;
+        hideLoadingOverlay();
+        _finishStartingExam(resp, license, language, attempt);
+      });
     }).catch(function(err) {
-      if (!examStartIsCurrent(attempt)) return;
-      examLoadInFlight = false;
-      hideLoadingOverlay();
-      showExamStartError(transportErrorResponse(err), attempt, doStartExam, false);
+      fail(transportErrorResponse(err));
     });
   }
 
@@ -2072,106 +2051,48 @@
     return null;
   }
 
-  // Second half of doStartExam — runs after we have the questions from server.
-  function _finishStartingExam(exam, license, language, attempt) {
-    activeQuestions = exam;
-    // Warm the offline image cache now, while we're definitely online (questions
-    // just arrived from the server). Non-blocking — the exam start proceeds.
-    prefetchExamImages(activeQuestions);
-    currentIndex = 0;
-    userAnswers = new Array(TOTAL_QUESTIONS);
-    for (var ui = 0; ui < TOTAL_QUESTIONS; ui++) userAnswers[ui] = null;
-    shuffledOrders = new Array(TOTAL_QUESTIONS);
-    // Pre-generate all shuffled orders and register with server for score verification.
-    // The server scores the exam itself using its own answer key — we send the question
-    // id and the shuffle permutation so the server can derive correctShuffledIdx without
-    // trusting our claim. correctShuffledIdx is also included as a backwards-compat
-    // fallback for questions missing from the server-side key.
-    var regQuestions = [];
-    for (var si = 0; si < TOTAL_QUESTIONS; si++) {
-      var sq = activeQuestions[si];
-      var sqAnswers = getQAnswers(sq);
-      var sqCorrectIdx = getQCorrectIndex(sq);
-      var sqOrder = shuffle(sqAnswers.map(function(_, idx) { return idx; }));
-      var sqShuffledCorrect = (sqCorrectIdx == null) ? 0 : sqOrder.indexOf(sqCorrectIdx);
-      shuffledOrders[si] = { order: sqOrder, correctIdx: sqShuffledCorrect };
-      regQuestions.push({
-        qIdx: si,
-        qId: sq.id,
-        shuffleOrder: sqOrder,
-        correctShuffledIdx: sqShuffledCorrect
-      });
-    }
-    // Register exam questions with the server — CONFIRMED write. Was previously
-    // fire-and-forget (apiPostNoWait/no-cors), which failed SILENTLY under server
-    // load: no מבחנים row, no answer key, and the exam proceeded anyway — leaving
-    // examinees "tested but never recorded" (e.g. נבאללה 03/06, examinee פינטו).
-    // We now BLOCK the start until the server confirms it stored the key, with a
-    // retry button on failure. Examinee never enters an exam that isn't recorded.
-    var doRegister = function() {
-      if (!examStartIsCurrent(attempt)) return;
-      examLoadInFlight = true;
-      showLoadingOverlay('רושם את המבחן בשרת…');
-      registerExamQuestionsConfirmed(regQuestions, language, 4, function _onRegistered() {
-        if (!examStartIsCurrent(attempt)) return;
-        examLoadInFlight = false;
-        hideLoadingOverlay();
-        _beginExam(license, language);
-      }, function _onRegisterFailed(response) {
-        if (!examStartIsCurrent(attempt)) return;
-        examLoadInFlight = false;
-        hideLoadingOverlay();
-        showExamStartError(response, attempt, doRegister, true);
-      }, attempt);
-    };
-    doRegister();
-  }
-
-  // Confirmed registerExamQuestions: uses apiPost (READS the server response,
-  // unlike the old no-cors path) and retries with backoff until status:ok.
-  // onOk fires only on a confirmed persisted write; onFail after retries run out.
-  function registerExamQuestionsConfirmed(regQuestions, language, retries, onOk, onFail, attempt) {
-    if (!examStartIsCurrent(attempt)) return;
-    apiPost({
-      action: 'registerExamQuestions',
-      sessionCode: attempt.sessionCode,
-      idNumber: attempt.idNumber,
-      examineeToken: attempt.examineeToken,
-      language: language,
-      questions: regQuestions
-    }, CRITICAL_POST_TIMEOUT_MS).then(function(resp) {
-      if (!examStartIsCurrent(attempt)) return;
-      if (resp && resp.status === 'ok') {
-        // Register also marks in_exam server-side. Trust its examStarted flag;
-        // if false (stale server, or the marking didn't land), leave
-        // examStartConfirmed=false so _beginExam's proactive markExamStarted —
-        // and the visibilitychange fallback — re-fire it.
-        examStartConfirmed = (resp.examStarted === true);
-        onOk();
+  // The answer order is the server's. A malformed one would silently scramble
+  // the answers under the examinee, so anything that is not a permutation of
+  // 0..3 falls back to the natural order (and is logged).
+  function normalizeOrder(order) {
+    var seen = {}, out = [];
+    if (Array.isArray(order) && order.length === 4) {
+      for (var i = 0; i < 4; i++) {
+        var v = Number(order[i]);
+        if (!(v >= 0 && v <= 3) || seen[v]) { out = []; break; }
+        seen[v] = true; out.push(v);
       }
-      else if (resp && (resp.rateLimited || resp.retryable || resp.code === 'question_cache_busy')) { onFail(resp); }
-      else if (retries > 1) { setTimeout(function() { registerExamQuestionsConfirmed(regQuestions, language, retries - 1, onOk, onFail, attempt); }, 1500); }
-      else { onFail(resp); }
-    }).catch(function(err) {
-      if (!examStartIsCurrent(attempt)) return;
-      if (retries > 1) { setTimeout(function() { registerExamQuestionsConfirmed(regQuestions, language, retries - 1, onOk, onFail, attempt); }, 1500); }
-      else { onFail(transportErrorResponse(err) || err); }
-    });
+    }
+    if (out.length === 4) return out;
+    logEvent('bad_order', JSON.stringify(order));
+    return [0, 1, 2, 3];
   }
 
-  // Second half of exam start — runs ONLY after the server confirmed the question
-  // registration. Sets the timer, anti-cheat listeners, and renders the first Q.
-  function _beginExam(license, language) {
+  // Second half of doStartExam — runs after startExam returned the question map.
+  function _finishStartingExam(resp, license, language, attempt) {
+    var serverQuestions = resp.questions;
+    activeQuestions = [];
+    shuffledOrders = new Array(TOTAL_QUESTIONS);
+    userAnswers = new Array(TOTAL_QUESTIONS);
+    reanswerAt = {};
+    for (var i = 0; i < TOTAL_QUESTIONS; i++) {
+      var sq = serverQuestions[i] || {};
+      activeQuestions.push({ id: sq.id, category: String(sq.topic || '') });
+      shuffledOrders[i] = { order: normalizeOrder(sq.order), correctIdx: null };
+      userAnswers[i] = null;
+    }
+    currentIndex = 0;
+    // Warm the offline image cache now, while we're definitely online.
+    prefetchExamImages(activeQuestions);
+    _beginExam(license, language, Number(resp.extraMinutes) || 0);
+  }
+
+  // Third phase — timer, anti-cheat listeners, first question.
+  function _beginExam(license, language, extraMinutes) {
     timeRemaining = examTimeMinutes * 60;
     examStartTime = Date.now();
     examInProgress = true;
     examSubmitted = false;
-    // Resilient in_exam marking (restored after Layer-1 removed the proactive
-    // call). registerExamQuestions already tries to flip approved→in_exam and
-    // reports examStarted; if that did NOT confirm, fire the dedicated retrying
-    // markExamStarted now so the examinee never stays stuck as "ממתין" on the
-    // examiner's screen. Idempotent server-side — double-marking is harmless.
-    if (!examStartConfirmed) markExamStartedWithRetry(3);
     startDevToolsTrap();
 
     // Seed the language history with the initial exam language so we can
@@ -2198,6 +2119,9 @@
     history.pushState({ examActive: true }, '');
     window.addEventListener('popstate', onBackButton);
     startTimer();
+    // Minutes granted before this attempt started (evacuation, medical) are
+    // applied on top of the authorised duration, exactly like a mid-exam grant.
+    if (extraMinutes > 0) applyExtraMinutes(extraMinutes);
     saveActiveExam();
     renderQuestion();
   }
@@ -2212,23 +2136,11 @@
   document.getElementById('startExamBtn').addEventListener('click', function() {
     // DESKTOP: enter fullscreen NOW — synchronously on THIS click gesture — so the
     // exam always opens in fullscreen even if the page wasn't fullscreen before.
-    // Requesting it later (inside _beginExam, after the async registration) loses
-    // the user-gesture and silently fails → the page stayed windowed. Phones don't
+    // Requesting it later (inside _beginExam, after the async start) loses the
+    // user-gesture and silently fails → the page stayed windowed. Phones don't
     // use browser fullscreen (they have screen-level lockdown + the split monitor).
     if (!isMobileDevice()) { try { requestFullscreen(); } catch(e) {} }
-    if (!translationLoaded) {
-      // Translation file still loading — wait for it
-      var btn = document.getElementById('startExamBtn');
-      btn.disabled = true;
-      btn.textContent = '\u05D8\u05D5\u05E2\u05DF...'; // טוען...
-      loadTranslationFile(sessionData.language || 'he', function() {
-        btn.disabled = false;
-        btn.textContent = '\u05D4\u05EA\u05D7\u05DC \u05DE\u05D1\u05D7\u05DF'; // התחל מבחן
-        doStartExam();
-      });
-    } else {
-      doStartExam();
-    }
+    doStartExam();
   });
 
   // ========== beforeunload ==========
@@ -2243,45 +2155,38 @@
         // If a DQ was already sent/confirmed or provisional DQ is pending, send DQ (not fail)
         if (tabSwitchDQConfirmed || provisionalDQSent || tabSwitchGraceTimer || splitScreenBlurTimer) {
           try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
-          try {
-            if (navigator.sendBeacon) {
-              navigator.sendBeacon(API_URL, new Blob([JSON.stringify({
-                action: 'disqualify',
-                sessionCode: sessionCode,
-                idNumber: examineeData.idNumber,
-                dqEventId: currentDQEventId,
-                origin: API_ORIGIN,
-                examineeToken: examineeToken
-              })], { type: 'application/json' }));
-            }
-          } catch(ex) {}
+          beaconToApi({
+            action: 'disqualify',
+            sessionCode: sessionCode,
+            idNumber: examineeData.idNumber,
+            dqEventId: currentDQEventId,
+            origin: API_ORIGIN,
+            examineeToken: examineeToken
+          });
         } else {
           // Normal close — send fail as safety net
           // If just a refresh, the resume logic will cancel this
-          try {
-            if (navigator.sendBeacon) {
-              navigator.sendBeacon(API_URL, new Blob([JSON.stringify({
-                action: 'submitFailOnClose',
-                sessionCode: sessionCode,
-                idNumber: examineeData.idNumber,
-                fullName: examineeData.fullName,
-                phone: examineeData.phone || '',
-                license: examineeData.license || sessionData.license || 'B',
-                language: examineeData.language || sessionData.language || 'he',
-                examinerName: sessionData.examinerName || '',
-                site: examineeData.site || sessionData.site || '',
-                classroom: sessionData.classroom || '',
-                answeredCount: getAnsweredCount(),
-                totalQuestions: TOTAL_QUESTIONS,
-                time: getElapsedTimeStr(),
-                population: examineeData.population || '',
-                audioMode: sessionData.audioMode || 'off',
-                device: getDeviceClass(),
-                origin: API_ORIGIN,
-                examineeToken: examineeToken
-              })], { type: 'application/json' }));
-            }
-          } catch(ex) {}
+          beaconToApi({
+            action: 'submitFailOnClose',
+            sessionCode: sessionCode,
+            idNumber: examineeData.idNumber,
+            fullName: examineeData.fullName,
+            phone: examineeData.phone || '',
+            license: examineeData.license || sessionData.license || 'B',
+            language: examineeData.language || sessionData.language || 'he',
+            examinerName: sessionData.examinerName || '',
+            site: examineeData.site || sessionData.site || '',
+            classroom: sessionData.classroom || '',
+            answeredCount: getAnsweredCount(),
+            totalQuestions: TOTAL_QUESTIONS,
+            time: getElapsedTimeStr(),
+            population: examineeData.population || '',
+            audioMode: sessionData.audioMode || 'off',
+            device: getDeviceClass(),
+            origin: API_ORIGIN,
+            examineeToken: examineeToken,
+            clientLog: ExamTransport.drainLog()
+          });
         }
         e.preventDefault();
         e.returnValue = '\u05D4\u05DE\u05D1\u05D7\u05DF \u05E2\u05D3\u05D9\u05D9\u05DF \u05E4\u05E2\u05D9\u05DC. \u05D1\u05D8\u05D5\u05D7 \u05E9\u05E8\u05D5\u05E6\u05D4 \u05DC\u05E6\u05D0\u05EA?';
@@ -2300,11 +2205,23 @@
   var tabSwitchGraceTimer = null;
   var tabSwitchWarnings = 0;          // how many times user returned within grace
   var tabHiddenAt = 0;                // timestamp when tab was hidden
-  // Desktop = strict mode: shorter grace, no warnings, no short-blur tolerance
+  // D9: desktop is strict but not instant. The documented 2 s grace was dead
+  // code — "tabSwitchWarnings >= TAB_SWITCH_MAX_WARNINGS" is 0 >= 0 on a desktop,
+  // so the FIRST hidden event disqualified: an OS screen lock, a display going
+  // to sleep or a forced minimise ended the exam with no way back. The grace now
+  // always runs on the first event; on desktop it is the only tolerance there is
+  // (no warning banner, and a second event disqualifies at once).
   var TAB_SWITCH_GRACE_MS = isMobileDevice() ? 10000 : 2000;    // 10s on phone, 2s on desktop
   var TAB_SWITCH_CALL_MS = 5000;      // 5+ seconds away = phone call → immediate DQ (phone only relevant)
-  var TAB_SWITCH_MAX_WARNINGS = isMobileDevice() ? 3 : 0;       // 3 chances on phone, 0 on desktop
+  var TAB_SWITCH_MAX_WARNINGS = isMobileDevice() ? 3 : 0;       // 3 warned chances on phone, none on desktop
   var SHORT_BLUR_IGNORE_MS = isMobileDevice() ? 2000 : 0;       // ignore <2s blur on phone, 0 tolerance on desktop
+
+  // True once this examinee has no tolerance left. The first hidden event is
+  // always a grace (D9), so a desktop — which gets no warnings at all — reaches
+  // this on its SECOND event, and a phone still after its third warning.
+  function usedEveryChance() {
+    return tabSwitchWarnings > 0 && tabSwitchWarnings >= TAB_SWITCH_MAX_WARNINGS;
+  }
 
   var tabSwitchBound = false;
   function setupTabSwitchDetection() {
@@ -2330,9 +2247,8 @@
     return API_URL + '?' + qs.join('&');
   }
 
-  var dqServerConfirmed = false;
-  var provisionalDQSent = false;  // true when provisional DQ was sent (waiting for grace timer)
-  var currentDQEventId = '';      // unique ID per DQ event — allows server to distinguish retries from new attempts
+  var provisionalDQSent = false;  // true when a provisional DQ was sent (waiting for the grace timer)
+  var currentDQEventId = '';      // unique per DQ event, so the server tells a retry from a new attempt
 
   // Generate a new DQ event ID only if there isn't an active one already.
   // This prevents duplicate IDs when visibilitychange and blur fire simultaneously.
@@ -2343,50 +2259,43 @@
     return currentDQEventId;
   }
 
+  // D10: sendBeacon is the right tool — it survives the page going away and
+  // costs ONE Apps Script execution. The fetch is only for browsers without it
+  // (or when the beacon is refused, e.g. an over-quota queue); sending both, as
+  // this did by design, doubled every disqualification and every cancel.
+  function beaconToApi(payload) {
+    try {
+      if (!navigator.sendBeacon) return false;
+      return !!navigator.sendBeacon(API_URL, new Blob([JSON.stringify(payload)], { type: 'application/json' }));
+    } catch (ex) { return false; }
+  }
+
   function sendDQToServer() {
-    var eventId = currentDQEventId;
-    var url = buildDisqualifyUrl();
-    dqServerConfirmed = false;
-
-    // Method 1: sendBeacon (most reliable for background/closing)
-    try {
-      if (navigator.sendBeacon) {
-        var beaconData = JSON.stringify({
-          action: 'disqualify',
-          sessionCode: sessionCode,
-          idNumber: examineeData.idNumber,
-          dqEventId: eventId,
-          origin: API_ORIGIN,
-          examineeToken: examineeToken
-        });
-        navigator.sendBeacon(API_URL, new Blob([beaconData], { type: 'application/json' }));
-      }
-    } catch(ex) {}
-
-    // Method 2: single fetch backup
-    try {
-      fetch(url + '&_m=fetch1')
-        .then(function(resp) { if (resp.ok || resp.type === 'opaque') dqServerConfirmed = true; })
-        .catch(function() {});
-    } catch(ex) {}
+    var payload = {
+      action: 'disqualify',
+      sessionCode: sessionCode,
+      idNumber: examineeData.idNumber,
+      dqEventId: currentDQEventId,
+      origin: API_ORIGIN,
+      examineeToken: examineeToken
+    };
+    logEvent('dq_sent', currentDQEventId);
+    if (beaconToApi(payload)) return;
+    try { fetch(buildDisqualifyUrl() + '&_m=fetch1').catch(function() {}); } catch(ex) {}
   }
 
   // Cancel a provisional DQ — called when examinee returns within grace period
   function sendCancelDQToServer() {
     var eid = currentDQEventId;
-    try {
-      if (navigator.sendBeacon) {
-        navigator.sendBeacon(API_URL, new Blob([JSON.stringify({
-          action: 'cancelDisqualify',
-          sessionCode: sessionCode,
-          idNumber: examineeData.idNumber,
-          dqEventId: eid,
-          origin: API_ORIGIN,
-          examineeToken: examineeToken
-        })], { type: 'application/json' }));
-      }
-    } catch(ex) {}
-    // Also try fetch as backup
+    var payload = {
+      action: 'cancelDisqualify',
+      sessionCode: sessionCode,
+      idNumber: examineeData.idNumber,
+      dqEventId: eid,
+      origin: API_ORIGIN,
+      examineeToken: examineeToken
+    };
+    if (beaconToApi(payload)) return;
     try {
       var params = 'action=cancelDisqualify&origin=' + encodeURIComponent(API_ORIGIN) + '&sessionCode=' + encodeURIComponent(sessionCode) + '&idNumber=' + encodeURIComponent(examineeData.idNumber) + '&dqEventId=' + encodeURIComponent(eid) + '&examineeToken=' + encodeURIComponent(examineeToken);
       fetch(API_URL + '?' + params).catch(function() {});
@@ -2398,8 +2307,8 @@
 
     if (document.visibilityState === 'hidden') {
       tabHiddenAt = Date.now();
-      if (tabSwitchWarnings >= TAB_SWITCH_MAX_WARNINGS) {
-        // Already used their chance — immediate final DQ, no grace
+      if (usedEveryChance()) {
+        // Already used every chance — immediate final DQ, no grace
         tabSwitchDQConfirmed = true;
         provisionalDQSent = false;
         newDQEventId();
@@ -2440,9 +2349,11 @@
         if (awayMs < SHORT_BLUR_IGNORE_MS) {
           // Very short switch (< 2 sec) — ignore completely (connectivity hiccup, system notification)
         } else {
-          // Away 2-5 sec — count as warning
+          // Counted either way; the banner is the phone's "one more chance"
+          // message, and on desktop there is no next chance to announce.
           tabSwitchWarnings++;
-          showTabSwitchWarning();
+          if (TAB_SWITCH_MAX_WARNINGS > 0) showTabSwitchWarning();
+          else reportWarningToServer('יציאה ממסך המבחן');
         }
       }
     }
@@ -2538,37 +2449,27 @@
   }
 
   // ========== DQ Overturn polling — checks if examiner reversed the DQ ==========
-  var dqOverturnInterval = null;
-  var dqOverturnGen = 0;
+  // Same route as the approval poll (the gateway serves checkApproval), so a
+  // disqualified examinee waiting for the examiner's decision costs nothing.
   var DQ_POLL_BASE_MS = 3000;
   var DQ_POLL_MAX_MS = 20000;
-  var dqOverturnDelayMs = DQ_POLL_BASE_MS;
+  var dqOverturnLoop = null;
+  var dqOverturnGen = 0;
 
   function dqOverturnPollTick() {
-    if (dqOverturnInterval === null) return;
     var generation = dqOverturnGen;
     var requestedSession = sessionCode;
     var requestedId = examineeData.idNumber;
     var requestedToken = examineeToken;
-    if (!requestedSession || !requestedId) { stopDQOverturnPolling(); return; }
-    var started = Date.now();
-    var failed = false;
-    var serverWaitMs = 0;
+    if (!requestedSession || !requestedId) { stopDQOverturnPolling(); return Promise.resolve({ status: 'ok' }); }
     function isCurrent() {
-      return dqOverturnInterval !== null && generation === dqOverturnGen &&
+      return dqOverturnLoop !== null && generation === dqOverturnGen &&
         requestedSession === sessionCode && requestedId === examineeData.idNumber && requestedToken === examineeToken;
     }
-    apiGet({
-        action: 'checkApproval',
-        sessionCode: requestedSession,
-        idNumber: requestedId,
-        examineeToken: requestedToken
-      }, POLL_TIMEOUT_MS).then(function(data) {
-        if (!isCurrent()) return;
-        if (!data || data.status !== 'ok') {
-          failed = true;
-          serverWaitMs = examRetryWaitSeconds(data) * 1000;
-        } else if (data.approval === 'in_exam') {
+    return approvalPollCall().then(function(data) {
+      if (!isCurrent()) return data;
+      if (data && data.status === 'ok') {
+        if (data.approval === 'in_exam') {
           // Examiner overturned DQ — try to resume exam
           stopDQOverturnPolling();
           restoreExamFromSuspended();
@@ -2577,23 +2478,22 @@
           stopDQOverturnPolling();
           showFinalDQScreen();
         }
-      }).catch(function() { failed = true; }).then(function() {
-        if (!isCurrent()) return;
-        dqOverturnDelayMs = pacePoll(dqOverturnDelayMs, DQ_POLL_BASE_MS, DQ_POLL_MAX_MS, failed || Date.now() - started > 6000);
-        // jitter our own wait, but never retry before the wait the server asked for
-        dqOverturnInterval = setTimeout(dqOverturnPollTick, Math.max(jitterMs(dqOverturnDelayMs), serverWaitMs));
-      });
+      }
+      return data;
+    });
   }
 
   function startDQOverturnPolling() {
     stopDQOverturnPolling();
-    dqOverturnDelayMs = DQ_POLL_BASE_MS;
-    dqOverturnInterval = setTimeout(dqOverturnPollTick, dqOverturnDelayMs);
+    dqOverturnLoop = ExamTransport.createPollLoop({
+      name: 'dq-overturn', baseMs: DQ_POLL_BASE_MS, maxMs: DQ_POLL_MAX_MS, tick: dqOverturnPollTick
+    });
+    dqOverturnLoop.start();
   }
 
   function stopDQOverturnPolling() {
     dqOverturnGen++;
-    if (dqOverturnInterval) { clearInterval(dqOverturnInterval); dqOverturnInterval = null; }
+    if (dqOverturnLoop) { dqOverturnLoop.stop(); dqOverturnLoop = null; }
   }
 
   function showFinalDQScreen() {
@@ -2617,8 +2517,14 @@
   }
 
   // ========== Restore exam after DQ overturn ==========
+  // How long a "disqualified" answer is ignored after an overturn: the status
+  // poll may still be served a snapshot taken before the examiner's decision.
+  var DQ_RESUME_GRACE_MS = 15000;
+  var lastOverturnResumeAt = -DQ_RESUME_GRACE_MS;   // far enough back that the first answer is never suppressed
+
   function restoreExamFromSuspended() {
     // Examiner overturned — release the DQ-screen lock so back/close behave normally again
+    lastOverturnResumeAt = Date.now();
     dqScreenActive = false;
     try { window.removeEventListener('beforeunload', dqBeforeUnload); } catch(e) {}
     var suspKey = 'examSuspended_' + sessionCode + '_' + examineeData.idNumber;
@@ -2661,7 +2567,6 @@
     tabSwitchWarnings = 0;
     currentDQEventId = '';
     provisionalDQSent = false;
-    dqServerConfirmed = false;
     if (splitScreenBlurTimer) { clearTimeout(splitScreenBlurTimer); splitScreenBlurTimer = null; }
 
     // Clear DQ markers
@@ -2673,20 +2578,8 @@
     splitScreenBound = false;
     fullscreenBound = false;
 
-    // Re-setup exam UI
-    showScreen('screenExam');
-    setupBeforeUnload();
-    setupTabSwitchDetection();
-    setupSplitScreenDetection();
-    setupFullscreenEnforcement();
-    // Prevent back button during exam
-    history.pushState({ examActive: true }, '');
-    history.pushState({ examActive: true }, '');
-    window.addEventListener('popstate', onBackButton);
-    startResumedTimer();
-    startDevToolsTrap();
-    saveActiveExam();
-    renderQuestion();
+    // Re-setup exam UI (the bank is already in memory — the exam was running)
+    loadExamBanks(examineeData.language || sessionData.language || 'he').then(resumeExamUI);
   }
 
   function showTabSwitchWarning() {
@@ -3148,62 +3041,58 @@
   }
 
   // ===== Examiner-initiated DQ detection (poll during the exam) =====
-  // The exam runs locally, so an examiner who disqualifies from the dashboard was
-  // previously INVISIBLE to the examinee — they kept answering. Poll the live
-  // status every 6s; if the examiner DQ'd (disqualified / dq_confirmed), stop the
-  // exam and show the DQ screen (which also starts the overturn wait). No self-DQ
-  // is sent — the server already DQ'd them.
-  // Adaptive like the approval poll (same 2026-08-26 saturation rationale):
-  // in-exam examinees are the MAJORITY of connected clients during an exam day,
-  // and each used to hit the server every 6s for the whole exam. Base is 10s
-  // (an examiner's mid-exam time extension or DQ still lands within ~10s),
-  // growing ×1.5 to 20s while the server is slow/failing and stepping back down
-  // one ×1.5 per healthy answer (2026-09-18, see the poll pacing block). Pacing
-  // only — the handler logic is byte-identical.
-  var EXAMSTATUS_POLL_BASE_MS = 10000;
+  // The exam runs locally, so an examiner who disqualifies from the dashboard
+  // would otherwise be INVISIBLE to the examinee. This poll also carries the
+  // mid-exam time extensions. In-exam examinees are the majority of connected
+  // clients on an exam day: through the gateway the poll is free (8 s), direct
+  // it is one Apps Script execution per examinee (12 s).
+  var EXAMSTATUS_GATEWAY_BASE_MS = 8000;
+  var EXAMSTATUS_DIRECT_BASE_MS = 12000;
   var EXAMSTATUS_POLL_MAX_MS = 20000;
-  var examStatusDelayMs = EXAMSTATUS_POLL_BASE_MS;
-  var examStatusInterval = null;
-  var examStatusGen = 0;  // same stop/restart double-chain guard as the approval poll
+  var examStatusLoop = null;
+  var examStatusGen = 0;
+
   function examStatusPollTick() {
     var myGen = examStatusGen;
-    if (examStatusInterval === null) return;  // stopped meanwhile
-    // Skipped tick (exam paused state) — keep the cadence alive like setInterval did.
+    // Paused state (between DQ and the examiner's decision, or after submit):
+    // keep the cadence alive without asking the server anything.
     if (!examInProgress || examSubmitted || tabSwitchDQConfirmed ||
         !sessionCode || !examineeData || !examineeData.idNumber) {
-      examStatusInterval = setTimeout(examStatusPollTick, EXAMSTATUS_POLL_BASE_MS);
-      return;
+      return Promise.resolve({ status: 'ok', skipped: true });
     }
-    var t0 = Date.now();
-    var failed = false;
-    apiGet({ action: 'getExamStatus', sessionCode: sessionCode, idNumber: examineeData.idNumber, examineeToken: examineeToken }, POLL_TIMEOUT_MS)
-      .then(function(data) {
-        if (myGen !== examStatusGen || !examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
-        if (data && data.status === 'ok') {
-          if (typeof data.extraMinutes === 'number') applyExtraMinutes(data.extraMinutes);
-          if (data.examStatus === 'disqualified' || data.examStatus === 'dq_confirmed') {
-            tabSwitchDQConfirmed = true;
-            try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
-            showDQScreen();
-          }
-        } else { failed = true; }
-      })
-      .catch(function() { failed = true; })
-      .then(function() {
-        if (examStatusInterval === null || myGen !== examStatusGen) return;
-        var slow = (Date.now() - t0) > 6000;
-        examStatusDelayMs = pacePoll(examStatusDelayMs, EXAMSTATUS_POLL_BASE_MS, EXAMSTATUS_POLL_MAX_MS, slow || failed);
-        examStatusInterval = setTimeout(examStatusPollTick, jitterMs(examStatusDelayMs));
-      });
+    return statusPollCall().then(function(data) {
+      if (myGen !== examStatusGen || !examInProgress || examSubmitted || tabSwitchDQConfirmed) return data;
+      if (data && data.status === 'ok') {
+        if (typeof data.extraMinutes === 'number') applyExtraMinutes(data.extraMinutes);
+        if (data.examStatus === 'disqualified' || data.examStatus === 'dq_confirmed') {
+          // A snapshot taken BEFORE the examiner overturned the DQ still says
+          // "disqualified" — through the gateway it can be up to 3 s old, and
+          // acting on it would throw the examinee straight back out of the exam
+          // they were just let back into. Ignore it for a short while after a
+          // resume; a real second disqualification still lands after that.
+          if (Date.now() - lastOverturnResumeAt < DQ_RESUME_GRACE_MS) return data;
+          tabSwitchDQConfirmed = true;
+          try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+          showDQScreen();
+        }
+      }
+      return data;
+    });
   }
   function startExamStatusPoll() {
-    if (examStatusInterval) return;
+    if (examStatusLoop) return;
     examStatusGen++;
-    examStatusDelayMs = EXAMSTATUS_POLL_BASE_MS;
-    examStatusInterval = setTimeout(examStatusPollTick, examStatusDelayMs);
+    examStatusLoop = ExamTransport.createPollLoop({
+      name: 'exam-status',
+      baseMs: gatewayUrl() ? EXAMSTATUS_GATEWAY_BASE_MS : EXAMSTATUS_DIRECT_BASE_MS,
+      maxMs: EXAMSTATUS_POLL_MAX_MS,
+      tick: examStatusPollTick
+    });
+    examStatusLoop.start();
   }
   function stopExamStatusPoll() {
-    if (examStatusInterval) { clearInterval(examStatusInterval); examStatusInterval = null; }
+    examStatusGen++;
+    if (examStatusLoop) { examStatusLoop.stop(); examStatusLoop = null; }
   }
 
   var resizeDebounceTimer = null;
@@ -3286,7 +3175,7 @@
     // VISIBLE we fall through to the grace-timer debounce below: a SUSTAINED blur
     // (still blurred after the grace) still DQs (real app-switch), but a transient
     // focus-steal that returns within the grace no longer fails an INNOCENT examinee.
-    if (tabSwitchWarnings >= TAB_SWITCH_MAX_WARNINGS && document.visibilityState === 'hidden') {
+    if (usedEveryChance() && document.visibilityState === 'hidden') {
       // Already warned AND the page is actually hidden — immediate final DQ
       tabSwitchDQConfirmed = true;
       provisionalDQSent = false;
@@ -3394,15 +3283,18 @@
     return null;
   }
 
-  function getTTSLang() {
-    var lang = getExamLang();
+  // D12: the answers shown for a question answered in another language stay in
+  // THAT language (see the frozen-answer notice), so every speaking helper takes
+  // the language explicitly instead of assuming the current exam language.
+  function getTTSLang(lang) {
+    lang = lang || getExamLang();
     // All these languages are supported by Google TTS via Cloudflare Worker
     if (['he', 'ru', 'en', 'fr', 'ar', 'es', 'am'].indexOf(lang) !== -1) return lang;
     return 'he';
   }
 
-  function getAnswerPrefix() {
-    var lang = getExamLang();
+  function getAnswerPrefix(lang) {
+    lang = lang || getExamLang();
     var prefixes = {
       'he': '\u05EA\u05E9\u05D5\u05D1\u05D4 ',  // תשובה
       'ru': '\u041E\u0442\u0432\u0435\u0442 ',     // Ответ
@@ -3415,8 +3307,8 @@
     return prefixes[lang] || prefixes['he'];
   }
 
-  function getAnswerLabelsForTTS() {
-    var lang = getExamLang();
+  function getAnswerLabelsForTTS(lang) {
+    lang = lang || getExamLang();
     // For non-Hebrew languages, use numeric labels 1/2/3/4 for TTS clarity
     if (lang !== 'he') return ['1', '2', '3', '4'];
     return ANSWER_LABELS;  // א, ב, ג, ד
@@ -3437,7 +3329,7 @@
   }
 
   var TTS_WORKER_URL = 'https://hebrew-tts.bohanyzahal.workers.dev/';
-  function ttsUrl(t) { return TTS_WORKER_URL + '?tl=' + getTTSLang() + '&gender=' + voiceGender + '&q=' + encodeURIComponent(t); }
+  function ttsUrl(t, lang) { return TTS_WORKER_URL + '?tl=' + getTTSLang(lang) + '&gender=' + voiceGender + '&q=' + encodeURIComponent(t); }
 
   function splitChunks(text) {
     var M = 190, c = [], r = (text || '').trim();
@@ -3483,27 +3375,27 @@
     }
   }
 
-  function googleSpeak(text, onEnd) {
-    audioQueue = splitChunks(text).map(function(c) { return ttsUrl(c); });
+  function googleSpeak(text, onEnd, lang) {
+    audioQueue = splitChunks(text).map(function(c) { return ttsUrl(c, lang); });
     playGoogleQueue(onEnd);
   }
 
-  function webSpeechSpeak(text, onEnd) {
-    if (!window.speechSynthesis) { googleSpeak(text, onEnd); return; }
+  function webSpeechSpeak(text, onEnd, lang) {
+    if (!window.speechSynthesis) { googleSpeak(text, onEnd, lang); return; }
     speechSynthesis.cancel();
     var utter = new SpeechSynthesisUtterance(text);
-    utter.lang = LANG_LOCALE_MAP[getTTSLang()] || 'he-IL';
+    utter.lang = LANG_LOCALE_MAP[getTTSLang(lang)] || 'he-IL';
     if (hebrewVoice) utter.voice = hebrewVoice;
     utter.rate = speechRate;
     var ended = false, started = false;
     utter.onstart = function() { started = true; webspeechConfirmed = true; };
     utter.onend = function() { if (!ended) { ended = true; if (onEnd) onEnd(); } };
     utter.onerror = function() {
-      if (!ended) { ended = true; if (!webspeechConfirmed) ttsEngine = 'google'; googleSpeak(text, onEnd); }
+      if (!ended) { ended = true; if (!webspeechConfirmed) ttsEngine = 'google'; googleSpeak(text, onEnd, lang); }
     };
     speechSynthesis.speak(utter);
     setTimeout(function() {
-      if (!started && !ended) { ended = true; speechSynthesis.cancel(); ttsEngine = 'google'; googleSpeak(text, onEnd); }
+      if (!started && !ended) { ended = true; speechSynthesis.cancel(); ttsEngine = 'google'; googleSpeak(text, onEnd, lang); }
     }, 3000);
     var ri = setInterval(function() {
       if (!isSpeaking || ended || !speechSynthesis.speaking) { clearInterval(ri); return; }
@@ -3511,12 +3403,12 @@
     }, 10000);
   }
 
-  function speak(text, onEnd) {
+  function speak(text, onEnd, lang) {
     stopSpeaking();
     if (!text || !text.trim()) { if (onEnd) onEnd(); return; }
     isSpeaking = true; unlockAudio();
-    if (ttsEngine === 'webspeech') webSpeechSpeak(text, onEnd);
-    else googleSpeak(text, onEnd);
+    if (ttsEngine === 'webspeech') webSpeechSpeak(text, onEnd, lang);
+    else googleSpeak(text, onEnd, lang);
   }
 
   function stopSpeaking() {
@@ -3525,23 +3417,25 @@
     if (window.speechSynthesis) speechSynthesis.cancel();
   }
 
-  function speakQuestionShuffled(text, answers) {
+  // qLang reads the question, ansLang the answers — they differ exactly when the
+  // displayed answers are frozen in the language they were answered in (D12).
+  function speakQuestionShuffled(text, answers, qLang, ansLang) {
     stopSpeaking(); isSpeaking = true; unlockAudio();
-    var ansPrefix = getAnswerPrefix();
-    var ansLabels = getAnswerLabelsForTTS();
-    questionParts = [text];
+    var ansPrefix = getAnswerPrefix(ansLang);
+    var ansLabels = getAnswerLabelsForTTS(ansLang);
+    questionParts = [{ text: text, lang: qLang }];
     for (var i = 0; i < answers.length; i++)
-      questionParts.push(ansPrefix + ansLabels[i] + '. ' + answers[i]);
+      questionParts.push({ text: ansPrefix + ansLabels[i] + '. ' + answers[i], lang: ansLang });
     questionPartIndex = 0;
     (function next() {
       if (questionPartIndex >= questionParts.length || !isSpeaking) { isSpeaking = false; return; }
-      var t = questionParts[questionPartIndex++];
-      if (ttsEngine === 'webspeech') webSpeechSpeak(t, next);
-      else { audioQueue = splitChunks(t).map(function(c) { return ttsUrl(c); }); playGoogleQueue(next); }
+      var part = questionParts[questionPartIndex++];
+      if (ttsEngine === 'webspeech') webSpeechSpeak(part.text, next, part.lang);
+      else { audioQueue = splitChunks(part.text).map(function(c) { return ttsUrl(c, part.lang); }); playGoogleQueue(next); }
     })();
   }
 
-  // ========== Questions ==========
+  // ========== Question topics ==========
   function classifyCategory(cat) {
     var c = (cat || '').trim();
     if (/\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9/.test(c)) return '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9';
@@ -3563,174 +3457,38 @@
     return '';
   }
 
-  // ========== Translation helpers ==========
-  // Translation dictionaries loaded dynamically per language
-  // Format: TRANSLATIONS_XX = { questionId: { t: "text", a: ["ans1",...], ci: encodedCorrectIndex } }
-  var TRANSLATION_VARS = { 'en': 'TRANSLATIONS_EN', 'fr': 'TRANSLATIONS_FR', 'ar': 'TRANSLATIONS_AR', 'es': 'TRANSLATIONS_ES', 'am': 'TRANSLATIONS_AM' };
+  // ========== Questions: ids from the server, texts from the static bank ==========
+  // activeQuestions holds only what the server issued — {id, category(topic)}.
+  // Every text is read from QuestionBank at render time, which is what makes a
+  // language switch local and keeps the correct answer out of the client.
+  var MISSING_QUESTION_TEXT = '(שאלה לא זמינה)';
 
   // Get the active exam language
   function getExamLang() {
     return (sessionData && sessionData.language) ? sessionData.language : 'he';
   }
 
-  // Get the translation dictionary for the current language (or null)
-  function getTransDict() {
-    var lang = getExamLang();
-    var varName = TRANSLATION_VARS[lang];
-    if (varName && window[varName]) return window[varName];
-    return null;
-  }
+  function examLicense() { return String(examineeData.license || sessionData.license || 'B'); }
 
-  // Check if a question has a translation for the given language
-  function hasTranslation(q, lang) {
-    var varName = TRANSLATION_VARS[lang];
-    if (!varName || !window[varName]) return false;
-    var t = window[varName][q.id];
-    return t && t.t && t.a && t.a.length >= 2;
-  }
-
-  // Legacy: looked up a Russian-language question by id from the global
-  // QUESTIONS array. With server-side delivery we receive each exam already
-  // in the right language, so this returns null (the callers fall back to
-  // q.text / q.answers, which are correct for the active language).
-  function getRuQuestion(_id) { return null; }
-
-  // Get question text for the current language
-  function getQText(q) {
-    var lang = getExamLang();
-    if (lang === 'he') return q.text;
-    if (lang === 'ru') {
-      if (q.language === 'ru') return q.text;
-      var rq = getRuQuestion(q.id);
-      if (rq) return rq.text;
-      return q.text;
+  // The bank entry for a question in the displayed language. A language missing
+  // one id falls back to Hebrew and, only if that is missing too, to a
+  // placeholder — one absent translation must never blank a question mid-exam.
+  function bankEntry(q, lang) {
+    if (!q || q.id == null) return null;
+    lang = lang || getExamLang();
+    var entry = QuestionBank.get(q.id, lang, examLicense());
+    if (!entry && lang !== 'he') {
+      entry = QuestionBank.get(q.id, 'he', examLicense());
+      if (entry) logEvent('bank_fallback_he', lang + ':' + q.id);
     }
-    var dict = getTransDict();
-    if (dict && dict[q.id]) return dict[q.id].t;
-    return q.text;
+    if (!entry) logEvent('bank_missing', lang + ':' + q.id);
+    return entry;
   }
-
-  // Get question answers for the current language
-  function getQAnswers(q) {
-    var lang = getExamLang();
-    if (lang === 'he') return q.answers;
-    if (lang === 'ru') {
-      if (q.language === 'ru') return q.answers;
-      var rq = getRuQuestion(q.id);
-      if (rq) return rq.answers;
-      return q.answers;
-    }
-    var dict = getTransDict();
-    if (dict && dict[q.id]) return dict[q.id].a;
-    return q.answers;
-  }
-
-  // Decode obfuscated correct index
-  function decodeCI(ci, id) { return ci ^ (id % 256); }
-
-  // Get correct index for the current language
-  function getQCorrectIndex(q) {
-    var lang = getExamLang();
-    if (lang === 'he') return decodeCI(q.ci, q.id);
-    if (lang === 'ru') {
-      if (q.language === 'ru') return decodeCI(q.ci, q.id);
-      var rq = getRuQuestion(q.id);
-      if (rq) return decodeCI(rq.ci, rq.id);
-      return decodeCI(q.ci, q.id);
-    }
-    var dict = getTransDict();
-    if (dict && dict[q.id] && dict[q.id].ci !== undefined) return decodeCI(dict[q.id].ci, q.id);
-    return decodeCI(q.ci, q.id);
-  }
-
-  // Legacy: client-side filtering used a global QUESTIONS array that no
-  // longer exists (the server picks questions now). Kept as a stub so any
-  // remaining call sites (e.g. error/debug paths) don't blow up.
-  function getFilteredQuestions(_license, _language) { return []; }
-
-  function _legacyGetFilteredQuestions_DEPRECATED(license, language) {
-    license = String(license || '');
-    language = String(language || 'he');
-    var qs = (typeof QUESTIONS !== 'undefined') ? QUESTIONS : window.QUESTIONS;
-    if (!qs || !Array.isArray(qs)) { console.log('[EXAM DEBUG] QUESTIONS not loaded!'); return []; }
-
-    // For translated languages (en/fr/ar/es): filter Hebrew questions that have the translation
-    var filterLang = language;
-    var needTranslation = false;
-    if (language !== 'he' && language !== 'ru') {
-      filterLang = 'he';
-      needTranslation = true;
-    }
-
-    return qs.filter(function(q) {
-      if ((q.language || 'he') !== filterLang) return false;
-      if (!q.answers || q.answers.length < 2) return false;
-      // For translated languages, require the translation fields to exist
-      if (needTranslation && !hasTranslation(q, language)) return false;
-      // "מתן זכות קדימה" questions apply to all license types
-      if (/\u05D6\u05DB\u05D5\u05EA \u05E7\u05D3\u05D9\u05DE\u05D4/.test(q.category || '')) return true;
-      if (license === '1') {
-        var lt = (q.licenseType || '').trim();
-        if (lt !== '' && lt !== 'N/A') return false;
-        var cat = (q.category || '');
-        if (cat.indexOf('1') === -1) return false;
-      } else if (license === 'C') {
-        var lic = (q.licenseType || '').trim();
-        if (lic !== 'C' && lic !== 'C/E' && lic !== 'C+E' && lic !== 'CE') return false;
-      } else {
-        var lic = (q.licenseType || '').trim();
-        if (lic !== license) return false;
-      }
-      return true;
-    });
-  }
-
-  // Legacy: client-side exam picker, replaced by the server-side
-  // `getExamQuestions` Apps Script action. Stubbed; the actual logic
-  // (kept below) is dead code retained for reference only.
-  function buildExam(_license, _language) { return []; }
-
-  function _legacyBuildExam_DEPRECATED(license, language) {
-    var structure = EXAM_STRUCTURE[license];
-    if (!structure) return [];
-    var pool = _legacyGetFilteredQuestions_DEPRECATED(license, language);
-    // Deduplicate by question ID - keep first occurrence only
-    var seenIds = {};
-    pool = pool.filter(function(q) {
-      if (seenIds[q.id]) return false;
-      seenIds[q.id] = true;
-      return true;
-    });
-    var byTopic = {};
-    for (var t in structure) byTopic[t] = [];
-    pool.forEach(function(q) {
-      var topic = classifyCategory(q.category);
-      if (byTopic[topic]) byTopic[topic].push(q);
-    });
-    var selected = [];
-    var usedIds = {};
-    for (var topic in structure) {
-      var needed = structure[topic];
-      var available = shuffle(byTopic[topic] || []);
-      if (available.length < needed) return [];
-      var count = 0;
-      for (var i = 0; i < available.length && count < needed; i++) {
-        if (!usedIds[available[i].id]) {
-          usedIds[available[i].id] = true;
-          selected.push(available[i]);
-          count++;
-        }
-      }
-      if (count < needed) return [];
-    }
-    return shuffle(selected);
-  }
-
-  function shuffle(arr) {
-    var a = arr.slice();
-    for (var i = a.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)); var t = a[i]; a[i] = a[j]; a[j] = t; }
-    return a;
-  }
+  function getQText(q, lang) { var e = bankEntry(q, lang); return e ? e.text : MISSING_QUESTION_TEXT; }
+  function getQAnswers(q, lang) { var e = bankEntry(q, lang); return e ? e.answers : ['', '', '', '']; }
+  // Same-origin path (images/TQ_PIC_x.jpg) or '' — see imageSources for the
+  // remote fallbacks, which are only tried when the local copy fails.
+  function getQImage(q) { var e = bankEntry(q, 'he') || bankEntry(q); return e ? QuestionBank.imageUrl(e) : ''; }
 
   // ========== Timer ==========
   // Uses real wall-clock time (Date.now) instead of counting setInterval ticks,
@@ -3822,7 +3580,11 @@
   function onTimerExpired() {
     if (timerExpiryChecking || examSubmitted) return;
     timerExpiryChecking = true;
-    apiGet({ action: 'getExamStatus', sessionCode: sessionCode, idNumber: examineeData.idNumber, examineeToken: examineeToken })
+    // D13: the 30 s default meant that during a slow spell the exam auto-
+    // submitted even though an extension had just been granted. This one answer
+    // decides whether the examinee keeps writing, so it waits the full poll
+    // deadline for it.
+    statusPollCall()
       .then(function(data) {
         if (data && data.status === 'ok' && typeof data.extraMinutes === 'number') applyExtraMinutes(data.extraMinutes);
       })
@@ -3861,92 +3623,74 @@
     return c;
   }
 
+  // A language switch is a local re-render: every language of the bank is
+  // already in memory (prefetched while the examinee waited for approval), and
+  // nothing about the exam itself changes — same ids, same order, same clock.
   function switchExamLanguage(newLang) {
     if (newLang === getExamLang()) return;
     if (typeof stopSpeaking === 'function') stopSpeaking();
     if (!Array.isArray(activeQuestions) || activeQuestions.length === 0) return;
 
-    // Fast path: translations were pre-fetched at exam start, so we have all
-    // 7 languages in memory. Switch is INSTANT — no server call, no overlay.
-    var cache = window._examTranslations;
-    if (cache && cache[newLang]) {
-      var t = cache[newLang];
-      var missingAny = false;
-      for (var i = 0; i < activeQuestions.length; i++) {
-        var tr = t[activeQuestions[i].id];
-        if (tr) {
-          activeQuestions[i].text = tr.t;
-          activeQuestions[i].answers = tr.a;
-        } else {
-          missingAny = true;
-        }
-      }
-      if (!missingAny) {
-        sessionData.language = newLang;
-        // Also update examineeData.language so submitResult / submitFailOnClose
-        // / wrong-answer reconstruction all use the FINAL language the examinee
-        // actually saw, not the one they registered with.
-        examineeData.language = newLang;
-        // Record the switch in the language history (only if it's actually
-        // a change from the last entry — guards against duplicate pushes).
-        if (languageHistory.length === 0 || languageHistory[languageHistory.length - 1] !== newLang) {
-          languageHistory.push(newLang);
-        }
-        try { saveExamineeState(); } catch (e) {}
-        var isRTL = (newLang === 'he' || newLang === 'ar');
-        document.documentElement.dir = isRTL ? 'rtl' : 'ltr';
-        document.documentElement.lang = newLang;
-        renderQuestion();
-        return;
-      }
-      // If some translations missing, fall through to server fetch
-    }
-
-    // Fallback (cache miss / partial / old client): server fetch with overlay.
-    showLoadingOverlay('מתחלף לשפה ' + (LANG_LABELS[newLang] || newLang) + '…');
-    var ids = activeQuestions.map(function(q) { return q.id; }).join(',');
-    apiGet({
-      action: 'getQuestionsByIds',
-      sessionCode: sessionCode,
-      idNumber: examineeData.idNumber,
-      ids: ids,
-      language: newLang
-    }).then(function(resp) {
-      hideLoadingOverlay();
-      if (!resp || resp.status !== 'ok' || !Array.isArray(resp.questions)) {
-        console.warn('[LANG] Could not re-fetch questions in ' + newLang, resp);
-        alert('לא ניתן לטעון את השאלות בשפה החדשה. נסה שוב.');
-        return;
-      }
-      for (var i = 0; i < activeQuestions.length; i++) {
-        var nq = resp.questions[i];
-        if (nq && nq.id === activeQuestions[i].id) {
-          activeQuestions[i].text = nq.text;
-          activeQuestions[i].answers = nq.answers;
-          activeQuestions[i].imageUrl = nq.imageUrl || activeQuestions[i].imageUrl;
-        }
-      }
+    var apply = function() {
       sessionData.language = newLang;
-      // Also sync examineeData.language (see fast-path comment above).
+      // Also update examineeData.language so submitResult / submitFailOnClose
+      // use the FINAL language the examinee actually saw.
       examineeData.language = newLang;
       if (languageHistory.length === 0 || languageHistory[languageHistory.length - 1] !== newLang) {
         languageHistory.push(newLang);
       }
-      try { saveExamineeState(); } catch (e) {}
+      try { saveExamineeState('screenExam'); } catch (e) {}
       var isRTL = (newLang === 'he' || newLang === 'ar');
       document.documentElement.dir = isRTL ? 'rtl' : 'ltr';
       document.documentElement.lang = newLang;
+      logEvent('lang_switch', newLang);
       renderQuestion();
+    };
+
+    if (QuestionBank.has(newLang)) { apply(); return; }
+    showLoadingOverlay('מתחלף לשפה ' + (LANG_LABELS[newLang] || newLang) + '…');
+    QuestionBank.load(newLang).then(function() {
+      hideLoadingOverlay();
+      apply();
     }).catch(function(err) {
       hideLoadingOverlay();
-      console.error('[LANG] switchExamLanguage error', err);
-      alert('שגיאת תקשורת בעת שינוי שפה. נסה שוב.');
+      logEvent('lang_switch_failed', newLang + ':' + String(err));
+      // No native alert(): on iOS it fires a blur that arms the DQ grace timer.
+      showExamNotice('לא ניתן לטעון את השאלות בשפה שנבחרה. המבחן ממשיך בשפה הנוכחית.');
+      renderQuestion();   // puts the language selector back on the active language
     });
   }
 
+  // Short in-page toast for mid-exam messages (never a native dialog — see
+  // docs/KNOWN_ISSUES: confirm()/alert() on iOS Safari blur the page and can
+  // trigger the anti-cheat grace timer).
+  function showExamNotice(message) {
+    try {
+      var el = document.getElementById('examNotice');
+      if (!el) {
+        if (!document.body) return;
+        el = document.createElement('div');
+        el.id = 'examNotice';
+        el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99997;background:#b45309;color:#fff;font-size:14px;font-weight:700;text-align:center;padding:10px 12px;direction:rtl;';
+        document.body.appendChild(el);
+      }
+      el.textContent = message;
+      el.style.display = 'block';
+      if (window._examNoticeHideT) clearTimeout(window._examNoticeHideT);
+      window._examNoticeHideT = setTimeout(function() { if (el) el.style.display = 'none'; }, 8000);
+    } catch (e) {}
+  }
+
   // ========== Resilient image loader ==========
-  // Tries proxy first (bypasses carrier compression / data saver / blocked third-party).
-  // Falls back to gov.il direct if proxy fails. Shows loading + retry UI.
+  // D15: OUR OWN copy first. All 440 question images live in this repo
+  // (images/TQ_PIC_*.jpg, ee05859) precisely so a gov.il outage cannot blank a
+  // question; the Cloudflare proxy and gov.il itself are fallbacks, tried one at
+  // a time ONLY after the local copy fails. Before this, every image start fired
+  // all three at once — ~24 parallel requests per exam, a third to gov.il.
+  var GOVIL_IMAGE_PREFIXES = [
+    'https://www.gov.il/BlobFolder/generalpage/tq_pic_01/he/',
+    'https://www.gov.il/BlobFolder/generalpage/tq_pic_02/he/'
+  ];
   function toProxyUrl(originalUrl) {
     if (!IMAGE_PROXY_BASE) return originalUrl;
     try {
@@ -3955,56 +3699,45 @@
       return IMAGE_PROXY_BASE.replace(/\/$/, '') + '/img' + u.pathname;
     } catch(e) { return originalUrl; }
   }
-
-  // Map a gov.il question image to OUR OWN same-origin copy (images/TQ_PIC_*.jpg
-  // in the Pages repo). Removes the runtime dependency on gov.il: if the page
-  // loaded, the image loads — even during a gov.il outage/attack. null when not
-  // mirrored, so the proxy/gov.il fallback still applies.
-  function toLocalUrl(originalUrl) {
-    try {
-      var u = new URL(originalUrl);
-      if (u.hostname !== 'www.gov.il' && u.hostname !== 'gov.il') return null;
-      var base = u.pathname.split('/').pop();
-      if (!/^TQ_PIC_[A-Za-z0-9_]+\.jpg$/i.test(base)) return null;
-      return 'images/' + base;
-    } catch(e) { return null; }
+  // The bank stores only the file name, and gov.il serves the images under two
+  // folders, so both are offered as remote fallbacks after the local copy.
+  function imageSources(localUrl) {
+    var name = String(localUrl || '').split('/').pop();
+    var sources = [localUrl];
+    for (var p = 0; name && p < GOVIL_IMAGE_PREFIXES.length; p++) {
+      var remote = GOVIL_IMAGE_PREFIXES[p] + name;
+      var proxied = toProxyUrl(remote);
+      if (proxied !== remote) sources.push(proxied);
+      sources.push(remote);
+    }
+    return sources.filter(function(v, i, all) { return v && all.indexOf(v) === i; });
   }
 
-  // Prefetch all question images into the Cache API at exam start (while online)
-  // so they still render if the connection drops mid-exam (risk #5: an image
-  // question you can't see while the clock keeps running). Fire-and-forget,
-  // non-blocking, best-effort. The SW (sw-examinee.js) serves these from cache
-  // when the network is unavailable. Caches BOTH URLs buildResilientImage may
-  // request (proxy first, then direct) so whichever the <img> uses resolves.
+  // Warm the LOCAL copies into the Cache API at exam start (while online) so an
+  // image question still renders if the connection drops mid-exam. Same-origin,
+  // so these are real (non-opaque) responses the SW can serve later.
   function prefetchExamImages(questions) {
     if (!questions || !('caches' in window)) return;
     try {
       caches.open('exam-images-v1').then(function(cache) {
         for (var i = 0; i < questions.length; i++) {
-          var iu = questions[i] && questions[i].imageUrl;
-          if (!iu || !iu.trim()) continue;
-          // Cache local copy first (the primary source), then proxy + gov.il.
-          var lu = toLocalUrl(iu);
-          var urls = [];
-          if (lu) urls.push(lu);
-          urls.push(toProxyUrl(iu));
-          urls.push(iu);
-          urls = urls.filter(function(v, idx) { return v && urls.indexOf(v) === idx; });
-          for (var u = 0; u < urls.length; u++) {
-            (function(url) {
-              // no-cors so cross-origin gov.il/proxy works; opaque responses are
-              // cacheable via Cache.put and serveable to <img>.
-              fetch(url, { mode: 'no-cors', cache: 'no-store' })
-                .then(function(resp) { if (resp) cache.put(url, resp); })
-                .catch(function() {});
-            })(urls[u]);
-          }
+          var url = getQImage(questions[i]);
+          if (!url) continue;
+          (function(u) {
+            fetch(u, { cache: 'no-store' })
+              .then(function(resp) { if (resp && resp.ok) cache.put(u, resp); })
+              .catch(function() {});
+          })(url);
         }
       }).catch(function() {});
     } catch(e) {}
   }
 
-  function buildResilientImage(originalUrl) {
+  // One <img> that walks imageSources in order: local copy, then (only on
+  // failure) proxy and gov.il for each of the two gov.il folders. Keeps the
+  // hang guard and the manual retry UI — a question you cannot see while the
+  // clock runs is worse than a slow one.
+  function buildResilientImage(localUrl) {
     var wrap = document.createElement('div');
     wrap.className = 'q-image-wrap';
     wrap.style.cssText = 'position:relative;min-height:120px;display:flex;align-items:center;justify-content:center;margin:8px 0;';
@@ -4021,18 +3754,12 @@
     img.alt = 'תמונה לשאלה';
     img.style.display = 'none';
 
+    var sources = imageSources(localUrl);
     var attempt = 0;
-    // Local copy first (same origin), then Cloudflare proxy, then direct gov.il.
-    var sources = [];
-    var localSrc = toLocalUrl(originalUrl);
-    if (localSrc) sources.push(localSrc);
-    sources.push(toProxyUrl(originalUrl));
-    sources.push(originalUrl);
-    sources = sources.filter(function(v, i) { return v && sources.indexOf(v) === i; });
     var maxRetriesPerSource = 2;
     var retriesThisSource = 0;
     var loadTimer = null;
-    var settled = false;       // per-attempt guard: onload/onerror/timeout fire once
+    var settled = false;        // per-attempt guard: onload/onerror/timeout fire once
     var LOAD_TIMEOUT_MS = 7000; // hang window before we give up on this attempt
 
     function clearLoadTimer() { if (loadTimer) { clearTimeout(loadTimer); loadTimer = null; } }
@@ -4041,12 +3768,12 @@
       clearLoadTimer();
       retriesThisSource++;
       if (retriesThisSource < maxRetriesPerSource) {
-        setTimeout(tryNext, 800);           // brief wait, retry same source
+        setTimeout(tryNext, 800);            // brief wait, retry same source
       } else {
-        attempt++;                           // move to next source (proxy → direct gov.il)
+        attempt++;                           // move to the next source
         retriesThisSource = 0;
         if (attempt < sources.length) tryNext();
-        else showError();
+        else { logEvent('image_failed', String(localUrl)); showError(); }
       }
     }
 
@@ -4059,9 +3786,8 @@
       var bust = retriesThisSource > 0 ? (src.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now() : '';
       // Hang guard: if NEITHER onload nor onerror fires within the window (slow
       // mobile network, captive portal, or a network that blocks workers.dev),
-      // treat it as a failure so the retry/fallback runs — instead of an infinite
-      // "טוען תמונה..." spinner. This is the device/network-dependent case where
-      // images never appeared and no error was shown.
+      // treat it as a failure so the retry/fallback runs — instead of an
+      // infinite "טוען תמונה..." spinner.
       loadTimer = setTimeout(function() {
         if (settled) return;
         settled = true;
@@ -4076,9 +3802,8 @@
       clearLoadTimer();
       loading.style.display = 'none';
       img.style.display = '';
-      // Remove error UI if present
-      var err = wrap.querySelector('.q-image-error');
-      if (err) err.parentNode.removeChild(err);
+      var err = wrap.querySelector && wrap.querySelector('.q-image-error');
+      if (err && err.parentNode) err.parentNode.removeChild(err);
     };
 
     img.onerror = function() {
@@ -4128,14 +3853,18 @@
   var ANSWER_ORDER_GROUP = { he: 'he', ru: 'he', am: 'he', en: 'en', fr: 'fr', es: 'es', ar: 'ar' };
   function sameAnswerOrder(a, b) { return (ANSWER_ORDER_GROUP[a] || a) === (ANSWER_ORDER_GROUP[b] || b); }
   var FROZEN_ANSWER_TEXT = {
-    he: { note: 'ענית על שאלה זו בשפה אחרת. התשובות מוצגות כפי שראית אותן אז.', again: 'לענות מחדש בשפה הנוכחית' },
-    en: { note: 'You answered this question in another language. The answers are shown as you saw them then.', again: 'Answer again in the current language' },
-    ru: { note: 'Вы ответили на этот вопрос на другом языке. Ответы показаны так, как вы их видели тогда.', again: 'Ответить заново на текущем языке' },
-    ar: { note: 'أجبت عن هذا السؤال بلغة أخرى. الإجابات معروضة كما رأيتها حينها.', again: 'الإجابة من جديد باللغة الحالية' },
-    fr: { note: 'Vous avez répondu à cette question dans une autre langue. Les réponses sont affichées telles que vous les avez vues alors.', again: 'Répondre à nouveau dans la langue actuelle' },
-    es: { note: 'Respondiste esta pregunta en otro idioma. Las respuestas se muestran como las viste entonces.', again: 'Responder de nuevo en el idioma actual' },
-    am: { note: 'ይህን ጥያቄ በሌላ ቋንቋ መልሰዋል። መልሶቹ ያኔ እንዳዩዋቸው ይታያሉ።', again: 'በአሁኑ ቋንቋ እንደገና ይመልሱ' }
+    he: { note: 'ענית על שאלה זו בשפה אחרת. התשובות מוצגות כפי שראית אותן אז.', again: 'לענות מחדש בשפה הנוכחית', keep: 'התשובה הקודמת שלך נשמרה. בחר תשובה חדשה כדי להחליף אותה.' },
+    en: { note: 'You answered this question in another language. The answers are shown as you saw them then.', again: 'Answer again in the current language', keep: 'Your previous answer is kept. Pick a new one to replace it.' },
+    ru: { note: 'Вы ответили на этот вопрос на другом языке. Ответы показаны так, как вы их видели тогда.', again: 'Ответить заново на текущем языке', keep: 'Ваш предыдущий ответ сохранён. Выберите новый, чтобы заменить его.' },
+    ar: { note: 'أجبت عن هذا السؤال بلغة أخرى. الإجابات معروضة كما رأيتها حينها.', again: 'الإجابة من جديد باللغة الحالية', keep: 'إجابتك السابقة محفوظة. اختر إجابة جديدة لاستبدالها.' },
+    fr: { note: 'Vous avez répondu à cette question dans une autre langue. Les réponses sont affichées telles que vous les avez vues alors.', again: 'Répondre à nouveau dans la langue actuelle', keep: 'Votre réponse précédente est conservée. Choisissez-en une nouvelle pour la remplacer.' },
+    es: { note: 'Respondiste esta pregunta en otro idioma. Las respuestas se muestran como las viste entonces.', again: 'Responder de nuevo en el idioma actual', keep: 'Tu respuesta anterior se conserva. Elige una nueva para reemplazarla.' },
+    am: { note: 'ይህን ጥያቄ በሌላ ቋንቋ መልሰዋል። መልሶቹ ያኔ እንዳዩዋቸው ይታያሉ።', again: 'በአሁኑ ቋንቋ እንደገና ይመልሱ', keep: 'ቀድሞ የሰጡት መልስ ተጠብቋል። ለመቀየር አዲስ መልስ ይምረጡ።' }
   };
+  // D11: the button used to null the answer on the spot — two curious clicks
+  // could unmake a scored answer and fail someone at 26/30. It now only ASKS for
+  // the current-language list: the old answer stays recorded until a new one is
+  // actually picked (see the click handler in renderQuestion).
   function buildFrozenAnswerNotice() {
     var t = FROZEN_ANSWER_TEXT[getExamLang()] || FROZEN_ANSWER_TEXT.he;
     var box = document.createElement('div');
@@ -4150,11 +3879,20 @@
     b.textContent = t.again;
     b.style.cssText = 'margin:0 10px;padding:6px 12px;border-radius:8px;border:1px solid #c2410c;background:#fff;color:#c2410c;font-weight:700;cursor:pointer;';
     b.addEventListener('click', function() {
-      userAnswers[currentIndex] = null;
-      if (typeof saveActiveExam === 'function') saveActiveExam();
+      reanswerAt[currentIndex] = ANSWER_ORDER_GROUP[getExamLang()] || getExamLang();
       renderQuestion();
     });
     box.appendChild(b);
+    return box;
+  }
+  // Shown instead of the frozen notice once the examinee asked to answer again:
+  // the list is live, nothing is highlighted, and the old answer is still theirs.
+  function buildKeepPreviousNotice() {
+    var t = FROZEN_ANSWER_TEXT[getExamLang()] || FROZEN_ANSWER_TEXT.he;
+    var box = document.createElement('div');
+    box.className = 'keep-previous-notice';
+    box.style.cssText = 'margin:8px 0;padding:10px 12px;border-radius:10px;background:#eff6ff;border:1px solid #93c5fd;color:#1e40af;font-size:14px;line-height:1.5;';
+    box.textContent = t.keep;
     return box;
   }
   // ===== end answer order =====
@@ -4165,31 +3903,28 @@
     var examArea = document.getElementById('examArea');
     examArea.innerHTML = '';
 
-    // Get translated text/answers/correctIndex for current language
+    // Texts for the CURRENT language, straight from the static bank.
     var qText = getQText(q);
     var qAnswers = getQAnswers(q);
-    var qCorrectIndex = getQCorrectIndex(q);
 
-    // Get or create shuffle order for this question
-    var answerOrder, shuffledAnswers, shuffledCorrectIndex;
-    if (shuffledOrders[currentIndex]) {
-      answerOrder = shuffledOrders[currentIndex].order;
-      shuffledAnswers = answerOrder.map(function(idx) { return qAnswers[idx]; });
-      shuffledCorrectIndex = answerOrder.indexOf(qCorrectIndex);
-      shuffledOrders[currentIndex].correctIdx = shuffledCorrectIndex;
-    } else {
-      answerOrder = shuffle(qAnswers.map(function(_, i) { return i; }));
-      shuffledAnswers = answerOrder.map(function(idx) { return qAnswers[idx]; });
-      shuffledCorrectIndex = answerOrder.indexOf(qCorrectIndex);
-      shuffledOrders[currentIndex] = { order: answerOrder, correctIdx: shuffledCorrectIndex };
-    }
+    // The answer order is the server's (fixed for the whole exam, applied to
+    // whichever language is displayed). correctIdx stays null — the client is
+    // never told which answer is right.
+    if (!shuffledOrders[currentIndex]) shuffledOrders[currentIndex] = { order: [0, 1, 2, 3], correctIdx: null };
+    var answerOrder = shuffledOrders[currentIndex].order;
+    var shuffledAnswers = answerOrder.map(function(idx) { return qAnswers[idx]; });
 
     // Previous answer for this question (if going back)
     var prevAnswer = userAnswers[currentIndex];
-    // 2026-09-20: an answer given under a different answer order is shown as it
-    // was seen (see sameAnswerOrder above); the examinee may answer again instead.
-    var frozenAnswers = !!(prevAnswer && prevAnswer.langAtAnswer && !sameAnswerOrder(prevAnswer.langAtAnswer, getExamLang()));
-    if (frozenAnswers) { shuffledAnswers = prevAnswer.shuffledAnswers; shuffledCorrectIndex = prevAnswer.shuffledCorrectIndex; }
+    // 2026-09-20: en/fr/es/ar each list a question's answers in their own order,
+    // so an answer given in another order group is SHOWN as it was seen. D11:
+    // the examinee may ask for the current-language list (reanswerAt), and until
+    // they actually pick an answer the old one stays recorded.
+    var curGroup = ANSWER_ORDER_GROUP[getExamLang()] || getExamLang();
+    var differentOrder = !!(prevAnswer && prevAnswer.langAtAnswer && !sameAnswerOrder(prevAnswer.langAtAnswer, getExamLang()));
+    var reanswering = differentOrder && reanswerAt[currentIndex] === curGroup;
+    var frozenAnswers = differentOrder && !reanswering;
+    if (frozenAnswers) shuffledAnswers = prevAnswer.a;
 
     // Timer
     var timerBar = document.createElement('div');
@@ -4269,6 +4004,11 @@
     card.className = 'question-audio-card';
     examArea.appendChild(card);
 
+    // The question is always in the current language; the ANSWERS may be frozen
+    // in the language they were answered in (both for display and for TTS).
+    var examLangNow = getExamLang();
+    var ansLang = frozenAnswers ? prevAnswer.langAtAnswer : examLangNow;
+
     var meta = document.createElement('div');
     meta.className = 'q-number';
     var metaNum = document.createElement('span');
@@ -4292,7 +4032,7 @@
       speakBtn.innerHTML = '&#x1F50A; \u05D4\u05E7\u05E8\u05D0 \u05E9\u05D0\u05DC\u05D4';
       speakBtn.addEventListener('click', function() {
         speakBtn.classList.add('speaking');
-        speakQuestionShuffled(qText, shuffledAnswers);
+        speakQuestionShuffled(qText, shuffledAnswers, examLangNow, ansLang);
         var check = setInterval(function() { if (!isSpeaking) { speakBtn.classList.remove('speaking'); clearInterval(check); } }, 300);
       });
       audioRow.appendChild(speakBtn);
@@ -4308,19 +4048,16 @@
     qTextEl.className = 'q-text';
     qTextEl.textContent = qText;
     // Set text direction for RTL languages (Arabic, Hebrew) vs LTR
-    var examLang = getExamLang();
-    var ansLang = frozenAnswers ? prevAnswer.langAtAnswer : examLang;   // the language the shown answers are in
-    if (examLang === 'ar') {
+    if (examLangNow === 'ar') {
       qTextEl.dir = 'rtl';
-    } else if (examLang !== 'he') {
+    } else if (examLangNow !== 'he') {
       qTextEl.dir = 'ltr';
       qTextEl.style.textAlign = 'left';
     }
     card.appendChild(qTextEl);
 
-    if (q.imageUrl && q.imageUrl.trim() !== '') {
-      card.appendChild(buildResilientImage(q.imageUrl));
-    }
+    var qImage = getQImage(q);
+    if (qImage) card.appendChild(buildResilientImage(qImage));
 
     // Answers
     var answerList = document.createElement('ul');
@@ -4338,7 +4075,7 @@
           listenBtn.className = 'listen-btn';
           listenBtn.addEventListener('click', function(e) {
             e.stopPropagation();
-            speak(getAnswerPrefix() + getAnswerLabelsForTTS()[idx] + '. ' + ans);
+            speak(getAnswerPrefix(ansLang) + getAnswerLabelsForTTS(ansLang)[idx] + '. ' + ans, null, ansLang);
           });
           li.appendChild(listenBtn);
         }
@@ -4347,8 +4084,9 @@
         btn.className = 'answer-audio-btn';
         btn.style.cssText = 'flex:1; min-width:0;';
 
-        // Highlight if this was previously selected
-        if (prevAnswer !== null && prevAnswer.chosenIndex === idx) {
+        // Highlight the previous choice — but NOT while answering again in a
+        // different order, where the same position is a different answer.
+        if (prevAnswer && !reanswering && prevAnswer.chosenIndex === idx) {
           btn.classList.add('selected');
         }
         if (frozenAnswers) btn.disabled = true;
@@ -4379,17 +4117,17 @@
 
           stopSpeaking();
 
-          // Save/update answer
-          var isCorrect = idx === shuffledCorrectIndex;
+          // The answer records WHAT WAS ON SCREEN: the question and the four
+          // answers in the order displayed, plus the language they were in. The
+          // submit payload is built from these, so the certificate shows exactly
+          // what the examinee saw — and the server scores from its own key.
           userAnswers[currentIndex] = {
-            question: q, chosenIndex: idx,
-            shuffledCorrectIndex: shuffledCorrectIndex,
-            shuffledAnswers: shuffledAnswers, isCorrect: isCorrect,
-            // Language active at moment of answer — used server-side to render
-            // wrongDetails text in the language the examinee actually saw for
-            // this specific question (may differ if they switched mid-exam).
-            langAtAnswer: getExamLang()
+            chosenIndex: idx,
+            langAtAnswer: examLangNow,
+            q: qText,
+            a: shuffledAnswers.slice()
           };
+          delete reanswerAt[currentIndex];   // a new choice replaces the old one (D11)
           saveActiveExam();
 
           // Update question map colors
@@ -4411,6 +4149,7 @@
       })(idx, shuffledAnswers[idx]);
     }
     if (frozenAnswers) card.appendChild(buildFrozenAnswerNotice());
+    else if (reanswering) card.appendChild(buildKeepPreviousNotice());
     card.appendChild(answerList);
 
     // Navigation buttons
@@ -4447,11 +4186,11 @@
     examArea.appendChild(navRow);
 
     // Auto-read if audio mode on (only for first visit to question)
-    if (sessionData.audioMode === 'on' && autoReadEnabled && prevAnswer === null) {
+    if (sessionData.audioMode === 'on' && autoReadEnabled && !prevAnswer) {
       setTimeout(function() {
         var sb = card.querySelector('.btn-speak');
         if (sb) sb.classList.add('speaking');
-        speakQuestionShuffled(qText, shuffledAnswers);
+        speakQuestionShuffled(qText, shuffledAnswers, examLangNow, ansLang);
         var check = setInterval(function() { if (!isSpeaking) { if (sb) sb.classList.remove('speaking'); clearInterval(check); } }, 300);
       }, 400);
     }
@@ -4541,67 +4280,25 @@
     examSubmitted = true;
     clearActiveExam();
 
-    var correctCount = 0;
-    var answeredCount = 0;
-    for (var k = 0; k < userAnswers.length; k++) {
-      if (userAnswers[k] !== null) {
-        answeredCount++;
-        if (userAnswers[k].isCorrect) correctCount++;
-      }
-    }
-    var pct = Math.round((correctCount / TOTAL_QUESTIONS) * 100);
-    var passed = correctCount >= PASS_SCORE;
+    var answeredCount = getAnsweredCount();
     var timeStr = getElapsedTimeStr();
 
-    // Build wrong answers data (use exam language for question text)
-    var wrongLabels = (getExamLang() === 'he') ? ANSWER_LABELS : ['A', 'B', 'C', 'D'];
-    var wrongData = [];
-    for (var w = 0; w < userAnswers.length; w++) {
-      if (userAnswers[w] === null) {
-        // Unanswered question = wrong
-        var uq = activeQuestions[w];
-        var so = shuffledOrders[w];
-        var uqAnswers = getQAnswers(uq);
-        var uqCorrectIdx = getQCorrectIndex(uq);
-        var translatedCorrect = uqAnswers[uqCorrectIdx];
-        wrongData.push({
-          questionId: uq && uq.id ? uq.id : '',
-          question: getQText(uq),
-          yourAnswer: '\u05DC\u05D0 \u05E0\u05E2\u05E0\u05EA\u05D4',
-          correctAnswer: so ? (wrongLabels[so.correctIdx] + ' - ' + translatedCorrect) : translatedCorrect,
-          category: classifyCategory(uq.category)
-        });
-      } else if (!userAnswers[w].isCorrect) {
-        var a = userAnswers[w];
-        wrongData.push({
-          questionId: a.question && a.question.id ? a.question.id : '',
-          question: getQText(a.question),
-          yourAnswer: wrongLabels[a.chosenIndex] + ' - ' + a.shuffledAnswers[a.chosenIndex],
-          correctAnswer: wrongLabels[a.shuffledCorrectIndex] + ' - ' + a.shuffledAnswers[a.shuffledCorrectIndex],
-          category: classifyCategory(a.question.category)
-        });
-      }
-    }
-
-    // Build raw answers array for server-side verification. Include the
-    // language active when each answer was given so the server can build the
-    // feedback certificate in the language the examinee actually saw per Q.
+    // The client no longer scores anything: it reports WHAT WAS ON SCREEN and
+    // the server scores from the מבחנים map and its own answer key. Every
+    // question is reported — an unanswered one with selected:-1 and the current
+    // language's texts — so the certificate never has to guess.
     var rawAnswers = [];
-    for (var ra = 0; ra < userAnswers.length; ra++) {
-      if (userAnswers[ra] !== null) {
-        rawAnswers.push({
-          qIdx: ra,
-          selected: userAnswers[ra].chosenIndex,
-          langAtAnswer: userAnswers[ra].langAtAnswer || getExamLang()
-        });
+    for (var ra = 0; ra < TOTAL_QUESTIONS; ra++) {
+      var given = userAnswers[ra];
+      if (given) {
+        rawAnswers.push({ qIdx: ra, selected: given.chosenIndex, langAtAnswer: given.langAtAnswer || getExamLang(),
+          q: given.q, a: given.a });
       } else {
-        // Stamp the language the examinee was last viewing (final exam language)
-        // on UNANSWERED questions too. Without it the server falls back to the
-        // REGISTRATION-language correct index while rendering the answer TEXT in
-        // the final language → the certificate shows a mismatched "correct answer"
-        // for skipped questions after a mid-exam language switch. Score is
-        // unaffected either way (unanswered is always wrong).
-        rawAnswers.push({ qIdx: ra, selected: -1, langAtAnswer: getExamLang() }); // unanswered
+        var order = (shuffledOrders[ra] && shuffledOrders[ra].order) || [0, 1, 2, 3];
+        var unansweredAnswers = getQAnswers(activeQuestions[ra]);
+        rawAnswers.push({ qIdx: ra, selected: -1, langAtAnswer: getExamLang(),
+          q: getQText(activeQuestions[ra]),
+          a: order.map(function(idx) { return unansweredAnswers[idx]; }) });
       }
     }
 
@@ -4623,10 +4320,10 @@
       // Full sequence of languages the examinee navigated through this exam.
       // Server formats it into the new "מסלול שפות" column (e.g. "he → ru → he").
       languageHistory: languageHistory.slice(),
-      score: correctCount,
+      // No score, no percent, no "passed": this client never receives the
+      // answer key, and an absent field is honest where a 0 would be a lie the
+      // server might fall back on.
       total: TOTAL_QUESTIONS,
-      percent: pct,
-      passed: passed,
       time: timeStr,
       examinerName: sessionData.examinerName || '',
       site: examineeData.site || sessionData.site || '',
@@ -4635,16 +4332,14 @@
       audioMode: sessionData.audioMode || 'off',
       device: getDeviceClass(),
       answers: rawAnswers,
-      // Layer-1 consolidation: send wrong-answers WITH the result, so it's one
-      // server call/write instead of a separate submitWrongAnswers POST. The
-      // server still rebuilds them itself when it can (serverWrong) and uses
-      // these only as the fallback — identical behaviour, half the executions.
-      wrongAnswers: wrongData
+      // The device's own trace of this exam (bounded to ~2 KB) — until now an
+      // exam-day incident had only the server's half of the story.
+      clientLog: ExamTransport.drainLog()
     };
 
     // Save result to localStorage BEFORE sending — safety net for network failures
     try {
-      persistPendingResult(payload, wrongData);
+      persistPendingResult(payload);
     } catch(e2) {}
 
     // Result is persisted locally but NOT yet on the server — arm the survival
@@ -4655,14 +4350,12 @@
     // the heavier (retried) result POST. On a weak connection this often lands even while
     // the full result is still syncing, so the examinee shows "סיים — מסנכרן" instead of
     // looking like they're still testing (which led an examiner to force a needless redo).
-    try {
-      var _mfBody = JSON.stringify({ action: 'markFinished', sessionCode: sessionCode, idNumber: examineeData.idNumber, examineeToken: examineeToken, origin: API_ORIGIN });
-      if (navigator.sendBeacon) navigator.sendBeacon(API_URL, new Blob([_mfBody], { type: 'application/json' }));
-      else apiPostNoWait({ action: 'markFinished', sessionCode: sessionCode, idNumber: examineeData.idNumber, examineeToken: examineeToken });
-    } catch(e) {}
+    var finishedPing = { action: 'markFinished', sessionCode: sessionCode, idNumber: examineeData.idNumber,
+      examineeToken: examineeToken, origin: API_ORIGIN };
+    if (!beaconToApi(finishedPing)) apiPostNoWait(finishedPing);
 
     showSubmitStatus('sending');
-    submitWithRetry(payload, 3, wrongData);
+    submitWithRetry(payload, 3);
 
     // Show done screen - NO score
     clearExamineeState();
@@ -4677,27 +4370,10 @@
     updatePendingStorageNotices();
   }
 
-  function sendWrongAnswers(wrongData, capturedIdNumber) {
-    if (!wrongData || wrongData.length === 0) return;
-    // Send ALL wrong answers in a single POST (no URL length limits)
-    var idToSend = capturedIdNumber || examineeData.idNumber;
-    console.log('[WRONG] Sending ' + wrongData.length + ' wrong answers via POST for ' + idToSend);
-    apiPost({
-      action: 'submitWrongAnswers',
-      sessionCode: sessionCode,
-      idNumber: idToSend,
-      wrongAnswers: wrongData
-    }).then(function() {
-      console.log('[WRONG] POST sent successfully');
-    }).catch(function(err) {
-      console.log('[WRONG] POST error:', err);
-    });
-  }
-
   // LOUD, visible failure banner on the done screen. Previously the failure
   // message went into a display:none debug div — so a result that never reached
   // the server still looked "submitted". Now the examinee/examiner cannot miss it.
-  function showSubmitFailureBanner(payload, wrongData, terminalMessage) {
+  function showSubmitFailureBanner(payload, terminalMessage) {
     var doneScreen = document.getElementById('screenDone');
     if (!doneScreen) return;
     var ssb = document.getElementById('submitStatusBanner');
@@ -4718,7 +4394,7 @@
     var rn = document.getElementById('submitRetryNowBtn');
     if (rn) rn.addEventListener('click', function() {
       b.innerHTML = '⏳ שולח…';
-      submitWithRetry(payload, 3, wrongData);
+      submitWithRetry(payload, 3);
     });
   }
   function clearSubmitFailureBanner() {
@@ -4874,7 +4550,6 @@
           if (!name || name.indexOf('pendingResult_') !== 0) continue;
           try {
             var value=JSON.parse(stores[s].getItem(name));
-            if(value&&!value.wrongAnswers){try{value.wrongAnswers=JSON.parse(stores[s].getItem('pendingWrongAnswers_'+name.substring('pendingResult_'.length))||'null');}catch(e){}}
             if(value&&value.action==='submitResult'&&value.idNumber&&!found[submitAttemptKey(value)]){
               try{if(stores[s]===sessionStorage)_pendingTabOnly[submitAttemptKey(value)]=true;}catch(e){}
             }
@@ -4911,7 +4586,7 @@
     }catch(e){}
   }
 
-  function persistPendingResult(payload, wrongData) {
+  function persistPendingResult(payload) {
     if (!payload.origin) payload.origin = API_ORIGIN;
     var key=submitAttemptKey(payload);
     // Write the new attempt directly. Never parse, move, or overwrite an older
@@ -4920,12 +4595,9 @@
     _volatilePendingResults[key]=payload;
     try {
       localStorage.setItem('pendingResult_'+suffix,JSON.stringify(payload));
-      // Wrong answers already travel inside the result. A redundant sidecar
-      // failure must not turn a successfully saved result into a failed save.
-      try {
-        if(wrongData&&wrongData.length)localStorage.setItem('pendingWrongAnswers_'+suffix,JSON.stringify(wrongData));
-        else localStorage.removeItem('pendingWrongAnswers_'+suffix);
-      } catch(e) {}
+      // A pre-r25 build kept the wrong answers in a sidecar key; the server
+      // builds the feedback itself now, so drop any leftover instead.
+      try { localStorage.removeItem('pendingWrongAnswers_'+suffix); } catch(e) {}
       delete _pendingMemoryOnly[key]; return true;
     } catch(e) {}
     try {
@@ -5039,7 +4711,7 @@
       (payload.examineeToken || '') === (examineeToken || '');
   }
 
-  function submitWithRetry(payload, retries, wrongData) {
+  function submitWithRetry(payload, retries) {
     var _sid = payload && payload.idNumber;
     if (!_sid) return;
     var key = submitAttemptKey(payload);
@@ -5049,7 +4721,7 @@
       if (_submitInFlight[_sid]) {
         // A newer attempt sharing this ID must still get a turn when the old
         // request settles; do not strand its locally saved result.
-        if (_submitInFlight[_sid] !== key) _submitFailedNext(payload, retries, wrongData);
+        if (_submitInFlight[_sid] !== key) _submitFailedNext(payload, retries);
         return;
       }
       _submitInFlight[_sid] = key;
@@ -5063,6 +4735,7 @@
       console.log('[SUBMIT] Response:', JSON.stringify(data));
       if (data && data.status === 'ok') {
         _submitCompleted[key] = true;
+        delete _submitSlowDelay[key];
         clearSubmitRetry(payload);
         if (isDisplayedResult(payload)) {
           clearSubmitFailureBanner();
@@ -5076,9 +4749,6 @@
           var notice = document.getElementById('pendingRecoveryNotice');
           if (notice && notice.parentNode) notice.parentNode.removeChild(notice);
         }
-        // Wrong-answers are now written WITH the result (sent in the payload),
-        // so no separate submitWrongAnswers call is needed. (sendWrongAnswers
-        // kept for backward-compat / manual recovery only.)
       } else if (data && data.examineeTokenError === 'mismatch') {
         // The server did NOT confirm persistence. Retain the evidence locally;
         // an examiner must reconcile it with the superseding registration.
@@ -5088,16 +4758,16 @@
         armPendingResultGuard();
         showPendingRecoveryNotice();
         if (isDisplayedResult(payload)) {
-          showSubmitFailureBanner(payload, wrongData, 'השרת לא אישר את התוצאה משום שההרשמה השתנתה. נדרשת בדיקת הבוחן.');
+          showSubmitFailureBanner(payload, 'השרת לא אישר את התוצאה משום שההרשמה השתנתה. נדרשת בדיקת הבוחן.');
         }
         console.log('[SUBMIT] Superseded attempt retained locally for examiner recovery.');
       } else {
-        _submitFailedNext(payload, retries, wrongData);
+        _submitFailedNext(payload, retries);
       }
     }).catch(function(err) {
       if (_sid) _submitInFlight[_sid] = false;
       console.log('[SUBMIT] Network error:', err);
-      _submitFailedNext(payload, retries, wrongData);
+      _submitFailedNext(payload, retries);
       });
     } catch (syncErr) {
       // apiPost threw synchronously (near-impossible for plain exam data) — release
@@ -5105,22 +4775,40 @@
       // to the normal retry/backoff. Nothing was sent, so the retry can't duplicate.
       if (_sid) _submitInFlight[_sid] = false;
       console.log('[SUBMIT] Synchronous send error:', syncErr);
-      _submitFailedNext(payload, retries, wrongData);
+      _submitFailedNext(payload, retries);
     }
   }
 
-  // Fast retries first (3s); once exhausted, surface the LOUD banner and keep
-  // retrying slowly (15s) until the server accepts it. The result is also kept in
-  // localStorage (renderExamDone) so a reload/auto-resend can recover it too.
-  function _submitFailedNext(payload, retries, wrongData) {
+  // D18. Fast retries first (3 s ×3), then a GROWING wait — 15 s ×1.5 up to a
+  // 120 s ceiling, jittered — instead of one POST every 15 s forever from every
+  // finishing device. While the backend is degraded the wait never drops below
+  // 30 s. The result stays in localStorage until the server confirms it and the
+  // banner offers a manual send, so slowing down never risks losing it.
+  var SUBMIT_FAST_RETRY_MS = 3000;
+  var SUBMIT_SLOW_BASE_MS = 15000;
+  var SUBMIT_SLOW_CEILING_MS = 120000;
+  var SUBMIT_DEGRADED_MIN_MS = 30000;
+  var _submitSlowDelay = {};
+
+  function submitRetryDelayMs(key, retries) {
+    if (retries > 1) return SUBMIT_FAST_RETRY_MS;
+    var next = _submitSlowDelay[key]
+      ? Math.min(Math.round(_submitSlowDelay[key] * 1.5), SUBMIT_SLOW_CEILING_MS)
+      : SUBMIT_SLOW_BASE_MS;
+    _submitSlowDelay[key] = next;
+    if (isBackendDegraded()) next = Math.max(next, SUBMIT_DEGRADED_MIN_MS);
+    return Math.min(ExamTransport.jitterMs(next), SUBMIT_SLOW_CEILING_MS);
+  }
+
+  function _submitFailedNext(payload, retries) {
     var key = submitAttemptKey(payload);
     if (_submitCompleted[key] || _submitBlocked[key]) return;
     clearSubmitRetry(payload);
-    if (retries <= 1 && isDisplayedResult(payload)) showSubmitFailureBanner(payload, wrongData);
+    if (retries <= 1 && isDisplayedResult(payload)) showSubmitFailureBanner(payload);
     _submitRetryTimers[key] = setTimeout(function() {
       delete _submitRetryTimers[key];
-      if (!_submitCompleted[key] && !_submitBlocked[key]) submitWithRetry(payload, retries > 1 ? retries - 1 : 1, wrongData);
-    }, retries > 1 ? 3000 : 15000);
+      if (!_submitCompleted[key] && !_submitBlocked[key]) submitWithRetry(payload, retries > 1 ? retries - 1 : 1);
+    }, submitRetryDelayMs(key, retries));
   }
 
   // Resend a single pending (unsent) result for an id, if one is stored locally.
@@ -5128,14 +4816,14 @@
   // is safe to call repeatedly. Used by the reset guard and on-load recovery.
   function flushPendingResult(idNumber) {
     var pending=pendingPayloads();
-    for(var i=0;i<pending.length;i++)if(pending[i].idNumber===idNumber){armPendingResultGuard();submitWithRetry(pending[i],3,pending[i].wrongAnswers||null);}
+    for(var i=0;i<pending.length;i++)if(pending[i].idNumber===idNumber){armPendingResultGuard();submitWithRetry(pending[i],3);}
   }
 
   function resendAllPendingResults() {
     var pending=pendingPayloads();
     updatePendingStorageNotices();
     if(pending.length)armPendingResultGuard();
-    for(var i=0;i<pending.length;i++)submitWithRetry(pending[i],3,pending[i].wrongAnswers||null);
+    for(var i=0;i<pending.length;i++)submitWithRetry(pending[i],3);
   }
 
   // ========== Auto-restore on page load ==========
@@ -5146,10 +4834,27 @@
   try { resendAllPendingResults(); } catch(e) {}
   var hasRestoredSession = false;
   (function() {
-    var saved = loadExamineeState();
-    if (!saved || !saved.sessionCode || !saved.sessionData) return;
+    var found = loadExamineeState();
+    if (!found || !found.state || !found.state.sessionCode || !found.state.sessionData) return;
+    var saved = found.state;
     hasRestoredSession = true;
+    // D20: a state written by THIS tab is unambiguous. One found in localStorage
+    // was written by another tab or another day — on a shared classroom device
+    // that is somebody else's identity, so it is adopted only after they say so.
+    if (found.fromLocal && saved.examineeData && saved.examineeData.idNumber) {
+      confirmRestoredExaminee(saved, function() { adoptRestoredState(saved); }, function() {
+        // "נבחן חדש": keep the session (not personal), drop the identity.
+        sessionCode = saved.sessionCode;
+        sessionData = saved.sessionData;
+        resetPollRoutes();
+        showScreen(sessionCode ? 'screenIdForm' : 'screenCode');
+      });
+      return;
+    }
+    adoptRestoredState(saved);
+  })();
 
+  function adoptRestoredState(saved) {
     // Restore state
     sessionCode = saved.sessionCode;
     sessionData = saved.sessionData;
@@ -5157,6 +4862,8 @@
     examineeToken = saved.examineeToken || '';
     // Ensure license is string (Google Sheets may return number for "1")
     if (sessionData.license) sessionData.license = String(sessionData.license);
+    resetPollRoutes();          // the restored session may carry a gateway url
+    saveExamineeState(saved.screen);   // this tab now owns the state
 
     // Recovery: if this examinee finished but their result never reached the
     // server (network blip / reload / device reused), resend it now that the
@@ -5199,37 +4906,13 @@
           }
         } catch(ex) {}
 
-        // Load translation if needed
-        var lang = examineeData.language || sessionData.language || 'he';
-        if (lang !== 'he') {
-          loadTranslationFile(lang, function() {
-            showScreen('screenExam');
-            setupBeforeUnload();
-            setupTabSwitchDetection();
-            setupSplitScreenDetection();
-            setupFullscreenEnforcement();
-            // Prevent back button during exam
-            history.pushState({ examActive: true }, '');
-            history.pushState({ examActive: true }, '');
-            window.addEventListener('popstate', onBackButton);
-            startResumedTimer();
-            startDevToolsTrap();
-            renderQuestion();
-          });
-        } else {
-          showScreen('screenExam');
-          setupBeforeUnload();
-          setupTabSwitchDetection();
-          setupSplitScreenDetection();
-          setupFullscreenEnforcement();
-          // Prevent back button during exam
-          history.pushState({ examActive: true }, '');
-          history.pushState({ examActive: true }, '');
-          window.addEventListener('popstate', onBackButton);
-          startResumedTimer();
-          startDevToolsTrap();
-          renderQuestion();
-        }
+        // The texts come from the bank, so a resumed exam waits for it (from the
+        // service-worker cache when the network is gone) before it draws.
+        showLoadingOverlay('טוען את המבחן…');
+        loadExamBanks(examineeData.language || sessionData.language || 'he').then(function() {
+          hideLoadingOverlay();
+          resumeExamUI();
+        });
         return; // done restoring
       } else {
         // Exam time expired during refresh — end it
@@ -5304,11 +4987,8 @@
       // immediately return the stale 'rejected' status and the user is stuck
       // on "הבוחן דחה את הכניסה" with no way to recover except clearing
       // browser storage. Real exam-day incident.
-      apiGet({
-        action: 'checkApproval',
-        sessionCode: sessionCode,
-        idNumber: examineeData.idNumber
-      }).then(function(resp) {
+      loadExamBanks(examineeData.language || sessionData.language || 'he');
+      approvalPollCall().then(function(resp) {
         var st = (resp && resp.approval) || '';
         if (st === 'waiting' || st === 'approved' || st === 'in_exam') {
           showScreen('screenInstructions');
@@ -5333,7 +5013,25 @@
       showScreen('screenIdForm');
     }
     // Note: we don't restore into exam — that would be cheating-prone
-  })();
+  }
+
+  // Re-arm the exam screen after a reload or a DQ overturn: same listeners, same
+  // clock, same questions — only the rendering is rebuilt.
+  function resumeExamUI() {
+    showScreen('screenExam');
+    setupBeforeUnload();
+    setupTabSwitchDetection();
+    setupSplitScreenDetection();
+    setupFullscreenEnforcement();
+    // Prevent back button during exam
+    history.pushState({ examActive: true }, '');
+    history.pushState({ examActive: true }, '');
+    window.addEventListener('popstate', onBackButton);
+    startResumedTimer();
+    startDevToolsTrap();
+    saveActiveExam();
+    renderQuestion();
+  }
 
   // ========== Auto-retry pending results on page load ==========
   // Only retry if there's no active session for a DIFFERENT examinee
@@ -5371,12 +5069,7 @@
             debugEl.innerHTML = '\u23F3 \u05E9\u05D5\u05DC\u05D7 \u05EA\u05D5\u05E6\u05D0\u05D4 \u05E9\u05E0\u05E9\u05DE\u05E8\u05D4 \u05DE\u05E0\u05D9\u05E1\u05D9\u05D5\u05DF \u05E7\u05D5\u05D3\u05DD...';
           }
           // Retry submission (silently if different examinee)
-          var savedWrong = null;
-          try {
-            var wrongStr = localStorage.getItem('pendingWrongAnswers_' + pending.idNumber);
-            if (wrongStr) savedWrong = JSON.parse(wrongStr);
-          } catch(ew) {}
-          submitWithRetry(pending, 3, savedWrong);
+          submitWithRetry(pending, 3);
           return; // handle one at a time
         }
       }
@@ -5403,46 +5096,26 @@
   }
 
   // ===== Auto-update: reload to the latest deployed version when idle =====
-  // The service worker is now network-first, so any reload fetches the newest
-  // examinee.html. Here we TRIGGER that reload automatically when a new version
-  // is deployed — but ONLY while idle (never mid-exam or while a submit is still
-  // pending). Deploys are detected by polling our own page's ETag/Last-Modified
-  // (HEAD bypasses the SW since it isn't a GET). Zero maintenance — no version
-  // file to bump.
-  (function() {
-    if (!window.fetch) return;
-    var baseTag = null, pendingTag = null;
-    // 16/09/2026 (see examiner.html): one build is served as "x-y" OR W/"x-y" and
-    // error/proxy responses carry their own tags -- compare the normalised ETag of a 200 only.
-    var tagOf = function(r) {
-      if (!r || !r.ok) return null;
-      var e = r.headers.get('ETag');
-      return e ? String(e).replace(/^W\//, '').replace(/"/g, '').trim() || null : null;
-    };
-    var probe = function(cb) {
-      fetch(location.pathname, { method: 'HEAD', cache: 'no-store' })
-        .then(function(r) { cb(tagOf(r)); }).catch(function() { cb(null); });
-    };
-    probe(function(t) { baseTag = t; });
-    setInterval(function() {
-      probe(function(t) {
-        if (!t) return;                                   // no trustworthy answer
-        if (!baseTag) { baseTag = t; return; }            // first good answer is the base
-        if (t === baseTag) { pendingTag = null; return; } // same build
-        if (pendingTag !== t) { pendingTag = t; return; } // a real deploy is still there next poll
-        if (examInProgress || examSubmitted) return;    // never disrupt an exam / pending submit
-        // Also never reload a REGISTERED examinee — waiting for approval, or
-        // approved and about to press start. The reload survived the exam but
-        // bounced these two states back through the restore path: registration
-        // form → "כבר רשום" → waiting, with a failed in-flight call showing as
-        // a communication error. Reported during the 2026-07-28 deploy.
-        // idNumber is empty on the code screen and after resetForNextExaminee,
-        // which are the genuinely idle moments a reload belongs in.
-        if (examineeData && examineeData.idNumber) return;
+  // version.json carries a CONTENT HASH per page, so a Pages push that did not
+  // change examinee.html shows nothing. The old ETag poll could not tell one
+  // build's two spellings apart and every push re-stamped every file — on
+  // 16/09/2026 that reloaded waiting examinees back to the login screen. The
+  // examinee never sees a banner: the page reloads itself only while it is
+  // genuinely idle, and otherwise waits for an idle moment.
+  ExamTransport.createUpdateCheck({
+    page: 'examinee.html',
+    intervalMs: 120000,
+    onNewVersion: function() {
+      var reloadWhenIdle = function() {
+        var busy = examInProgress || examSubmitted ||
+          !!(examineeData && examineeData.idNumber) ||   // registered: waiting, or about to start
+          hasAnyPendingResult();
+        if (busy) { setTimeout(reloadWhenIdle, 60000); return; }
         location.reload();
-      });
-    }, 120000);  // check every 2 min
-  })();
+      };
+      reloadWhenIdle();
+    }
+  }).start();
 
 })();
 </script>

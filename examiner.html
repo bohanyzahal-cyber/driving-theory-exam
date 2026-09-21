@@ -516,8 +516,6 @@
         <div class="stat-item"><div class="stat-val" id="statRate" style="color:#60a5fa;">0%</div><div class="stat-lbl">אחוז הצלחה</div></div>
       </div>
       <div class="bulk-actions" id="bulkActions" style="display:none;">
-        <!-- מוסתר זמנית לבקשת המשתמש (מבלבל מול שאר כפתורי הדו"חות). להחזרה: הסר את display:none מהסגנון של הכפתור הבא. -->
-        <button class="wa-btn" style="padding:8px 16px; font-size:14px; display:none;" onclick="sendBulkToManager()">שלח סיכום למנהל אתר</button>
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#1a73e8;" onclick="sendToAllExaminees()">📱 שלח WhatsApp לכל הנבחנים</button>
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#1a5276;" onclick="generateExaminerReport()">&#x1f4cb; דו"ח בוחן</button>
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#6d28d9;" onclick="shareExaminerReport()">&#x1f4e4; שתף דו"ח בוחן</button>
@@ -933,6 +931,8 @@
 <!-- Notification sound (base64 short beep) -->
 <audio id="notifSound" preload="auto" src="data:audio/wav;base64,UklGRlQGAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YTAGAACAgICAgICAgICAfn18e3p5eHd3d3h5ent8fX5/gIGCg4SFhoeIiImJiYmIh4aFhIOCgYB/fn18e3p5eHd3d3h5ent8fX5/gIGCg4SFhoeIiImJiYmIh4aFhIOCgYB/fn18e3p5eA=="></audio>
 
+<script src="shared/transport.js"></script>
+<script src="shared/bank.js"></script>
 <script>
 (function() {
   'use strict';
@@ -1008,7 +1008,6 @@
   var prevPendingIds = {};
   var prevDqCounts = {}; // idNumber → known DQ count; used to detect new DQ events
   var completedResults = [];
-  var phoneOverrides = {}; // idNumber → corrected phone
   var timeExtOverrides = {}; // idNumber → selected time extension value
   var audioOverrides = {};   // idNumber → 'on'/'off' chosen by the examiner, not yet approved
   var userRole = 'בוחן';
@@ -1021,6 +1020,10 @@
   function isKdtzRole(r) {
     return /^\s*מפקד\s+קד[\s׳״'"]*ץ\s*$/.test(String(r || ''));
   }
+
+  // Rows the SYSTEM wrote on the examinee's behalf (no score to verify). The
+  // server stamps one of these into \u05e4\u05d9\u05e8\u05d5\u05d8 \u05e9\u05d2\u05d5\u05d9\u05d5\u05ea when it fabricates a fail.
+  var FABRICATED_FAIL_MARKERS = /\u05e1\u05d2\u05d9\u05e8\u05ea \u05d3\u05e4\u05d3\u05e4\u05df|\u05d8\u05d9\u05d9\u05de\u05d0\u05d0\u05d5\u05d8|\u05e1\u05d9\u05d5\u05dd \u05d9\u05d3\u05e0\u05d9/;
 
   // ========== Session persistence ==========
   function saveState() {
@@ -1092,116 +1095,128 @@
   }
 
   // ========== API Helper ==========
-  var API_TIMEOUT_MS = 30000;
-  // Bound the complete response, including its body. A stalled body must not
-  // hold a dashboard poll or an examiner action indefinitely. Reject even on
-  // older browsers without AbortController; abort the transport when possible.
-  function fetchJsonWithTimeout(url, opts, timeoutMs) {
-    opts = opts || {};
-    return new Promise(function(resolve, reject) {
-      var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-      if (controller) opts.signal = controller.signal;
-      var settled = false;
-      var timer = setTimeout(function() {
-        var err = new Error('Request timed out');
-        err.name = 'TimeoutError';
-        finish(err);
-        if (controller) { try { controller.abort(); } catch(e) {} }
-      }, timeoutMs || API_TIMEOUT_MS);
-      function finish(err, data) {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        if (err) reject(err); else resolve(data);
-      }
-      Promise.resolve().then(function() { return fetch(url, opts); }).then(function(response) {
-        return response.text().then(function(body) {
-          if (!response.ok) {
-            var httpErr = new Error('HTTP ' + response.status);
-            httpErr.name = 'HttpError'; httpErr.transport = 'http'; httpErr.status = response.status;
-            throw httpErr;
-          }
-          try { return JSON.parse(body); }
-          catch (parseErr) {
-            var jsonErr = new Error('Non-JSON response');
-            jsonErr.name = 'SyntaxError'; jsonErr.transport = 'nonjson'; jsonErr.bodyHead = String(body || '').slice(0, 120);
-            throw jsonErr;
-          }
-        });
-      }).then(function(data) { noteTransport(null); finish(null, data); }, function(err) { noteTransport(err); finish(err); });
+  // Everything transport-shaped now lives in shared/transport.js (one copy for
+  // examinee / examiner / teacher / student / exam). These are the page's thin
+  // wrappers: same names, same signatures, same call sites.
+  var API_TIMEOUT_MS = ExamTransport.API_TIMEOUT_MS;        // 30s - an examiner is waiting
+  var POLL_TIMEOUT_MS = ExamTransport.POLL_TIMEOUT_MS;      // 60s - unattended polls
+  var HEAVY_REPORT_TIMEOUT_MS = 90000;                      // combined/commander reports: measured 18-81s
+  var fetchJsonWithTimeout = ExamTransport.fetchJsonWithTimeout;
+  var isBackendDegraded = ExamTransport.isBackendDegraded;
+
+  // ===== D1: an unattended poll NEVER logs anybody out =====
+  // 16/09/2026, reproduced in the harness: ONE answer carrying tokenExpired -
+  // from the 5 s dashboard poll, unattended - fired a blocking alert(), called
+  // logout(), stopped the polling, cleared the session and deleted
+  // 'ext_examiner_remember'. Server-side a token can disappear without having
+  // expired (5-token cap + an unlocked read-modify-write on concurrent logins),
+  // so one such answer is a rumour, not a fact.
+  //
+  // The rule now:
+  //   * the FIRST tokenExpired in a session asks verifyLogin for a second opinion,
+  //     and the polls keep running while it does;
+  //   * only a verifyLogin that ALSO says tokenExpired - or a second consecutive
+  //     tokenExpired from the same family of actions - confirms it;
+  //   * confirmed means an in-page banner with a button (never alert(), which
+  //     freezes timers and is unreliable on iOS Safari), the session code stays
+  //     on screen, and only then is remember-me deleted.
+  var tokenExpiry = { strikes: {}, reverifying: false, confirmed: false };
+  function tokenFamily(action) {
+    // The poll is its own family: two strikes there are two unattended answers
+    // in a row, which is exactly the evidence we want before believing it.
+    if (action === 'examinerDashboard') return 'poll';
+    return 'action';
+  }
+  function resetTokenExpiry() { tokenExpiry = { strikes: {}, reverifying: false, confirmed: false }; }
+  function noteTokenOk(action) {
+    if (tokenExpiry.confirmed) return;
+    tokenExpiry.strikes[tokenFamily(action)] = 0;
+  }
+  function noteTokenExpired(action) {
+    if (tokenExpiry.confirmed) return;
+    var fam = tokenFamily(action);
+    tokenExpiry.strikes[fam] = (tokenExpiry.strikes[fam] || 0) + 1;
+    ExamTransport.log('tokenExpired', action + ' x' + tokenExpiry.strikes[fam]);
+    if (tokenExpiry.strikes[fam] >= 2) { confirmTokenExpired(); return; }
+    if (tokenExpiry.reverifying) return;
+    tokenExpiry.reverifying = true;
+    // Second opinion. verifyLogin is excluded from this machinery itself, so a
+    // failure here can never recurse.
+    apiGet({ action: 'verifyLogin', examinerId: examinerData && examinerData.id, token: examinerToken })
+      .then(function(data) {
+        tokenExpiry.reverifying = false;
+        if (data && data.tokenExpired === true) { confirmTokenExpired(); return; }
+        if (data && data.status === 'ok') resetTokenExpiry();   // it was a rumour
+      })
+      .catch(function() { tokenExpiry.reverifying = false; });  // transport trouble proves nothing
+  }
+  function confirmTokenExpired() {
+    if (tokenExpiry.confirmed) return;
+    tokenExpiry.confirmed = true;
+    stopDashboardPolling();                       // stop asking with a token we know is dead
+    try { localStorage.removeItem('ext_examiner_remember'); } catch(e) {}
+    showReauthBanner();
+  }
+  function showReauthBanner() {
+    if (document.getElementById('reauthBanner')) return;
+    var b = document.createElement('div');
+    b.id = 'reauthBanner';
+    b.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;background:#b91c1c;color:#fff;padding:12px 16px;text-align:center;font-size:15px;font-weight:700;box-shadow:0 -2px 10px rgba(0,0,0,.25);';
+    var msg = document.createElement('span');
+    msg.textContent = '\u05e4\u05d2 \u05ea\u05d5\u05e7\u05e3 \u05d4\u05d4\u05ea\u05d7\u05d1\u05e8\u05d5\u05ea \u2014 \u05d4\u05ea\u05d7\u05d1\u05e8 \u05de\u05d7\u05d3\u05e9';
+    b.appendChild(msg);
+    var btn = document.createElement('button');
+    btn.id = 'reauthBtn';
+    btn.textContent = '\u05d4\u05ea\u05d7\u05d1\u05e8 \u05de\u05d7\u05d3\u05e9';
+    btn.style.cssText = 'margin-right:12px;padding:6px 16px;font-weight:800;background:#fff;color:#b91c1c;border:none;border-radius:8px;cursor:pointer;';
+    btn.addEventListener('click', function() {
+      // The session is NOT cleared: the code stays in sessionStorage and on the
+      // dashboard, so re-logging in returns the examiner to the same session.
+      var banner = document.getElementById('reauthBanner');
+      if (banner && banner.parentNode) banner.parentNode.removeChild(banner);
+      showScreen('screenLogin');
     });
+    b.appendChild(btn);
+    document.body.appendChild(b);
   }
 
-  // ===== Transport health (2026-09-18 review, action 2) =====
-  // Our server always answers HTTP 200 with JSON. Anything else — Google's own
-  // HTML error page (a SyntaxError once parsed), a 404/429/5xx from its front
-  // door — means the BACKEND is degraded, not this device's network. Such an
-  // answer is never a "new version" (the update check already ignores non-200)
-  // and never "session expired" (only our JSON carries tokenExpired); and the
-  // whole fleet must slow down instead of re-asking at full speed — the 16/09
-  // storms that reached 119 concurrent executions were the fleet reacting to
-  // failures by retrying and reloading together. Timeouts and network errors
-  // leave the state alone: one ~93 s hang looks exactly like no network.
-  var transportState = 'ok';   // 'ok' | 'degraded' — the last classified answer
-  var transportDegradedSince = 0;
-  function noteTransport(err) {
-    if (!err) { transportState = 'ok'; transportDegradedSince = 0; return; }
-    if (err.transport === 'http' || err.transport === 'nonjson') {
-      if (transportState !== 'degraded') transportDegradedSince = Date.now();
-      transportState = 'degraded';
+  var api = ExamTransport.createApi({
+    apiUrl: API_URL,
+    origin: API_ORIGIN,
+    decorate: function(params) {
+      if (examinerToken && examinerData && !params.token && params.action !== 'login' && params.action !== 'verifyLogin') {
+        params.token = examinerToken;
+        if (!params.examinerId) params.examinerId = examinerData.id;
+      }
+      return params;
     }
-  }
-  function isBackendDegraded() { return transportState === 'degraded'; }
-  // ===== end transport health =====
+  });
 
-  // timeoutMs is forwarded, not ignored. It used to be missing here while the
-  // commander-dashboard call already passed `90000` as a second argument — so
-  // JavaScript dropped it silently and every request kept the 30s default. The
-  // report was measured finishing server-side in 22-65s, meaning anything but
-  // the very cheapest daily window was shown to the commander as
-  // "שגיאת תקשורת: Request timed out" while the server had actually answered.
-  // Aborting the fetch never stops the Apps Script execution, so a longer
-  // deadline costs the server nothing — it only decides whether we keep the
-  // answer we already paid for. examinee.html has always had this parameter.
+  // timeoutMs is forwarded, not ignored (it used to be dropped silently, which
+  // is how the commander dashboard's 90 s became 30 s and a report that HAD
+  // answered was shown as "\u05e9\u05d2\u05d9\u05d0\u05ea \u05ea\u05e7\u05e9\u05d5\u05e8\u05ea"). Aborting a fetch never stops the
+  // Apps Script run, so a longer deadline costs the server nothing - it only
+  // decides whether we keep the answer we already paid for.
   function apiGet(params, timeoutMs) {
-    // Auto-attach token and examinerId for authenticated requests (skip for login/verifyLogin)
-    if (examinerToken && examinerData && !params.token && params.action !== 'login' && params.action !== 'verifyLogin') {
-      params.token = examinerToken;
-      if (!params.examinerId) params.examinerId = examinerData.id;
-    }
-    if (!params.origin) params.origin = API_ORIGIN;
-    var qs = [];
-    for (var k in params) {
-      if (params.hasOwnProperty(k)) qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
-    }
-    qs.push('_t=' + Date.now());
-    return fetchJsonWithTimeout(API_URL + '?' + qs.join('&'), { cache: 'no-store' }, timeoutMs).then(function(data) {
-      if (data && data.tokenExpired && params.action !== 'login') {
-        alert('פג תוקף ההתחברות — יש להתחבר מחדש');
-        logout();
+    params = params || {};
+    return api.get(params, timeoutMs || API_TIMEOUT_MS).then(function(data) {
+      if (params.action !== 'login' && params.action !== 'verifyLogin') {
+        if (data && data.tokenExpired === true) noteTokenExpired(params.action);
+        else if (data && data.status === 'ok') noteTokenOk(params.action);
       }
       return data;
     });
   }
 
-  // Same signature as apiGet on purpose — no call site passes a timeout today,
-  // so this changes nothing now; it exists so the next one that does is not
-  // silently dropped the way the commander dashboard's 90s was.
   function apiPost(data, timeoutMs) {
     var payload = data || {};
-    if (!payload.origin) payload.origin = API_ORIGIN;
-    // Auto-attach examiner credentials (mirror of apiGet behaviour) so any
-    // POST action that needs server-side auth gets it without each call site
-    // having to remember.
-    if (examinerToken && examinerData && !payload.token && payload.action !== 'login' && payload.action !== 'verifyLogin') {
-      payload.token = examinerToken;
-      if (!payload.examinerId) payload.examinerId = examinerData.id;
-    }
-    return fetchJsonWithTimeout(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify(payload)
-    }, timeoutMs);
+    return api.post(payload, timeoutMs || API_TIMEOUT_MS).then(function(resp) {
+      if (payload.action !== 'login' && payload.action !== 'verifyLogin') {
+        if (resp && resp.tokenExpired === true) noteTokenExpired(payload.action);
+        else if (resp && resp.status === 'ok') noteTokenOk(payload.action);
+      }
+      return resp;
+    });
   }
 
   // Upload result HTML to the exam-results Cloudflare Worker.
@@ -1245,6 +1260,9 @@
         examinerData = data.examiner;
         examinerToken = examinerData.token || '';
         userRole = examinerData.role || 'בוחן';
+        resetTokenExpiry();
+        var reauthOld = document.getElementById('reauthBanner');
+        if (reauthOld && reauthOld.parentNode) reauthOld.parentNode.removeChild(reauthOld);
         // Save token for "remember me" (not password)
         if (document.getElementById('rememberMe').checked) {
           try { localStorage.setItem('ext_examiner_remember', JSON.stringify({ id: id, token: examinerToken })); } catch(e) {}
@@ -1289,6 +1307,9 @@
 
   window.logout = function() {
     stopDashboardPolling();
+    resetTokenExpiry();
+    var reauth = document.getElementById('reauthBanner');
+    if (reauth && reauth.parentNode) reauth.parentNode.removeChild(reauth);
     clearState();
     try { localStorage.removeItem('ext_examiner_remember'); } catch(e) {}
     examinerData = null; examinerToken = ''; sessionCode = ''; userRole = 'בוחן'; cmdData = null;
@@ -1944,110 +1965,91 @@
     if (bcBtn) bcBtn.style.display = (examinerData && examinerData.role === 'מפקד') ? '' : 'none';
   }
 
-  // ===== Poll pacing (shared by every poll loop) =====
-  // 2026-09-18 review of the 15-17/09 exam days, action 1. Pacing only —
-  // nothing here changes what a poll does with its answer.
-  //  1. jitter: every scheduled wait is multiplied by a random factor in
-  //     [1-POLL_JITTER, 1+POLL_JITTER]. The poll loops had no randomness at
-  //     all, so a fleet released by one server stall (two executions ended
-  //     47 ms apart on 17/09) re-arrived at the server as one burst.
-  //  2. gradual recovery: a slow or failed answer still grows the wait ×1.5
-  //     up to the max, but a healthy answer now steps it DOWN by the same
-  //     factor instead of snapping the whole fleet back to base at once.
-  //  3. poll deadline 60 s (the API default stays 30 s for actions the examiner triggers by hand).
-  //     Aborting a fetch never stops the Apps Script execution: a poll
-  //     abandoned at 30 s left an orphan running for another minute while
-  //     this device already asked again. Every fleet-wide slow state measured
-  //     in the Executions log (17/09 08:41 and 12:01, 16/09 10:57) stayed
-  //     under 60 s, so a merely slow answer is now kept; an isolated ~93 s
-  //     hang of one execution is still abandoned and re-asked at 60 s.
-  var POLL_JITTER = 0.3;
-  var POLL_BACKOFF_FACTOR = 1.5;
-  var POLL_TIMEOUT_MS = 60000;
-  function jitterMs(ms) {
-    return Math.round(ms * (1 - POLL_JITTER + 2 * POLL_JITTER * Math.random()));
-  }
-  // worse = the last answer was slow or failed. Up: ×factor, capped at maxMs.
-  // Down: ÷factor, never below baseMs — one step per healthy answer.
-  function nextPollDelay(currentMs, baseMs, maxMs, worse) {
-    if (worse) return Math.min(Math.round(currentMs * POLL_BACKOFF_FACTOR), maxMs);
-    return Math.max(baseMs, Math.round(currentMs / POLL_BACKOFF_FACTOR));
-  }
-  // Degraded backend (see isBackendDegraded): the fleet polls every 30-60 s,
-  // jittered, until a JSON answer comes back, then steps down as usual.
-  var POLL_DEGRADED_MIN_MS = 30000;
-  var POLL_DEGRADED_MAX_MS = 60000;
-  function pacePoll(currentMs, baseMs, maxMs, worse) {
-    if (isBackendDegraded()) {
-      var slowed = nextPollDelay(currentMs, baseMs, POLL_DEGRADED_MAX_MS, worse);
-      return Math.min(Math.max(slowed, POLL_DEGRADED_MIN_MS), POLL_DEGRADED_MAX_MS);
-    }
-    return nextPollDelay(currentMs, baseMs, maxMs, worse);
-  }
-  // ===== end poll pacing =====
+  // ===== Poll pacing =====
+  // Lives in shared/transport.js now (jitter, x1.5 backoff, one step down per
+  // healthy answer, a 30-60 s floor while the backend is degraded, and the 60 s
+  // poll deadline). Nothing page-specific remains.
 
-  // ===== Adaptive dashboard polling =====
-  // 2026-08-26 saturation: every open examiner dashboard hit the server each 5s
-  // all day. Base is 8s now; while the server answers slowly (queuing) or fails,
-  // the NEXT wait grows ×1.5 up to 20s so dashboards ease off instead of
-  // deepening the spiral; a healthy answer steps back down one ×1.5 at a time
-  // (2026-09-18: the old snap-back re-synchronised the whole fleet; the poll
-  // pacing block above adds that, the jitter and the 60s poll deadline). Pacing only —
-  // pollDashboard itself, failedPolls and the offline banner are unchanged, and
-  // manual pollDashboard() calls (right after approve/reject etc.) still fire
-  // immediately without touching this chain. dashboardInterval now holds a
-  // setTimeout id; clearInterval() clears those too, so stopDashboardPolling
-  // keeps working unchanged.
+  // ===== Dashboard polling =====
+  // 2026-08-26 saturation: every open dashboard hit the server every 5 s all
+  // day. The chain is answer -> wait -> ask again (never a fixed interval), the
+  // wait grows x1.5 up to 20 s while the server is slow or failing and steps
+  // back down one factor per healthy answer, and it is jittered so a fleet
+  // released together does not re-arrive together. All of that is the shared
+  // createPollLoop now; what stays here is the cadence policy.
   var DASH_POLL_BASE_MS = 5000;  // r6: back to 5s (was 8s while cache reads were failing server-side)
   var DASH_POLL_MAX_MS = 20000;
-  // While an examinee's device reports "finished, syncing" the result is known
-  // to be seconds away, so the dashboard closes the gap instead of waiting out
-  // a full 5s tick: measured 2026-09-15, a result took ~20s to appear (submit
-  // ~2s + up to 5s until the next tick + a 8-10s dashboard request). The fast
-  // cadence is bounded two ways: it never applies when the server is slow or
-  // failing (the backoff branch wins), and a result still not landed after
-  // DASH_SYNC_FAST_WINDOW_MS falls back to the normal tick, so one stuck
-  // "syncing" row cannot pin the dashboard at 2s for the rest of the session.
+  // While a device reports "finished, syncing" the result is seconds away, so
+  // the dashboard closes the gap instead of waiting out a full 5 s tick
+  // (measured 15/09: submit ~2 s + up to 5 s until the next tick + an 8-10 s
+  // request). Bounded two ways: never while the server is slow or failing (the
+  // backoff wins), and a result still not landed after DASH_SYNC_FAST_WINDOW_MS
+  // falls back to the normal tick, so one stuck row cannot pin it at 2 s.
   var DASH_POLL_SYNC_MS = 2000;
   var DASH_SYNC_FAST_WINDOW_MS = 30000;
   var dashSyncSince = 0;  // ms timestamp the current syncing stretch began; 0 = nobody syncing
-  var dashPollDelayMs = DASH_POLL_BASE_MS;
-  var dashPollGen = 0;  // stop/restart double-chain guard
+  var dashPollGen = 0;    // stop/restart double-chain guard
+  var dashPollDelayMs = DASH_POLL_BASE_MS;   // the wait actually chosen for the next tick
   var dashboardRequest = null;
-  function dashboardPollTick() {
-    var myGen = dashPollGen;
-    var t0 = Date.now();
-    var p = pollDashboard();
-    var reschedule = function() {
-      if (dashboardInterval === null || myGen !== dashPollGen) return;  // stopped/restarted meanwhile
-      var slow = (Date.now() - t0) > 6000;
-      var syncingNow = dashSyncSince && (Date.now() - dashSyncSince) < DASH_SYNC_FAST_WINDOW_MS;
-      if (slow || failedPolls > 0) {
-        dashPollDelayMs = pacePoll(dashPollDelayMs, DASH_POLL_BASE_MS, DASH_POLL_MAX_MS, true);
-      } else if (dashPollDelayMs > DASH_POLL_BASE_MS) {
-        // still coming down from a backoff: one step per healthy answer
-        dashPollDelayMs = pacePoll(dashPollDelayMs, DASH_POLL_BASE_MS, DASH_POLL_MAX_MS, false);
-      } else {
-        dashPollDelayMs = syncingNow ? DASH_POLL_SYNC_MS : DASH_POLL_BASE_MS;
+
+  // The loop itself is the shared one: answer -> wait -> ask again, never two
+  // chains, never a second request on top of a live one.
+  var dashboardLoop = ExamTransport.createPollLoop({
+    name: 'examinerDashboard',
+    baseMs: DASH_POLL_BASE_MS,
+    maxMs: DASH_POLL_MAX_MS,
+    tick: function() { return pollDashboard(); },
+    nextDelay: function(info, paced) {
+      // Only when the backend is healthy AND we are already back at base may the
+      // sync cadence pull the next tick in: a struggling server always wins.
+      var chosen = paced;
+      if (!(info.slow || info.failed || failedPolls > 0) && paced <= DASH_POLL_BASE_MS) {
+        var syncingNow = dashSyncSince && (Date.now() - dashSyncSince) < DASH_SYNC_FAST_WINDOW_MS;
+        chosen = syncingNow ? DASH_POLL_SYNC_MS : DASH_POLL_BASE_MS;
       }
-      dashboardInterval = setTimeout(dashboardPollTick, jitterMs(dashPollDelayMs));
-    };
-    if (p && typeof p.then === 'function') { p.then(reschedule, reschedule); } else { reschedule(); }
-  }
+      dashPollDelayMs = chosen;
+      return chosen;
+    }
+  });
 
   function startDashboardPolling() {
-    if (dashboardInterval !== null) clearTimeout(dashboardInterval);
     dashPollGen++;
-    dashPollDelayMs = DASH_POLL_BASE_MS;
-    dashboardInterval = -1;
-    dashboardPollTick(); // first check immediately; next waits for completion
+    dashboardInterval = -1;          // "polling is on" for the legacy checks below
+    dashboardLoop.start();           // first check immediately; next waits for completion
   }
 
   function stopDashboardPolling() {
     dashPollGen++;
-    if (dashboardInterval) { clearInterval(dashboardInterval); dashboardInterval = null; }
+    dashboardLoop.stop();
+    dashboardInterval = null;
     if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null; }
   }
+
+  // ===== toast =====
+  // A native alert() stops every timer in the page until somebody taps OK - and
+  // on iOS Safari it also fires blur and can be suppressed entirely. An answer
+  // that arrives while the examiner is looking at another row must never be
+  // able to freeze the dashboard, so the dashboard reports through this instead.
+  // confirm() stays where a destructive click genuinely needs a yes.
+  function showToast(message, kind) {
+    var host = document.getElementById('examinerToasts');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'examinerToasts';
+      host.style.cssText = 'position:fixed;left:50%;transform:translateX(-50%);bottom:18px;z-index:99997;display:flex;flex-direction:column;gap:8px;max-width:92vw;';
+      document.body.appendChild(host);
+    }
+    var bg = kind === 'error' ? '#b91c1c' : (kind === 'warn' ? '#b45309' : '#15803d');
+    var t = document.createElement('div');
+    t.className = 'examiner-toast';
+    t.style.cssText = 'background:' + bg + ';color:#fff;padding:11px 16px;border-radius:10px;font-size:14px;font-weight:700;box-shadow:0 4px 14px rgba(0,0,0,.25);text-align:center;white-space:pre-line;cursor:pointer;';
+    t.textContent = message;
+    t.addEventListener('click', function() { if (t.parentNode) t.parentNode.removeChild(t); });
+    host.appendChild(t);
+    setTimeout(function() { if (t.parentNode) t.parentNode.removeChild(t); }, kind === 'error' ? 9000 : 6000);
+    return t;
+  }
+  function toastError(message) { return showToast(message, 'error'); }
 
   var OFFLINE_BANNER_TEXT = 'אין חיבור לשרת. מנסה שוב...';
   var OFFLINE_BANNER_DEGRADED_TEXT = 'השרת (Google) עמוס או משיב בשגיאה — ממשיכים לנסות אוטומטית כל 30–60 שניות. אין צורך לרענן את הדף או להתחבר מחדש.';
@@ -2078,7 +2080,7 @@
         banner.classList.add('show');
       }
     }
-    // Returned so the adaptive scheduler (dashboardPollTick) can measure
+    // Returned so the poll loop can measure
     // duration and pace the next poll. Handlers below are unchanged.
     request.promise = apiGet({ action: 'examinerDashboard', sessionCode: requestedSession }, POLL_TIMEOUT_MS).then(function(data) {
       if (!isCurrent()) return;
@@ -2107,8 +2109,22 @@
       console.log('[DASHBOARD] Network error (fails=' + failedPolls + '):', err);
     }).then(function() {
       if (dashboardRequest === request) dashboardRequest = null;
+      // The poll loop paces itself on what the tick RESOLVES to, so a failure
+      // that came back fast (a JSON error, a 404 from Google's front door) must
+      // still read as a failure - otherwise only a slow answer would ever back off.
+      return failedPolls > 0 ? { status: 'error' } : { status: 'ok' };
     });
     return request.promise;
+  }
+
+  // Text of the "\u05d0\u05e4\u05e1" confirmation. Separated out so the warning cannot
+  // drift away from the finishedOnDevice flag that justifies it (D17).
+  function resetConfirmText(item) {
+    var base = 'לאפס את ' + item.name + '?\nהנבחן יוכל להירשם מחדש (לא ייחשב כנכשל או פסול).';
+    if (item && item.finishedOnDevice) {
+      return '\u26a0\ufe0f \u05d4\u05e0\u05d1\u05d7\u05df \u05e1\u05d9\u05de\u05df \u05e9\u05e1\u05d9\u05d9\u05dd \u05d1\u05de\u05db\u05e9\u05d9\u05e8 \u2014 \u05d0\u05d9\u05e4\u05d5\u05e1 \u05d9\u05d4\u05e4\u05d5\u05da \u05d0\u05ea \u05d4\u05ea\u05d5\u05e6\u05d0\u05d4 \u05e9\u05dc\u05d5 \u05dc\u05d1\u05dc\u05ea\u05d9 \u05e0\u05d9\u05ea\u05e0\u05ea \u05dc\u05e9\u05dc\u05d9\u05d7\u05d4.\n\n' + base;
+    }
+    return base;
   }
 
   // ========== Pending list ==========
@@ -2198,7 +2214,7 @@
       apiGet({ action: 'addExamTime', sessionCode: sessionCode, idNumber: item.idNumber, minutes: minutes, reason: reason }).then(function(data) {
         if (data && data.status === 'ok') {
           close();
-          alert('נוספו ' + data.addedMinutes + ' דקות ל' + item.name + '.\nסך תוספת הזמן: ' + data.totalExtraMinutes + ' דקות.');
+          showToast('נוספו ' + data.addedMinutes + ' דקות ל' + item.name + '.\nסך תוספת הזמן: ' + data.totalExtraMinutes + ' דקות.');
           pollDashboard();
         } else {
           errEl.textContent = 'שגיאה: ' + ((data && data.message) || 'לא ידוע'); errEl.style.display = 'block';
@@ -2392,12 +2408,12 @@
                 // so the session flag can stay on as a plain default.
                 pollDashboard();
               } else {
-                alert('שגיאה באישור: ' + (data.message || 'לא ידוע'));
+                toastError('שגיאה באישור: ' + (data.message || 'לא ידוע'));
                 approveBtn.disabled = false;
                 approveBtn.textContent = 'אשר';
               }
             }).catch(function(error) {
-              alert(examinerMutationErrorText(error));
+              toastError(examinerMutationErrorText(error));
               approveBtn.disabled = false;
               approveBtn.textContent = 'אשר';
             });
@@ -2415,12 +2431,12 @@
                 rejectBtn.textContent = '✗ נדחה';
                 pollDashboard();
               } else {
-                alert('שגיאה בדחייה: ' + (data.message || 'לא ידוע'));
+                toastError('שגיאה בדחייה: ' + (data.message || 'לא ידוע'));
                 rejectBtn.disabled = false;
                 rejectBtn.textContent = 'דחה';
               }
             }).catch(function(error) {
-              alert(examinerMutationErrorText(error));
+              toastError(examinerMutationErrorText(error));
               rejectBtn.disabled = false;
               rejectBtn.textContent = 'דחה';
             });
@@ -2440,12 +2456,12 @@
               if (data.status === 'ok') {
                 pollDashboard();
               } else {
-                alert('שגיאה: ' + (data.message || 'לא ידוע'));
+                toastError('שגיאה: ' + (data.message || 'לא ידוע'));
                 resetPendingBtn.disabled = false;
                 resetPendingBtn.textContent = 'אפס';
               }
             }).catch(function() {
-              alert('שגיאת תקשורת');
+              toastError('שגיאת תקשורת');
               resetPendingBtn.disabled = false;
               resetPendingBtn.textContent = 'אפס';
             });
@@ -2662,8 +2678,8 @@
             confirmDqBtn.textContent = 'מאשר...';
             apiGet({ action: 'confirmDQ', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
               if (data.status === 'ok') pollDashboard();
-              else alert('שגיאה: ' + (data.message || 'לא ידוע'));
-            }).catch(function() { alert('שגיאת תקשורת'); });
+              else toastError('שגיאה: ' + (data.message || 'לא ידוע'));
+            }).catch(function() { toastError('שגיאת תקשורת'); });
           });
           actions.appendChild(confirmDqBtn);
 
@@ -2677,8 +2693,8 @@
             overturnDqBtn.textContent = 'מבטל...';
             apiGet({ action: 'overturnDQ', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
               if (data.status === 'ok') pollDashboard();
-              else alert('שגיאה: ' + (data.message || 'לא ידוע'));
-            }).catch(function() { alert('שגיאת תקשורת'); });
+              else toastError('שגיאה: ' + (data.message || 'לא ידוע'));
+            }).catch(function() { toastError('שגיאת תקשורת'); });
           });
           actions.appendChild(overturnDqBtn);
         }
@@ -2695,15 +2711,15 @@
               forceBtn.textContent = 'מסיים...';
               apiGet({ action: 'forceComplete', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
                 if (data.status === 'ok') {
-                  alert(item.name + ' סומן כנכשל (ניתוק).');
+                  showToast(item.name + ' סומן כנכשל (ניתוק).');
                   pollDashboard();
                 } else {
-                  alert('שגיאה: ' + (data.message || 'לא ידוע'));
+                  toastError('שגיאה: ' + (data.message || 'לא ידוע'));
                   forceBtn.disabled = false;
                   forceBtn.textContent = 'סיים ידנית';
                 }
               }).catch(function() {
-                alert('שגיאת תקשורת');
+                toastError('שגיאת תקשורת');
                 forceBtn.disabled = false;
                 forceBtn.textContent = 'סיים ידנית';
               });
@@ -2728,15 +2744,15 @@
             dqBtn.textContent = 'מפסול...';
             apiGet({ action: 'disqualify', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
               if (data.status === 'ok') {
-                alert(item.name + ' נפסל.');
+                showToast(item.name + ' נפסל.');
                 pollDashboard();
               } else {
-                alert('שגיאה: ' + (data.message || 'לא ידוע'));
+                toastError('שגיאה: ' + (data.message || 'לא ידוע'));
                 dqBtn.disabled = false;
                 dqBtn.textContent = 'פסול';
               }
             }).catch(function() {
-              alert('שגיאת תקשורת');
+              toastError('שגיאת תקשורת');
               dqBtn.disabled = false;
               dqBtn.textContent = 'פסול';
             });
@@ -2749,20 +2765,24 @@
         resetBtn.textContent = 'אפס';
         resetBtn.title = 'תקלה טכנית — אפס לרישום מחדש';
         resetBtn.addEventListener('click', function() {
-          if (confirm('לאפס את ' + item.name + '?\nהנבחן יוכל להירשם מחדש (לא ייחשב כנכשל או פסול).')) {
+          // D17: the dashboard already KNOWS the device is holding a finished
+          // result (item.finishedOnDevice drives the green "\u05de\u05e1\u05e0\u05db\u05e8\u05df" banner two
+          // blocks up). Resetting that examinee makes the result on the device
+          // undeliverable for good, so say so before asking.
+          if (confirm(resetConfirmText(item))) {
             resetBtn.disabled = true;
             resetBtn.textContent = 'מאפס...';
             apiGet({ action: 'resetExaminee', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
               if (data.status === 'ok') {
-                alert(item.name + ' אופס — יכול להירשם מחדש.');
+                showToast(item.name + ' אופס — יכול להירשם מחדש.');
                 pollDashboard();
               } else {
-                alert('שגיאה: ' + (data.message || 'לא ידוע'));
+                toastError('שגיאה: ' + (data.message || 'לא ידוע'));
                 resetBtn.disabled = false;
                 resetBtn.textContent = 'אפס';
               }
             }).catch(function() {
-              alert('שגיאת תקשורת');
+              toastError('שגיאת תקשורת');
               resetBtn.disabled = false;
               resetBtn.textContent = 'אפס';
             });
@@ -2790,11 +2810,6 @@
     completedResults = completed;
 
     // Apply locally edited phone overrides
-    for (var oi = 0; oi < completedResults.length; oi++) {
-      var overridePhone = phoneOverrides[completedResults[oi].idNumber];
-      if (overridePhone) completedResults[oi].phone = overridePhone;
-    }
-
     if (completed.length === 0) {
       area.innerHTML = '<p class="muted" style="text-align:center; padding:20px;">אין תוצאות עדיין</p>';
       document.getElementById('statsBar').style.display = 'none';
@@ -2848,16 +2863,19 @@
       // exam took <3 min. DQ rows have no score to verify → skip the verified flag.
       var verifiedKnown = (typeof r.verified !== 'undefined');
       var vstate = String(r.verified || '');
-      // A "0/X" score is a SYSTEM-fabricated fail (browser-close / timeout /
-      // disconnect), not a real graded score → nothing to verify, skip the badge.
-      var isZeroScore = /^0\//.test(String(r.score || ''));
+      // S3 (data-integrity audit): the badge used to be suppressed for ANY
+      // score starting "0/" on the theory that 0/X is always a system-fabricated
+      // fail. It is not: a real exam whose server re-score failed (missing
+      // \u05de\u05d1\u05d7\u05e0\u05d9\u05dd row - the 03/06 pattern) also lands as 0/30, and that is exactly
+      // the row that must be looked at. A fabricated fail is recognisable by the
+      // marker the SERVER wrote into \u05e4\u05d9\u05e8\u05d5\u05d8 \u05e9\u05d2\u05d5\u05d9\u05d5\u05ea, not by the score.
+      var isFabricatedFail = FABRICATED_FAIL_MARKERS.test(String(r.wrongDetails || ''));
       var flagHtml = '';
-      // Show "⚠ לא אומת" ONLY for a genuine DIGITAL exam the server did NOT re-score
-      // against the answer key (a glitch, or a tampered/forged submit). SKIP: manual
-      // paper entries ('ידני' — entered by the examiner on purpose), system fails
-      // (0/X), and DQ rows — otherwise the flag cries wolf and gets ignored.
-      if (verifiedKnown && !isDQ && !isZeroScore && vstate !== 'מאומת' && vstate !== 'ידני') {
-        flagHtml += ' <span title="הציון לא אומת מול מפתח התשובות בשרת — דורש בדיקה ידנית" style="display:inline-block;background:#fef3c7;color:#92400e;border:1px solid #f59e0b;border-radius:6px;padding:0 5px;font-size:10px;font-weight:800;white-space:nowrap;">⚠ לא אומת</span>';
+      // Show "\u26a0 \u05dc\u05d0 \u05d0\u05d5\u05de\u05ea" ONLY for a genuine DIGITAL exam the server did NOT
+      // re-score against the answer key. SKIP: manual paper entries ('\u05d9\u05d3\u05e0\u05d9'),
+      // the system's own browser-close / timeout / manual-end rows, and DQ rows.
+      if (verifiedKnown && !isDQ && !isFabricatedFail && vstate !== '\u05DE\u05D0\u05D5\u05DE\u05EA' && vstate !== '\u05D9\u05D3\u05E0\u05D9') {
+        flagHtml += ' <span title="\u05d4\u05e6\u05d9\u05d5\u05df \u05dc\u05d0 \u05d0\u05d5\u05de\u05ea \u05de\u05d5\u05dc \u05de\u05e4\u05ea\u05d7 \u05d4\u05ea\u05e9\u05d5\u05d1\u05d5\u05ea \u05d1\u05e9\u05e8\u05ea \u2014 \u05d3\u05d5\u05e8\u05e9 \u05d1\u05d3\u05d9\u05e7\u05d4 \u05d9\u05d3\u05e0\u05d9\u05ea" style="display:inline-block;background:#fef3c7;color:#92400e;border:1px solid #f59e0b;border-radius:6px;padding:0 5px;font-size:10px;font-weight:800;white-space:nowrap;">\u26a0 \u05dc\u05d0 \u05d0\u05d5\u05de\u05ea</span>';
       }
       if (String(r.suspicious) === 'חשוד') {
         flagHtml += ' <span title="המבחן נמשך פחות מ-3 דקות" style="display:inline-block;background:#fee2e2;color:#991b1b;border:1px solid #ef4444;border-radius:6px;padding:0 5px;font-size:10px;font-weight:800;white-space:nowrap;">⏱ חשוד</span>';
@@ -2972,12 +2990,16 @@
     var probe = siteCombinedProbe;
     probe.inFlight = true;
     probe.at = Date.now();
+    // D22: this used to run on the 30 s default against a report measured at
+    // 18-81 s, so every probe that ran long left an abandoned Apps Script
+    // execution behind - one orphan per examiner every 10 minutes, at exactly
+    // the busiest moment of the morning.
     apiGet({
       action: 'siteCombinedReport',
       examinerId: examinerData.id,
       token: examinerToken,
       sessionCode: sessionCode
-    }).then(function(data) {
+    }, HEAVY_REPORT_TIMEOUT_MS).then(function(data) {
       probe.inFlight = false;
       if (probe !== siteCombinedProbe) return;          // the session changed meanwhile
       if (!data || data.status !== 'ok' || !Array.isArray(data.sessions) || data.sessions.length <= 1) {
@@ -3381,21 +3403,6 @@
   })();
 
   // ========== Edit examinee phone ==========
-  window.editPhone = function(idx) {
-    var r = completedResults[idx];
-    if (!r) return;
-    var current = r.phone || '';
-    var newPhone = prompt('\u05DE\u05E1\u05E4\u05E8 \u05D8\u05DC\u05E4\u05D5\u05DF \u05E0\u05D5\u05DB\u05D7\u05D9 \u05E2\u05D1\u05D5\u05E8 ' + r.name + ':', current);
-    if (newPhone === null || newPhone.trim() === '') return;
-    newPhone = newPhone.trim();
-    r.phone = newPhone;
-    phoneOverrides[r.idNumber] = newPhone; // Persist override across polling
-    // Re-render only the results table
-    var savedCount = prevCompletedCount;
-    updateCompletedList(completedResults);
-    prevCompletedCount = savedCount; // Prevent notification sound on re-render
-  };
-
   // ========== Commander result correction ==========
   // Stores the index of the row currently being edited so submitCorrectResult
   // can read it back without trusting DOM state.
@@ -4347,98 +4354,6 @@
       btn.textContent = '\u2713 \u05D4\u05D5\u05E2\u05EA\u05E7!';
       setTimeout(function() { btn.textContent = '\u{1F4CB} \u05D4\u05E2\u05EA\u05E7'; }, 2000);
     }
-  };
-
-  window.sendBulkToManager = function() {
-    if (!currentSiteManagerPhone) { alert('\u05DC\u05D0 \u05D4\u05D5\u05D2\u05D3\u05E8 \u05DE\u05E1\u05E4\u05E8 \u05DE\u05E0\u05D4\u05DC \u05D0\u05EA\u05E8'); return; }
-    var phone = formatPhone(currentSiteManagerPhone);
-    var today = new Date();
-    var dateStr = today.getDate() + '/' + (today.getMonth() + 1) + '/' + today.getFullYear();
-
-    // Collect statistics
-    var passCount = 0, failCount = 0, dqCount = 0;
-    var popStats = {};
-    var errLow = 0, errMid = 0, errHigh = 0; // 1-3, 4-6, 7+
-    var licenses = {};
-
-    for (var i = 0; i < completedResults.length; i++) {
-      var r = completedResults[i];
-      var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === '\u05E4\u05E1\u05D5\u05DC';
-      var isPassed = !isDQ && (r.passed === '\u05E2\u05D1\u05E8' || r.passed === true);
-      var lic = r.license || currentLicense || '';
-      var pop = r.population || '';
-
-      if (lic) licenses[lic] = true;
-      if (isDQ) { dqCount++; failCount++; }
-      else if (isPassed) passCount++;
-      else failCount++;
-
-      // Population stats
-      if (pop) {
-        if (!popStats[pop]) popStats[pop] = { total: 0, passed: 0, failed: 0 };
-        popStats[pop].total++;
-        if (isPassed) popStats[pop].passed++;
-        else popStats[pop].failed++;
-      }
-
-      // Error buckets for real failures (not DQ)
-      if (!isPassed && !isDQ) {
-        var sp = String(r.score || '').split('/');
-        var correct = parseInt(sp[0]) || 0;
-        var outOf = parseInt(sp[1]) || 30;
-        var errs = outOf - correct;
-        if (errs <= 3) errLow++;
-        else if (errs <= 6) errMid++;
-        else errHigh++;
-      }
-    }
-
-    var totalCount = passCount + failCount;
-    var rate = totalCount > 0 ? Math.round((passCount / totalCount) * 100) : 0;
-    var licenseStr = Object.keys(licenses).join(', ') || currentLicense || '';
-
-    // Build statistical summary message
-    var msg = '*\uD83D\uDCCA \u05E1\u05D9\u05DB\u05D5\u05DD \u05DE\u05D1\u05D7\u05E0\u05D9\u05DD \u2014 ' + currentSite + '*\n';
-    msg += '\u05D1\u05D5\u05D7\u05DF: ' + examinerData.name + '\n';
-    msg += '\u05EA\u05D0\u05E8\u05D9\u05DA: ' + dateStr + ' | \u05DB\u05D9\u05EA\u05D4: ' + currentClassroom;
-    if (licenseStr) msg += ' | \u05D3\u05E8\u05D2\u05D4: ' + licenseStr;
-    msg += '\n\n';
-
-    msg += '\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n';
-    msg += '\u2705 \u05E2\u05D1\u05E8\u05D5: ' + passCount + '  |  \u274C \u05E0\u05DB\u05E9\u05DC\u05D5: ' + failCount;
-    if (dqCount > 0) msg += ' (' + dqCount + ' \u05E4\u05E1\u05D5\u05DC\u05D9\u05DD)';
-    msg += '\n';
-    msg += '\u05E1\u05D4"\u05DB: ' + totalCount + '  |  \u05D0\u05D7\u05D5\u05D6 \u05D4\u05E6\u05DC\u05D7\u05D4: ' + rate + '%\n';
-    msg += '\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n';
-
-    // Population breakdown
-    var popKeys = Object.keys(popStats);
-    if (popKeys.length > 0) {
-      var popOrder = ['\u05E6\u05D1\u05D0', '\u05E7\u05D3\u05F4\u05E5', '\u05D5\u05D5\u05D0\u05D5\u05E6\u05F3\u05E8', '\u05E2\u05D9\u05D5\u05E0\u05D9 \u05D1\u05DC\u05D1\u05D3'];
-      var orderedPops = [];
-      for (var p = 0; p < popOrder.length; p++) { if (popStats[popOrder[p]]) orderedPops.push(popOrder[p]); }
-      for (var k = 0; k < popKeys.length; k++) { if (orderedPops.indexOf(popKeys[k]) === -1) orderedPops.push(popKeys[k]); }
-
-      msg += '\n\uD83D\uDCCB *\u05DC\u05E4\u05D9 \u05D0\u05D5\u05DB\u05DC\u05D5\u05E1\u05D9\u05D4:*\n';
-      for (var j = 0; j < orderedPops.length; j++) {
-        var ps = popStats[orderedPops[j]];
-        var pr = ps.total > 0 ? Math.round((ps.passed / ps.total) * 100) : 0;
-        msg += orderedPops[j] + ': ' + ps.total + ' (\u05E2\u05D1\u05E8\u05D5 ' + ps.passed + ', \u05E0\u05DB\u05E9\u05DC\u05D5 ' + ps.failed + ') ' + pr + '%\n';
-      }
-    }
-
-    // Error breakdown for failures
-    var realFails = failCount - dqCount;
-    if (realFails > 0 || dqCount > 0) {
-      msg += '\n\uD83D\uDCC9 *\u05E4\u05D9\u05DC\u05D5\u05D7 \u05E0\u05DB\u05E9\u05DC\u05D9\u05DD:*\n';
-      if (errLow > 0) msg += '1-3 \u05E9\u05D2\u05D9\u05D0\u05D5\u05EA: ' + errLow + '\n';
-      if (errMid > 0) msg += '4-6 \u05E9\u05D2\u05D9\u05D0\u05D5\u05EA: ' + errMid + '\n';
-      if (errHigh > 0) msg += '7+ \u05E9\u05D2\u05D9\u05D0\u05D5\u05EA: ' + errHigh + '\n';
-      if (dqCount > 0) msg += '\u05E4\u05E1\u05D5\u05DC\u05D9\u05DD: ' + dqCount + '\n';
-    }
-
-
-    window.open(buildWaUrl(phone, msg), '_blank');
   };
 
   // ========== Bulk WhatsApp send queue ==========
@@ -5856,7 +5771,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     if (confirm('\u05D4\u05D0\u05DD \u05DC\u05E4\u05E1\u05D5\u05DC \u05D0\u05EA \u05D4\u05DE\u05D1\u05D7\u05DF \u05E9\u05DC ' + r.name + '?')) {
       apiGet({ action: 'disqualify', sessionCode: sessionCode, idNumber: r.idNumber, examinerId: examinerData.id }).then(function(data) {
         if (data.status === 'ok') {
-          alert(r.name + ' \u05E0\u05E4\u05E1\u05DC.');
+          showToast(r.name + ' \u05E0\u05E4\u05E1\u05DC.');
           pollDashboard();
         } else {
           alert('\u05E9\u05D2\u05D9\u05D0\u05D4: ' + (data.message || ''));
@@ -5871,10 +5786,10 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     if (confirm('ביטול פסילה של ' + r.name + '?\nהתוצאה תשתנה ל"נכשל" והנבחן יוכל להיבחן מחדש.')) {
       apiGet({ action: 'overturnDQ', sessionCode: sessionCode, idNumber: r.idNumber, examinerId: examinerData.id }).then(function(data) {
         if (data.status === 'ok') {
-          alert(r.name + ' — הפסילה בוטלה.');
+          showToast(r.name + ' — הפסילה בוטלה.');
           pollDashboard();
         } else {
-          alert('שגיאה: ' + (data.message || ''));
+          toastError('שגיאה: ' + (data.message || ''));
         }
       });
     }
@@ -5886,10 +5801,10 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     if (confirm('אישור פסילה של ' + r.name + '?\nהנבחן יקבל הודעה סופית שהמבחן נפסל.')) {
       apiGet({ action: 'confirmDQ', sessionCode: sessionCode, idNumber: r.idNumber, examinerId: examinerData.id }).then(function(data) {
         if (data.status === 'ok') {
-          alert(r.name + ' — הפסילה אושרה.');
+          showToast(r.name + ' — הפסילה אושרה.');
           pollDashboard();
         } else {
-          alert('שגיאה: ' + (data.message || ''));
+          toastError('שגיאה: ' + (data.message || ''));
         }
       });
     }
@@ -5925,7 +5840,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     if (confirm(confirmMsg)) {
       apiGet({ action: 'correctToPass', sessionCode: sessionCode, idNumber: r.idNumber, examinerId: examinerData.id }).then(function(data) {
         if (data.status === 'ok') {
-          alert(r.name + ' \u05EA\u05D5\u05E7\u05DF \u05DC"\u05E2\u05D1\u05E8".');
+          showToast(r.name + ' \u05EA\u05D5\u05E7\u05DF \u05DC"\u05E2\u05D1\u05E8".');
           pollDashboard();
         } else {
           alert('\u05E9\u05D2\u05D9\u05D0\u05D4: ' + (data.message || ''));
@@ -5965,7 +5880,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
         renderDashboard();
         closeSettingsModal();
       } else {
-        alert(data.message || 'שגיאה בעדכון');
+        toastError(data.message || 'שגיאה בעדכון');
       }
     });
   };
@@ -5991,7 +5906,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     apiGet({ action: 'closeSession', sessionCode: sessionCode, examinerId: examinerData.id }).then(function() {
       stopDashboardPolling();
       clearState();
-      alert('הסשן נסגר.');
+      showToast('הסשן נסגר.');
       showScreen('screenSetup');
     });
   };
@@ -6082,10 +5997,6 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     return dd + '/' + mm + '/' + d.getFullYear();
   }
 
-  function fmtDateLabel(d) {
-    return d.getDate() + '/' + (d.getMonth() + 1) + '/' + d.getFullYear();
-  }
-
   window.cmdSelectPeriod = function(btn) {
     var allBtns = document.querySelectorAll('#cmdPeriodBtns .cmd-period-btn');
     for (var j = 0; j < allBtns.length; j++) allBtns[j].classList.remove('active');
@@ -6168,12 +6079,12 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       dateTo: range.to.toISOString()
     }).then(function(data) {
       document.getElementById('ccmLoading').style.display = 'none';
-      if (data.status !== 'ok') { alert(data.message || 'שגיאה'); return; }
+      if (data.status !== 'ok') { toastError(data.message || 'שגיאה'); return; }
       ccmCurrentData = data;
       renderCenterReport(data, range);
     }).catch(function(err) {
       document.getElementById('ccmLoading').style.display = 'none';
-      alert('שגיאת תקשורת: ' + err);
+      toastError(examinerMutationErrorText(err));
     });
   };
 
@@ -6599,6 +6510,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
         renderWaitTimes(cmdData.waitTimes);
         renderTimeline(cmdData.timeline);
         renderHeatmap(cmdData.heatmap);
+        QuestionBank.load('he').catch(function() {});   // texts/images for the top-wrong table
         renderTopWrong(cmdData.topWrong);
         renderPracticeImpact(cmdData.practiceImpact);
         renderBreakdownTable(cmdData, cmdCurrentTab);
@@ -7215,80 +7127,85 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
   // image that opens full-size in a new tab. The image lookup is done
   // server-side by matching question text + correct answer against the
   // language dataset, so the picture matches the specific sign being asked.
+  // The server sends { questionId, count, category, text } and nothing else -
+  // no imageUrl, no answers: resolving a question used to cost it 14 Drive reads
+  // per request (r12/r13). The canonical Hebrew text and the image come from the
+  // static bank in this repo; the stored text is the fallback for an id the bank
+  // does not carry (a question retired since the result was written).
+  function topWrongEntry(item) {
+    var e = (item && typeof item.questionId === 'number') ? QuestionBank.get(item.questionId, 'he') : null;
+    return {
+      id: item.questionId,
+      text: (e && e.text) || item.text || '',
+      image: e ? QuestionBank.imageUrl(e) : '',
+      count: item.count,
+      category: item.category || ''
+    };
+  }
   function renderTopWrong(topWrong) {
     var host = document.getElementById('cmdTopWrong');
     if (!host) return;
     if (!topWrong || topWrong.length === 0) {
-      host.innerHTML = '<p style="color:#94a3b8;">אין נתוני שאלות שגויות לטווח שנבחר</p>';
+      host.innerHTML = '<p style="color:#94a3b8;">\u05d0\u05d9\u05df \u05e0\u05ea\u05d5\u05e0\u05d9 \u05e9\u05d0\u05dc\u05d5\u05ea \u05e9\u05d2\u05d5\u05d9\u05d5\u05ea \u05dc\u05d8\u05d5\u05d5\u05d7 \u05e9\u05e0\u05d1\u05d7\u05e8</p>';
       return;
     }
-    var maxCount = topWrong[0].count;
+    // The bank may not be in memory yet on the first commander load; paint what
+    // we have, then repaint once it arrives (a single fetch, cached afterwards).
+    if (!QuestionBank.has('he')) {
+      QuestionBank.load('he').then(function() {
+        if (cmdData && cmdData.topWrong === topWrong) renderTopWrong(topWrong);
+      }).catch(function() {});
+    }
+    var maxCount = topWrong[0].count || 1;
     var html = '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
     html += '<thead><tr style="background:#f1f5f9;">';
     html += '<th style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;width:32px;">#</th>';
-    html += '<th style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;width:70px;">תמונה</th>';
-    html += '<th style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;">שאלה ותשובה נכונה</th>';
-    html += '<th style="padding:6px 8px;text-align:left;font-size:11px;color:#64748b;width:120px;">נכשלים</th>';
+    html += '<th style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;width:70px;">\u05ea\u05de\u05d5\u05e0\u05d4</th>';
+    html += '<th style="padding:6px 8px;text-align:right;font-size:11px;color:#64748b;">\u05e9\u05d0\u05dc\u05d4</th>';
+    html += '<th style="padding:6px 8px;text-align:left;font-size:11px;color:#64748b;width:120px;">\u05e0\u05db\u05e9\u05dc\u05d9\u05dd</th>';
     html += '</tr></thead><tbody>';
     for (var i = 0; i < topWrong.length; i++) {
-      var item = topWrong[i];
+      var item = topWrongEntry(topWrong[i]);
       var w = Math.round((item.count / maxCount) * 100);
       html += '<tr style="border-bottom:1px solid #e2e8f0;">';
       html += '<td style="padding:6px 8px;color:#94a3b8;font-weight:600;vertical-align:top;">' + (i + 1) + '</td>';
-      // Image thumbnail cell — link to full image in new tab when available
       html += '<td style="padding:6px 8px;vertical-align:middle;">';
-      if (item.imageUrl) {
-        html += '<a href="' + escapeHtml(item.imageUrl) + '" target="_blank" rel="noopener" title="לחץ לפתוח את התמונה בגודל מלא">';
-        html += '<img src="' + escapeHtml(item.imageUrl) + '" alt="תמונת השאלה" style="max-width:60px;max-height:60px;border-radius:4px;border:1px solid #e2e8f0;background:#fff;display:block;" onerror="this.style.display=\'none\';this.nextElementSibling.style.display=\'inline-block\';"/>';
-        html += '<span style="display:none;font-size:10px;color:#3b82f6;text-decoration:underline;">קישור</span>';
+      if (item.image) {
+        html += '<a href="' + escapeHtml(item.image) + '" target="_blank" rel="noopener" title="\u05dc\u05d7\u05e5 \u05dc\u05e4\u05ea\u05d5\u05d7 \u05d0\u05ea \u05d4\u05ea\u05de\u05d5\u05e0\u05d4 \u05d1\u05d2\u05d5\u05d3\u05dc \u05de\u05dc\u05d0">';
+        html += '<img src="' + escapeHtml(item.image) + '" alt="\u05ea\u05de\u05d5\u05e0\u05ea \u05d4\u05e9\u05d0\u05dc\u05d4" style="max-width:60px;max-height:60px;border-radius:4px;border:1px solid #e2e8f0;background:#fff;display:block;" onerror="this.style.display=\'none\';"/>';
         html += '</a>';
       } else {
-        html += '<span style="font-size:10px;color:#cbd5e1;">—</span>';
+        html += '<span style="font-size:10px;color:#cbd5e1;">\u2014</span>';
       }
       html += '</td>';
-      // Question + correct answer cell. Skip undefined/empty correct answers
-      // (legacy ci-bug data) — showing "undefined" would be worse than nothing.
-      // Add a deep link to find_image.html?q=... — lets the commander click
-      // into any row (especially sign questions like "מה פירוש התמרור?"
-      // that aggregate dozens of distinct questions) and browse all matches
-      // with images. Best workaround for the limitation that we can't pick
-      // one image when correctAnswer is missing.
       html += '<td style="padding:6px 8px;line-height:1.4;color:#334155;">';
-      html += '<div style="font-weight:500;">' + escapeHtml(item.question);
-      html += ' <a href="find_image.html?q=' + encodeURIComponent(item.question) + '" target="_blank" rel="noopener" title="חפש את השאלה ב-find_image" style="font-size:11px;color:#3b82f6;text-decoration:none;margin-right:6px;">🔍 חפש</a>';
+      html += '<div style="font-weight:500;">' + escapeHtml(item.text);
+      html += ' <a href="find_image.html?q=' + encodeURIComponent(item.text) + '" target="_blank" rel="noopener" title="\u05d7\u05e4\u05e9 \u05d0\u05ea \u05d4\u05e9\u05d0\u05dc\u05d4 \u05e2\u05dd \u05d4\u05ea\u05de\u05d5\u05e0\u05d4" style="font-size:11px;color:#3b82f6;text-decoration:none;margin-right:6px;">\ud83d\udd0d \u05d7\u05e4\u05e9</a>';
       html += '</div>';
-      var validAnswer = item.correctAnswer && String(item.correctAnswer).indexOf('undefined') === -1;
-      if (validAnswer) {
-        html += '<div style="margin-top:4px;font-size:11px;color:#16a34a;"><strong>✓ נכון:</strong> ' + escapeHtml(item.correctAnswer) + '</div>';
+      if (item.category) {
+        html += '<div style="margin-top:3px;font-size:10px;color:#64748b;">' + escapeHtml(item.category) + '</div>';
       }
-      if (item.questionId) {
-        html += '<div style="margin-top:2px;font-size:10px;color:#94a3b8;">id: ' + item.questionId + '</div>';
+      if (typeof item.id === 'number') {
+        html += '<div style="margin-top:2px;font-size:10px;color:#94a3b8;">id: ' + item.id + '</div>';
       }
-      // Per-language failure chips — shown only when a non-Hebrew language
-      // appears, so Hebrew-only questions stay clean. A question failing
-      // mostly in one language is a translation-bug signal.
-      if (item.langCounts) {
-        var lcKeys = Object.keys(item.langCounts);
-        var hasNonHe = false;
-        for (var lk = 0; lk < lcKeys.length; lk++) { if (lcKeys[lk] !== 'עברית') { hasNonHe = true; break; } }
-        if (hasNonHe && lcKeys.length > 0) {
-          lcKeys.sort(function(a, b) { return item.langCounts[b] - item.langCounts[a]; });
+      if (topWrong[i].langCounts) {
+        var lc = topWrong[i].langCounts, lcKeys = Object.keys(lc), hasNonHe = false;
+        for (var lk = 0; lk < lcKeys.length; lk++) { if (lcKeys[lk] !== '\u05e2\u05d1\u05e8\u05d9\u05ea') { hasNonHe = true; break; } }
+        if (hasNonHe && lcKeys.length) {
+          lcKeys.sort(function(a, b) { return lc[b] - lc[a]; });
           var lcHtml = '';
           for (var lk2 = 0; lk2 < lcKeys.length; lk2++) {
-            lcHtml += '<span style="display:inline-block;background:#e8f0fe;color:#1e40af;border-radius:8px;padding:0 6px;margin-left:4px;font-size:10px;font-weight:700;">' + escapeHtml(lcKeys[lk2]) + ' ' + item.langCounts[lcKeys[lk2]] + '</span>';
+            lcHtml += '<span style="display:inline-block;background:#e8f0fe;color:#1e40af;border-radius:8px;padding:0 6px;margin-left:4px;font-size:10px;font-weight:700;">' + escapeHtml(lcKeys[lk2]) + ' ' + lc[lcKeys[lk2]] + '</span>';
           }
-          html += '<div style="margin-top:3px;" title="פילוח כשלים לפי שפת המבחן — ריכוז בשפה אחת עשוי להעיד על בעיית תרגום">' + lcHtml + '</div>';
+          html += '<div style="margin-top:3px;" title="\u05e4\u05d9\u05dc\u05d5\u05d7 \u05db\u05e9\u05dc\u05d9\u05dd \u05dc\u05e4\u05d9 \u05e9\u05e4\u05ea \u05d4\u05de\u05d1\u05d7\u05df \u2014 \u05e8\u05d9\u05db\u05d5\u05d6 \u05d1\u05e9\u05e4\u05d4 \u05d0\u05d7\u05ea \u05e2\u05e9\u05d5\u05d9 \u05dc\u05d4\u05e2\u05d9\u05d3 \u05e2\u05dc \u05d1\u05e2\u05d9\u05d9\u05ea \u05ea\u05e8\u05d2\u05d5\u05dd">' + lcHtml + '</div>';
         }
       }
       html += '</td>';
-      // Bar + count cell
       html += '<td style="padding:6px 8px;vertical-align:middle;">';
       html += '<div style="display:flex;align-items:center;gap:6px;">';
       html += '<div style="flex:1;height:10px;background:#f1f5f9;border-radius:5px;overflow:hidden;"><div style="width:' + w + '%;height:100%;background:#ef4444;"></div></div>';
       html += '<span style="font-weight:700;color:#ef4444;min-width:30px;text-align:left;">' + item.count + '</span>';
-      html += '</div>';
-      html += '</td>';
-      html += '</tr>';
+      html += '</div></td></tr>';
     }
     html += '</tbody></table>';
     host.innerHTML = html;
@@ -7625,24 +7542,18 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     if (cmdData.topWrong && cmdData.topWrong.length > 0) {
       H.push('<h2>10 השאלות שנכשלים בהן הכי הרבה</h2>');
       H.push('<table style="font-size:11px;"><thead><tr>');
-      H.push('<th style="width:30px;">#</th><th style="width:60px;">תמונה</th><th>שאלה ותשובה נכונה</th><th style="width:70px;">נכשלים</th>');
+      H.push('<th style="width:30px;">#</th><th style="width:60px;">\u05EA\u05DE\u05D5\u05E0\u05D4</th><th>\u05E9\u05D0\u05DC\u05D4</th><th style="width:70px;">\u05E0\u05DB\u05E9\u05DC\u05D9\u05DD</th>');
       H.push('</tr></thead><tbody>');
       for (var twi = 0; twi < cmdData.topWrong.length; twi++) {
-        var tw = cmdData.topWrong[twi];
+        var tw = topWrongEntry(cmdData.topWrong[twi]);
         H.push('<tr>');
         H.push('<td>' + (twi + 1) + '</td>');
         H.push('<td>');
-        if (tw.imageUrl) {
-          H.push('<img src="' + escapeHtml(tw.imageUrl) + '" alt="" style="max-width:50px;max-height:50px;border:1px solid #ddd;"/>');
-        } else {
-          H.push('—');
-        }
+        if (tw.image) H.push('<img src="' + escapeHtml(tw.image) + '" alt="" style="max-width:50px;max-height:50px;border:1px solid #ddd;"/>');
+        else H.push('\u2014');
         H.push('</td>');
-        H.push('<td><div>' + escapeHtml(tw.question) + '</div>');
-        var twValidAnswer = tw.correctAnswer && String(tw.correctAnswer).indexOf('undefined') === -1;
-        if (twValidAnswer) {
-          H.push('<div style="color:#16a34a;font-size:10px;margin-top:2px;"><strong>נכון:</strong> ' + escapeHtml(tw.correctAnswer) + '</div>');
-        }
+        H.push('<td><div>' + escapeHtml(tw.text) + '</div>');
+        if (tw.category) H.push('<div style="color:#64748b;font-size:10px;margin-top:2px;">' + escapeHtml(tw.category) + '</div>');
         H.push('</td>');
         H.push('<td style="color:#dc2626;font-weight:700;">' + tw.count + '</td>');
         H.push('</tr>');
@@ -8090,67 +8001,38 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     navigator.serviceWorker.register('./sw-examiner.js').catch(function() {});
   }
 
-  // ===== Auto-update: detect a new deployed version and refresh =====
-  // sw-examiner.js is network-first, so a reload always fetches the latest HTML.
-  // The dashboard stays open for hours, so we detect new deploys (HEAD-poll our
-  // own ETag/Last-Modified — HEAD bypasses the SW) and show a banner + auto-reload
-  // after a grace period, so the examiner always runs the current version without
-  // manually refreshing. Zero maintenance — no version file to bump.
-  //
-  // 16/09/2026 — THIS BLOCK TOOK THE EXAMINERS DOWN. From ~09:30 every examiner
-  // in an exam was bounced to the login screen, and pages that came back then
-  // reloaded themselves without end, showing "גרסה חדשה זמינה" — while NO deploy
-  // had happened since 07:57 (GitHub's deployment list proves it). Examiners had
-  // to fall back to paper. Three defects, each enough on its own:
-  //  1. The same build carries two ETag spellings: "6aaa21d2-76fe0" (identity)
-  //     and W/"6aaa21d2-76fe0" (gzip) — measured live that day. Comparing them
-  //     as strings calls one build two versions whenever an edge or a mobile
-  //     carrier's proxy hands back the other variant.
-  //  2. Error pages counted: a 5xx, a captive portal or a proxy response has its
-  //     own tag and was read as "new version". (The service worker DOES intercept
-  //     this HEAD — the old comment above claiming otherwise was wrong.)
-  //  3. It reloaded mid-exam, and every reload re-runs login + dashboard reads,
-  //     so a whole site flipping at once became a burst on the Apps Script that
-  //     timed out the logins themselves ("שגיאת תקשורת" on the login screen).
-  // Now: tags are normalised and only taken from a 200; a change must be seen
-  // on two consecutive polls; and an open session never reloads by itself.
+  // ===== Auto-update: BANNER ONLY, never a reload we did not ask for =====
+  // 16/09/2026: this block took every examiner down. From ~09:30 they were
+  // bounced to the login screen and the pages reloaded themselves without end
+  // under "\u05d2\u05e8\u05e1\u05d4 \u05d7\u05d3\u05e9\u05d4 \u05d6\u05de\u05d9\u05e0\u05d4" - with NO deploy since 07:57. Two causes
+  // in this block: one build is served with two ETag spellings ("x" and W/"x"),
+  // and every Pages push re-stamps every file's ETag whether or not it changed.
+  // Both are gone: version.json carries a sha1 PER PAGE, produced by the build.
+  // And decision 4 of the 21/09 design: examiner and teacher never reload
+  // themselves. A banner, a button, nothing else - not even for an idle page,
+  // because "idle" is a guess about a person in an exam room.
   (function() {
     if (!window.fetch) return;
-    var baseTag = null, pendingTag = null, notified = false;
-    // ETag only, weak prefix and quotes stripped. No Last-Modified fallback:
-    // mixing the two header sources is itself a way to see two "versions".
-    var tagOf = function(r) {
-      if (!r || !r.ok) return null;
-      var e = r.headers.get('ETag');
-      return e ? String(e).replace(/^W\//, '').replace(/"/g, '').trim() || null : null;
-    };
-    var probe = function(cb) {
-      fetch(location.pathname, { method: 'HEAD', cache: 'no-store' })
-        .then(function(r) { cb(tagOf(r)); }).catch(function() { cb(null); });
-    };
-    probe(function(t) { baseTag = t; });
-    setInterval(function() {
-      if (notified) return;
-      probe(function(t) {
-        if (!t) return;                                   // no trustworthy answer this time
-        if (!baseTag) { baseTag = t; return; }            // first good answer is the base
-        if (t === baseTag) { pendingTag = null; return; } // same build
-        // One differing answer proves nothing. A real deploy is still there on
-        // the next poll, two minutes later, with the same tag.
-        if (pendingTag !== t) { pendingTag = t; return; }
-        notified = true;
+    ExamTransport.createUpdateCheck({
+      page: 'examiner.html',
+      intervalMs: 120000,
+      onNewVersion: function() {
+        if (document.getElementById('examinerUpdateBanner')) return;
         var b = document.createElement('div');
-        b.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99999;background:#1a73e8;color:#fff;padding:12px 16px;text-align:center;font-size:15px;font-weight:700;box-shadow:0 -2px 10px rgba(0,0,0,.2);';
-        b.innerHTML = (sessionCode ? '🔄 גרסה חדשה זמינה — אפשר לרענן אחרי הבחינה ' : '🔄 גרסה חדשה זמינה — מתעדכן אוטומטית… ') + '<button id="swUpdNow" style="margin-right:10px;padding:6px 16px;font-weight:800;background:#fff;color:#1a73e8;border:none;border-radius:8px;cursor:pointer;">רענן עכשיו</button>';
+        b.id = 'examinerUpdateBanner';
+        b.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99998;background:#1a73e8;color:#fff;padding:12px 16px;text-align:center;font-size:15px;font-weight:700;box-shadow:0 -2px 10px rgba(0,0,0,.2);';
+        var msg = document.createElement('span');
+        msg.textContent = '\ud83d\udd04 \u05d2\u05e8\u05e1\u05d4 \u05d7\u05d3\u05e9\u05d4 \u05d6\u05de\u05d9\u05e0\u05d4 \u2014 \u05e8\u05e2\u05e0\u05df \u05db\u05e9\u05e0\u05d5\u05d7 \u05dc\u05da (\u05dc\u05d0 \u05d1\u05d0\u05de\u05e6\u05e2 \u05d1\u05d7\u05d9\u05e0\u05d4)';
+        b.appendChild(msg);
+        var btn = document.createElement('button');
+        btn.id = 'swUpdNow';
+        btn.textContent = '\u05e8\u05e2\u05e0\u05df \u05e2\u05db\u05e9\u05d9\u05d5';
+        btn.style.cssText = 'margin-right:10px;padding:6px 16px;font-weight:800;background:#fff;color:#1a73e8;border:none;border-radius:8px;cursor:pointer;';
+        btn.addEventListener('click', function() { location.reload(); });
+        b.appendChild(btn);
         document.body.appendChild(b);
-        var btn = document.getElementById('swUpdNow');
-        if (btn) btn.addEventListener('click', function() { location.reload(); });
-        // Never pull an examiner out of a running exam session on our own: the
-        // banner stays and "רענן עכשיו" works, but only an idle page (login,
-        // setup, commander screens) reloads automatically.
-        if (!sessionCode) setTimeout(function() { if (!sessionCode) location.reload(); }, 60000);
-      });
-    }, 120000);  // check every 2 min
+      }
+    }).start();
   })();
 
   var deferredInstallPrompt = null;

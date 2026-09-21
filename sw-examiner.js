@@ -1,17 +1,23 @@
 // Service Worker for Examiner PWA
 //
-// ⚠️ תזכורת קריטית: בכל שינוי גלוי ב-examiner.html — חובה להעלות את המספר כאן (v38 → v39 ...)
-// אחרת הבוחנים ימשיכו לקבל מהמטמון את הגרסה הישנה ולא יראו את השינוי (מקרה e0708f2, יולי 2026).
-// ⚠️ CRITICAL: bump this number on EVERY user-facing examiner.html change, or the fleet
-//    keeps serving the stale cached build and never sees your fix.
-var CACHE_NAME = 'examiner-v42';
+// CACHE_NAME below is REWRITTEN BY THE BUILD (tools/build_version.js) from the
+// sha1 of examiner.html — never edit it by hand and never move it off its own
+// line: one hash names both the update check (version.json) and this cache, so
+// a page that really changed also invalidates its offline copy, and a push that
+// did not change it invalidates nothing. (D8: the old hand-bumped vNN drifted
+// eight deploys behind.)
+var CACHE_NAME = 'examiner-8de297b7';
 
-// Install — cache the examiner page shell
+// Install — cache the page shell plus the shared client modules. transport.js
+// and bank.js are separate files now, so an offline shell without them is a
+// blank page.
 self.addEventListener('install', function(e) {
   e.waitUntil(
     caches.open(CACHE_NAME).then(function(cache) {
       return cache.addAll([
         './examiner.html',
+        './shared/transport.js',
+        './shared/bank.js',
         './icon-examiner-192.png',
         './icon-examiner-512.png',
         './manifest-examiner.json'
@@ -34,24 +40,30 @@ self.addEventListener('activate', function(e) {
   self.clients.claim();
 });
 
-// Fetch — network first, fallback to cache (API calls always go to network)
+// Fetch — network first, cache only as an offline fallback.
+//
+// D7: GET ONLY. The previous version filtered by URL alone, so every POST to
+// the API and every HEAD from the old update check reached cache.put() and threw
+// "Request method 'HEAD' is unsupported" in the live console — and caches.match()
+// on a non-GET request can never hit anyway. Same guard as sw-examinee.js.
 self.addEventListener('fetch', function(e) {
-  var url = e.request.url;
-  // Always go to network for API calls
-  if (url.indexOf('script.google.com') !== -1) return;
-  // Always go to network for QR fallback API
-  if (url.indexOf('qrserver.com') !== -1) return;
+  var req = e.request;
+  if (req.method !== 'GET') return;
+  var url = req.url;
+  if (url.indexOf('script.google.com') !== -1) return;   // API — always network
+  if (url.indexOf('qrserver.com') !== -1) return;         // QR fallback — always network
 
   e.respondWith(
-    fetch(e.request).then(function(response) {
-      // Update cache with fresh version
-      if (response.ok) {
+    fetch(req).then(function(response) {
+      if (response && response.ok) {
         var clone = response.clone();
-        caches.open(CACHE_NAME).then(function(cache) { cache.put(e.request, clone); });
+        caches.open(CACHE_NAME).then(function(cache) { cache.put(req, clone); });
       }
       return response;
     }).catch(function() {
-      return caches.match(e.request);
+      // bank/<lang>.json is fetched with a ?v=<sha> cache-buster; ignoreSearch so
+      // the copy taken at load time still answers when the network is gone.
+      return caches.match(req, { ignoreSearch: true });
     })
   );
 });

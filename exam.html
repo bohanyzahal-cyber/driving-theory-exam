@@ -290,9 +290,12 @@
 
 <!--
   Questions are no longer loaded as a bulk JS file. Each exam fetches its
-  30 questions from the main external-exam Apps Script (`getExamQuestions`).
-  See QUESTIONS_API_URL below.
+  30 question IDS from the main external-exam Apps Script (`startPractice`);
+  every text comes from the static bank in this repo (bank/he.json, via
+  shared/bank.js). See QUESTIONS_API_URL below.
 -->
+<script src="shared/transport.js"></script>
+<script src="shared/bank.js"></script>
 <script>
 (function() {
   'use strict';
@@ -338,6 +341,17 @@
   // Question delivery uses the main external-exam Apps Script (separate
   // project) since that's where the question DB + answer key live.
   var QUESTIONS_API_URL = 'https://script.google.com/macros/s/AKfycbzOI0zrDEngP-GvlRblhOk8tQsYBvWZ2gGliIQHTpS67WrDZl4la8NPpwtJr_Vjsh3Gzg/exec';
+
+  // One shared transport: bounded requests, one classifier for a degraded backend.
+  var api = ExamTransport.createApi({ apiUrl: QUESTIONS_API_URL, origin: 'examinee-app' });
+  function practiceErrorText(resp) {
+    if (resp && resp.code === 'rate_limited') return '\u05d9\u05d5\u05ea\u05e8 \u05de\u05d3\u05d9 \u05d1\u05e7\u05e9\u05d5\u05ea \u2014 \u05d4\u05de\u05ea\u05df \u05d3\u05e7\u05d4 \u05d5\u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.';
+    if (resp && /Unknown action/i.test(String(resp.message || ''))) return '\u05d4\u05de\u05e2\u05e8\u05db\u05ea \u05de\u05ea\u05e2\u05d3\u05db\u05e0\u05ea \u2014 \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1 \u05d1\u05e2\u05d5\u05d3 \u05d3\u05e7\u05d4';
+    if (resp && resp.message) return resp.message;
+    return ExamTransport.isBackendDegraded()
+      ? '\u05d4\u05e9\u05e8\u05ea \u05e2\u05de\u05d5\u05e1 \u2014 \u05d0\u05d9\u05df \u05e6\u05d5\u05e8\u05da \u05dc\u05e8\u05e2\u05e0\u05df. \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1 \u05d1\u05e2\u05d5\u05d3 \u05d3\u05e7\u05d4.'
+      : '\u05e9\u05d2\u05d9\u05d0\u05ea \u05ea\u05e7\u05e9\u05d5\u05e8\u05ea. \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.';
+  }
 
   // ========== Config ==========
   var TOTAL_QUESTIONS = 30;
@@ -553,84 +567,6 @@
   }
 
   // ========== Questions ==========
-  function classifyCategory(cat) {
-    var c = (cat || '').trim();
-    if (/\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9/.test(c)) return '\u05E1\u05E4\u05E6\u05D9\u05E4\u05D9';
-    if (/\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA/.test(c)) return '\u05D1\u05D8\u05D9\u05D7\u05D5\u05EA';
-    if (/\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1/.test(c)) return '\u05D4\u05DB\u05E8\u05EA \u05D4\u05E8\u05DB\u05D1';
-    if (/\u05D7\u05D5\u05E7/.test(c)) return '\u05D7\u05D5\u05E7';
-    if (/\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD/.test(c)) return '\u05EA\u05DE\u05E8\u05D5\u05E8\u05D9\u05DD';
-    if (/\u05D6\u05DB\u05D5\u05EA \u05E7\u05D3\u05D9\u05DE\u05D4/.test(c)) return '\u05D7\u05D5\u05E7';
-    return '';
-  }
-
-  // Legacy: client-side filtering used the global QUESTIONS array, which is
-  // gone now (server picks questions). Kept as a stub so UI helpers that
-  // still call it (updateAvailableCount, etc.) don't blow up.
-  function getFilteredQuestions(_license) { return []; }
-
-  function _legacyGetFilteredQuestions_DEPRECATED(license) {
-    if (!window.QUESTIONS || !Array.isArray(QUESTIONS)) return [];
-    return QUESTIONS.filter(function(q) {
-      if ((q.language || 'he') !== 'he') return false;
-      if (!q.answers || q.answers.length < 2) return false;
-      // "מתן זכות קדימה" questions apply to all license types
-      if (/\u05D6\u05DB\u05D5\u05EA \u05E7\u05D3\u05D9\u05DE\u05D4/.test(q.category || '')) return true;
-      if (license === '1') {
-        var lt = (q.licenseType || '').trim();
-        if (lt !== '' && lt !== 'N/A') return false;
-        var cat = (q.category || '');
-        if (cat.indexOf('1') === -1) return false;
-      } else if (license === 'C') {
-        var lic = (q.licenseType || '').trim();
-        if (lic !== 'C' && lic !== 'C/E' && lic !== 'C+E' && lic !== 'CE') return false;
-      } else {
-        var lic = (q.licenseType || '').trim();
-        if (lic !== license) return false;
-      }
-      return true;
-    });
-  }
-
-  // Legacy: client-side picker, replaced by server-side `getExamQuestions`.
-  function buildExam(_license) { return []; }
-
-  function _legacyBuildExam_DEPRECATED(license) {
-    var structure = EXAM_STRUCTURE[license];
-    if (!structure) return [];
-    var pool = _legacyGetFilteredQuestions_DEPRECATED(license);
-    // Deduplicate by question ID - keep first occurrence only
-    var seenIds = {};
-    pool = pool.filter(function(q) {
-      if (seenIds[q.id]) return false;
-      seenIds[q.id] = true;
-      return true;
-    });
-    var byTopic = {};
-    for (var t in structure) byTopic[t] = [];
-    pool.forEach(function(q) {
-      var topic = classifyCategory(q.category);
-      if (byTopic[topic]) byTopic[topic].push(q);
-    });
-    var selected = [];
-    var usedIds = {};
-    for (var topic in structure) {
-      var needed = structure[topic];
-      var available = shuffle(byTopic[topic] || []);
-      if (available.length < needed) return [];
-      var count = 0;
-      for (var i = 0; i < available.length && count < needed; i++) {
-        if (!usedIds[available[i].id]) {
-          usedIds[available[i].id] = true;
-          selected.push(available[i]);
-          count++;
-        }
-      }
-      if (count < needed) return [];
-    }
-    return shuffle(selected);
-  }
-
   function shuffle(arr) {
     var a = arr.slice();
     for (var i = a.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)); var t = a[i]; a[i] = a[j]; a[j] = t; }
@@ -734,21 +670,32 @@
     showLoadingOverlay('\u05DE\u05DB\u05D9\u05DF \u05DE\u05D1\u05D7\u05DF\u2026');
 
     var idNumber = (document.getElementById('phoneNumber') ? document.getElementById('phoneNumber').value : '') || '';
-    var qs = 'action=getExamQuestions&license=' + encodeURIComponent(license) +
-             '&language=he&standaloneIdNumber=' + encodeURIComponent(idNumber) +
-             '&origin=examinee-app' +
-             '&_t=' + Date.now();
-    fetch(QUESTIONS_API_URL + '?' + qs, { cache: 'no-store' })
-      .then(function(r) { return r.json(); })
+
+    // startPractice hands back ids + the blueprint topic + the encoded correct
+    // index per language; the standalone page is Hebrew-only, so it reads texts
+    // out of bank/he.json and keeps scoring exactly as before (local, from ci).
+    api.get({ action: 'startPractice', mode: 'exam', license: license, language: 'he', standaloneIdNumber: idNumber })
       .then(function(resp) {
+        if (!resp || resp.status !== 'ok' || !Array.isArray(resp.questions) || resp.questions.length < TOTAL_QUESTIONS) {
+          throw { soft: true, message: practiceErrorText(resp) };
+        }
+        return QuestionBank.load('he').then(function() {
+          var out = [];
+          for (var i = 0; i < resp.questions.length; i++) {
+            var r = resp.questions[i];
+            var e = r && QuestionBank.get(r.id, 'he', license);
+            if (!e || !r.ci || typeof r.ci.he !== 'number') continue;
+            out.push({ id: r.id, text: e.text, answers: e.answers,
+                       imageUrl: QuestionBank.imageUrl(e), category: r.topic || '', ci: r.ci.he });
+          }
+          if (out.length < TOTAL_QUESTIONS) throw { soft: true, message: '\u05d1\u05e0\u05e7 \u05d4\u05e9\u05d0\u05dc\u05d5\u05ea \u05dc\u05d0 \u05e0\u05d8\u05e2\u05df \u05d1\u05de\u05dc\u05d5\u05d0\u05d5. \u05e8\u05e2\u05e0\u05df \u05d5\u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.' };
+          return out;
+        });
+      })
+      .then(function(questions) {
         hideLoadingOverlay();
         startBtn.disabled = false;
-        if (!resp || resp.status !== 'ok' || !Array.isArray(resp.questions) || resp.questions.length < TOTAL_QUESTIONS) {
-          var msg = (resp && resp.message) ? resp.message : '\u05E9\u05D2\u05D9\u05D0\u05D4 \u05D1\u05D8\u05E2\u05D9\u05E0\u05EA \u05E9\u05D0\u05DC\u05D5\u05EA';
-          examArea.innerHTML = '<div class="info-banner warn">' + msg + '</div>';
-          return;
-        }
-        activeQuestions = resp.questions;
+        activeQuestions = questions;
         currentIndex = 0;
         userAnswers = [];
         stopSpeaking();
@@ -757,10 +704,11 @@
         startTimer();
         renderQuestion();
       })
-      .catch(function(_err) {
+      .catch(function(err) {
         hideLoadingOverlay();
         startBtn.disabled = false;
-        examArea.innerHTML = '<div class="info-banner warn">\u05E9\u05D2\u05D9\u05D0\u05EA \u05EA\u05E7\u05E9\u05D5\u05E8\u05EA. \u05E0\u05E1\u05D4 \u05E9\u05D5\u05D1.</div>';
+        var msg = (err && err.soft && err.message) ? err.message : practiceErrorText(null);
+        examArea.innerHTML = '<div class="info-banner warn">' + msg + '</div>';
       });
   });
 
@@ -855,9 +803,8 @@
     if (q.imageUrl && q.imageUrl.trim() !== '') {
       var img = document.createElement('img');
       img.className = 'q-image';
-      img.referrerPolicy = 'no-referrer';
       img.loading = 'eager';
-      img.src = q.imageUrl;
+      img.src = q.imageUrl;   // images/TQ_PIC_*.jpg - same origin, committed to this repo
       img.alt = '\u05EA\u05DE\u05D5\u05E0\u05D4 \u05DC\u05E9\u05D0\u05DC\u05D4';
       img.onerror = function() { img.style.display = 'none'; };
       card.appendChild(img);

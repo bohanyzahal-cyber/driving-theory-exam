@@ -225,22 +225,6 @@
 <!-- Auth-required blocker. Shown when localStorage credentials are missing
      (i.e. user landed here directly without logging in via examiner.html).
      Replaces the previous "small error in results area" UX that confused users. -->
-<div id="authBlocker" style="display:none; max-width:520px; margin:48px auto; padding:32px 28px; background:#fff; border:1px solid #cbd5e1; border-radius:14px; box-shadow:0 4px 16px rgba(0,0,0,0.08); text-align:center;">
-  <div style="font-size:52px; margin-bottom:14px;">🔐</div>
-  <h2 style="font-size:20px; color:#1e293b; margin:0 0 12px;">דרושה התחברות</h2>
-  <p style="font-size:14px; color:#475569; line-height:1.6; margin:0 0 10px;">
-    כדי לחפש תמונות לשאלות צריך להתחבר קודם דרך לוח הבוחן.
-  </p>
-  <p style="font-size:13px; color:#64748b; line-height:1.6; margin:0 0 22px;">
-    ⚠️ ודאי שסימנת את <strong>"זכור אותי"</strong> בכניסה — אחרת תצטרך להתחבר שוב בכל פעם.
-  </p>
-  <a href="examiner.html" style="display:inline-block; background:#1e40af; color:#fff; padding:12px 28px; border-radius:10px; font-size:15px; font-weight:700; text-decoration:none;">🔓 כניסה ללוח הבוחן</a>
-  <p style="font-size:12px; color:#94a3b8; line-height:1.6; margin:16px 0 0;">
-    אחרי התחברות — חזור לעמוד הזה,<br>
-    או לחץ "🖼 חפש תמונה" בלוח הבוחן.
-  </p>
-</div>
-
 <main>
   <div class="search-box">
     <label for="searchInput">חיפוש לפי טקסט השאלה:</label>
@@ -265,7 +249,7 @@
 
   <div class="loading" id="loading">
     <div class="spinner"></div>
-    <p>טוען מאגר שאלות (~9MB, פעם אחת בלבד)...</p>
+    <p>טוען את בנק השאלות…</p>
   </div>
 
   <div class="results" id="results"></div>
@@ -282,99 +266,71 @@
 </div>
 
 <!--
-  questions.js and per-language translation files removed — search now runs
-  server-side via the Apps Script `searchQuestions` action. Requires examiner
-  credentials (read from localStorage, set by examiner.html on login).
+  The question bank is a STATIC, PUBLIC file in this repo (bank/<lang>.json,
+  built by tools/build_bank.js). This page searches it in the browser - no
+  server call, no examiner credentials, no searchQuestions action. The bank
+  carries texts, answers and image names only; the correct-answer index stays
+  on the server, so this page no longer marks the correct answer.
 -->
+<script src="shared/bank.js"></script>
 <script>
 (function() {
   'use strict';
 
-  var IMAGE_PROXY_BASE = 'https://image-proxy.bohanyzahal.workers.dev';
-  var API_URL = 'https://script.google.com/macros/s/AKfycbzOI0zrDEngP-GvlRblhOk8tQsYBvWZ2gGliIQHTpS67WrDZl4la8NPpwtJr_Vjsh3Gzg/exec';
-  var API_ORIGIN = 'examiner-app';
-
-  // Read examiner credentials from localStorage (set by examiner.html on login).
-  // Without these, the server rejects searchQuestions calls.
-  var examinerCreds = (function() {
-    try {
-      var raw = localStorage.getItem('ext_examiner_remember');
-      return raw ? JSON.parse(raw) : null;
-    } catch (e) { return null; }
-  })();
-
-  function toProxyUrl(originalUrl) {
-    if (!originalUrl) return '';
-    if (!IMAGE_PROXY_BASE) return originalUrl;
-    try {
-      var u = new URL(originalUrl);
-      if (u.hostname !== 'www.gov.il' && u.hostname !== 'gov.il') return originalUrl;
-      return IMAGE_PROXY_BASE.replace(/\/$/, '') + '/img' + u.pathname;
-    } catch(e) { return originalUrl; }
-  }
-
-  // XOR cipher used by the system to obfuscate the correct answer index
-  function decodeCI(stored, id) {
-    if (typeof stored !== 'number' || typeof id !== 'number') return -1;
-    return stored ^ (id % 256);
-  }
-
+  var LANG_LABELS = { he: 'עברית', ru: 'רוסית', ar: 'ערבית', en: 'אנגלית', am: 'אמהרית', fr: 'צרפתית', es: 'ספרדית' };
+  var MAX_RESULTS = 8;
   var currentLang = 'he';
-
-  // Server returns each match already in the requested language, so just
-  // hand back text/answers as-is. `ci` is the encoded correct index
-  // (legacy format) — server includes it for this examiner-only utility.
-  function getQuestionInLang(q, _lang) {
-    return {
-      t: q.text,
-      a: q.answers,
-      ci: (typeof q.ci !== 'undefined') ? decodeCI(q.ci, q.id) : -1
-    };
-  }
+  var lastQuery = '';
 
   function escHtml(s) {
     return String(s == null ? '' : s)
-      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-      .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function el(id) { return document.getElementById(id); }
+
+  function setStatus(text) { var s = el('dbStatus'); if (s) s.textContent = text; }
+  function setLoading(on, text) {
+    var l = el('loading');
+    if (!l) return;
+    l.style.display = on ? '' : 'none';
+    if (on && text) { var p = l.querySelector('p'); if (p) p.textContent = text; }
+  }
+  function showError(text) {
+    var results = el('results');
+    if (results) results.innerHTML = '<div class="info-banner warn" style="margin:12px;color:#dc2626;">' + escHtml(text) + '</div>';
   }
 
   function showResults(matches) {
-    var results = document.getElementById('results');
-    var empty = document.getElementById('empty');
-    var meta = document.getElementById('meta');
-    var countBadge = document.getElementById('countBadge');
-
+    var results = el('results'), empty = el('empty'), meta = el('meta'), countBadge = el('countBadge');
     results.innerHTML = '';
-    if (matches.length === 0) {
+    if (!matches.length) {
       empty.style.display = '';
       empty.querySelector('p').textContent = 'לא נמצאו שאלות תואמות. נסה מילים אחרות.';
       meta.style.display = 'none';
       return;
     }
-
     empty.style.display = 'none';
     meta.style.display = '';
-    countBadge.textContent = matches.length + ' תוצאות' + (matches.length >= 8 ? ' (מציג 8 ראשונות)' : '');
+    countBadge.textContent = matches.length + ' תוצאות' + (matches.length >= MAX_RESULTS ? ' (מציג ' + MAX_RESULTS + ' ראשונות)' : '');
 
-    matches.slice(0, 8).forEach(function(q) {
-      var loc = getQuestionInLang(q, currentLang);
-      if (!loc) loc = getQuestionInLang(q, 'he'); // fallback
-
+    matches.slice(0, MAX_RESULTS).forEach(function(q) {
       var card = document.createElement('div');
       card.className = 'card';
 
-      // Question text
       var qtext = document.createElement('div');
       qtext.className = 'qtext';
-      qtext.textContent = loc.t || '(אין טקסט)';
+      qtext.textContent = q.text || '(אין טקסט)';
       card.appendChild(qtext);
 
-      // Image (or no-image notice)
-      if (q.imageUrl && q.imageUrl.trim() !== '') {
+      // Images are self-hosted in this repo (images/TQ_PIC_*.jpg) since ee05859
+      // - no proxy, no gov.il, nothing to fail at runtime.
+      var imgSrc = QuestionBank.imageUrl(q);
+      if (imgSrc) {
         var img = document.createElement('img');
-        img.src = toProxyUrl(q.imageUrl);
+        img.src = imgSrc;
         img.alt = 'תמונה לשאלה';
-        img.referrerPolicy = 'no-referrer';
         img.loading = 'lazy';
         img.onerror = function() {
           img.style.display = 'none';
@@ -386,38 +342,28 @@
         img.style.cursor = 'zoom-in';
         img.title = 'לחץ להגדלה';
         img.addEventListener('click', function() {
-          var overlay = document.getElementById('fullOverlay');
-          document.getElementById('fullImg').src = img.src;
-          overlay.classList.add('active');
+          el('fullImg').src = img.src;
+          el('fullOverlay').classList.add('active');
         });
         card.appendChild(img);
       } else {
-        var noimg = document.createElement('div');
-        noimg.className = 'noimg';
-        noimg.textContent = '— לשאלה זו אין תמונה —';
-        card.appendChild(noimg);
+        var noimg2 = document.createElement('div');
+        noimg2.className = 'noimg';
+        noimg2.textContent = '— לשאלה זו אין תמונה —';
+        card.appendChild(noimg2);
       }
 
-      // Meta row
       var qmeta = document.createElement('div');
       qmeta.className = 'qmeta';
-      qmeta.innerHTML =
-        '<span>📋 שאלה ' + escHtml(q.id) + '</span>' +
-        (q.licenseType ? '<span>🪪 ' + escHtml(q.licenseType) + '</span>' : '') +
-        (q.category ? '<span>📂 ' + escHtml(q.category) + '</span>' : '');
+      qmeta.innerHTML = '<span>📋 שאלה ' + escHtml(q.id) + '</span>';
       card.appendChild(qmeta);
 
-      // Answers
-      if (loc.a && loc.a.length) {
+      if (q.answers && q.answers.length) {
         var ansDiv = document.createElement('div');
         ansDiv.className = 'answers';
         var html = '<ol>';
-        loc.a.forEach(function(ans, i) {
-          var cls = (i === loc.ci) ? ' class="correct"' : '';
-          html += '<li' + cls + '>' + escHtml(ans) + (i === loc.ci ? ' ✓' : '') + '</li>';
-        });
-        html += '</ol>';
-        ansDiv.innerHTML = html;
+        for (var i = 0; i < q.answers.length; i++) html += '<li>' + escHtml(q.answers[i]) + '</li>';
+        ansDiv.innerHTML = html + '</ol>';
         card.appendChild(ansDiv);
       }
 
@@ -425,102 +371,73 @@
     });
   }
 
-  // Server-side search — sends query to Apps Script, gets up to 20 matches.
-  // The full question bank stays on the server; we don't load it client-side.
-  function searchServer(query, onResults, onError) {
-    if (!examinerCreds || !examinerCreds.id || !examinerCreds.token) {
-      onError('יש להתחבר תחילה דרך examiner.html');
+  // Search runs against the bank of the CHOSEN language, loaded once and kept
+  // in memory (and in the service-worker cache for the next visit).
+  function runSearch(value) {
+    lastQuery = value;
+    var q = String(value || '').trim();
+    if (q.length < 3) {
+      el('results').innerHTML = '';
+      el('empty').style.display = '';
+      el('empty').querySelector('p').textContent = 'הקלד טקסט לחיפוש (לפחות 3 תווים)';
       return;
     }
-    if (!query || query.length < 3) { onResults([]); return; }
-    var qs = 'action=searchQuestions' +
-      '&q=' + encodeURIComponent(query) +
-      '&language=' + encodeURIComponent(currentLang) +
-      '&examinerId=' + encodeURIComponent(examinerCreds.id) +
-      '&token=' + encodeURIComponent(examinerCreds.token) +
-      '&origin=' + encodeURIComponent(API_ORIGIN) +
-      '&_t=' + Date.now();
-    fetch(API_URL + '?' + qs, { cache: 'no-store' })
-      .then(function(r) { return r.json(); })
-      .then(function(resp) {
-        if (!resp || resp.status !== 'ok') { onError((resp && resp.message) || 'שגיאה'); return; }
-        onResults(resp.matches || []);
-      })
-      .catch(function() { onError('שגיאת תקשורת'); });
+    if (QuestionBank.has(currentLang)) {
+      showResults(QuestionBank.search(currentLang, q, 50));
+      return;
+    }
+    setLoading(true, 'טוען את בנק השאלות ב' + (LANG_LABELS[currentLang] || currentLang) + '…');
+    QuestionBank.load(currentLang).then(function() {
+      setLoading(false);
+      setStatus('בנק מקומי — ' + (LANG_LABELS[currentLang] || currentLang));
+      if (lastQuery === value) showResults(QuestionBank.search(currentLang, q, 50));
+    }).catch(function() {
+      setLoading(false);
+      setStatus('הבנק לא נטען');
+      showError('לא הצלחתי לטעון את בנק השאלות. בדוק חיבור ונסה שוב.');
+    });
   }
 
-  // Initialize UI immediately (no client-side wait — server handles questions)
   (function initUI() {
-    // Hard gate: no examiner credentials = swap the search UI for an auth
-    // blocker with a clickable login button. Search would have failed at the
-    // server anyway, and the previous "small inline error" was easy to miss.
-    if (!examinerCreds || !examinerCreds.id || !examinerCreds.token) {
-      var blocker = document.getElementById('authBlocker');
-      if (blocker) blocker.style.display = 'block';
-      var mainEl = document.querySelector('main');
-      if (mainEl) mainEl.style.display = 'none';
-      return;
-    }
-
-    var loadingEl = document.getElementById('loading');
-    if (loadingEl) loadingEl.style.display = 'none';
-    var emptyEl = document.getElementById('empty');
-    if (emptyEl) emptyEl.style.display = '';
-    var metaEl = document.getElementById('meta');
-    if (metaEl) metaEl.style.display = '';
-    var countBadge = document.getElementById('countBadge');
-    if (countBadge) countBadge.textContent = '0 תוצאות';
-    var dbStatus = document.getElementById('dbStatus');
-    if (dbStatus) dbStatus.textContent = 'חיפוש דרך השרת';
+    setLoading(false);
+    el('empty').style.display = '';
+    el('meta').style.display = '';
+    el('countBadge').textContent = '0 תוצאות';
+    setStatus('בנק מקומי — עברית');
+    QuestionBank.load('he').catch(function() {});
   })();
 
   var debounceTimer = null;
-  function runSearch(val) {
-    searchServer(val,
-      function(matches) { showResults(matches); },
-      function(err) {
-        var results = document.getElementById('results');
-        if (results) results.innerHTML = '<div class="info-banner warn" style="margin:12px;color:#dc2626;">' + escHtml(err) + '</div>';
-      }
-    );
-  }
-  document.getElementById('searchInput').addEventListener('input', function() {
+  el('searchInput').addEventListener('input', function() {
     var val = this.value;
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(function() { runSearch(val); }, 350);
   });
 
-  // Language picker
-  document.getElementById('langPick').addEventListener('click', function(e) {
+  el('langPick').addEventListener('click', function(e) {
     if (e.target.tagName !== 'BUTTON') return;
     var btns = this.querySelectorAll('button');
     for (var i = 0; i < btns.length; i++) btns[i].classList.remove('active');
     e.target.classList.add('active');
     currentLang = e.target.getAttribute('data-lang');
-    // Re-run current search
-    var val = document.getElementById('searchInput').value;
+    setStatus('בנק מקומי — ' + (LANG_LABELS[currentLang] || currentLang));
+    var val = el('searchInput').value;
     if (val.length >= 3) runSearch(val);
   });
 
-  // Esc closes overlay
   document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape') document.getElementById('fullOverlay').classList.remove('active');
+    if (e.key === 'Escape') el('fullOverlay').classList.remove('active');
   });
 
-  // Auto-fill from URL parameter ?q=... — lets the commander dashboard
-  // deep-link from the top-10 wrong-questions table directly into a search.
+  // Deep link from the commander dashboard's top-wrong table: ?q=<question text>.
   try {
     var params = new URLSearchParams(window.location.search);
     var qVal = params.get('q');
     if (qVal) {
-      var inp = document.getElementById('searchInput');
-      if (inp) {
-        inp.value = qVal;
-        // Trigger the same debounced search the input event uses
-        setTimeout(function() { runSearch(qVal); }, 100);
-      }
+      var inp = el('searchInput');
+      if (inp) { inp.value = qVal; setTimeout(function() { runSearch(qVal); }, 100); }
     }
-  } catch (e) { /* URLSearchParams missing — fine, falls back to manual entry */ }
+  } catch (e) { /* URLSearchParams missing - manual entry still works */ }
 })();
 </script>
 </body>
