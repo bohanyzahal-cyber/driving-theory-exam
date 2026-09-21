@@ -210,12 +210,25 @@ test('a wrong token and an unknown examinee get the same answer from both routes
 });
 
 test('the snapshot never leaks names, phones or tokens, and refuses a wrong key', () => {
-  const env = serverEnv([pendingRow('900000001', 'approved')]);
+  // The row carries every counter and flag the examiner board displays (r31,
+  // DESIGN §13.6: the board waits on the Worker's fingerprint of these), so the
+  // "nothing identifying" rule is asserted on a row where they are all set.
+  const loaded = pendingRow('900000001', 'in_exam');
+  loaded[13] = 2;        // N: ספירת DQ
+  loaded[14] = 'כן';     // O: מסך נוסף
+  loaded[15] = 3;        // P: ספירת אזהרות
+  loaded[16] = 'החלפת חלון';
+  loaded[18] = '2026-09-22T07:10:00Z';   // S: סיים במכשיר
+  const env = serverEnv([loaded]);
   const snap = get(env, { action: 'sessionSnapshot', sessionCode: SESSION, gatewayKey: GATEWAY_KEY, origin: 'gateway' });
   assert.equal(snap.status, 'ok');
   const text = JSON.stringify(snap);
   assert.ok(!text.includes('נבחן 900000001') && !text.includes('0501234567') && !text.includes('tok-900000001'));
+  assert.ok(!text.includes('החלפת חלון'), 'the warning REASON is free text an examinee typed into — it stays on the sheet');
   assert.equal(snap.rows[0].tokenHash, crypto.createHash('sha256').update('tok-900000001').digest('hex'));
+  assert.deepEqual(Object.keys(snap.rows[0]).sort(),
+    ['audio', 'dq', 'examMinutes', 'ext', 'extraMinutes', 'fin', 'id', 'status', 'tokenHash', 'warn']);
+  assert.deepEqual([snap.rows[0].warn, snap.rows[0].fin, snap.rows[0].ext, snap.rows[0].dq], [3, 1, 1, 2]);
   const denied = get(env, { action: 'sessionSnapshot', sessionCode: SESSION, gatewayKey: 'nope', origin: 'gateway' });
   assert.equal(denied.code, 'gateway_denied');
 });

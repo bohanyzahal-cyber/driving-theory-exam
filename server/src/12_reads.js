@@ -231,3 +231,76 @@ function readHistorySince(sheetName, archiveName, tsColIdx, cutoff, colSpec) {
 function readResultsSince(cutoff, colSpec) { return readHistorySince('תוצאות', RESULTS_ARCHIVE_SHEET, 0, cutoff, colSpec); }
 function readPendingSince(cutoff, colSpec) { return readHistorySince('ממתינים', PENDING_ARCHIVE_SHEET, 4, cutoff, colSpec); }
 
+// ---- 'סשנים' — the reads every deployment needs ---------------------------
+// Moved here from 44_sessions_misc.js on 22/09/2026 (DESIGN §13.3): the site
+// report, the commander dashboard and the forecast are `reports` actions and
+// they all read the session rows, while the session HANDLERS are `exam`. A
+// read that both halves of the split need belongs in `both`.
+
+// Decode column L into an array of quota rows. Handles three historical shapes:
+//   1. Empty cell           → []
+//   2. Plain number         → [{license: <session.license>, requested: <num>, approved: <colM>}]
+//      (early prototype that stored requested/approved as separate columns L,M)
+//   3. JSON array string    → parsed array
+// Used by every session reader so backward-compat is centralised.
+function decodeSessionQuotas(colL, colM, sessionLicense) {
+  if (colL === '' || colL == null) return [];
+  var s = String(colL).trim();
+  if (s.charAt(0) === '[') {
+    try {
+      var arr = JSON.parse(s);
+      if (Array.isArray(arr)) {
+        var out = [];
+        for (var i = 0; i < arr.length; i++) {
+          var r = arr[i] || {};
+          out.push({
+            site: String(r.site || ''),
+            license: String(r.license || ''),
+            requested: Number(r.requested) || 0,
+            approved: Number(r.approved) || 0
+          });
+        }
+        return out;
+      }
+    } catch(e) {}
+    return [];
+  }
+  // Legacy single-pair format: column L = requested, column M = approved
+  var legacyReq = parseInt(s, 10);
+  var legacyAppr = parseInt(colM, 10);
+  if (isFinite(legacyReq) && legacyReq > 0) {
+    return [{
+      site: '',
+      license: String(sessionLicense || 'B'),
+      requested: legacyReq,
+      approved: isFinite(legacyAppr) ? legacyAppr : 0
+    }];
+  }
+  return [];
+}
+
+// ---- One 'סשנים' read per execution ----------------------------------------
+// addExamTime and disqualify each read the whole sheet twice — once for the
+// ownership check, once for the session's examiner name (review C R12). The
+// memo lives for one request, which is far shorter than any state it caches.
+var _sessionRowsMemo = null;
+function sessionRows() {
+  if (!_sessionRowsMemo) _sessionRowsMemo = getSheet('סשנים').getDataRange().getValues();
+  return _sessionRowsMemo;
+}
+function sessionRowByCode(sessionCode) {
+  var rows = sessionRows(), want = String(sessionCode || '').trim();
+  for (var i = 1; i < rows.length; i++) {
+    if (String(rows[i][0]).trim() === want) return rows[i];
+  }
+  return null;
+}
+// Same rule as verifyExaminerForSession (20_auth.js): the session's own
+// examiner, and nothing when the session does not exist. Served from the memo
+// so the caller's later lookups are free. ⚠ The two must stay in step until the
+// auth module is rewritten to take a row.
+function examinerOwnsSession(sessionCode, examinerId) {
+  if (!examinerId) return false;
+  var row = sessionRowByCode(sessionCode);
+  return !!row && normalizeId(row[1]) === normalizeId(examinerId);
+}

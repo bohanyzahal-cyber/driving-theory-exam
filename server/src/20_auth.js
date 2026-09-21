@@ -316,3 +316,11 @@ function bankNotConfiguredResponse() {
   return jsonResponse({ status: 'error', code: 'bank_not_configured',
     message: 'מאגר השאלות אינו מוגדר בשרת — פנה למנהל המערכת' });
 }
+
+// Address of the polling Worker (DESIGN §3.4). Empty = examinees poll this
+// script directly; setting/clearing the ScriptProperty switches the whole fleet
+// within one getSessionInfo, without a Pages deploy.
+function gatewayUrl() {
+  try { return String(PropertiesService.getScriptProperties().getProperty('GATEWAY_URL') || '').trim(); }
+  catch (e) { return ''; }
+}

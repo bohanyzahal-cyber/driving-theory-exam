@@ -9,9 +9,8 @@
 //   תוצאות  30 days → תוצאות_ארכיון    (history readers use readResultsSince)
 // Nothing is deleted: every row is copied first and the archive keeps the full
 // width. Run archiveSheets() once by hand, then installNightlyJobs().
-var PENDING_ARCHIVE_SHEET = 'ממתינים_ארכיון';
-var RESULTS_ARCHIVE_SHEET = 'תוצאות_ארכיון';
-var EXAMS_ARCHIVE_SHEET = 'מבחנים_ארכיון';
+// The three archive sheet NAMES live in 00_config.js since 22/09/2026: 12_reads
+// and 22_util read them and they are `both`, while this module is `reports`.
 var PENDING_ARCHIVE_RETAIN_DAYS = 14;
 var PENDING_TERMINAL = { completed: 1, disqualified: 1, dq_confirmed: 1, cancelled: 1, rejected: 1 };
 
@@ -143,13 +142,14 @@ function deleteRowRuns(sheet, chunkRows) {
 // name, and an operator may still have it in a runbook. Delete after 10/2026.
 function archiveOldPendingRows() { return archiveSheets(); }
 
-// Run ONCE from the editor after a deploy. Leaves EXACTLY two time triggers:
-// archiveSheets 01:00 and rebuildAtRiskCache 03:00 (Asia/Jerusalem). Every
-// trigger of a retired job is removed by NAME — the functions themselves may no
-// longer exist in the script, but Apps Script keeps running their triggers and
-// each run burns from the 90-minutes-a-day trigger budget.
-var NIGHTLY_OBSOLETE_HANDLERS = ['archiveOldPendingRows', 'archiveSheets', 'warmupQuestionCaches',
-  'ensureQuestionCachesWarm', 'rebuildMissingQuestionCaches', 'rebuildAtRiskCache'];
+// Run ONCE from the editor after a deploy — in the REPORTS project once the
+// split is live (DESIGN §13.3), because both handlers ship there. Leaves EXACTLY
+// two time triggers: archiveSheets 01:00 and rebuildAtRiskCache 03:00
+// (Asia/Jerusalem). Every trigger of a retired job is removed by NAME — the
+// functions themselves may no longer exist in the script, but Apps Script keeps
+// running their triggers and each run burns from the 90-minutes-a-day trigger
+// budget. NIGHTLY_OBSOLETE_HANDLERS is in 24_triggers.js (`both`), next to
+// uninstallNightlyJobs, which is what the exam project runs.
 function installNightlyJobs() {
   var trigs = ScriptApp.getProjectTriggers(), removed = [];
   for (var i = 0; i < trigs.length; i++) {

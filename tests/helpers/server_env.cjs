@@ -11,6 +11,15 @@
 //   env.ctx.handleStartExam({ ... });
 //   env.sheet('מבחנים').rows        // what was written
 //   env.counters()                  // { fullReads, cellsRead, appends, setValues }
+//
+// Two options exist for the r31 split (DESIGN §13.3):
+//   serverFile: 'external_exam_apps_script.exam.js'   which of the three builds
+//               to load (default: the monolith, which is the "full server")
+//   standalone: true   SpreadsheetApp.getActiveSpreadsheet() answers null, as it
+//               does in a project that is not bound to a document, so the
+//               EXAM_SPREADSHEET_ID fallback is testable. The active spreadsheet
+//               is then reachable by its id 'active' — pass
+//               properties: { EXAM_SPREADSHEET_ID: 'active' } to open it.
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
@@ -19,6 +28,8 @@ const { randomUUID, createHmac, createHash } = require('node:crypto');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const SERVER_FILE = path.join(ROOT, 'external_exam_apps_script.js');
+const EXAM_SERVER_FILE = path.join(ROOT, 'external_exam_apps_script.exam.js');
+const REPORTS_SERVER_FILE = path.join(ROOT, 'external_exam_apps_script.reports.js');
 
 function createEnv(options) {
   const opts = options || {};
@@ -133,6 +144,10 @@ function createEnv(options) {
     return { getBytes: () => [...bytes], getDataAsString: () => bytes.toString('utf8') };
   };
   const triggers = [];
+  // Counted, because "flush BEFORE dropping the snapshot" is the whole point of
+  // the r31 invalidation fix (DESIGN §13.6) and a test cannot see the order any
+  // other way.
+  const flushes = { count: 0 };
   const ctx = {
     Date: FakeDate,
     Logger: { log: s => logs.push(String(s)) },
@@ -189,8 +204,10 @@ function createEnv(options) {
       getService: () => ({ getUrl: () => 'https://script.invalid/exec' })
     },
     SpreadsheetApp: {
-      flush() {},
-      getActiveSpreadsheet: () => active,
+      flush() { flushes.count++; },
+      // A STANDALONE Apps Script project (the reports deployment, DESIGN §13.3)
+      // is bound to no document at all, and this is exactly what it answers.
+      getActiveSpreadsheet: () => (opts.standalone ? null : active),
       openById: id => { const ss = spreadsheets.get(id); if (!ss) throw new Error('no spreadsheet ' + id); return ss; },
       create: ssName => makeSpreadsheet('ss' + (spreadsheets.size + 1), ssName)
     },
@@ -202,7 +219,10 @@ function createEnv(options) {
     MimeType: { JSON: 'application/json' }
   };
   vm.createContext(ctx);
-  vm.runInContext(fs.readFileSync(SERVER_FILE, 'utf8'), ctx, { filename: 'external_exam_apps_script.js' });
+  const serverFile = opts.serverFile
+    ? (path.isAbsolute(opts.serverFile) ? opts.serverFile : path.join(ROOT, opts.serverFile))
+    : SERVER_FILE;
+  vm.runInContext(fs.readFileSync(serverFile, 'utf8'), ctx, { filename: path.basename(serverFile) });
   for (const extra of opts.sources || []) {
     vm.runInContext(fs.readFileSync(path.isAbsolute(extra) ? extra : path.join(ROOT, extra), 'utf8'), ctx, { filename: String(extra) });
   }
@@ -226,11 +246,11 @@ function createEnv(options) {
   };
 
   return {
-    ctx, cache, entries, properties, logs, clock, triggers, spreadsheets, active,
+    ctx, cache, entries, properties, logs, clock, triggers, spreadsheets, active, flushes, serverFile,
     sheet, sheets: active.sheets, counters, resetCounters,
     rows: name => sheet(name).rows,
     json: out => (out && typeof out.getContent === 'function' ? JSON.parse(out.getContent()) : out)
   };
 }
 
-module.exports = { createEnv, SERVER_FILE, ROOT };
+module.exports = { createEnv, SERVER_FILE, EXAM_SERVER_FILE, REPORTS_SERVER_FILE, ROOT };

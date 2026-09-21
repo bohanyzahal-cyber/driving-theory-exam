@@ -8,6 +8,14 @@
 
 // ========== פונקציות עזר ==========
 
+// The three sheets archiveSheets() moves old rows into (14_pending_archive.js,
+// target `reports`). The NAMES live here because 12_reads readHistorySince and
+// 22_util read them on the live path and both are `both` — a split deployment
+// without the archive job must still know where the history is (DESIGN §13.3).
+var PENDING_ARCHIVE_SHEET = 'ממתינים_ארכיון';
+var RESULTS_ARCHIVE_SHEET = 'תוצאות_ארכיון';
+var EXAMS_ARCHIVE_SHEET = 'מבחנים_ארכיון';
+
 var SHEET_HEADERS = {
   'בוחנים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'מס בוחן', 'תפקיד', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד', 'אתרים מנוהלים'],
   'אתרים': ['שם אתר', 'מזהה', 'טלפון מנהל', 'כיתות'],

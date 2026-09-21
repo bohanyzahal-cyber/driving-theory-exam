@@ -1,13 +1,30 @@
 // One spreadsheet handle per execution, and the first open is marked: on 17/09
 // an examinerDashboard spent 84.8 s before its first sheet mark, and the trail
 // could not say whether opening the document or reading 'בוחנים' took it.
+//
+// Since the split (22/09/2026, DESIGN §13.3) this may run in a STANDALONE Apps
+// Script project — the reports deployment is not bound to any spreadsheet, so
+// getActiveSpreadsheet() answers null there and the script must be told which
+// document is the exam one. One Script Property, checked once per execution;
+// a missing property is a configuration error and says so, rather than
+// surfacing later as "cannot read property getSheetByName of null".
+var EXAM_SPREADSHEET_PROPERTY = 'EXAM_SPREADSHEET_ID';
 var _spreadsheetHandle = null;
 function getSpreadsheet() {
   if (!_spreadsheetHandle) {
-    _spreadsheetHandle = SpreadsheetApp.getActiveSpreadsheet();
+    _spreadsheetHandle = SpreadsheetApp.getActiveSpreadsheet() || openExamSpreadsheetById();
     diagMark('ss:open');
   }
   return _spreadsheetHandle;
+}
+function openExamSpreadsheetById() {
+  var id = '';
+  try { id = String(PropertiesService.getScriptProperties().getProperty(EXAM_SPREADSHEET_PROPERTY) || '').trim(); }
+  catch (e) { id = ''; }
+  if (!id) {
+    throw new Error('EXAM_SPREADSHEET_ID is not set — standalone deployment needs the exam spreadsheet id');
+  }
+  return SpreadsheetApp.openById(id);
 }
 
 // ---- Practice/teacher data lives in its OWN spreadsheet (r24, review B1) ----

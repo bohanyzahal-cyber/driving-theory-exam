@@ -48,11 +48,24 @@ function markPendingCompleted(sessionCode, idNumber, pendingSnapshot) {
   var pendData = pendingSnapshot
     ? refreshExamineePendingRows(pendSheet, pendingSnapshot.rows, sessionCode, idNumber)
     : pendSheet.getDataRange().getValues();
+  var wrote = false;
   for (var j = pendData.length - 1; j >= 1; j--) {
     if (String(pendData[j][0]) === String(sessionCode) && normalizeId(pendData[j][1]) === normalizeId(idNumber) && (String(pendData[j][5]).trim() === 'in_exam' || String(pendData[j][5]).trim() === 'approved')) {
       pendSheet.getRange(j + 1, 6).setValue('completed');
       pendData[j][5] = 'completed';
+      wrote = true;
     }
+  }
+  // This is the ONE write to ממתינים that did not go through
+  // setPendingStatus, so until 22/09/2026 (DESIGN §13.6) a submission left the
+  // per-session snapshot holding the old "in_exam" for up to
+  // PENDING_SNAPSHOT_SEC (4 s) — the Worker, and therefore the examiner board,
+  // could not see a finished examinee any sooner. flush() first: the
+  // invalidation is only worth anything if the next read of the sheet finds the
+  // value already there.
+  if (wrote) {
+    SpreadsheetApp.flush();
+    invalidatePendingSnapshot(sessionCode);
   }
 }
 

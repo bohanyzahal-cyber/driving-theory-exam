@@ -159,6 +159,11 @@ function handleMarkFinished(p) {
 // It carries NO names and NO phones, and never the examinee token itself: the
 // Worker compares SHA-256 hashes, so a leak of this response cannot be replayed
 // as an examinee. Rows come back in sheet order (oldest first).
+// r31 (22/09/2026, DESIGN §13.6) added warn/fin/ext/dq: the examiner board no
+// longer polls on a timer — it waits on the Worker's fingerprint of these rows
+// (/v1/session/watch), so every field the board DISPLAYS has to be in the
+// fingerprint or a change to it would never wake anybody. They are counters and
+// flags, so the no-names/no-phones/no-tokens rule is unchanged.
 defineAction('sessionSnapshot', { methods: ['GET'], auth: 'gateway', handler: handleSessionSnapshot,
   rateLimit: { max: 60, windowSec: 60, id: function(p) { return String(p.sessionCode || ''); } } });
 function handleSessionSnapshot(p) {
@@ -176,7 +181,11 @@ function handleSessionSnapshot(p) {
       tokenHash: hashExamineeToken(r.length > 12 ? r[12] : ''),
       audio: String(r[9] || '').trim() === 'on' ? 'on' : 'off',
       examMinutes: examMinutesFor(r),   // one rule for the exam length (60_exam.js)
-      extraMinutes: extraMin[id] || 0
+      extraMinutes: extraMin[id] || 0,
+      warn: Number(r[15]) || 0,                                  // P (16): ספירת אזהרות
+      fin: r.length > 18 && r[18] ? 1 : 0,                       // S (19): סיים במכשיר
+      ext: String(r[14] || '').trim() === 'כן' ? 1 : 0,             // O (15): מסך נוסף
+      dq: Number(r[13]) || 0                                     // N (14): ספירת DQ
     });
   }
   return jsonResponse({ status: 'ok', at: Date.now(), rows: rows });

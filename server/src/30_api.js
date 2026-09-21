@@ -1,5 +1,12 @@
+// Which of the three generated files this is — 'all' (the monolith), 'exam' (the
+// hot project every page already points at) or 'reports' (the standalone cold
+// project). tools/build_server.js replaces the marker line below per output;
+// nothing else in the sources may assign it. health reports it, so a paste can
+// be verified from outside without reading a single private cell.
+// @@API_DEPLOYMENT@@
+
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-22-r30';
+var THEORY_API_BUILD = '2026-09-22-r31';
 // When the current request entered the script — health&deep=1 reports the whole
 // request against it, so a watchdog can separate our time from Google's.
 var API_STARTED_AT = 0;
@@ -36,6 +43,18 @@ function theoryRetryableErrorResponse(err) {
 
 function dispatchApiAction(method, action, p) {
   ensureLegacyActions();
+  // The target check runs BEFORE the registry lookup, and before any auth, on
+  // purpose: in a split deployment the handler of a foreign action is not in
+  // this file at all, so the honest answer is "wrong server", not "unknown
+  // action" (which a page would report as a bug) and not "token invalid" (which
+  // would send an examiner to re-login for nothing). No credential is read to
+  // produce it, so it leaks nothing an anonymous caller could not already guess
+  // from health.
+  var target = ACTION_TARGETS[action];
+  if (target && target !== 'both' && API_DEPLOYMENT !== 'all' && target !== API_DEPLOYMENT) {
+    return jsonResponse({ status: 'error', code: 'wrong_deployment',
+      message: 'הפעולה שייכת לשרת אחר — יש לרענן את הדף' });
+  }
   var spec = apiRegistry()[action];
   if (!spec) return jsonResponse({ status: 'error', message: 'Unknown action: ' + action });
   if (spec.methods.indexOf(method) === -1) {
@@ -53,7 +72,17 @@ function dispatchApiAction(method, action, p) {
 
 function requireActionAuth(auth, p) {
   if (auth === 'examiner') return requireToken(p);
-  if (auth === 'teacher') return requireTeacherToken(p);
+  // requireTeacherToken lives in 90_teacher.js, which the exam deployment does
+  // not carry. Every teacher action is a `reports` action, so the target check
+  // above already refused it and this line is unreachable there — but resolving
+  // the name instead of referencing it means the day somebody gives a
+  // teacher-authenticated action an `exam` target, the exam deployment REFUSES
+  // it rather than throwing ReferenceError out of the middle of the router.
+  if (auth === 'teacher') {
+    var teacherCheck = globalFunction('requireTeacherToken');
+    return teacherCheck ? teacherCheck(p) : jsonResponse({ status: 'error', code: 'wrong_deployment',
+      message: 'הפעולה שייכת לשרת אחר — יש לרענן את הדף' });
+  }
   if (auth === 'examinee') return requireExamineeToken(p);
   if (auth === 'gateway') return requireGatewayKey(p);
   return null;   // 'none' — either public, or the handler enforces its own rule
@@ -70,17 +99,55 @@ function requireGatewayKey(p) {
   return null;
 }
 
-// ---- Actions owned by this package -----------------------------------------
-defineAction('startExam', { methods: ['POST'], auth: 'examinee', handler: handleStartExam,
-  rateLimit: { max: 10, windowSec: 60, id: function(p) { return String(p.sessionCode || '') + '_' + normalizeId(p.idNumber); } } });
-defineAction('startPractice', { methods: ['GET'], auth: 'none', handler: handleStartPractice });
-defineAction('markExamStarted', { methods: ['GET'], auth: 'examinee', handler: handleMarkExamStartedNoop });
-defineAction('getExamQuestions', { methods: ['GET'], auth: 'none', handler: handleClientOutdated });
-defineAction('registerExamQuestions', { methods: ['POST'], auth: 'none', handler: handleClientOutdated });
-defineAction('submitResult', { methods: ['POST'], auth: 'examinee', handler: handleSubmitResult });
-defineAction('submitFailOnClose', { methods: ['POST'], auth: 'examinee', handler: handleSubmitFailOnClose });
-defineAction('cancelFailOnClose', { methods: ['POST'], auth: 'examinee', handler: handleCancelFailOnClose });
-defineAction('getResultUploadToken', { methods: ['GET'], auth: 'examiner', handler: handleGetResultUploadToken });
+// ---- Which deployment serves which action (DESIGN §13.3) --------------------
+// ONE table for every action the system has, whether it is declared here, in the
+// legacy table below or with defineAction() inside a module. It is the contract
+// the client half of the split is checked against: the 22 'reports' names must
+// be exactly ExamTransport.REPORTS_ACTIONS (tests/server_split.test.cjs), because
+// a page routes by that list and the server refuses by this one — if they ever
+// drift, a page sends to a server that answers wrong_deployment forever.
+// 'both' is only what EVERY page may need whatever it is doing: health (the
+// deploy check and the transport's own probe) and getOfficeNumber (a public
+// display string). Everything else belongs to exactly one project, and the
+// default for a new action is 'exam' — the hot file — only if it really runs
+// during an exam; a report, a teacher screen or practice is 'reports'.
+var ACTION_TARGETS = {
+  // -- served by both deployments --
+  health: 'both', getOfficeNumber: 'both',
+  // -- the cold project: reports, commanders, teachers, students, practice --
+  startPractice: 'reports', submitPracticeResult: 'reports', loadStudentProgress: 'reports',
+  saveStudentProgress: 'reports', studentJoinClass: 'reports',
+  teacherLogin: 'reports', teacherVerifyLogin: 'reports', teacherDashboard: 'reports',
+  teacherCreateClass: 'reports', teacherCloseClass: 'reports', teacherDeleteClass: 'reports',
+  teacherRemoveStudent: 'reports', teacherGetClasses: 'reports', teacherClassDetails: 'reports',
+  teacherExportData: 'reports', teacherCommanderDashboard: 'reports', teacherAtRiskList: 'reports',
+  adminDashboard: 'reports', commanderDashboard: 'reports', centerManagerReport: 'reports',
+  siteCombinedReport: 'reports', examinerForecast: 'reports',
+  // -- the hot project: everything an exam morning touches --
+  login: 'exam', verifyLogin: 'exam', getSites: 'exam', listSessions: 'exam',
+  listAllSessions: 'exam', listActiveExaminers: 'exam', createSession: 'exam',
+  updateSession: 'exam', closeSession: 'exam', getSessionInfo: 'exam',
+  registerExaminee: 'exam', cancelRegistration: 'exam', approveExaminee: 'exam',
+  rejectExaminee: 'exam', examinerDashboard: 'exam', resetExaminee: 'exam',
+  forceComplete: 'exam', markSent: 'exam', correctToPass: 'exam',
+  commanderCorrectResult: 'exam', submitManualResult: 'exam', correctExamineeMeta: 'exam',
+  checkApproval: 'exam', getExamStatus: 'exam', addExamTime: 'exam', markFinished: 'exam',
+  reportWarning: 'exam', disqualify: 'exam', cancelDisqualify: 'exam',
+  overturnDQ: 'exam', confirmDQ: 'exam',
+  startExam: 'exam', markExamStarted: 'exam', getExamQuestions: 'exam',
+  registerExamQuestions: 'exam', submitResult: 'exam', submitFailOnClose: 'exam',
+  cancelFailOnClose: 'exam', getResultUploadToken: 'exam',
+  sessionSnapshot: 'exam', bankGrant: 'exam'
+};
+
+// ---- Where the action rows live --------------------------------------------
+// A defineAction row is evaluated when the file LOADS, so `handler: handleX`
+// must be a function this deployment actually contains. The rows for the exam
+// handlers therefore sit in 60_exam.js next to them (22/09/2026, DESIGN §13.3)
+// — this module is `both` and would otherwise crash the reports project on
+// load with "handleStartExam is not defined". The legacy table below is safe
+// the same way for a different reason: it names its handlers as STRINGS and
+// resolves them at call time.
 
 // ---- Every other action, with today's method and auth rule ------------------
 // S2 will move these rows next to their handlers; until then this table is the
@@ -179,6 +246,24 @@ function ensureLegacyActions() {
         ' vs ' + methods.join('/') + '/' + auth);
     }
   }
+  assertActionTargets();
+}
+
+// An action with no row in ACTION_TARGETS is not a small omission: in the split
+// it would be served by whichever of the two projects happens to hold its
+// handler and answer "Unknown action" in the other, with nothing in either log
+// saying why. Loud here, at registration, exactly like a conflicting
+// defineAction — and the test gate (node tools/test.js) runs before every paste,
+// so this can only fire on a tree that was never built.
+function assertActionTargets() {
+  var names = apiActionNames(), missing = [];
+  for (var i = 0; i < names.length; i++) {
+    if (!ACTION_TARGETS[names[i]]) missing.push(names[i]);
+  }
+  if (missing.length) {
+    throw new Error('ACTION_TARGETS has no entry for: ' + missing.join(', ') +
+      ' — every action must name the deployment that serves it (DESIGN §13.3)');
+  }
 }
 
 // Resolved at call time: the handler may live in any module, and a test or a
@@ -211,7 +296,11 @@ function handleHealth(p) {
   // gateway: booleans only. The question texts are served by the Worker against
   // a signed grant, so "is it wired up" is the first thing a deploy check needs
   // — and neither the URL nor the key is ever printed by a public probe.
-  var body = { status: 'ok', build: THEORY_API_BUILD, indexIds: questionIndexCount(),
+  // deployment: which of the three pasted files this is (DESIGN §13.3). It is
+  // the whole verification of a split paste — "did the right file land in the
+  // right project" — and it costs nothing to read.
+  var body = { status: 'ok', build: THEORY_API_BUILD, deployment: API_DEPLOYMENT,
+    indexIds: questionIndexCount(),
     gateway: { url: Boolean(gatewayUrl()), key: Boolean(gatewayKey()) } };
   if (String(p.deep || '') !== '1') return jsonResponse(body);
   var deepT0 = Date.now(), sheetMs = -1, sheetError = '';

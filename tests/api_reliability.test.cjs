@@ -250,7 +250,7 @@ test('health&deep=1 times one cell of our own document and reports a failure ins
   const e = runtime();
   const ok = get(e, { action: 'health', deep: '1' });
   assert.equal(ok.status, 'ok');
-  assert.equal(ok.build, '2026-09-22-r30');
+  assert.equal(ok.build, '2026-09-22-r31');
   assert.equal(ok.deep, true);
   assert.equal(ok.indexIds, 1700);
   assert.ok(typeof ok.sheetMs === 'number' && ok.sheetMs >= 0);
@@ -268,7 +268,7 @@ test('health identifies build without Sheets, Drive or private parameters', () =
   e.ctx.getSheet = () => { throw new Error('health must not access Sheets'); };
   const result = get(e, { action: 'health', token: 'DO_NOT_LOG_ME' });
   assert.equal(result.status, 'ok');
-  assert.equal(result.build, '2026-09-22-r30');
+  assert.equal(result.build, '2026-09-22-r31');
   assert.equal(e.logs.length, 2);
   assert.ok(e.logs[0].includes('"phase":"start"'));
   assert.ok(e.logs[1].includes('"phase":"end"'));

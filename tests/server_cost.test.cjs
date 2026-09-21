@@ -266,7 +266,12 @@ function envWith(extra, properties) {
     assert.equal(text.indexOf('0500000000'), -1);
     for (const row of snap.rows) {
       assert.match(row.tokenHash, /^[0-9a-f]{64}$/);
-      assert.deepEqual(Object.keys(row).sort(), ['audio', 'examMinutes', 'extraMinutes', 'id', 'status', 'tokenHash']);
+      // r31 (DESIGN §13.6) added warn/fin/ext/dq — counters and flags the
+      // examiner board shows, so the Worker's fingerprint can wake it on them.
+      // The list stays exhaustive: it is the guard against a name or a phone
+      // being added to the row some day without anybody noticing.
+      assert.deepEqual(Object.keys(row).sort(),
+        ['audio', 'dq', 'examMinutes', 'ext', 'extraMinutes', 'fin', 'id', 'status', 'tokenHash', 'warn']);
     }
   });
   check('sessionSnapshot hashes the token the way the Worker does (SHA-256 hex)', () => {

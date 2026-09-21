@@ -14,7 +14,7 @@
 // into cloudflare-workers/session-gateway/assets/, never in the repo and never on
 // Pages), and the Worker serves each device only the ids it was issued, against a
 // grant this script signs (bankGrantFor, 20_auth.js). The server keeps only:
-//   * QUESTION_INDEX — id → { c: {license: topic}, l: language bitmask, img }
+//   * the question index — id → { c: {license: topic}, l: language bitmask, img }
 //     (generated into this file at build time from deployment/question_index.json)
 //   * the answer key (deployment/answer_key.gs, pasted separately, never public)
 // From those two it can draw an exam and score it, with zero Drive and zero
@@ -22,7 +22,40 @@
 
 // @@QUESTION_INDEX@@
 
-// Bit 0 = he … bit 6 = am in QUESTION_INDEX[id].l — the order tools/build_bank.js
+// ---- Unpacking the index (r31, DESIGN §13.1) --------------------------------
+// The index used to be pasted as 1,700 object literals — 132 K characters that
+// Google parsed on EVERY request, whether or not the request touched a question
+// (measured 21/09/2026: 1.2 s of our own in a 2.7 s empty action). It is now one
+// 10.8 K string of six characters per id (five topic digits, one per license in
+// QUESTION_INDEX_PACKED.lic order, 0 = not in that license; then the image
+// digit), plus the language masks of the seven ids that are not in all seven
+// languages. Unpacking is a single pass that costs microseconds, and it happens
+// ONCE per execution — and only in an execution that actually looks at a
+// question. Memoised on the function object like apiRegistry(), so load order
+// cannot matter.
+function questionIndex() {
+  if (questionIndex._index) return questionIndex._index;
+  var packed = QUESTION_INDEX_PACKED, rec = packed.rec, lic = packed.lic, topics = packed.topics;
+  var lang = packed.lang || {}, stride = lic.length + 1, out = {};
+  for (var id = 1; id <= packed.max; id++) {
+    var at = (id - 1) * stride, classified = null;
+    for (var k = 0; k < lic.length; k++) {
+      var digit = rec.charCodeAt(at + k) - 48;
+      if (!digit) continue;
+      if (!classified) classified = {};
+      classified[lic[k]] = topics[digit - 1];
+    }
+    if (!classified) continue;   // six zeros = there is no such question
+    var key = String(id);
+    out[key] = { c: classified,
+      l: Object.prototype.hasOwnProperty.call(lang, key) ? lang[key] : packed.langDefault,
+      img: rec.charCodeAt(at + lic.length) === 49 ? 1 : 0 };
+  }
+  questionIndex._index = out;
+  return out;
+}
+
+// Bit 0 = he … bit 6 = am in the index entry's `l` — the order tools/build_bank.js
 // writes. A bit says the id exists in that language's bank, which is also what
 // makes its answer key trustworthy for that language (en/fr/es/ar order their
 // answers differently from Hebrew — see TRANSLATION_LINEAGE_2026-09-20.md).
@@ -64,11 +97,11 @@ function shuffleArrayServer(arr) {
 }
 
 function questionIndexEntry(id) {
-  var entry = QUESTION_INDEX[String(id)];
+  var entry = questionIndex()[String(id)];
   return entry || null;
 }
 
-function questionIndexCount() { return Object.keys(QUESTION_INDEX).length; }
+function questionIndexCount() { return Object.keys(questionIndex()).length; }
 
 function questionLangBit(lang) {
   var i = QUESTION_LANGS.indexOf(String(lang || 'he').toLowerCase());
@@ -97,9 +130,10 @@ function answerKeyIndex(id, lang) {
 // index entries — measured in microseconds, so no cache (and no cache bug).
 function indexIdsByTopic(license, lang) {
   var bit = questionLangBit(lang), lic = String(license), byTopic = {};
-  for (var id in QUESTION_INDEX) {
-    if (!Object.prototype.hasOwnProperty.call(QUESTION_INDEX, id)) continue;
-    var entry = QUESTION_INDEX[id];
+  var index = questionIndex();
+  for (var id in index) {
+    if (!Object.prototype.hasOwnProperty.call(index, id)) continue;
+    var entry = index[id];
     if (!(entry.l & bit)) continue;
     var topic = entry.c[lic];
     if (!topic) continue;

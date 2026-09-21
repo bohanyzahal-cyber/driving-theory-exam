@@ -1,0 +1,41 @@
+{
+  "both": [
+    "00_config",
+    "05_registry",
+    "10_spreadsheet",
+    "08_pending_writes",
+    "12_reads",
+    "16_lookup_util",
+    "18_whatsapp",
+    "20_auth",
+    "22_util",
+    "24_triggers",
+    "70_questions",
+    "30_api",
+    "75_diag"
+  ],
+  "exam": [
+    "40_sessions_login",
+    "42_sessions_manage",
+    "44_sessions_misc",
+    "50_pending",
+    "52_pending_status",
+    "55_dashboard",
+    "60_exam",
+    "65_dq"
+  ],
+  "reports": [
+    "14_pending_archive",
+    "62_practice",
+    "82_report_center",
+    "84_report_site",
+    "86_commander",
+    "88_predictive",
+    "90_teacher",
+    "91_teacher_classes",
+    "92_at_risk",
+    "94_forecast",
+    "96_admin",
+    "98_migration_practice"
+  ]
+}
