@@ -62,7 +62,9 @@ function build() {
   const order = readOrder();
   let markerSeen = 0;
   const parts = order.map(name => {
-    let text = fs.readFileSync(path.join(SRC_DIR, name + '.js'), 'utf8');
+    // One line-ending convention for the pasted file whatever a module was
+    // saved with (a CRLF module used to leave the generated file mixed).
+    let text = fs.readFileSync(path.join(SRC_DIR, name + '.js'), 'utf8').replace(/\r\n?/g, '\n');
     if (text.includes(INDEX_MARKER)) {
       markerSeen++;
       const generated = questionIndexSource();
