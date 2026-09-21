@@ -946,6 +946,14 @@
   // ========== CONFIG ==========
   // *** שנה את ה-URL הזה ל-URL של ה-Apps Script החדש ***
   var API_URL = 'https://script.google.com/macros/s/AKfycbzOI0zrDEngP-GvlRblhOk8tQsYBvWZ2gGliIQHTpS67WrDZl4la8NPpwtJr_Vjsh3Gzg/exec';
+  // The server is TWO Apps Script deployments since r31 (DESIGN §13.3): Google
+  // loads and compiles the whole script on every request, so the exam file
+  // carries nothing that never runs during an exam. Reports, the commander
+  // dashboard, the forecast and the combined-site report are served by the
+  // second deployment; shared/transport.js routes them by action name. Until
+  // that deployment exists this is the SAME url and everything goes where it
+  // always did - the day Yossi creates it, only this line changes.
+  var REPORTS_API_URL = API_URL;
   // Origin tag — required by Apps Script allowlist; must match a value in ALLOWED_ORIGINS server-side.
   var API_ORIGIN = 'examiner-app';
 
@@ -1182,6 +1190,7 @@
 
   var api = ExamTransport.createApi({
     apiUrl: API_URL,
+    reportsUrl: REPORTS_API_URL,
     origin: API_ORIGIN,
     decorate: function(params) {
       if (examinerToken && examinerData && !params.token && params.action !== 'login' && params.action !== 'verifyLogin') {
@@ -2125,81 +2134,238 @@
   }
 
   // ===== Poll pacing =====
-  // Lives in shared/transport.js now (jitter, x1.5 backoff, one step down per
-  // healthy answer, a 30-60 s floor while the backend is degraded, and the 60 s
-  // poll deadline) - all of it for pages a FLEET runs. The one loop on this page
-  // opts out of the ladder with steady:true; see the policy note below.
+  // Lives in shared/transport.js now (jitter, backoff on a failed request, the
+  // poll deadline and the long-poll gap) - all of it written for pages a FLEET
+  // runs. The one loop left on this page is the session watch below, and it
+  // opts out of the ladder with steady:true: a single chain cannot stampede.
 
   // ===== Dashboard polling =====
-  // 2026-09-21 pacing policy - replaces the 2026-08-26 saturation ladder.
-  // The chain is still answer -> wait -> ask again: ONE chain per open examiner
-  // page, never a fixed interval, never two requests in flight. A single chain
-  // cannot stampede. When Apps Script answers in 8 s the ANSWER TIME is the
-  // throttle - the next request physically cannot go out before it arrives - so
-  // the x1.5 ladder (7.5 -> 11 -> 17 -> 20 s) and the 30-60 s "degraded" floor
-  // add a wait on top of a wait and buy nothing. They were written in
-  // August/September, when hundreds of examinee devices polled Apps Script
-  // directly and a fleet released together could re-arrive together; since r30
-  // every examinee poll goes through the Cloudflare Worker and there is no fleet
-  // left on this path to protect. What the extra waiting DID cost was measured
-  // in the 21/09 rehearsal: an examinee submitted, his phone said the result was
-  // saved, and the dashboard still showed him "in exam" for over a minute until
-  // the examiner pressed F5. So the loop runs in steady mode (transport.js) -
-  // the next tick is always DASH_POLL_BASE_MS, jittered - and the cadence policy
-  // below is the whole story. info.slow / info.failed are still reported and the
-  // page still tells the examiner that Google is busy; it just never answers a
-  // slow server by asking less often.
-  var DASH_POLL_BASE_MS = 5000;  // r6: back to 5s (was 8s while cache reads were failing server-side)
-  var DASH_POLL_MAX_MS = 20000;  // steady mode never climbs; kept so the loop keeps its contract
-  // While a device reports "finished, syncing" the result is seconds away, so
-  // the dashboard closes the gap instead of waiting out a full 5 s tick
-  // (measured 15/09: submit ~2 s + up to 5 s until the next tick + an 8-10 s
-  // request). A slow answer no longer cancels it: a slow server is exactly when
-  // the examiner is waiting for that row. One bound is left - a result still not
-  // landed after DASH_SYNC_FAST_WINDOW_MS falls back to the normal tick, so one
-  // stuck row cannot pin the dashboard at 2 s.
-  var DASH_POLL_SYNC_MS = 2000;
-  var DASH_SYNC_FAST_WINDOW_MS = 30000;
-  var dashSyncSince = 0;  // ms timestamp the current syncing stretch began; 0 = nobody syncing
-  var dashPollGen = 0;    // stop/restart double-chain guard
-  var dashPollDelayMs = DASH_POLL_BASE_MS;   // the wait actually chosen for the next tick
-  var dashboardRequest = null;
+  // r31 ("everything fast, no timers", 21/09 messages 48-53, DESIGN §13.2):
+  // this dashboard has no cadence any more.
+  //
+  // What it used to do: ask Apps Script "what changed?" every 5 s - 2 s while a
+  // result was syncing - whether or not anything had. That is ~700 executions
+  // of examinerDashboard per examiner per morning, each one a full Google run
+  // (an EMPTY server action was measured at 2.7 s on 21/09), and it STILL made
+  // the examiner wait up to 5 s to see a registration or a result. A fixed
+  // cadence pays Google when there is nothing to see and makes a person wait
+  // when there is.
+  //
+  // What runs instead:
+  //   1. ONE request held open at the Cloudflare Worker
+  //      (GET /v1/session/watch, wait=25 s). The Worker already holds this
+  //      session's snapshot for the examinee polls and refreshes it from Google
+  //      at most once every 2 s, so watching it costs Google NOTHING extra. It
+  //      answers the moment the session fingerprint changes - a registration, a
+  //      status, a warning, "finished on device", a DQ, added minutes - or when
+  //      the hold expires unchanged.
+  //   2. A changed fingerprint reads the dashboard IMMEDIATELY. That read is
+  //      the only Google execution on this path and it happens only when there
+  //      is something new to show.
+  //   3. A safety net (a clock check every DASH_SAFETY_CHECK_MS): read the
+  //      dashboard when nothing has been asked for DASH_SAFETY_MS. This is NOT
+  //      a cadence - it is there for what never reaches the snapshot at all (a
+  //      result corrected from another page, a stuck row the server completed
+  //      by itself) and for a Worker that stops answering.
+  //   4. No watch at all (an old Worker, no examiner grant, Cloudflare down):
+  //      the net falls back to DASH_FALLBACK_MS and this page behaves exactly
+  //      as it did before r31. Nothing here depends on the Worker being up.
+  //
+  // RETIRED with the cadence: DASH_POLL_SYNC_MS, DASH_SYNC_FAST_WINDOW_MS and
+  // dashSyncSince - the 2 s "a result is seconds away" window. Since §13.5 the
+  // examinee's own device nudges the Worker after submitResult and after
+  // markFinished, so that change wakes this watch like any other one.
+  var DASH_SAFETY_MS = 60000;        // watch healthy: how stale the dashboard may get
+  var DASH_FALLBACK_MS = 5000;       // no watch: the pre-r31 cadence, unchanged
+  var DASH_SAFETY_CHECK_MS = 2500;   // how often the net looks at the clock
+  var DASH_WATCH_MAX_MS = 20000;     // steady mode never climbs; the loop keeps its contract
+  var DASH_GRANT_RETRY_MS = 60000;   // how often a watch with no usable grant may ask for one
+  var dashPollGen = 0;         // stop/restart double-chain guard
+  var dashboardRequest = null; // the single in-flight examinerDashboard request
+  var lastDashboardAt = 0;     // when one was last ISSUED - what the safety net measures
+  var dashRefreshPending = false;    // a change arrived while a read was in flight
+  var dashSafetyTimer = null;
+  var lastWatchFp = null;      // the fingerprint the watch last saw; null = ask without one
+  var watchHealthy = false;    // the Worker answered ok at least once on this chain
+  var watchPrimed = false;     // ...and that FIRST answer is the base, not a change
+  var watchGrantAt = 0;        // when the watch last PAID for a grant request
+  var watchRefusedGrant = '';  // the grant string the gateway last refused
 
-  // The loop itself is the shared one: answer -> wait -> ask again, never two
-  // chains, never a second request on top of a live one. steady:true because
-  // that single chain is its own throttle (see the policy note above).
-  var dashboardLoop = ExamTransport.createPollLoop({
-    name: 'examinerDashboard',
-    baseMs: DASH_POLL_BASE_MS,
-    maxMs: DASH_POLL_MAX_MS,
+  // The examiner grant the watch must carry. Whatever this page already holds
+  // (a usable stored grant is adopted without a request); otherwise at most one
+  // bankGrant request per DASH_GRANT_RETRY_MS. WHY the throttle: a gateway that
+  // refuses every grant - a rotated GATEWAY_KEY, a server that lost the
+  // property - would otherwise turn the watch into a Google call every 5 s on
+  // every open examiner page, which is precisely the load r31 exists to remove.
+  // Until a grant arrives the watch just fails and the net runs at 5 s.
+  function watchGrant(force) {
+    if (!force && bankGrantUsable(examinerBank)) return examinerBank;
+    if ((Date.now() - watchGrantAt) >= DASH_GRANT_RETRY_MS) {
+      var asked = Date.now();
+      fetchBankGrant(force === true);   // adopts a usable stored grant on the spot
+      // Only a real REQUEST spends the budget; adopting a stored grant is free,
+      // and spending it there would block the refresh a refusal really needs.
+      if (!bankGrantUsable(examinerBank)) watchGrantAt = asked;
+    }
+    return bankGrantUsable(examinerBank) ? examinerBank : null;
+  }
+
+  // Anything that is not an ok answer: forget the fingerprint, so the next
+  // request asks WITHOUT one and is answered at once instead of being held
+  // against a fingerprint this page can no longer trust - and let the safety net
+  // take the dashboard back to DASH_FALLBACK_MS until the Worker returns.
+  function watchFailed() {
+    watchHealthy = false;
+    lastWatchFp = null;
+    return { status: 'error' };
+  }
+  // The gateway refused the grant (a rotated key, a signature it cannot verify).
+  // The copy in memory and the stored one are the same worthless string, so drop
+  // both and ask the server for a new one. Once per DISTINCT refused grant: a
+  // grant that really went bad is replaced immediately, while a gateway that
+  // refuses everything it is handed falls back to the DASH_GRANT_RETRY_MS budget
+  // instead of asking Google for a new grant every 5 s.
+  function watchGrantRefused(refused) {
+    examinerBank = null;
+    try { localStorage.removeItem('ext_examiner_bank'); } catch (e) {}
+    if (refused && refused !== watchRefusedGrant) { watchRefusedGrant = refused; watchGrantAt = 0; }
+    watchGrant(true);
+    return watchFailed();
+  }
+
+  // One held request at the Worker. fetchJsonQuiet on purpose: the Worker is NOT
+  // the exam backend, so a 500 or a timeout from it must never mark Google
+  // degraded - that would floor every poll in this page at 30-60 s while Apps
+  // Script is perfectly healthy.
+  function watchTick() {
+    if (!sessionCode) return Promise.resolve({ status: 'error' });
+    var bank = watchGrant(false);
+    if (!bank) { watchHealthy = false; return Promise.resolve({ status: 'error' }); }
+    var myGen = dashPollGen, mySession = sessionCode;
+    function dead() { return myGen !== dashPollGen || mySession !== sessionCode; }
+    var url = String(bank.url).replace(/\/+$/, '') +
+              '/v1/session/watch?sessionCode=' + encodeURIComponent(mySession) +
+              '&wait=' + ExamTransport.LONGPOLL_WAIT_SEC +
+              (lastWatchFp ? '&fp=' + encodeURIComponent(lastWatchFp) : '') +
+              '&grant=' + encodeURIComponent(bank.grant);
+    return ExamTransport.fetchJsonQuiet(url, { cache: 'no-store' }, ExamTransport.LONGPOLL_TIMEOUT_MS)
+      .then(function(data) {
+        if (dead()) return { status: 'error' };      // a session switch or a stop: this chain is dead
+        if (data && data.status === 'ok' && typeof data.fp === 'string' && data.fp) {
+          watchHealthy = true;
+          // The FIRST ok answer of a chain is the base fingerprint, never a
+          // change: startDashboardPolling read the dashboard in the same breath
+          // as it sent this request, so reading again on its answer would cost a
+          // second Google run every time the dashboard opens. (Same rule as the
+          // update check: the first good probe is the base.) Anything that
+          // changed inside that sub-second window is caught by the safety net.
+          if (!watchPrimed) { watchPrimed = true; lastWatchFp = data.fp; }
+          else if (data.fp !== lastWatchFp) {
+            lastWatchFp = data.fp;
+            refreshDashboardSoon();
+          }
+          return data;   // held / fp -> info.rearm, so the next hold starts in 250 ms
+        }
+        if (data && data.code === 'grant_invalid') return watchGrantRefused(bank.grant);
+        return watchFailed();
+      }, function(err) {
+        if (dead()) return { status: 'error' };
+        // fetchJsonQuiet rejects on any non-2xx; 403 is the gateway saying the
+        // grant is no good, and only that one is worth a new grant.
+        if (err && err.transport === 'http' && err.status === 403) return watchGrantRefused(bank.grant);
+        return watchFailed();
+      });
+  }
+
+  // steady:true - one chain, so the answer time is its own throttle; the x1.5
+  // ladder and the 30-60 s degraded floor were written for a fleet and there is
+  // none on this path. An ok answer (held or not) re-arms after LONGPOLL_GAP_MS
+  // (250 ms) so the next hold starts at once; anything else waits
+  // DASH_FALLBACK_MS, jittered - a backoff on failure, not a wait for a change.
+  var watchLoop = ExamTransport.createPollLoop({
+    name: 'sessionWatch',
+    baseMs: DASH_FALLBACK_MS,
+    maxMs: DASH_WATCH_MAX_MS,
     steady: true,
-    tick: function() { return pollDashboard(); },
-    nextDelay: function(info) {
-      // An answer that arrived: 2 s while a result is syncing (bounded by
-      // DASH_SYNC_FAST_WINDOW_MS), 5 s otherwise - regardless of how long it
-      // took. A failed poll: a plain 5 s retry, no ladder.
-      var chosen = DASH_POLL_BASE_MS;
-      if (!info.failed) {
-        var syncingNow = dashSyncSince && (Date.now() - dashSyncSince) < DASH_SYNC_FAST_WINDOW_MS;
-        chosen = syncingNow ? DASH_POLL_SYNC_MS : DASH_POLL_BASE_MS;
-      }
-      dashPollDelayMs = chosen;
-      return chosen;
+    tick: watchTick,
+    nextDelay: function(info, paced) {
+      return (info.held > 0 || info.rearm) ? paced : DASH_FALLBACK_MS;
+    },
+    onRestart: function() {
+      // restartIfStuck revives a chain whose request will never settle (a tablet
+      // that was locked mid-request). Bump the generation FIRST, so that answer -
+      // if it ever arrives - can no longer move the fingerprint or read the
+      // dashboard behind the fresh chain's back.
+      dashPollGen++;
+      lastWatchFp = null;
+      watchHealthy = false;
+      watchPrimed = false;   // ...and the net re-reads at once: lastDashboardAt is ancient
     }
   });
+
+  // A change the watch saw must reach the screen even when a dashboard read is
+  // already in flight: that read may have LEFT Google before the change landed,
+  // and its answer would then paint the old picture while lastWatchFp already
+  // says we are up to date. So when the dedup swallows this call, remember it
+  // and read again the moment the in-flight request settles. Waiting for the
+  // next fingerprint change instead would mean waiting for the NEXT thing to
+  // happen; waiting for the safety net would mean up to DASH_SAFETY_MS.
+  function refreshDashboardSoon() {
+    if (!dashboardRequest) { pollDashboard(); return; }
+    if (dashRefreshPending) return;
+    dashRefreshPending = true;
+    var myGen = dashPollGen;
+    function again() {
+      dashRefreshPending = false;
+      if (myGen === dashPollGen) pollDashboard();   // still the same session and chain
+    }
+    dashboardRequest.promise.then(again, again);
+  }
+
+  // NOT a refresh cadence - a net under the watch. DASH_SAFETY_MS while the
+  // watch is answering (for the changes that never reach the Worker's snapshot:
+  // a result corrected from another page, a row the server completed itself),
+  // DASH_FALLBACK_MS while it is not (and then this IS the pre-r31 dashboard).
+  function dashSafetyCheck() {
+    if (dashboardRequest) return;                     // one is already out
+    // failedPolls: a read that FAILED is retried at the old cadence whatever
+    // the watch says. The watch reports what changed in the SESSION; it knows
+    // nothing about whether Google answered US, and a 60 s wait after a
+    // hiccup would be a regression on every pre-r31 behaviour.
+    var due = (watchHealthy && !failedPolls) ? DASH_SAFETY_MS : DASH_FALLBACK_MS;
+    if ((Date.now() - lastDashboardAt) >= due) pollDashboard();
+  }
 
   function startDashboardPolling() {
     dashPollGen++;
     dashboardInterval = -1;          // "polling is on" for the legacy checks below
-    dashboardLoop.start();           // first check immediately; next waits for completion
+    lastWatchFp = null;              // a fresh chain asks without a fingerprint: answered at once
+    watchPrimed = false;             // ...and that answer is the base, not a change to re-read
+    watchHealthy = false;            // ...and the net runs at 5 s until the Worker proves otherwise
+    pollDashboard();                 // the first read is immediate, exactly as before
+    watchLoop.start();
+    if (dashSafetyTimer) clearInterval(dashSafetyTimer);
+    dashSafetyTimer = setInterval(dashSafetyCheck, DASH_SAFETY_CHECK_MS);
   }
 
   function stopDashboardPolling() {
-    dashPollGen++;
-    dashboardLoop.stop();
+    dashPollGen++;                   // an answer still on the wire can no longer touch anything
+    watchLoop.stop();
+    if (dashSafetyTimer) { clearInterval(dashSafetyTimer); dashSafetyTimer = null; }
     dashboardInterval = null;
     if (countdownInterval) { clearInterval(countdownInterval); countdownInterval = null; }
   }
+
+  // An iPad that was locked, or a tab hidden for an hour, comes back with a
+  // chain whose request will never settle. Nothing else revives it, so the
+  // moment the page is visible again the watch is restarted - and the net, which
+  // now sees a very old lastDashboardAt, re-reads the dashboard within one
+  // DASH_SAFETY_CHECK_MS.
+  document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState !== 'visible') return;
+    if (!dashboardInterval) return;        // polling is off: there is nothing to revive
+    watchLoop.restartIfStuck();
+  });
 
   // ===== toast =====
   // A native alert() stops every timer in the page until somebody taps OK - and
@@ -2235,10 +2401,11 @@
     var requestedGen = dashPollGen;
     if (dashboardRequest && dashboardRequest.session === requestedSession &&
         dashboardRequest.token === requestedToken && dashboardRequest.generation === requestedGen) {
-      return dashboardRequest.promise; // manual refresh and automatic poll share one request
+      return dashboardRequest.promise; // a manual refresh, a watch answer and the net share one request
     }
     var request = { session: requestedSession, token: requestedToken, generation: requestedGen };
     dashboardRequest = request;
+    lastDashboardAt = Date.now();    // the safety net counts from the moment we ASK
     function isCurrent() {
       return requestedSession === sessionCode && requestedToken === examinerToken && requestedGen === dashPollGen;
     }
@@ -2264,15 +2431,9 @@
         failedPolls = 0;
         document.getElementById('offlineBanner').classList.remove('show');
         console.log('[DASHBOARD] pending=' + (data.pending||[]).length + ' active=' + (data.active||[]).length + ' completed=' + (data.completed||[]).length);
-        // Cache pending so the search-input handler can re-render between polls
-        // without waiting for the next 5-second tick.
+        // Cache pending so the search-input handler can re-render between reads
+        // without asking the server again.
         window.__lastPending = data.pending || [];
-        // Arm the fast tick while at least one device reports "finished,
-        // syncing" (the green banner state); clear it the moment none do, so
-        // the next stretch gets its own fresh DASH_SYNC_FAST_WINDOW_MS.
-        var syncing = (data.active || []).some(function(item) { return item && item.finishedOnDevice && !item.dqPending; });
-        if (!syncing) dashSyncSince = 0;
-        else if (!dashSyncSince) dashSyncSince = Date.now();
         updatePendingList(window.__lastPending);
         updateActiveList(data.active || []);
         updateCompletedList(data.completed || []);
@@ -2285,9 +2446,8 @@
       console.log('[DASHBOARD] Network error (fails=' + failedPolls + '):', err);
     }).then(function() {
       if (dashboardRequest === request) dashboardRequest = null;
-      // The poll loop paces itself on what the tick RESOLVES to, so a failure
-      // that came back fast (a JSON error, a 404 from Google's front door) must
-      // still read as a failure - otherwise only a slow answer would ever back off.
+      // The outcome, for whoever asked: a failure that came back fast (a JSON
+      // error, a 404 from Google's front door) is still a failure, not an ok.
       return failedPolls > 0 ? { status: 'error' } : { status: 'ok' };
     });
     return request.promise;
@@ -2311,7 +2471,8 @@
   // Modal: examiner adds time to a running exam (evacuation / technical / medical).
   // Amount = a quick preset OR a typed value; a reason is mandatory (saved server-side
   // to the 'הארכות זמן' audit sheet). On success the examinee's deadline extends
-  // within one poll (~6s) and a badge shows on the dashboard.
+  // within about a second - the decision nudge reaches the poll he already has
+  // open at the gateway - and a badge shows on the dashboard.
   function openAddTimeModal(item) {
     var ov = document.createElement('div');
     // Marker class, not decoration: isSafeToReload() looks for it. An overlay
@@ -2551,9 +2712,10 @@
           audioCb.type = 'checkbox';
           audioCb.style.cssText = 'width:16px;height:16px;margin:0;cursor:pointer;';
           audioCb.checked = (item.audioMode === 'on');
-          // The dashboard re-renders every 5s off fresh server data, and column J
-          // only changes at approval — so without this the examiner's tick was
-          // wiped by the very next poll and the box "wouldn't stay checked".
+          // The dashboard re-renders off fresh server data every time anything in
+          // the session changes, and column J only changes at approval — so without
+          // this the examiner's tick was wiped by the very next read and the box
+          // "wouldn't stay checked".
           // Same override pattern as the time-extension dropdown above.
           if (audioOverrides.hasOwnProperty(item.idNumber)) {
             audioCb.checked = (audioOverrides[item.idNumber] === 'on');
@@ -3143,7 +3305,7 @@
   // not-authorized, missing session) keeps the button hidden.
   //
   // 16/09/2026 — this ran on EVERY dashboard render, i.e. on every
-  // examinerDashboard poll (5s, 2s while a result syncs), from an examiner's
+  // examinerDashboard poll (a fixed 5s then, 2s while a result synced), from an examiner's
   // first completed result to the end of the session, since 2026-06-01. Each
   // run is the FULL siteCombinedReport (sessions + examiners + results reads;
   // measured 18-81s under load). One examiner sent ~1,000 of them per exam

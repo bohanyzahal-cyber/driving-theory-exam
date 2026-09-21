@@ -13,8 +13,13 @@
 //         later - but only when no dialog is open, no decision is waiting for
 //         the server and nobody is typing the login form (21/09 message 20)
 //   S3  the "not verified" badge keys on the stored marker, not on "0/"
-//   plus: the dashboard loop never overlaps and honours the 2 s sync window,
-//         the examiner bank grant and the gateway nudge after every decision
+//   r31 the dashboard has NO cadence (DESIGN §13.2): a request held open at the
+//       Worker says when the session changed, a changed fingerprint reads
+//       examinerDashboard exactly once, a safety net catches the rest, and a
+//       gateway that is not there puts the page back on its pre-r31 5 s retry
+//   r31 the cold actions (reports, commander, forecast) are routed to the second
+//       Apps Script deployment by name (DESIGN §13.3)
+//   plus: the examiner bank grant and the gateway nudge after every decision
 //         (which carries the decision itself, so the examinee sees it in <=2 s),
 //         top-wrong rendering with and without a grant, and both SWs.
 const test = require('node:test');
@@ -135,13 +140,18 @@ const load = (ctx, code) => vm.runInContext(code, ctx);
 // Section: the API helper + the whole token-expiry state machine.
 const apiSection = src => section(src, '  // ========== API Helper ==========', '  // ========== Login ==========');
 
-function d1Context(answers) {
+// urls: { api, reports } - the two Apps Script deployments of r31. They are the
+// same string in production until Yossi creates the second one; the routing
+// test below drives them apart so "which deployment" is observable.
+function d1Context(answers, urls = {}) {
   const ui = dom();
   ui.element('screenLogin');
-  const calls = [];
+  const calls = [], sent = [];
   const setup = baseContext({
     ...ui,
-    API_URL: 'https://synthetic/exec', API_ORIGIN: 'examiner-app',
+    API_URL: urls.api || 'https://synthetic/exec',
+    REPORTS_API_URL: urls.reports || urls.api || 'https://synthetic/exec',
+    API_ORIGIN: 'examiner-app',
     examinerToken: 'T1', examinerData: { id: '111', name: 'synthetic' },
     stopDashboardPolling() { setup.ctx.pollingStopped = true; },
     showScreen(id) { setup.ctx.screen = id; },
@@ -152,12 +162,13 @@ function d1Context(answers) {
     const match = /action=([a-zA-Z]+)/.exec(url);
     const action = match ? match[1] : JSON.parse((opts && opts.body) || '{}').action;
     calls.push(action);
+    sent.push(url);
     const body = answers(action, calls.length);
     return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify(body)) });
   };
   setup.ctx.localStorage.setItem('ext_examiner_remember', JSON.stringify({ id: '111', token: 'T1' }));
   load(setup.ctx, apiSection(examiner));
-  return { ...setup, ...ui, calls };
+  return { ...setup, ...ui, calls, sent, lastUrl: () => sent[sent.length - 1] };
 }
 
 test('D1: one tokenExpired on a dashboard poll asks for a second opinion instead of logging out', async () => {
@@ -267,6 +278,60 @@ test('apiGet forwards its timeout (the commander-dashboard bug) and apiPost atta
   await ctx.apiPost({ action: 'closeSession' });
   assert.equal(seenBody.token, 'T1');
   assert.equal(seenBody.examinerId, '111');
+});
+
+// ---------------------------------------------------------------- r31 routing
+// Google loads and compiles the whole script on every request, so since r31 the
+// server is two deployments and the cold half (reports, commander, forecast,
+// teachers, practice) is not carried by the exam one. The client routes by
+// ACTION NAME, in shared/transport.js, from one list - this page only has to
+// hand it both urls.
+const EXAM_URL = 'https://exam.example/exec';
+const REPORTS_URL = 'https://reports.example/exec';
+
+test('r31: the examiner page sends the cold actions to the reports deployment and everything else to the exam one', async () => {
+  const { ctx, lastUrl } = d1Context(() => ({ status: 'ok' }), { api: EXAM_URL, reports: REPORTS_URL });
+  for (const action of ['commanderDashboard', 'siteCombinedReport', 'centerManagerReport', 'examinerForecast']) {
+    await ctx.apiGet({ action: action });
+    assert.equal(lastUrl().indexOf(REPORTS_URL + '?'), 0, action + ' is served by the reports deployment');
+  }
+  // The hot half - the dashboard, every decision, the grant, the upload token -
+  // stays with the deployment whose url every page already knows.
+  for (const action of ['examinerDashboard', 'approveExaminee', 'disqualify', 'bankGrant',
+                        'getResultUploadToken', 'sessionSnapshot', 'verifyLogin']) {
+    await ctx.apiGet({ action: action });
+    assert.equal(lastUrl().indexOf(EXAM_URL + '?'), 0, action + ' is an exam action');
+  }
+  await ctx.apiPost({ action: 'login', idNumber: '1', password: 'x' });
+  assert.equal(lastUrl(), EXAM_URL, 'a POST is routed by the same table');
+
+  // ...and the whole shared list really is reachable from this page's api.
+  for (const action of ctx.ExamTransport.REPORTS_ACTIONS) {
+    assert.equal(ctx.api.urlFor(action), REPORTS_URL, action);
+  }
+});
+
+test('r31: one url for both deployments is the state before the split, and nothing moves', async () => {
+  const { ctx, lastUrl } = d1Context(() => ({ status: 'ok' }), { api: 'https://synthetic/exec' });
+  for (const action of ['commanderDashboard', 'examinerDashboard']) {
+    await ctx.apiGet({ action: action });
+    assert.equal(lastUrl().indexOf('https://synthetic/exec?'), 0, action);
+  }
+});
+
+test('r31: the page carries REPORTS_API_URL as a line of its own, so the switch is one edit', () => {
+  assert.match(examiner, /\r\n  var REPORTS_API_URL = API_URL;\r\n/,
+    'next to API_URL, the same value until the reports deployment exists');
+  assert.match(section(examiner, '  var api = ExamTransport.createApi({', '  // timeoutMs is forwarded'),
+    /reportsUrl: REPORTS_API_URL,/, 'and it is handed to the transport');
+
+  // find_image.html carries the same line for the same reason, but keeps
+  // sending to the EXAM deployment: bankGrant is an exam action and it is the
+  // only thing that page asks the server for.
+  const findImage = fs.readFileSync(path.join(app, 'find_image.html'), 'utf8');
+  assert.match(findImage, /\r\n  var REPORTS_API_URL = API_URL;\r\n/);
+  assert.match(findImage, /apiUrl: API_URL,/);
+  assert.ok(findImage.indexOf('reportsUrl') < 0, 'nothing on that page belongs to the reports deployment');
 });
 
 // ---------------------------------------------------------------- bank grant + gateway nudge
@@ -531,37 +596,319 @@ test('the grant is fetched on all three ways in, and leaves with the examiner', 
   assert.match(examiner, /localStorage\.removeItem\('ext_examiner_bank'\)/, 'and logout takes it away');
 });
 
-// ---------------------------------------------------------------- dashboard loop
-function dashboardContext(apiGet) {
+// ---------------------------------------------------------------- dashboard
+// r31, DESIGN §13.2: the dashboard has no cadence. ONE request is held open at
+// the Worker (GET /v1/session/watch) and answers when the session fingerprint
+// changes; a changed fingerprint reads examinerDashboard once - that read is the
+// only Google execution on this path. A safety net sits under it for what never
+// reaches the Worker's snapshot, and for a Worker that is not answering at all.
+//
+// These tests drive the REAL sections, the grant section included: the watch has
+// to carry an examiner grant and has to cope with a gateway that refuses it.
+const GATEWAY = 'https://gateway.example';
+// boundedFetch reads .ok / .status / .text(), so this is what a "response" is.
+const gwOk = body => ({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(body)) });
+const gwHttp = (status, body) => ({ ok: false, status, text: () => Promise.resolve(JSON.stringify(body || {})) });
+// A HELD answer: the Worker keeps the request open for `ms` and then answers.
+// That is what an unchanged session looks like on the wire.
+const gwHeld = (clock, ms, body) => new Promise(resolve => clock.set(() => resolve(gwOk(body)), ms));
+
+// opts.watch(url, n, clock) -> a Promise of a response (or a rejection: no gateway)
+// opts.grant()               -> what apiGet({ action: 'bankGrant' }) answers
+// opts.stored === false      -> start with no stored grant at all
+function dashboardContext(dashboardAnswer, opts = {}) {
   const ui = dom();
   ui.element('offlineBanner');
+  const listeners = {};
+  ui.document.addEventListener = (type, cb) => { (listeners[type] = listeners[type] || []).push(cb); };
+  const apiCalls = [], watches = [];
   const setup = baseContext({
     ...ui,
     sessionCode: 'TEST00', examinerToken: 'synthetic', failedPolls: 0,
-    dashboardInterval: null, countdownInterval: null, apiGet,
+    dashboardInterval: null, countdownInterval: null,
     POLL_TIMEOUT_MS: 60000,
     updatePendingList() {}, updateActiveList() {}, updateCompletedList() {}
   });
+  const answerGrant = opts.grant || (() => ({ status: 'ok', bank: GRANT }));
+  const answerWatch = opts.watch || (() => Promise.resolve(gwOk({ status: 'ok', fp: 's:quiet', held: 0, rows: 0 })));
+  setup.ctx.apiGet = params => {
+    apiCalls.push(params.action);
+    if (params.action === 'bankGrant') return Promise.resolve(answerGrant());
+    return Promise.resolve(dashboardAnswer ? dashboardAnswer()
+      : { status: 'ok', pending: [], active: [], completed: [] });
+  };
+  setup.ctx.fetch = (url, fetchOpts) => {
+    watches.push({ url, opts: fetchOpts });
+    return answerWatch(url, watches.length, setup.timer);
+  };
   setup.ctx.isBackendDegraded = () => setup.ctx.ExamTransport.isBackendDegraded();
+  if (opts.stored !== false) setup.store.set('ext_examiner_bank', JSON.stringify(GRANT));
+  load(setup.ctx, grantSection(examiner));
   load(setup.ctx, section(examiner, '  // ===== Dashboard polling =====', '  // ===== toast ====='));
   load(setup.ctx, section(examiner, '  var OFFLINE_BANNER_TEXT', '  // Text of the "'));
   setup.ctx.ExamTransport._setJitter(ms => ms);          // exact fake clock
-  return { ...setup, ...ui };
+  return {
+    ...setup, ...ui, apiCalls, watches, listeners,
+    reads: () => apiCalls.filter(a => a === 'examinerDashboard').length,
+    grantRequests: () => apiCalls.filter(a => a === 'bankGrant').length,
+    visibility(state) {
+      ui.document.visibilityState = state;
+      (listeners.visibilitychange || []).forEach(cb => cb());
+    }
+  };
 }
 
-test('dashboard: a failing poll raises the banner, a good one clears it, and the loop never overlaps', async () => {
+test('dashboard: read once at the start, then ONLY when the fingerprint changes', async () => {
+  // The Worker answers the first request (it carries no fp) at once; a request
+  // that carries one it holds until something changes, or for the full 25 s.
+  const script = [
+    { fp: 's:a' },                 // the base
+    { fp: 's:a', held: 25000 },    // 25 s in which nothing happened
+    { fp: 's:b' },                 // a registration
+    { fp: 's:c' },                 // an approval
+    { fp: 's:c', held: 25000 }     // quiet again
+  ];
+  const { ctx, timer, watches, reads } = dashboardContext(undefined, {
+    watch: (url, n, clock) => {
+      const step = script[Math.min(n, script.length) - 1];
+      const body = { status: 'ok', fp: step.fp, held: step.held || 0, rows: 1 };
+      return step.held ? gwHeld(clock, step.held, body) : Promise.resolve(gwOk(body));
+    }
+  });
+  ctx.startDashboardPolling();
+  await drain();
+  assert.equal(reads(), 1, 'opening the screen is the only read so far');
+  assert.equal(watches.length, 1, 'and one request is now waiting at the Worker');
+
+  await timer.advance(250);                 // LONGPOLL_GAP_MS: the hold begins
+  assert.equal(watches.length, 2);
+  await timer.advance(25000);
+  assert.equal(reads(), 1, '25 s of holding on an unchanged session costs Google nothing');
+
+  await timer.advance(250);
+  assert.equal(reads(), 2, 'a new fingerprint reads the dashboard - once');
+  await timer.advance(250);
+  assert.equal(reads(), 3, 'and the next change reads it again');
+  await timer.advance(20000);
+  assert.equal(reads(), 3, 'nothing on this page is on a clock');
+  ctx.stopDashboardPolling();
+});
+
+test('dashboard: a change that lands while a read is in flight is neither doubled nor lost', async () => {
+  // The 2.7 s Google run is the reason this matters: the read that is already
+  // out may have LEFT before the change landed, so its answer would paint the
+  // old picture while the fingerprint already says we are up to date.
+  let release = null;
+  const script = [{ fp: 's:a' }, { fp: 's:b' }, { fp: 's:c' }, { fp: 's:c', held: 25000 }];
+  const { ctx, timer, reads } = dashboardContext(
+    () => new Promise(resolve => { release = () => resolve({ status: 'ok', pending: [], active: [], completed: [] }); }),
+    {
+      watch: (url, n, clock) => {
+        const step = script[Math.min(n, script.length) - 1];
+        const body = { status: 'ok', fp: step.fp, held: step.held || 0, rows: 1 };
+        return step.held ? gwHeld(clock, step.held, body) : Promise.resolve(gwOk(body));
+      }
+    });
+  ctx.startDashboardPolling();
+  await drain();
+  assert.equal(reads(), 1, 'the opening read, still hanging on Google');
+
+  await timer.advance(250);                 // s:b arrives while that read is out
+  assert.equal(reads(), 1, 'no second request on top of a live one');
+  await timer.advance(250);                 // and s:c on top of it
+  assert.equal(reads(), 1, 'still one');
+
+  const finish = release;
+  finish();
+  await drain();
+  assert.equal(reads(), 2, 'the queued change is read the moment the request settles - not in 60 s');
+  ctx.stopDashboardPolling();
+});
+
+test('dashboard: 250 ms between watch requests, 5 s after a failed one - and the net follows', async () => {
+  let mode = 'ok';
+  const { ctx, timer, watches, reads } = dashboardContext(undefined, {
+    watch: () => mode === 'ok'
+      ? Promise.resolve(gwOk({ status: 'ok', fp: 's:a', held: 0 }))
+      : Promise.reject(new Error('no gateway'))
+  });
+  ctx.startDashboardPolling();
+  await drain();
+  await timer.advance(249);
+  assert.equal(watches.length, 1, 'not before the long-poll gap');
+  await timer.advance(1);
+  assert.equal(watches.length, 2, 'the next hold starts 250 ms after the answer, not 5 s');
+
+  mode = 'down';
+  await timer.advance(250);                 // t=500: this one fails
+  assert.equal(watches.length, 3);
+  assert.equal(reads(), 1);
+  await timer.advance(4500);                // t=5000
+  assert.equal(reads(), 2, 'a dead gateway puts the dashboard back on its pre-r31 5 s retry');
+  assert.equal(watches.length, 3, 'and a failed watch waits DASH_FALLBACK_MS (jittered in production), not 250 ms');
+  await timer.advance(5000);                // t=10000
+  assert.equal(reads(), 3, 'still 5 s');
+  assert.equal(watches.length, 4, 'the watch retried once at 5.5 s');
+
+  mode = 'ok';
+  await timer.advance(500);                 // t=10500: the gateway is back
+  assert.equal(reads(), 4, 'after an outage we do not know what changed, so we read');
+  await timer.advance(30000);
+  assert.equal(reads(), 4, 'and then the 5 s cadence is gone again');
+  ctx.stopDashboardPolling();
+});
+
+test('dashboard: the safety net fires at 60 s of quiet, and not one tick before', async () => {
+  const { ctx, timer, reads } = dashboardContext(undefined, {
+    watch: (url, n, clock) => n === 1
+      ? Promise.resolve(gwOk({ status: 'ok', fp: 's:quiet', held: 0 }))
+      : gwHeld(clock, 25000, { status: 'ok', fp: 's:quiet', held: 25000 })
+  });
+  ctx.startDashboardPolling();
+  await drain();
+  assert.equal(reads(), 1);
+  await timer.advance(59000);
+  assert.equal(reads(), 1, 'a minute of quiet costs Google one read, not twelve');
+  await timer.advance(2000);
+  assert.equal(reads(), 2,
+    'and the net does fire: a result corrected from another page is not in the fingerprint');
+  ctx.stopDashboardPolling();
+});
+
+test('dashboard: a gateway that refuses the grant gets a fresh one, and the stored copy is not re-used', async () => {
+  let issued = 0;
+  const { ctx, timer, watches, store, grantRequests } = dashboardContext(undefined, {
+    grant: () => ({ status: 'ok', bank: { url: GATEWAY, grant: 'grant-' + (++issued), exp: EPOCH + 8 * 3600 * 1000 } }),
+    watch: (url) => url.indexOf('grant=payload.sig') >= 0
+      ? Promise.resolve(gwHttp(403, { status: 'error', code: 'grant_invalid' }))
+      : Promise.resolve(gwOk({ status: 'ok', fp: 's:a', held: 0 }))
+  });
+  ctx.startDashboardPolling();
+  await drain();
+  assert.match(watches[0].url, /grant=payload\.sig/, 'the stored grant went out first');
+  assert.equal(grantRequests(), 1, 'the 403 bought exactly one new grant');
+  assert.notEqual(store.get('ext_examiner_bank'), JSON.stringify(GRANT),
+    'a grant the gateway refused is not left in storage for the next reload to adopt');
+
+  await timer.advance(5000);               // a failed watch waits DASH_FALLBACK_MS
+  assert.match(watches[1].url, /grant=grant-1/, 'and the watch goes on with the new one');
+  await timer.advance(250);
+  assert.match(watches[2].url, /grant=grant-1/);
+  assert.equal(grantRequests(), 1, 'a grant that works is not asked for again');
+  ctx.stopDashboardPolling();
+});
+
+test('dashboard: an examiner with no grant at all keeps working, and asks for one at most once a minute', async () => {
+  const { ctx, timer, watches, reads, grantRequests } = dashboardContext(undefined, {
+    stored: false,
+    grant: () => ({ status: 'error', code: 'bank_not_configured' })
+  });
+  ctx.startDashboardPolling();
+  await drain();
+  assert.equal(watches.length, 0, 'nothing is sent to a gateway we cannot authenticate to');
+  assert.equal(reads(), 1);
+
+  await timer.advance(30000);
+  assert.equal(watches.length, 0);
+  assert.equal(reads(), 7, 'the dashboard is simply the pre-r31 one: a read every 5 s');
+  assert.equal(grantRequests(), 1,
+    'and the watch does NOT turn into a bankGrant call to Google every 5 s (DASH_GRANT_RETRY_MS)');
+  await timer.advance(35000);
+  assert.equal(grantRequests(), 2, 'it does keep trying, once a minute');
+  ctx.stopDashboardPolling();
+});
+
+test('dashboard: the watch url carries the session, the 25 s wait and the grant - and never degrades Google', async () => {
+  const { ctx, timer, watches } = dashboardContext(undefined, {
+    watch: (url, n) => n === 1
+      ? Promise.resolve(gwOk({ status: 'ok', fp: 's:a', held: 0 }))
+      : Promise.resolve(gwHttp(500, { status: 'error' }))
+  });
+  ctx.startDashboardPolling();
+  await drain();
+  assert.equal(watches[0].url,
+    'https://gateway.example/v1/session/watch?sessionCode=TEST00&wait=25&grant=payload.sig',
+    'the first request of a chain carries no fingerprint, so the Worker answers at once');
+  assert.equal(watches[0].opts.cache, 'no-store');
+
+  await timer.advance(250);
+  assert.equal(watches[1].url,
+    'https://gateway.example/v1/session/watch?sessionCode=TEST00&wait=25&fp=s%3Aa&grant=payload.sig',
+    'every request after it is held against what this page already has');
+  await drain();
+  assert.equal(ctx.ExamTransport.isBackendDegraded(), false,
+    'a 500 from the Worker is not Apps Script being ill - fetchJsonQuiet, never fetchJsonWithTimeout');
+  await timer.advance(5000);                // a failed watch waits DASH_FALLBACK_MS
+  assert.ok(watches[2].url.indexOf('&fp=') < 0,
+    'and a failed watch drops the fingerprint, so the next answer comes back immediately');
+  ctx.stopDashboardPolling();
+});
+
+test('dashboard: stopping stops the watch AND the net, and start/stop twice leaves one chain', async () => {
+  let inFlight = 0, maxInFlight = 0;
+  const { ctx, timer, watches, reads } = dashboardContext(() => {
+    inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
+    return Promise.resolve({ status: 'ok', pending: [], active: [], completed: [] }).then(r => { inFlight--; return r; });
+  });
+  ctx.startDashboardPolling();
+  await drain();
+  ctx.startDashboardPolling();               // the "resume this session" path, twice
+  await drain();
+  await timer.advance(10000);
+  ctx.stopDashboardPolling();
+  await drain();
+  assert.equal(timer.pending, 0, 'no timer left waiting');
+  assert.equal(timer.jobs.size, 0, 'and the 2.5 s safety interval is cleared too');
+
+  const sent = watches.length, seen = reads();
+  await timer.advance(60000);
+  assert.equal(watches.length, sent, 'the watch really is stopped');
+  assert.equal(reads(), seen, 'and so is the net');
+  assert.equal(maxInFlight, 1, 'never two dashboard requests at once');
+});
+
+test('dashboard: a tab that comes back revives the watch instead of waiting out a dead chain', async () => {
+  const { ctx, timer, watches, visibility } = dashboardContext(undefined, {
+    watch: () => Promise.resolve(gwOk({ status: 'ok', fp: 's:a', held: 0 }))
+  });
+  ctx.startDashboardPolling();
+  await drain();
+  const sent = watches.length;
+
+  visibility('hidden');
+  await drain();
+  assert.equal(watches.length, sent, 'going away changes nothing');
+
+  visibility('visible');
+  await drain();
+  assert.equal(watches.length, sent + 1, 'coming back sends a fresh request on the spot');
+  assert.ok(watches[sent].url.indexOf('&fp=') < 0,
+    'without a fingerprint: after a freeze we cannot know the one we hold is still current');
+
+  ctx.stopDashboardPolling();
+  const after = watches.length;
+  visibility('visible');
+  await drain();
+  assert.equal(watches.length, after, 'and a closed dashboard is not revived by a tab switch');
+  await timer.advance(10000);
+  assert.equal(watches.length, after);
+});
+
+test('dashboard: a failing read raises the banner, a good one clears it, and reads never overlap', async () => {
+  // No gateway at all here - which is exactly what an examiner gets when
+  // Cloudflare is unreachable, and exactly how this page behaved before r31.
   let response = { status: 'error', message: 'server busy' };
   let inFlight = 0, maxInFlight = 0;
   const { ctx, timer, nodes } = dashboardContext(() => {
     inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
     return Promise.resolve(response).then(r => { inFlight--; return r; });
-  });
+  }, { watch: () => Promise.reject(new Error('no gateway')) });
   ctx.startDashboardPolling();
   await drain();
   for (let i = 0; i < 3; i++) await timer.advance(20000);
   assert.ok(ctx.failedPolls >= 3);
   assert.equal(nodes.get('offlineBanner').classList.contains('show'), true);
-  assert.equal(maxInFlight, 1, 'answer -> wait -> ask again; never two chains');
+  assert.equal(maxInFlight, 1, 'read -> wait -> read again; never two chains');
   response = { status: 'ok', pending: [], active: [], completed: [] };
   await timer.advance(60000);
   assert.equal(ctx.failedPolls, 0);
@@ -570,84 +917,26 @@ test('dashboard: a failing poll raises the banner, a good one clears it, and the
   assert.equal(timer.pending, 0, 'stopping leaves no timer behind');
 });
 
-test('dashboard: the 2 s sync cadence applies while a result is syncing, and only for 30 s', async () => {
-  const syncing = { status: 'ok', pending: [], completed: [], active: [{ idNumber: 'A', finishedOnDevice: true }] };
-  const settled = { status: 'ok', pending: [], completed: [], active: [{ idNumber: 'A', finishedOnDevice: false }] };
-  let response = settled;
-  const { ctx, timer } = dashboardContext(() => Promise.resolve(response));
-  ctx.startDashboardPolling();
-  await drain();
-  assert.equal(ctx.dashPollDelayMs, 5000, 'idle dashboards stay at 5 s');
-  response = syncing;
-  await timer.advance(5000);
-  assert.equal(ctx.dashSyncSince, timer.now, 'the syncing stretch is stamped');
-  const syncStarted = timer.now;
-  await timer.advance(2000);
-  assert.equal(ctx.dashPollDelayMs, 2000, 'a syncing result pulls the next tick in to 2 s');
-  // past the 30 s window the stuck row must not keep the dashboard at 2 s
-  await timer.advance(35000);
-  assert.ok(timer.now - syncStarted > 30000);
-  assert.equal(ctx.dashPollDelayMs, 5000, 'the fast cadence gives up after its 30 s window');
-  // a failed poll drops back to the plain retry, even mid-sync — but only to 5 s
-  ctx.dashSyncSince = ctx.Date.now();
-  response = { status: 'error', message: 'busy' };
-  await timer.advance(10000);
-  assert.equal(ctx.dashPollDelayMs, 5000, 'a failure retries in 5 s and never builds a ladder on top');
-  ctx.stopDashboardPolling();
-});
-
-// The 21/09 rehearsal, as a test: Apps Script answered in 4-10 s, the old rules
-// read every one of those as "slow", walked the wait up 7.5 -> 11 -> 17 -> 20 s
-// and cancelled the sync cadence — so a result that had already been saved kept
-// showing as "in exam" until the examiner pressed F5. One chain per page cannot
-// stampede, so since 21/09 the answer time is the only throttle.
-test('dashboard: 8 s answers keep the 5 s cadence — the ladder no longer applies (21/09)', async () => {
-  const starts = [];
-  let clock = null;
-  const { ctx, timer } = dashboardContext(() => {
-    starts.push(clock.now);
-    return new Promise(resolve => clock.set(() => resolve({ status: 'ok', pending: [], active: [], completed: [] }), 8000));
+test('dashboard: a failed read is retried in 5 s even while the watch is perfectly healthy', async () => {
+  // The watch says what changed in the SESSION; it knows nothing about whether
+  // Google answered US. Without this the first failed read would sit behind the
+  // 60 s net - a regression on every pre-r31 behaviour.
+  let response = { status: 'error', message: 'busy' };
+  const { ctx, timer, reads } = dashboardContext(() => Promise.resolve(response), {
+    watch: (url, n, clock) => n === 1
+      ? Promise.resolve(gwOk({ status: 'ok', fp: 's:quiet', held: 0 }))
+      : gwHeld(clock, 25000, { status: 'ok', fp: 's:quiet', held: 25000 })
   });
-  clock = timer;
   ctx.startDashboardPolling();
   await drain();
-  await timer.advance(3 * 13000);
-  const gaps = starts.slice(1).map((t, i) => t - starts[i]);
-  assert.deepEqual(gaps, [13000, 13000, 13000], 'an 8 s answer plus a 5 s wait — not 7.5/11/17/20 on top of it');
-  assert.equal(ctx.dashPollDelayMs, 5000);
-  assert.equal(ctx.dashboardLoop.currentDelayMs(), 5000, 'steady mode: the shared ladder never moves');
-  ctx.stopDashboardPolling();
-});
-
-test('dashboard: a syncing result keeps the 2 s cadence even when the answer was slow', async () => {
-  const syncing = { status: 'ok', pending: [], completed: [], active: [{ idNumber: 'A', finishedOnDevice: true }] };
-  let clock = null;
-  const { ctx, timer } = dashboardContext(() => new Promise(resolve => clock.set(() => resolve(syncing), 8000)));
-  clock = timer;
-  ctx.startDashboardPolling();
-  await drain();
-  await timer.advance(8000);
-  assert.equal(ctx.dashSyncSince, timer.now, 'the syncing stretch is stamped');
-  assert.equal(ctx.dashPollDelayMs, 2000,
-    'a slow server is exactly when the examiner is waiting for that row to land');
-  ctx.stopDashboardPolling();
-});
-
-test('dashboard: one failed poll is a plain 5 s retry, not a ladder', async () => {
-  const starts = [];
-  let clock = null;
-  const { ctx, timer } = dashboardContext(() => { starts.push(clock.now); return Promise.resolve({ status: 'error', message: 'busy' }); });
-  clock = timer;
-  ctx.startDashboardPolling();
-  await drain();
-  assert.equal(ctx.failedPolls, 1, 'a failure that answered in 1 ms is still a failure');
-  await timer.advance(4999);
-  assert.equal(starts.length, 1, 'and it is still a wait');
-  await timer.advance(1);
-  assert.equal(starts.length, 2, 'the retry is a plain 5 s away');
-  await timer.advance(20000);
-  assert.equal(ctx.dashPollDelayMs, 5000, 'four more failures still do not build a ladder');
-  assert.equal(ctx.dashboardLoop.currentDelayMs(), 5000);
+  assert.equal(reads(), 1);
+  await timer.advance(5000);
+  assert.equal(reads(), 2, 'a failure is retried at DASH_FALLBACK_MS, watch or no watch');
+  response = { status: 'ok', pending: [], active: [], completed: [] };
+  await timer.advance(5000);
+  assert.equal(reads(), 3, 'the retry that finally works');
+  await timer.advance(30000);
+  assert.equal(reads(), 3, 'and then the net goes back to 60 s');
   ctx.stopDashboardPolling();
 });
 
@@ -663,6 +952,18 @@ test('dashboard: a manual refresh shares the in-flight request, and a session sw
   response.resolve({ status: 'ok', pending: [] });
   await first;
   assert.equal(renders, 0, 'the answer for the old session is dropped');
+});
+
+test('dashboard: a decision still reads the dashboard itself instead of waiting for the watch', () => {
+  // The examiner pressed the button; his own screen must show the result of it
+  // without a round trip through Cloudflare. (The nudge that follows is for the
+  // EXAMINEE's held poll - see the grant tests above.)
+  assert.match(section(examiner, "var params = { action: 'approveExaminee'", 'actions.appendChild(approveBtn);'),
+    /examinerDecision\(params\)[\s\S]*?pollDashboard\(\);/, 'approve');
+  for (const action of ['rejectExaminee', 'resetExaminee', 'forceComplete', 'disqualify']) {
+    const region = section(examiner, "examinerDecision({ action: '" + action + "'", '});');
+    assert.match(region + '});', /pollDashboard\(\)/, action + ' reads the dashboard when it succeeds');
+  }
 });
 
 // ---------------------------------------------------------------- S3

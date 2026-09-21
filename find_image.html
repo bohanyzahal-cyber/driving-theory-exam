@@ -300,6 +300,10 @@
   'use strict';
 
   var API_URL = 'https://script.google.com/macros/s/AKfycbzOI0zrDEngP-GvlRblhOk8tQsYBvWZ2gGliIQHTpS67WrDZl4la8NPpwtJr_Vjsh3Gzg/exec';
+  // r31 (DESIGN §13.3): every page carries this line so that the day the
+  // reports deployment exists there is one place per page to change. This page
+  // is NOT one of them - bankGrant is an exam action - so nothing routes here.
+  var REPORTS_API_URL = API_URL;
   var API_ORIGIN = 'examiner-app';
   var BANK_GRANT_MIN_TTL_MS = 10 * 60 * 1000;   // a grant about to expire is worth less than one request
 

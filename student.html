@@ -538,6 +538,9 @@ try {
 } catch(e){}
 
 var API_URL='https://script.google.com/macros/s/AKfycbzOI0zrDEngP-GvlRblhOk8tQsYBvWZ2gGliIQHTpS67WrDZl4la8NPpwtJr_Vjsh3Gzg/exec';
+// r31 (DESIGN §13.3): practice, progress and joining a class are all served
+// by the REPORTS deployment, never by the exam one. Same url until it exists.
+var REPORTS_API_URL=API_URL;
 // Origin tag — required by Apps Script allowlist; must match a value in ALLOWED_ORIGINS server-side.
 var API_ORIGIN='student-app';
 // Cloudflare Worker that proxies + caches gov.il images. iPhones often block direct
@@ -620,7 +623,7 @@ function getStudentId(){
 }
 
 // ===== one transport for the whole page =====
-var api = ExamTransport.createApi({ apiUrl: API_URL, origin: API_ORIGIN });
+var api = ExamTransport.createApi({ apiUrl: REPORTS_API_URL, origin: API_ORIGIN });
 var API_TIMEOUT_MS = ExamTransport.API_TIMEOUT_MS;
 function practiceErrorText(resp){
   if (resp && resp.code === 'rate_limited') return '\u05d9\u05d5\u05ea\u05e8 \u05de\u05d3\u05d9 \u05d1\u05e7\u05e9\u05d5\u05ea \u2014 \u05d4\u05de\u05ea\u05df \u05d3\u05e7\u05d4 \u05d5\u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.';

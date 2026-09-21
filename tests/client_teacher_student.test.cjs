@@ -11,6 +11,9 @@
 //       guard is evaluated AT FIRE TIME and every 15 s after it (21/09 msg 20)
 //   D16 student: progress and studentId belong to class+name, not to the device
 //   S8  student: one pass rule, ceil(total * 0.86), for every practice mode
+//   r31 every action these three pages send is a REPORTS action (practice,
+//       progress, classes, the commander dashboard), so all three talk to the
+//       second Apps Script deployment - DESIGN §13.3
 //   plus: startPractice + the signed grant it returns, a purely local language
 //         switch, a missing grant named instead of a blank practice, spaced
 //         repetition via mode=ids, the idle-only student reload, and the
@@ -174,6 +177,12 @@ function fakeBank() {
 // What startPractice now answers with, next to the questions.
 const PRACTICE_BANK = { url: 'https://gateway.example', grant: 'payload.sig', exp: 1758400000000 + 2 * 3600 * 1000 };
 
+// r31 (DESIGN §13.3): the two Apps Script deployments. They are one url in
+// production until Yossi creates the second one; the contexts below drive them
+// apart so that "which deployment answered this" is observable in a test.
+const EXAM_URL = 'https://exam.example/exec';
+const REPORTS_URL = 'https://reports.example/exec';
+
 // ======================================================================
 // teacher.html
 // ======================================================================
@@ -181,7 +190,7 @@ function teacherContext(answer) {
   const ui = dom();
   const { ctx, timer, store } = baseContext({
     ...ui,
-    API_URL: 'https://synthetic/exec', API_ORIGIN: 'teacher-app',
+    API_URL: EXAM_URL, REPORTS_API_URL: REPORTS_URL, API_ORIGIN: 'teacher-app',
     teacher: null, escHtml: s => String(s == null ? '' : s)
   });
   ctx.seen = [];
@@ -217,6 +226,26 @@ test('D6: the two heavy reads get 90 s, not the 30 s default', () => {
   assert.match(teacher, /\}, HEAVY_TIMEOUT_MS\)\.then\(function\(resp\)/,
     'teacherCommanderDashboard too');
   assert.match(teacher, /var HEAVY_TIMEOUT_MS = 90000;/);
+});
+
+test('r31: every request teacher.html makes goes to the reports deployment', async () => {
+  // Nothing this page asks for runs during an exam - logins, classes, the
+  // commander dashboard, the at-risk list, exports - so the exam deployment
+  // must not have to carry a byte of it. apiUrl IS the reports url here.
+  const { ctx } = teacherContext(() =>
+    Promise.resolve({ ok: true, text: () => Promise.resolve('{"status":"ok"}') }));
+  for (const action of ['teacherLogin', 'teacherVerifyLogin', 'teacherGetClasses', 'teacherClassDetails',
+                        'teacherCommanderDashboard', 'teacherAtRiskList', 'teacherExportData',
+                        'teacherCreateClass', 'teacherDeleteClass']) {
+    await ctx.apiGet({ action: action });
+    assert.equal(ctx.seen[ctx.seen.length - 1].url.indexOf(REPORTS_URL + '?'), 0, action);
+  }
+  assert.ok(ctx.seen.every(c => c.url.indexOf(EXAM_URL) !== 0), 'not one of them touched the exam deployment');
+});
+
+test('r31: teacher.html carries REPORTS_API_URL as a line of its own', () => {
+  assert.match(teacher, /\r\nvar REPORTS_API_URL = API_URL;\r\n/);
+  assert.match(teacher, /apiUrl: REPORTS_API_URL,/);
 });
 
 test('D6: no raw fetch survives in teacher.html', () => {
@@ -325,7 +354,7 @@ function studentContext(extra = {}) {
   const bank = fakeBank();
   const { ctx, timer, store } = baseContext({
     ...ui,
-    API_URL: 'https://synthetic/exec', API_ORIGIN: 'student-app',
+    API_URL: EXAM_URL, REPORTS_API_URL: REPORTS_URL, API_ORIGIN: 'student-app',
     QuestionBank: bank.api,
     currentName: '', currentClassCode: '', currentLicense: 'B', currentLanguage: 'he',
     currentStudentId: '', currentMode: 'exam', currentCategory: '',
@@ -642,6 +671,23 @@ test('joinClass adopts a server-side studentId under the namespace of the class 
     'stored under class+name, never as one device-wide key');
 });
 
+test('r31: student.html practises against the reports deployment', async () => {
+  const { ctx } = studentContext();
+  let seenUrl = '';
+  const enc = (ci, id) => ci ^ (id % 256);
+  ctx.fetch = (url) => {
+    seenUrl = url;
+    return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({
+      status: 'ok', bank: PRACTICE_BANK, questions: [{ id: 1, topic: 'חוק', ci: { he: enc(0, 1) } }]
+    })) });
+  };
+  ctx.startPractice({ mode: 'exam' }, () => {}, m => { throw new Error(m); });
+  await drain();
+  assert.equal(seenUrl.indexOf(REPORTS_URL + '?'), 0, 'startPractice never runs during an exam');
+  assert.match(student, /\r\nvar REPORTS_API_URL=API_URL;\r\n/);
+  assert.match(student, /createApi\(\{ apiUrl: REPORTS_API_URL, origin: API_ORIGIN \}\)/);
+});
+
 test('the retired student code really is gone', () => {
   for (const dead of ['getExamQuestions&', 'getQuestionsByIds&', '_practiceTranslations',
                       'TRANSLATION_VARS', 'getTransDict', 'getRuQuestion', 'getFilteredQuestions',
@@ -662,7 +708,7 @@ test('exam.html standalone: startPractice with the id number, texts from the Heb
   const bank = fakeBank();
   const { ctx } = baseContext({
     ...ui,
-    QUESTIONS_API_URL: 'https://synthetic/exec',
+    QUESTIONS_API_URL: EXAM_URL, REPORTS_API_URL: REPORTS_URL,
     QuestionBank: bank.api,
     TOTAL_QUESTIONS: 2,
     ExamTransportOrigin: 'examinee-app'
@@ -680,6 +726,7 @@ test('exam.html standalone: startPractice with the id number, texts from the Heb
     })) });
   };
   const resp = await ctx.api.get({ action: 'startPractice', mode: 'exam', license: 'B', language: 'he', standaloneIdNumber: '123456789' });
+  assert.equal(seenUrl.indexOf(REPORTS_URL + '?'), 0, 'r31: the standalone page is a reports client too');
   assert.match(seenUrl, /action=startPractice/);
   assert.match(seenUrl, /standaloneIdNumber=123456789/);
   assert.match(seenUrl, /origin=examinee-app/);
@@ -704,6 +751,15 @@ test('exam.html: the legacy client-side picker and the old action are gone', () 
   }
   assert.match(examPage, /action: 'startPractice'/);
   assert.match(examPage, /<script src="shared\/bank\.js"><\/script>/);
+});
+
+test('r31: exam.html keeps QUESTIONS_API_URL and routes through REPORTS_API_URL', () => {
+  // The name QUESTIONS_API_URL stays: it is the line that says "this is the
+  // OTHER Apps Script project, the one with the question DB", and the reports
+  // url is derived from it so there is still exactly one url to edit per page.
+  assert.match(examPage, /\r\n  var QUESTIONS_API_URL = '/);
+  assert.match(examPage, /\r\n  var REPORTS_API_URL = QUESTIONS_API_URL;\r\n/);
+  assert.match(examPage, /createApi\(\{ apiUrl: REPORTS_API_URL, origin: 'examinee-app' \}\)/);
 });
 
 test('exam.html: the standalone flow requires the grant and never loads a bank by language', () => {
