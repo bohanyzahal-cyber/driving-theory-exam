@@ -3356,8 +3356,13 @@ function legacyActionTable() {
     ['getSessionInfo', 'GET', 'none', 'handleGetSessionInfo'],
     ['registerExaminee', 'GET', 'none', 'handleRegisterExaminee'],
     ['cancelRegistration', 'GET', 'none', 'handleCancelRegistration'],
-    ['checkApproval', 'GET', 'none', 'handleCheckApproval'],
-    ['getExamStatus', 'GET', 'none', 'handleGetExamStatus'],
+    // Retired 21/09/2026 evening: the examinee page polls ONLY through the
+    // session gateway (there is no direct route any more). An old page still
+    // calling these is told to reload, like every other retired action.
+    // handleCheckApproval / handleGetExamStatus themselves stay: they are the
+    // reference the Worker is tested against (tests/contracts.test.cjs).
+    ['checkApproval', 'GET', 'none', 'handleClientOutdated'],
+    ['getExamStatus', 'GET', 'none', 'handleClientOutdated'],
     ['addExamTime', 'GET', 'none', 'handleAddExamTime'],
     ['markFinished', 'GET', 'none', 'handleMarkFinished'],
     // 'disqualify' is deliberately not examiner-gated: the examinee client sends

@@ -89,6 +89,9 @@ function serverEnv(pending, extensions) {
   });
 }
 const get = (e, params) => e.json(e.ctx.doGet({ parameter: Object.assign({ origin: 'examinee-app' }, params) }));
+// The two direct poll ACTIONS are retired from the API (an old page is told to
+// reload); their handlers stay as the reference every gateway answer must match.
+const direct = (e, handler, params) => e.json(e.ctx[handler](Object.assign({ origin: 'examinee-app' }, params)));
 const post = (e, body) => e.json(e.ctx.doPost({ postData: { contents: JSON.stringify(Object.assign({ origin: 'examinee-app' }, body)) } }));
 
 // The Worker's upstream IS the server: every fetch it makes runs doGet in the vm.
@@ -149,10 +152,10 @@ test('the gateway answers exactly what the server answers, for every row state',
   const gw = gatewayOver(env);
   for (const row of pending) {
     const id = row[1], token = row[12];
-    const direct = get(env, { action: 'checkApproval', sessionCode: SESSION, idNumber: id, examineeToken: token });
+    const directApproval = direct(env, 'handleCheckApproval', { sessionCode: SESSION, idNumber: id, examineeToken: token });
     const viaGateway = await gw.poll({ kind: 'approval', sessionCode: SESSION, idNumber: id, examineeToken: token });
-    assert.deepEqual(viaGateway, direct, 'approval answer for ' + row[5]);
-    const directStatus = get(env, { action: 'getExamStatus', sessionCode: SESSION, idNumber: id, examineeToken: token });
+    assert.deepEqual(viaGateway, directApproval, 'approval answer for ' + row[5]);
+    const directStatus = direct(env, 'handleGetExamStatus', { sessionCode: SESSION, idNumber: id, examineeToken: token });
     const gatewayStatus = await gw.poll({ kind: 'status', sessionCode: SESSION, idNumber: id, examineeToken: token });
     assert.deepEqual(gatewayStatus, directStatus, 'status answer for ' + row[5]);
   }
@@ -185,11 +188,11 @@ test('the gateway answers exactly what the server answers, for every row state',
 test('a wrong token and an unknown examinee get the same answer from both routes', async () => {
   const env = serverEnv([pendingRow('900000001', 'approved')]);
   const gw = gatewayOver(env);
-  const wrongDirect = get(env, { action: 'checkApproval', sessionCode: SESSION, idNumber: '900000001', examineeToken: 'wrong' });
+  const wrongDirect = direct(env, 'handleCheckApproval', { sessionCode: SESSION, idNumber: '900000001', examineeToken: 'wrong' });
   const wrongGateway = await gw.poll({ kind: 'approval', sessionCode: SESSION, idNumber: '900000001', examineeToken: 'wrong' });
   assert.deepEqual(wrongGateway, wrongDirect);
   assert.equal(wrongGateway.examineeTokenError, 'mismatch');
-  const missingDirect = get(env, { action: 'checkApproval', sessionCode: SESSION, idNumber: '900000099', examineeToken: 'x' });
+  const missingDirect = direct(env, 'handleCheckApproval', { sessionCode: SESSION, idNumber: '900000099', examineeToken: 'x' });
   const missingGateway = await gw.poll({ kind: 'approval', sessionCode: SESSION, idNumber: '900000099', examineeToken: 'x' });
   assert.deepEqual(missingGateway, missingDirect);
   assert.equal(missingGateway.status, 'error');
@@ -200,7 +203,7 @@ test('a wrong token and an unknown examinee get the same answer from both routes
   const decidedEnv = serverEnv([pendingRow('900000001', 'rejected')]);
   const decidedGw = gatewayOver(decidedEnv);
   const params = { sessionCode: SESSION, idNumber: '900000001', examineeToken: 'stale-token' };
-  const stolenDirect = get(decidedEnv, Object.assign({ action: 'checkApproval' }, params));
+  const stolenDirect = direct(decidedEnv, 'handleCheckApproval', params);
   const stolenGateway = await decidedGw.poll(Object.assign({ kind: 'approval' }, params));
   assert.deepEqual(stolenGateway, stolenDirect);
   assert.equal(stolenGateway.examineeTokenError, 'mismatch');

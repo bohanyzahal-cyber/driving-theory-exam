@@ -91,7 +91,7 @@
 |---|---|
 | ~~7.1~~ | ~~`student.html` stubs~~ | ✅ נמחק 22/09/2026 |
 | 7.2 | `server/src/98_migration_practice.js` | למחוק אחרי 27/09 (ראה 0.3) |
-| 7.3 | `checkApproval` / `getExamStatus` בשרת + `directApprovalCall`-era code | הלקוח לא קורא להם מאז 21/09 ערב (אין נפילה לסקר ישיר). למחוק אחרי שבוע של r30 חי (לקוחות ישנים בחלון הפריסה); `tests/contracts.test.cjs` משתמש בהם כייחוס ל-Worker — לעדכן יחד |
+| ~~7.3~~ | ~~`checkApproval` / `getExamStatus` בשרת~~ | ✅ 21/09 ערב (יוסי: לא דוחים): שתי הפעולות פרשו מה-API (→ `client_outdated`); הפונקציות נשארות כאמת-מידה לבדיקות החוזים |
 
 ---
 

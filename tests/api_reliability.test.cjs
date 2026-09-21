@@ -242,7 +242,7 @@ test('two packages cannot declare the same action differently', () => {
 
   // The same declaration twice is how the migration ends — it must be harmless.
   const identical = runtime();
-  identical.ctx.defineAction('checkApproval', { methods: ['GET'], auth: 'none', handler: identical.ctx.handleCheckApproval });
+  identical.ctx.defineAction('checkApproval', { methods: ['GET'], auth: 'none', handler: identical.ctx.handleClientOutdated });
   assert.doesNotThrow(() => identical.ctx.ensureLegacyActions());
 });
 
@@ -324,8 +324,18 @@ test('a handler that has gone missing answers an error instead of crashing', () 
 const ID = idOf(1);
 const approvalRow = (id, status, over) => pendingRow(id, Object.assign({ 5: status }, over || {}));
 const approvals = rows => runtime({ sheets: { 'ממתינים': [PENDING_HEADER, ...rows] } });
-const checkApproval = (e, id, token) => get(e, { action: 'checkApproval', sessionCode: SESSION, idNumber: id,
-  examineeToken: token === undefined ? 'token-' + id : token });
+// The handler is called directly: the API action itself is retired (below).
+const checkApproval = (e, id, token) => e.json(e.ctx.handleCheckApproval({ origin: 'examinee-app', sessionCode: SESSION, idNumber: id,
+  examineeToken: token === undefined ? 'token-' + id : token }));
+
+test('checkApproval / getExamStatus are retired API actions: an old page is told to reload, never answered', () => {
+  const e = approvals([approvalRow(ID, 'waiting')]);
+  for (const action of ['checkApproval', 'getExamStatus']) {
+    const body = get(e, { action: action, sessionCode: SESSION, idNumber: ID, examineeToken: 'token-' + ID });
+    assert.equal(body.code, 'client_outdated', action);
+    assert.equal(body.approval, undefined, action + ' leaks nothing');
+  }
+});
 
 test('a live registration outranks every finished row above it', () => {
   const e = approvals([approvalRow(ID, 'rejected'), approvalRow(ID, 'cancelled'), approvalRow(ID, 'waiting')]);
