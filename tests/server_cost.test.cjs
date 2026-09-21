@@ -367,6 +367,51 @@ function envWith(extra, properties) {
   });
 }
 
+// ---- 7b. submitPracticeResult: the class check costs two column reads -------
+// The action is auth:'none', so the class code it is handed is verified before
+// it can reach the teacher/commander statistics (TODO 1.2). That is two reads
+// the handler did not pay before, and both are bounded by the number of classes
+// and of enrolled students — never by the practice history, which is still only
+// appended to. An unknown class pays ONE: the roster is not read at all.
+{
+  const classes = [['קוד כיתה', 'שם כיתה', 'מורה ת.ז.', 'שם מורה', 'דרגה', 'תאריך יצירה', 'פעיל', 'אתר']];
+  for (let i = 0; i < 200; i++) classes.push(['CLS' + i, 'כיתה ' + i, '222222222', 'מורה', 'B', iso(NOW - 60 * DAY), 'כן', 'בסיס 6']);
+  const roster = [['קוד כיתה', 'שם תלמיד', 'מזהה תלמיד', 'תאריך הצטרפות']];
+  for (let i = 0; i < 5000; i++) roster.push(['CLS' + (i % 200), 'תלמיד ' + i, 'stu-' + i, iso(NOW - 40 * DAY)]);
+  const history = [['תאריך', 'מזהה תלמיד', 'שם תלמיד', 'קוד כיתה', 'מצב', 'דרגה', 'ציון', 'סה"כ', 'אחוז', 'עבר/נכשל',
+    'זמן', 'נושא', 'שפה', 'פירוט שגויות', 'פירוט לפי נושא', 'טלפון']];
+  for (let i = 0; i < 20000; i++) {
+    history.push([sheetDate(NOW - DAY), 'stu-' + (i % 5000), 'תלמיד', 'CLS' + (i % 200), 'exam', 'B', 26, 30, 87,
+      'עבר', '12:30', '', 'he', '', '', '0500000000']);
+  }
+  const env = createEnv({ now: NOW, sheets: { 'כיתות': classes, 'תלמידי כיתות': roster, 'תוצאות תרגול': history } });
+  const submit = params => env.json(env.ctx.handleSubmitPracticeResult(Object.assign(
+    { studentName: 'תלמיד 7', mode: 'exam', license: 'B', score: 26, total: 30, percent: 87, time: '12:30' }, params)));
+  env.resetCounters();
+  const stored = submit({ studentId: 'stu-7', classCode: 'CLS7' });
+  const c = env.counters();
+  check('submitPracticeResult verifies the class in two column reads and one append', () => {
+    assert.deepEqual(stored, { status: 'ok' });
+    assert.equal(c.reads, 2, 'reads=' + c.reads);
+    assert.equal(c.perSheet['כיתות'].fullReads + c.perSheet['תלמידי כיתות'].fullReads, 0, 'columns only, never getDataRange');
+    assert.equal(c.perSheet['תוצאות תרגול'].fullReads + c.perSheet['תוצאות תרגול'].rangeReads, 0,
+      'the 20,000-row practice history is only appended to');
+    assert.equal(c.appends, 1);
+    // 201 class codes + 5,001 roster rows × 3 columns (A the code, C the id, B
+    // along for the ride). Two getDataRange() reads would have been 201 × 8 +
+    // 5,001 × 4 and would grow with every column ever added to those sheets.
+    assert.ok(c.cellsRead <= 201 + 3 * 5001, 'cells=' + c.cellsRead);
+    assert.equal(env.rows('תוצאות תרגול').at(-1)[3], 'CLS7', 'an enrolled student keeps the class');
+  });
+  env.resetCounters();
+  const unknown = submit({ studentId: 'stu-7', classCode: 'NOSUCH' });
+  check('a class that does not exist costs ONE read, and the row is stored without it', () => {
+    assert.deepEqual(unknown, { status: 'ok', classUnknown: true });
+    assert.equal(env.counters().reads, 1, 'reads=' + env.counters().reads);
+    assert.equal(env.rows('תוצאות תרגול').at(-1)[3], '');
+  });
+}
+
 // ---- 8. countAttempts: live + archive ---------------------------------------
 {
   const fixture = buildFixture({});

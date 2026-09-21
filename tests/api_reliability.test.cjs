@@ -72,10 +72,56 @@ test('the rate-limit identity separates candidates and normalizes the same ID', 
   assert.notEqual(identity({ sessionCode: 'OTHER', idNumber: '1' }), identity({ sessionCode: SESSION, idNumber: '1' }));
 });
 
-test('guest practice allowance is unchanged', () => {
+// ---- practice allowances: four identities, one shared bucket ---------------
+// student.html asks for the class code as OPTIONAL, so a soldier practising at
+// home sends a studentId and no classCode. Until this release that fell through
+// to the guest bucket, whose identifier is the constant 'anon' — five practice
+// draws a minute for every such soldier in the country TOGETHER. Home practice
+// is now its own identity; what is left in the guest bucket is a caller that
+// names nothing at all, which our own pages never are.
+const practice = (e, params) => get(e, Object.assign({ action: 'startPractice', license: 'B' }, params || {}));
+
+test('guest practice allowance is unchanged: five a minute, one shared bucket', () => {
   const e = runtime();
-  for (let i = 0; i < 5; i++) assert.equal(get(e, { action: 'startPractice', license: 'B' }).status, 'ok');
-  assert.equal(get(e, { action: 'startPractice', license: 'B' }).rateLimited, true);
+  for (let i = 0; i < 5; i++) assert.equal(practice(e).status, 'ok');
+  assert.equal(practice(e).rateLimited, true);
+  // Two guests are indeed one bucket — that is the point of the identity, and
+  // the reason a page must never be a guest.
+  assert.equal(practice(e, { origin: 'student-app' }).rateLimited, true);
+  // ...and a home practiser is not touched by what the guests spent.
+  assert.equal(practice(e, { studentId: 'S-home' }).status, 'ok');
+});
+
+test('home practice is per device: one studentId cannot spend the draws of another', () => {
+  const e = runtime();
+  const first = practice(e, { studentId: 'S-aaa' });
+  assert.equal(first.status, 'ok');
+  // The grant names the identity the draw was rated against, so a Worker log can
+  // be traced back to it: home practice is its own subject, not 'guest'.
+  const payload = JSON.parse(Buffer.from(first.bank.grant.split('.')[0], 'base64url').toString('utf8'));
+  assert.equal(payload.sub, 'home:S-aaa');
+  for (let i = 1; i < 20; i++) assert.equal(practice(e, { studentId: 'S-aaa' }).status, 'ok', 'draw ' + (i + 1));
+  const limited = practice(e, { studentId: 'S-aaa' });
+  assert.equal(limited.rateLimited, true, 'the 21st draw of one device inside a minute');
+  assert.ok(limited.waitSec > 0 && limited.waitSec <= 60);
+  for (let i = 0; i < 20; i++) assert.equal(practice(e, { studentId: 'S-bbb' }).status, 'ok', 'other device, draw ' + (i + 1));
+  assert.equal(practice(e, { studentId: 'S-bbb' }).rateLimited, true, 'and it has its own twenty, no more');
+  assert.equal(practice(e, { studentId: 'S-aaa' }).rateLimited, true, 'the first device is still blocked, not reset');
+});
+
+test('one 300/min ceiling covers every caller without a class code — class students are outside it', () => {
+  const e = runtime();
+  let ok = 0;
+  // Fifteen home devices × 20 draws each = 300, the whole minute's ceiling.
+  for (let d = 0; d < 15; d++) {
+    for (let i = 0; i < 20; i++) if (practice(e, { studentId: 'S-flood-' + d }).status === 'ok') ok++;
+  }
+  assert.equal(ok, 300, 'every device stayed inside its own allowance');
+  assert.equal(practice(e, { studentId: 'S-fresh' }).rateLimited, true, 'a device that never practised is refused too');
+  assert.equal(practice(e, { standaloneIdNumber: '900000001' }).rateLimited, true, 'standalone counts in the same ceiling');
+  assert.equal(practice(e).rateLimited, true, 'so does a guest');
+  assert.equal(practice(e, { classCode: 'CLS1', studentId: 'S-aaa' }).status, 'ok',
+    'a class student is never locked out by a flood of anonymous practice');
 });
 
 test('a method the action does not accept is refused before the handler', () => {

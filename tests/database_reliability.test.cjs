@@ -362,3 +362,63 @@ test('a big history is read from the tail, and never from מבחנים', () => {
   assert.equal(counters['ממתינים'].fullReads, 0);
   assert.equal(pendingStatuses(e).at(-1), 'completed', 'the live row was found inside the tail');
 });
+
+// ---- practice results: which class code may reach the teacher --------------
+// submitPracticeResult is auth:'none' — the student has no account — and it used
+// to store whatever class code it was handed, so a typo invented a class and
+// anyone holding a real code could add rows to that teacher's numbers (TODO
+// 1.2). The class survives only when it exists AND the roster says this student
+// joined it. The row itself is always written: the student's own history is
+// keyed by studentId, so blanking the class breaks nothing they can see.
+const CLASS_HEADER = ['קוד כיתה', 'שם כיתה', 'מורה ת.ז.', 'שם מורה', 'דרגה', 'תאריך יצירה', 'פעיל', 'אתר'];
+const ROSTER_HEADER = ['קוד כיתה', 'שם תלמיד', 'מזהה תלמיד', 'תאריך הצטרפות'];
+const PRACTICE_HEADER = ['תאריך', 'מזהה תלמיד', 'שם תלמיד', 'קוד כיתה', 'מצב', 'דרגה', 'ציון', 'סה"כ', 'אחוז',
+  'עבר/נכשל', 'זמן', 'נושא', 'שפה', 'פירוט שגויות', 'פירוט לפי נושא', 'טלפון'];
+function practiceEnv() {
+  return createEnv({ sheets: {
+    'כיתות': [CLASS_HEADER, ['CLS1', 'כיתה א', '222222222', 'מורה', 'B', '2026-08-01T08:00:00Z', 'כן', 'בסיס 6']],
+    'תלמידי כיתות': [ROSTER_HEADER, ['CLS1', 'דני', 'S-enrolled', '2026-08-01T09:00:00Z']],
+    'תוצאות תרגול': [PRACTICE_HEADER]
+  } });
+}
+const sendPractice = (e, params) => e.json(e.ctx.handleSubmitPracticeResult(Object.assign(
+  { studentName: 'דני', mode: 'exam', license: 'B', score: 26, total: 30, percent: 87, time: '12:30' }, params)));
+const practiceRow = e => e.rows('תוצאות תרגול').at(-1);
+
+test('an enrolled student keeps the class code, and the answer says nothing extra', () => {
+  const e = practiceEnv();
+  assert.deepEqual(sendPractice(e, { studentId: 'S-enrolled', classCode: 'CLS1' }), { status: 'ok' });
+  assert.equal(e.rows('תוצאות תרגול').length, 2, 'header + the one result');
+  assert.equal(practiceRow(e)[3], 'CLS1', 'the row counts for the class');
+  assert.equal(practiceRow(e)[1], 'S-enrolled');
+  assert.equal(practiceRow(e)[9], 'עבר', 'the verdict is still derived on the server');
+});
+
+test('a class code nobody created is stored blank, and the submit still succeeds', () => {
+  const e = practiceEnv();
+  assert.deepEqual(sendPractice(e, { studentId: 'S-enrolled', classCode: 'NOSUCH' }), { status: 'ok', classUnknown: true });
+  assert.equal(practiceRow(e)[3], '', 'no invented class in the teacher statistics');
+  assert.equal(practiceRow(e)[1], 'S-enrolled', 'the student keeps their own history');
+  const roster = e.counters().perSheet['תלמידי כיתות'];
+  assert.equal(roster.rangeReads + roster.fullReads, 0, 'the roster is not even read for a class that does not exist');
+});
+
+test('a real class the student never joined does not count either', () => {
+  const e = practiceEnv();
+  assert.deepEqual(sendPractice(e, { studentId: 'S-stranger', classCode: 'CLS1' }), { status: 'ok', classUnknown: true });
+  assert.equal(practiceRow(e)[3], '', 'knowing a class code is not being in the class');
+  // Same for a caller that sends a class and no student at all.
+  assert.deepEqual(sendPractice(e, { classCode: 'CLS1' }), { status: 'ok', classUnknown: true });
+  assert.equal(practiceRow(e)[3], '');
+});
+
+test('practice with no class code at all is written as it always was, and reads nothing', () => {
+  const e = practiceEnv();
+  e.resetCounters();
+  assert.deepEqual(sendPractice(e, { studentId: 'S-home' }), { status: 'ok' }, 'home practice is not an error');
+  const counters = e.counters();
+  assert.equal(practiceRow(e)[3], '');
+  assert.equal(practiceRow(e)[1], 'S-home');
+  assert.equal(counters.perSheet['תוצאות תרגול'].appends, 1);
+  assert.equal(counters.reads, 0, 'nothing to validate, nothing to read');
+});

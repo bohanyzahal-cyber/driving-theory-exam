@@ -240,10 +240,11 @@ function handleStartPractice(p) {
     bank: bankGrantFor('practice', ids, practiceSubject(p)), questions: questions });
 }
 
-// Who the practice grant was issued to — the same three identities the rate
+// Who the practice grant was issued to — the same four identities the rate
 // limit separates, so a grant can be traced back to the draw that produced it.
 function practiceSubject(p) {
   if (p.classCode && p.studentId) return String(p.classCode) + ':' + String(p.studentId);
+  if (p.studentId) return 'home:' + String(p.studentId);   // student.html, no class code typed
   if (p.standaloneIdNumber) return normalizeId(p.standaloneIdNumber);
   return 'guest';
 }
@@ -281,20 +282,45 @@ function practiceByIds(raw, license, lang) {
   return out;
 }
 
-// Class practice is identified by class+student, standalone by the ID typed into
-// exam.html, and everything else is a guest. The guest allowance is also capped
-// globally: `ci` makes the draw an answer oracle, so a scraper must not be able
-// to walk the bank quickly by inventing identifiers.
-var PRACTICE_GUEST_GLOBAL_MAX = 120;
+// ---- Who is asking, and what that caller is allowed -------------------------
+// FOUR identities, and no two real users share a bucket:
+//
+//   class student   classCode + studentId    20/min per (class, student)
+//   home practice   studentId, no class      20/min per studentId
+//   standalone      standaloneIdNumber       5/min per ID (exam.html)
+//   guest           nothing at all           5/min, ONE shared bucket
+//
+// The home identity is the bug this fixes. student.html asks for the class code
+// as OPTIONAL — a soldier practising at home has no class — so those callers
+// sent a studentId and no classCode and fell through to the guest bucket, whose
+// identifier is the constant 'anon'. That is five practice draws a minute for
+// the whole country TOGETHER: on a busy evening most of them would have got
+// "יותר מדי בקשות" and nothing else. What is left in the guest bucket is a
+// caller that names nothing at all — our own pages always identify themselves,
+// so that is scripts, and five a minute is the right allowance for a script.
+//
+// One ceiling then covers everyone WITHOUT a class code (home + standalone +
+// guest) together, because an identifier the caller invents is not an identity:
+// vary the studentId and each one is worth another 20/min. The ceiling does NOT
+// protect the bank — practice returns `ci`, so a draw is an answer oracle by
+// design and no rate a real student would accept can stop a patient scraper
+// from walking 1,700 questions. What it protects is Apps Script: it bounds how
+// many of the shared executions one flood can hold, which is the resource an
+// exam morning on the same script actually competes for. Class students are
+// outside the ceiling — they are enrolled, traceable, and the last people a
+// flood may lock out.
+var PRACTICE_NOCLASS_GLOBAL_MAX = 300;
 function practiceRateLimit(p) {
   if (p.classCode && p.studentId) {
     return requireRateLimit('startPractice_student', String(p.classCode) + '_' + String(p.studentId), 20, 60);
   }
-  if (p.standaloneIdNumber) {
-    return requireRateLimit('startPractice_standalone', normalizeId(p.standaloneIdNumber), 5, 60);
-  }
-  return requireRateLimit('startPractice_guest', 'anon', 5, 60)
-    || requireRateLimit('startPractice_guest', 'guest_global', PRACTICE_GUEST_GLOBAL_MAX, 60);
+  var own;
+  if (p.studentId) own = requireRateLimit('startPractice_home', String(p.studentId), 20, 60);
+  else if (p.standaloneIdNumber) own = requireRateLimit('startPractice_standalone', normalizeId(p.standaloneIdNumber), 5, 60);
+  else own = requireRateLimit('startPractice_guest', 'anon', 5, 60);
+  // The ceiling is charged only for a draw the caller's own identity allowed, so
+  // one blocked device cannot spend everybody else's allowance while it retries.
+  return own || requireRateLimit('startPractice_noclass', 'global', PRACTICE_NOCLASS_GLOBAL_MAX, 60);
 }
 
 // ---- Retired actions --------------------------------------------------------

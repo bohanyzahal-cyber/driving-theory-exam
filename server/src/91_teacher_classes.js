@@ -360,6 +360,46 @@ function handleStudentJoinClass(p) {
   return jsonResponse({ status: 'ok', message: 'הצטרפת לכיתה בהצלחה!', className: classInfo.name, teacherName: classInfo.teacherName, license: classInfo.license });
 }
 
+// ---- Which class code is allowed to reach the teacher's statistics ---------
+// submitPracticeResult is auth:'none' — a student practising at home has no
+// account to authenticate with — and it used to store WHATEVER class code the
+// caller sent. Any string became a "class" in the teacher dashboard, and anyone
+// who knew a real code could push rows into that teacher's numbers (TODO 1.2).
+// So the code survives only when it names a class that EXISTS and this
+// studentId is on that class's roster — the row studentJoinClass wrote. In
+// every other case the practice row is stored with an EMPTY class code: it is
+// still the student's own history (that is keyed by studentId, and the student
+// screen reads it back), it simply stops counting for a class that never
+// enrolled them. Nothing legitimate breaks, so the submit still answers ok.
+//
+// Cost: at most two reads, columns only, and the roster is not read at all when
+// the class does not exist. Returns the class's canonical spelling from 'כיתות'
+// — every dashboard matches the code by exact string, so a row that counts must
+// carry the same spelling the class was created with.
+function practiceClassCodeFor(classCode, studentId) {
+  if (!classCode) return '';
+  var want = classCode.toUpperCase();
+  var classSheet = getSheet('כיתות'), classRows = classSheet.getLastRow();
+  if (classRows < 2) return '';
+  var codes = readSheetSlice(classSheet, 1, classRows, classSheet.getLastColumn(), [[1, 1]]);   // col A only
+  var canonical = '';
+  for (var c = 1; c < codes.length; c++) {
+    var code = String(codes[c][0]).trim();
+    if (code && code.toUpperCase() === want) { canonical = code; break; }
+  }
+  if (!canonical || !studentId) return '';
+  var studSheet = getSheet('תלמידי כיתות'), studRows = studSheet.getLastRow();
+  if (studRows < 2) return '';
+  // A:C in ONE round trip — col A is the class code and col C the student id;
+  // col B (the name) rides along, col D (the join date) does not.
+  var roster = readSheetSlice(studSheet, 1, studRows, studSheet.getLastColumn(), [[1, 3]]);
+  for (var s = 1; s < roster.length; s++) {
+    if (String(roster[s][0]).trim().toUpperCase() !== want) continue;
+    if (String(roster[s][2]).trim() === studentId) return canonical;
+  }
+  return '';
+}
+
 function handleSubmitPracticeResult(p) {
   var maintenance = practiceWriteGuard(); if (maintenance) return maintenance;   // r24
   var studentId = String(p.studentId || '').trim();
@@ -368,6 +408,9 @@ function handleSubmitPracticeResult(p) {
   // feeds the teacher/commander stats) can't be flooded with fabricated rows.
   var prRlErr = requireRateLimit('submitPracticeResult', (studentId || classCode || 'anon'), 30, 60);
   if (prRlErr) return prRlErr;
+  // A class code the student is not enrolled in never reaches the statistics.
+  var storedClass = practiceClassCodeFor(classCode, studentId);
+  var classUnknown = !!classCode && !storedClass;
   var sheet = getSheet('תוצאות תרגול');
   var mode = String(p.mode || 'exam');
   var license = String(p.license || 'B');
@@ -383,7 +426,8 @@ function handleSubmitPracticeResult(p) {
   var categoryBreakdown = '';
   try { categoryBreakdown = typeof p.categoryBreakdown === 'string' ? p.categoryBreakdown : JSON.stringify(p.categoryBreakdown || ''); } catch(e) {}
 
-  sheet.appendRow([todayStr(), studentId, String(p.studentName || ''), classCode, mode, license, score, total, percent, passed, time, category, language, wrongDetails, categoryBreakdown, String(p.phone || '')]);
+  sheet.appendRow([todayStr(), studentId, String(p.studentName || ''), storedClass, mode, license, score, total, percent, passed, time, category, language, wrongDetails, categoryBreakdown, String(p.phone || '')]);
+  if (classUnknown) return jsonResponse({ status: 'ok', classUnknown: true });
   return jsonResponse({ status: 'ok' });
 }
 
