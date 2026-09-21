@@ -2127,23 +2127,37 @@
   // ===== Poll pacing =====
   // Lives in shared/transport.js now (jitter, x1.5 backoff, one step down per
   // healthy answer, a 30-60 s floor while the backend is degraded, and the 60 s
-  // poll deadline). Nothing page-specific remains.
+  // poll deadline) - all of it for pages a FLEET runs. The one loop on this page
+  // opts out of the ladder with steady:true; see the policy note below.
 
   // ===== Dashboard polling =====
-  // 2026-08-26 saturation: every open dashboard hit the server every 5 s all
-  // day. The chain is answer -> wait -> ask again (never a fixed interval), the
-  // wait grows x1.5 up to 20 s while the server is slow or failing and steps
-  // back down one factor per healthy answer, and it is jittered so a fleet
-  // released together does not re-arrive together. All of that is the shared
-  // createPollLoop now; what stays here is the cadence policy.
+  // 2026-09-21 pacing policy - replaces the 2026-08-26 saturation ladder.
+  // The chain is still answer -> wait -> ask again: ONE chain per open examiner
+  // page, never a fixed interval, never two requests in flight. A single chain
+  // cannot stampede. When Apps Script answers in 8 s the ANSWER TIME is the
+  // throttle - the next request physically cannot go out before it arrives - so
+  // the x1.5 ladder (7.5 -> 11 -> 17 -> 20 s) and the 30-60 s "degraded" floor
+  // add a wait on top of a wait and buy nothing. They were written in
+  // August/September, when hundreds of examinee devices polled Apps Script
+  // directly and a fleet released together could re-arrive together; since r30
+  // every examinee poll goes through the Cloudflare Worker and there is no fleet
+  // left on this path to protect. What the extra waiting DID cost was measured
+  // in the 21/09 rehearsal: an examinee submitted, his phone said the result was
+  // saved, and the dashboard still showed him "in exam" for over a minute until
+  // the examiner pressed F5. So the loop runs in steady mode (transport.js) -
+  // the next tick is always DASH_POLL_BASE_MS, jittered - and the cadence policy
+  // below is the whole story. info.slow / info.failed are still reported and the
+  // page still tells the examiner that Google is busy; it just never answers a
+  // slow server by asking less often.
   var DASH_POLL_BASE_MS = 5000;  // r6: back to 5s (was 8s while cache reads were failing server-side)
-  var DASH_POLL_MAX_MS = 20000;
+  var DASH_POLL_MAX_MS = 20000;  // steady mode never climbs; kept so the loop keeps its contract
   // While a device reports "finished, syncing" the result is seconds away, so
   // the dashboard closes the gap instead of waiting out a full 5 s tick
   // (measured 15/09: submit ~2 s + up to 5 s until the next tick + an 8-10 s
-  // request). Bounded two ways: never while the server is slow or failing (the
-  // backoff wins), and a result still not landed after DASH_SYNC_FAST_WINDOW_MS
-  // falls back to the normal tick, so one stuck row cannot pin it at 2 s.
+  // request). A slow answer no longer cancels it: a slow server is exactly when
+  // the examiner is waiting for that row. One bound is left - a result still not
+  // landed after DASH_SYNC_FAST_WINDOW_MS falls back to the normal tick, so one
+  // stuck row cannot pin the dashboard at 2 s.
   var DASH_POLL_SYNC_MS = 2000;
   var DASH_SYNC_FAST_WINDOW_MS = 30000;
   var dashSyncSince = 0;  // ms timestamp the current syncing stretch began; 0 = nobody syncing
@@ -2152,17 +2166,20 @@
   var dashboardRequest = null;
 
   // The loop itself is the shared one: answer -> wait -> ask again, never two
-  // chains, never a second request on top of a live one.
+  // chains, never a second request on top of a live one. steady:true because
+  // that single chain is its own throttle (see the policy note above).
   var dashboardLoop = ExamTransport.createPollLoop({
     name: 'examinerDashboard',
     baseMs: DASH_POLL_BASE_MS,
     maxMs: DASH_POLL_MAX_MS,
+    steady: true,
     tick: function() { return pollDashboard(); },
-    nextDelay: function(info, paced) {
-      // Only when the backend is healthy AND we are already back at base may the
-      // sync cadence pull the next tick in: a struggling server always wins.
-      var chosen = paced;
-      if (!(info.slow || info.failed || failedPolls > 0) && paced <= DASH_POLL_BASE_MS) {
+    nextDelay: function(info) {
+      // An answer that arrived: 2 s while a result is syncing (bounded by
+      // DASH_SYNC_FAST_WINDOW_MS), 5 s otherwise - regardless of how long it
+      // took. A failed poll: a plain 5 s retry, no ladder.
+      var chosen = DASH_POLL_BASE_MS;
+      if (!info.failed) {
         var syncingNow = dashSyncSince && (Date.now() - dashSyncSince) < DASH_SYNC_FAST_WINDOW_MS;
         chosen = syncingNow ? DASH_POLL_SYNC_MS : DASH_POLL_BASE_MS;
       }
@@ -2211,7 +2228,7 @@
   function toastError(message) { return showToast(message, 'error'); }
 
   var OFFLINE_BANNER_TEXT = 'אין חיבור לשרת. מנסה שוב...';
-  var OFFLINE_BANNER_DEGRADED_TEXT = 'השרת (Google) עמוס או משיב בשגיאה — ממשיכים לנסות אוטומטית כל 30–60 שניות. אין צורך לרענן את הדף או להתחבר מחדש.';
+  var OFFLINE_BANNER_DEGRADED_TEXT = 'השרת (Google) עמוס או משיב בשגיאה — ממשיכים לנסות אוטומטית כל כמה שניות, והלוח יתעדכן מעצמו. אין צורך לרענן את הדף או להתחבר מחדש.';
   function pollDashboard() {
     var requestedSession = sessionCode;
     var requestedToken = examinerToken;

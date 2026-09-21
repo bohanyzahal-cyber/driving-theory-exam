@@ -15,7 +15,8 @@
 //      restart while a request is still out must never start a second chain),
 //      a generation counter, a 60 s poll deadline, and the long-poll gap: when
 //      the answer says the server HELD the request, the wait already happened
-//      on the wire, so the next request goes out at once.
+//      on the wire, so the next request goes out at once. A single-chain page
+//      (the examiner dashboard) can opt out of the fleet ladder with steady:true.
 //   5. createApi — GET/POST helpers with an always-forwarded timeout and a page
 //      supplied decorator that attaches credentials.
 //   7. createUpdateCheck — version.json based (per-page content hash), never an
@@ -140,6 +141,7 @@
 
   // ---------- 4. poll loop ----------
   // opts: { name, baseMs, maxMs, tick: function() -> Promise|any,
+  //         steady: optional true — see "steady mode" below,
   //         nextDelay: optional function(info) -> ms override (e.g. a 2 s sync cadence),
   //         onSettled: optional function(info),
   //         onRestart: optional function() — called just before restartIfStuck
@@ -148,6 +150,22 @@
   // info: { ok, slow, elapsedMs, failed, held, error, result }
   // tick() rejecting or returning {status:'error'} counts as failed; the loop never dies.
   // A resolved answer carrying held > 0 is a long-poll answer: see LONGPOLL_GAP_MS.
+  //
+  // ---- steady mode (opt-in, 2026-09-21) ----
+  // WHY: the x1.5 ladder and the 30-60 s degraded floor exist to stop a FLEET
+  // from stampeding — hundreds of examinee devices polling Apps Script directly,
+  // released together, retrying harder exactly when the backend is already on
+  // its knees. A page that runs ONE chain (answer -> wait -> ask again, never
+  // two requests in flight) cannot stampede: when the server takes 8 s to
+  // answer, the answer time IS the throttle, and slowing down on top of it only
+  // delays the person watching the screen — which is how an examiner ends up
+  // pressing F5 to see a result that already landed. Such a loop opts in with
+  // steady:true and every outcome (ok, slow, failed, error) schedules the next
+  // tick at baseMs, jittered as always. A held answer still uses LONGPOLL_GAP_MS,
+  // nextDelay still gets the last word, info.slow / info.failed are still
+  // reported so the page can SAY the server is slow, and the in-flight guard and
+  // generation counter are untouched. Loops WITHOUT steady behave exactly as
+  // before — the ladder stays the default for anything a fleet runs.
   function createPollLoop(opts) {
     var timer = null, running = false, gen = 0, inFlight = false, inFlightSince = 0;
     var delayMs = opts.baseMs;
@@ -178,7 +196,9 @@
           // exactly like any other failed poll, degraded pacing included.
           var held = (outcome.ok && outcome.result && typeof outcome.result.held === 'number' && outcome.result.held > 0) ? outcome.result.held : 0;
           var info = { ok: outcome.ok, failed: !outcome.ok, slow: !held && elapsed > SLOW_ANSWER_MS, elapsedMs: elapsed, held: held, error: outcome.error, result: outcome.result };
-          delayMs = pacePoll(delayMs, opts.baseMs, opts.maxMs, info.slow || info.failed);
+          // steady mode: one chain per page, so the answer time is the throttle
+          // and the ladder/floor would only add a wait on top of a wait.
+          delayMs = opts.steady ? opts.baseMs : pacePoll(delayMs, opts.baseMs, opts.maxMs, info.slow || info.failed);
           var next = held ? LONGPOLL_GAP_MS : delayMs;
           if (opts.nextDelay) { var override = opts.nextDelay(info, next); if (typeof override === 'number' && override > 0) next = override; }
           if (opts.onSettled) { try { opts.onSettled(info); } catch (e) {} }

@@ -373,6 +373,96 @@ test('long poll: a page that knows nothing about holds sees exactly the old loop
   loop.stop();
 });
 
+// ===== 4c. steady mode (2026-09-21) =====
+// The ×1.5 ladder and the 30-60 s degraded floor exist to stop a FLEET from
+// stampeding: hundreds of devices released together, retrying harder exactly
+// when the backend is already on its knees. A page that runs ONE chain (the
+// examiner dashboard) cannot stampede — the answer time IS the throttle — so it
+// opts into steady:true and every outcome schedules the next tick at baseMs.
+test('steady: a slow answer does not climb the ladder — the next tick is baseMs again', async () => {
+  const starts = [];
+  let clock = null;
+  const { timer, loop } = loopWith(() => {
+    starts.push(clock.now);
+    return new Promise(resolve => clock.set(() => resolve({ status: 'ok' }), 8000));   // > SLOW_ANSWER_MS
+  }, { steady: true });
+  clock = timer;
+  loop.start(); await drain();
+  await timer.advance(3 * 13000);
+  assert.deepEqual(starts, [0, 13000, 26000, 39000], 'an 8 s answer plus a 5 s wait, every time');
+  assert.equal(loop.currentDelayMs(), 5000, 'and the ladder itself never moved');
+  loop.stop();
+});
+
+test('steady: the SAME slow answers still climb the ladder without it (the fleet default)', async () => {
+  let clock = null;
+  const { timer, loop } = loopWith(() => new Promise(resolve => clock.set(() => resolve({ status: 'ok' }), 8000)));
+  clock = timer;
+  loop.start(); await drain();
+  await timer.advance(8000);
+  assert.equal(loop.currentDelayMs(), 7500, 'a page a fleet runs is untouched by steady mode');
+  await timer.advance(7500 + 8000);
+  assert.equal(loop.currentDelayMs(), 11250);
+  loop.stop();
+});
+
+test('steady: a failed poll retries at baseMs instead of backing off', async () => {
+  const starts = [];
+  let clock = null;
+  const { timer, loop } = loopWith(() => { starts.push(clock.now); return Promise.resolve({ status: 'error', code: 'upstream_unavailable' }); },
+    { steady: true });
+  clock = timer;
+  loop.start(); await drain();
+  assert.equal(loop.currentDelayMs(), 5000, 'a JSON error is still a failed poll — it just does not add a wait');
+  await timer.advance(20000);
+  assert.deepEqual(starts, [0, 5000, 10000, 15000, 20000], 'a plain retry, never 7.5 → 11 → 17 → 20');
+  loop.stop();
+});
+
+test('steady: failures are still REPORTED — the page may say so, it just must not wait longer', async () => {
+  const seen = [];
+  const { timer, loop } = loopWith(() => Promise.reject(new Error('network')),
+    { steady: true, onSettled: info => seen.push({ failed: info.failed, slow: info.slow }) });
+  loop.start(); await drain();
+  await timer.advance(5000);
+  assert.deepEqual(seen, [{ failed: true, slow: false }, { failed: true, slow: false }]);
+  assert.equal(loop.currentDelayMs(), 5000, 'and the loop never dies');
+  loop.stop();
+});
+
+test('steady: a degraded backend does not floor a steady loop at 30-60 s', async () => {
+  const starts = [];
+  let clock = null;
+  const { T, timer, loop } = loopWith(() => { starts.push(clock.now); return Promise.resolve({ status: 'ok' }); }, { steady: true });
+  clock = timer;
+  T.noteTransport({ transport: 'http' });        // Google answered with an HTML error page
+  assert.equal(T.isBackendDegraded(), true, 'the page still KNOWS the backend is degraded');
+  loop.start(); await drain();
+  await timer.advance(15000);
+  assert.deepEqual(starts, [0, 5000, 10000, 15000], 'and still asks every 5 s: the floor is a fleet rule');
+  assert.equal(loop.currentDelayMs(), 5000);
+  loop.stop();
+});
+
+test('steady: a held answer still uses the long-poll gap, and nextDelay still has the last word', async () => {
+  const starts = [];
+  let clock = null;
+  const { T, timer, loop } = loopWith(() => { starts.push(clock.now); return Promise.resolve({ status: 'ok', held: 24000 }); }, { steady: true });
+  clock = timer;
+  loop.start(); await drain();
+  await timer.advance(T.LONGPOLL_GAP_MS);
+  assert.deepEqual(starts, [0, 250], 'held > 0 is still the gap, not baseMs');
+  loop.stop();
+
+  const picks = [];
+  const second = loopWith(() => Promise.resolve({ status: 'ok' }),
+    { steady: true, nextDelay: (info, paced) => { picks.push(paced); return 2000; } });
+  second.loop.start(); await drain();
+  await second.timer.advance(2000);
+  assert.deepEqual(picks, [5000, 5000], 'nextDelay is handed baseMs and may still choose less');
+  second.loop.stop();
+});
+
 // ===== 6. createUpdateCheck =====
 function updateCheckWith(answers) {
   const queue = answers.slice();

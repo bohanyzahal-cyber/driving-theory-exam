@@ -570,7 +570,7 @@ test('dashboard: a failing poll raises the banner, a good one clears it, and the
   assert.equal(timer.pending, 0, 'stopping leaves no timer behind');
 });
 
-test('dashboard: the 2 s sync cadence applies only while healthy and only for 30 s', async () => {
+test('dashboard: the 2 s sync cadence applies while a result is syncing, and only for 30 s', async () => {
   const syncing = { status: 'ok', pending: [], completed: [], active: [{ idNumber: 'A', finishedOnDevice: true }] };
   const settled = { status: 'ok', pending: [], completed: [], active: [{ idNumber: 'A', finishedOnDevice: false }] };
   let response = settled;
@@ -588,11 +588,66 @@ test('dashboard: the 2 s sync cadence applies only while healthy and only for 30
   await timer.advance(35000);
   assert.ok(timer.now - syncStarted > 30000);
   assert.equal(ctx.dashPollDelayMs, 5000, 'the fast cadence gives up after its 30 s window');
-  // and a syncing row while the server is failing never wins over the backoff
+  // a failed poll drops back to the plain retry, even mid-sync — but only to 5 s
   ctx.dashSyncSince = ctx.Date.now();
   response = { status: 'error', message: 'busy' };
   await timer.advance(10000);
-  assert.ok(ctx.dashPollDelayMs > 5000, 'the backoff outranks the sync cadence');
+  assert.equal(ctx.dashPollDelayMs, 5000, 'a failure retries in 5 s and never builds a ladder on top');
+  ctx.stopDashboardPolling();
+});
+
+// The 21/09 rehearsal, as a test: Apps Script answered in 4-10 s, the old rules
+// read every one of those as "slow", walked the wait up 7.5 -> 11 -> 17 -> 20 s
+// and cancelled the sync cadence — so a result that had already been saved kept
+// showing as "in exam" until the examiner pressed F5. One chain per page cannot
+// stampede, so since 21/09 the answer time is the only throttle.
+test('dashboard: 8 s answers keep the 5 s cadence — the ladder no longer applies (21/09)', async () => {
+  const starts = [];
+  let clock = null;
+  const { ctx, timer } = dashboardContext(() => {
+    starts.push(clock.now);
+    return new Promise(resolve => clock.set(() => resolve({ status: 'ok', pending: [], active: [], completed: [] }), 8000));
+  });
+  clock = timer;
+  ctx.startDashboardPolling();
+  await drain();
+  await timer.advance(3 * 13000);
+  const gaps = starts.slice(1).map((t, i) => t - starts[i]);
+  assert.deepEqual(gaps, [13000, 13000, 13000], 'an 8 s answer plus a 5 s wait — not 7.5/11/17/20 on top of it');
+  assert.equal(ctx.dashPollDelayMs, 5000);
+  assert.equal(ctx.dashboardLoop.currentDelayMs(), 5000, 'steady mode: the shared ladder never moves');
+  ctx.stopDashboardPolling();
+});
+
+test('dashboard: a syncing result keeps the 2 s cadence even when the answer was slow', async () => {
+  const syncing = { status: 'ok', pending: [], completed: [], active: [{ idNumber: 'A', finishedOnDevice: true }] };
+  let clock = null;
+  const { ctx, timer } = dashboardContext(() => new Promise(resolve => clock.set(() => resolve(syncing), 8000)));
+  clock = timer;
+  ctx.startDashboardPolling();
+  await drain();
+  await timer.advance(8000);
+  assert.equal(ctx.dashSyncSince, timer.now, 'the syncing stretch is stamped');
+  assert.equal(ctx.dashPollDelayMs, 2000,
+    'a slow server is exactly when the examiner is waiting for that row to land');
+  ctx.stopDashboardPolling();
+});
+
+test('dashboard: one failed poll is a plain 5 s retry, not a ladder', async () => {
+  const starts = [];
+  let clock = null;
+  const { ctx, timer } = dashboardContext(() => { starts.push(clock.now); return Promise.resolve({ status: 'error', message: 'busy' }); });
+  clock = timer;
+  ctx.startDashboardPolling();
+  await drain();
+  assert.equal(ctx.failedPolls, 1, 'a failure that answered in 1 ms is still a failure');
+  await timer.advance(4999);
+  assert.equal(starts.length, 1, 'and it is still a wait');
+  await timer.advance(1);
+  assert.equal(starts.length, 2, 'the retry is a plain 5 s away');
+  await timer.advance(20000);
+  assert.equal(ctx.dashPollDelayMs, 5000, 'four more failures still do not build a ladder');
+  assert.equal(ctx.dashboardLoop.currentDelayMs(), 5000);
   ctx.stopDashboardPolling();
 });
 
@@ -608,17 +663,6 @@ test('dashboard: a manual refresh shares the in-flight request, and a session sw
   response.resolve({ status: 'ok', pending: [] });
   await first;
   assert.equal(renders, 0, 'the answer for the old session is dropped');
-});
-
-test('dashboard: a fast JSON error still backs the loop off', async () => {
-  const { ctx, timer } = dashboardContext(() => Promise.resolve({ status: 'error', message: 'busy' }));
-  ctx.startDashboardPolling();
-  await drain();
-  const first = ctx.dashboardLoop.currentDelayMs();
-  await timer.advance(20000);
-  assert.ok(ctx.dashboardLoop.currentDelayMs() > first,
-    'a failure that answered in 1 ms must pace like a failure, not like a healthy poll');
-  ctx.stopDashboardPolling();
 });
 
 // ---------------------------------------------------------------- S3
