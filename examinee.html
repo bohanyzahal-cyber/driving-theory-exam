@@ -1222,22 +1222,82 @@
   // and answering that by sending the whole fleet straight at Google is exactly
   // the storm the gateway exists to prevent.
   function gatewayUrl() { return String((sessionData && sessionData.gateway && sessionData.gateway.url) || ''); }
-  function gatewayPollUrl(kind) {
-    return gatewayUrl().replace(/\/+$/, '') + '/v1/poll?kind=' + kind +
+
+  // ----- Long polling (the gateway route only) -----
+  // The Worker HOLDS a poll for up to 25 s and answers the moment the examiner's
+  // decision for THIS examinee lands. Two parameters carry it: 'wait' (how long
+  // it may hold) and 'fp' (the fingerprint of the answer this device already
+  // has). The Worker holds while its answer still matches 'fp', so the FIRST
+  // poll of a route — and of a session — asks without one and is answered at
+  // once; that answer is what gives us a fingerprint to hold against.
+  // Result: one request per ~25 s instead of one per 2-6 s (the Free plan's
+  // 100k requests/day now fits a 400-examinee day), and a decision reaches the
+  // examinee in about a second instead of in a poll interval.
+  // An old Worker ignores both parameters and answers immediately; the page then
+  // simply runs at the cadence constants further down, exactly as before.
+  var LONGPOLL_WAIT_SEC = ExamTransport.LONGPOLL_WAIT_SEC;       // 25 s
+  var LONGPOLL_TIMEOUT_MS = ExamTransport.LONGPOLL_TIMEOUT_MS;   // the hold + 15 s of slack
+  var POLL_INTERRUPTED = 'poll_interrupted';
+  var pollFps = {};                                              // kind -> fp of the answer this device already has
+  function forgetPollFp(kind) { if (pollFps[kind]) delete pollFps[kind]; }
+  function resetPollFps() { pollFps = {}; }
+  function rememberPollFp(kind, data) {
+    if (data && typeof data.fp === 'string' && data.fp) pollFps[kind] = data.fp;
+    else if (data && data.status === 'ok') forgetPollFp(kind);   // an answer with no fp cannot be held against
+  }
+  // A held request dies when the phone locks its screen or the examinee switches
+  // app — the browser kills the fetch. That is the DEVICE, not the Worker, and
+  // counting it as a gateway failure would hand five minutes of direct Apps
+  // Script calls to every examinee who put their phone down. A request that was
+  // ANSWERED (5xx, an HTML error page, our own deadline while the page was on
+  // screen) is a real failure and still counts, exactly as before.
+  var POLL_WAKE_GRACE_MS = 2000;      // a request killed on the way back up is the same event
+  var lastBecameVisibleAt = 0;
+  document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState === 'visible') lastBecameVisibleAt = Date.now();
+  });
+  function gatewayFailureCounts(err) {
+    var kind = err && err.transport;
+    if (kind !== 'network' && kind !== 'timeout') return true;
+    if (typeof document.visibilityState === 'string' && document.visibilityState !== 'visible') return false;
+    return !(lastBecameVisibleAt && (Date.now() - lastBecameVisibleAt) < POLL_WAKE_GRACE_MS);
+  }
+
+  function gatewayPollUrl(kind, noWait) {
+    var url = gatewayUrl().replace(/\/+$/, '') + '/v1/poll?kind=' + kind +
       '&sessionCode=' + encodeURIComponent(sessionCode) +
       '&idNumber=' + encodeURIComponent((examineeData && examineeData.idNumber) || '') +
       '&examineeToken=' + encodeURIComponent(examineeToken || '');
+    if (noWait) return url;      // a one-off answer somebody is waiting for on screen is never held
+    url += '&wait=' + LONGPOLL_WAIT_SEC;
+    if (pollFps[kind]) url += '&fp=' + encodeURIComponent(pollFps[kind]);
+    return url;
   }
   var approvalRoute = null, statusRoute = null;
   function pollRoute(kind, directCall) {
     if (!gatewayUrl()) return directCall;
     var failover = ExamTransport.createFailover({
-      primary: function() { return ExamTransport.fetchJsonWithTimeout(gatewayPollUrl(kind), { cache: 'no-store' }, POLL_TIMEOUT_MS); },
-      fallback: directCall,
+      primary: function(args) {
+        var noWait = !!(args && args.noWait);
+        return ExamTransport.fetchJsonWithTimeout(gatewayPollUrl(kind, noWait), { cache: 'no-store' },
+            noWait ? POLL_TIMEOUT_MS : LONGPOLL_TIMEOUT_MS)
+          .then(function(data) { rememberPollFp(kind, data); return data; }, function(err) {
+            if (gatewayFailureCounts(err)) throw err;
+            // Neither news nor a fault: the loop backs off one step like any
+            // failed poll, the screen says nothing, and nobody is sent at Google.
+            forgetPollFp(kind);
+            logEvent('poll_hold_dropped', kind);
+            return { status: 'error', code: POLL_INTERRUPTED, retryable: true };
+          });
+      },
+      // The direct route knows nothing about holds, and a fingerprint is the
+      // gateway's view of this examinee: drop it, so the first poll back on the
+      // gateway asks without one and is answered at once.
+      fallback: function(args) { forgetPollFp(kind); return directCall(args); },
       failuresBeforeFallback: 3,
       fallbackMs: 300000
     });
-    return function() { return failover.call(); };
+    return function(args) { return failover.call(args); };
   }
   function directApprovalCall() {
     return apiGet({ action: 'checkApproval', sessionCode: sessionCode, idNumber: examineeData.idNumber }, POLL_TIMEOUT_MS);
@@ -1245,16 +1305,20 @@
   function directStatusCall() {
     return apiGet({ action: 'getExamStatus', sessionCode: sessionCode, idNumber: examineeData.idNumber, examineeToken: examineeToken }, POLL_TIMEOUT_MS);
   }
-  function approvalPollCall() {
+  // opts.noWait = true for the one-off calls a person is waiting for on screen
+  // (the timer-expiry extension check, the restore verification): they must be
+  // answered immediately, never held.
+  function approvalPollCall(opts) {
     if (!approvalRoute) approvalRoute = pollRoute('approval', directApprovalCall);
-    return approvalRoute();
+    return approvalRoute(opts);
   }
-  function statusPollCall() {
+  function statusPollCall(opts) {
     if (!statusRoute) statusRoute = pollRoute('status', directStatusCall);
-    return statusRoute();
+    return statusRoute(opts);
   }
-  // A new session code may come with a different gateway setting (or none).
-  function resetPollRoutes() { approvalRoute = null; statusRoute = null; }
+  // A new session code may come with a different gateway setting (or none), and
+  // a fingerprint only means anything for the session it was issued in.
+  function resetPollRoutes() { approvalRoute = null; statusRoute = null; resetPollFps(); }
 
   // A server that does not know an action is an OLD server behind a new page
   // (or the reverse) — never a data error the examinee can fix by re-clicking.
@@ -1656,6 +1720,11 @@
           rejEl.style.display = 'block';
         }
         // else still 'waiting' — continue polling
+      } else if (data && data.code === POLL_INTERRUPTED) {
+        // The device dropped a held request (screen lock, app switch). No news
+        // and no server fault: the loop backs off a step and the screen stays
+        // as it is — three screen locks must not raise a server error banner.
+        updateApprovalDebug('בדיקה #' + pollNum + ' נקטעה', 'תגובה: ההמתנה נקטעה');
       } else {
         console.log('[APPROVAL] Non-ok status:', data && data.message);
         updateApprovalDebug('בדיקה #' + pollNum + ' שגיאה', 'תגובה: ' + ((data && data.message) || 'unknown'));
@@ -1779,6 +1848,12 @@
   // poll is one Apps Script execution per waiting examinee, dozens of which were
   // a large share of the flood that saturated the ~30 execution slots on exam
   // mornings, so the direct fallback stays at 8 s (what e1755c8 set, r6 undid).
+  //
+  // Since long polling the two GATEWAY constants are a FALLBACK cadence: they
+  // pace the loop only when the Worker answered WITHOUT holding — an old Worker
+  // that ignores wait/fp, the first poll of a route (no fingerprint yet), or a
+  // poll the Worker refused to hold (upstream busy, stale snapshot). A held
+  // answer is paced by ExamTransport.LONGPOLL_GAP_MS instead.
   var APPROVAL_GATEWAY_BASE_MS = 3000;
   var APPROVAL_GATEWAY_FAST_MS = 2000;
   var APPROVAL_FAST_WINDOW_MS = 120000;
@@ -1796,6 +1871,7 @@
     approvalFailCount = 0;
     approvalPollCount = 0;
     approvalPollGen++;
+    forgetPollFp('approval');   // a fresh chain asks for the state as it is NOW
     approvalPollStartedAt = Date.now();
     setupWaitingProtections(); // wake-lock + tab-title flash
     var baseMs = gatewayUrl() ? APPROVAL_GATEWAY_BASE_MS : APPROVAL_DIRECT_BASE_MS;
@@ -1807,13 +1883,16 @@
       // The fast opening window, and only through the gateway. Like the examiner
       // dashboard, it may pull the next tick in ONLY when the answer was healthy
       // and the pacing is already back at base: a struggling backend always wins.
+      // A HELD answer needs no cadence at all: the Worker already did the
+      // waiting, and transport hands back its 250 ms gap as 'paced'.
       nextDelay: function(info, paced) {
+        if (info.held > 0) return paced;
         if (!gatewayUrl() || info.slow || info.failed || paced > baseMs) return paced;
         return (Date.now() - approvalPollStartedAt) < APPROVAL_FAST_WINDOW_MS ? APPROVAL_GATEWAY_FAST_MS : baseMs;
       },
       // The rescue below restarts the chain; bump the generation first so a late
       // answer from the dead request cannot act on the fresh one's behalf.
-      onRestart: function() { approvalPollGen++; }
+      onRestart: function() { approvalPollGen++; forgetPollFp('approval'); }
     });
     approvalLoop.start();   // immediate first check
   }
@@ -2584,7 +2663,9 @@
 
   // ========== DQ Overturn polling — checks if examiner reversed the DQ ==========
   // Same route as the approval poll (the gateway serves checkApproval), so a
-  // disqualified examinee waiting for the examiner's decision costs nothing.
+  // disqualified examinee waiting for the examiner's decision costs nothing —
+  // and it long-polls like the approval poll, so the decision lands in about a
+  // second. DQ_POLL_BASE_MS is the cadence for an answer that was NOT held.
   var DQ_POLL_BASE_MS = 3000;
   var DQ_POLL_MAX_MS = 20000;
   var dqOverturnLoop = null;
@@ -2619,6 +2700,7 @@
 
   function startDQOverturnPolling() {
     stopDQOverturnPolling();
+    forgetPollFp('approval');   // this chain waits for a decision: start from the state as it is now
     dqOverturnLoop = ExamTransport.createPollLoop({
       name: 'dq-overturn', baseMs: DQ_POLL_BASE_MS, maxMs: DQ_POLL_MAX_MS, tick: dqOverturnPollTick
     });
@@ -3182,7 +3264,10 @@
   // mid-exam time extensions. In-exam examinees are the majority of connected
   // clients on an exam day: through the gateway the poll is free (6 s — the
   // Worker coalesces the whole session), direct it is one Apps Script execution
-  // per examinee (12 s).
+  // per examinee (12 s). As on the approval poll, the GATEWAY constant is the
+  // cadence for an answer that was NOT held (an old Worker, the first poll of a
+  // route, or a poll the Worker refused to hold); a held answer is paced by
+  // ExamTransport.LONGPOLL_GAP_MS.
   var EXAMSTATUS_GATEWAY_BASE_MS = 6000;
   var EXAMSTATUS_DIRECT_BASE_MS = 12000;
   var EXAMSTATUS_POLL_MAX_MS = 20000;
@@ -3219,6 +3304,7 @@
   function startExamStatusPoll() {
     if (examStatusLoop) return;
     examStatusGen++;
+    forgetPollFp('status');     // a fresh chain asks for the state as it is NOW
     examStatusLoop = ExamTransport.createPollLoop({
       name: 'exam-status',
       baseMs: gatewayUrl() ? EXAMSTATUS_GATEWAY_BASE_MS : EXAMSTATUS_DIRECT_BASE_MS,
@@ -3721,7 +3807,7 @@
     // submitted even though an extension had just been granted. This one answer
     // decides whether the examinee keeps writing, so it waits the full poll
     // deadline for it.
-    statusPollCall()
+    statusPollCall({ noWait: true })
       .then(function(data) {
         if (data && data.status === 'ok' && typeof data.extraMinutes === 'number') applyExtraMinutes(data.extraMinutes);
       })
@@ -5116,7 +5202,7 @@
       // immediately return the stale 'rejected' status and the user is stuck
       // on "הבוחן דחה את הכניסה" with no way to recover except clearing
       // browser storage. Real exam-day incident.
-      approvalPollCall().then(function(resp) {
+      approvalPollCall({ noWait: true }).then(function(resp) {
         var st = (resp && resp.approval) || '';
         if (st === 'waiting' || st === 'approved' || st === 'in_exam') {
           showScreen('screenInstructions');

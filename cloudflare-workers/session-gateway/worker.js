@@ -30,6 +30,7 @@
  * Endpoints:
  *   GET  /                — health: {status:'ok', service, build, bank}
  *   GET  /v1/poll?kind=approval|status&sessionCode&idNumber&examineeToken
+ *                         [&wait=<1-25>&fp=<the last fingerprint>] — long poll
  *   GET  /v1/bank?grant=…[&ids=1,2&langs=he,en]   — texts for the granted ids
  *   GET  /v1/bank/full?grant=…&lang=he            — a whole language (examiner)
  *   POST /v1/invalidate?grant=<examiner>&sessionCode=X[&idNumber&status&…]
@@ -37,10 +38,20 @@
  *                           straight into it (see `invalidate`)
  *   OPTIONS *             — CORS preflight
  *
+ * WHY (3) — the HOLD: a client that sends `wait` and the `fp` it already has
+ * gets its request HELD here until the answer actually changes (or `wait`
+ * elapses). That is ~4-5x fewer requests — the whole account shares a hard
+ * 100,000 requests/day on the free plan, and a heavy exam day was already
+ * ~130k — AND it puts the examiner's decision on the screen in ~1 s, because
+ * nothing waits for the next poll tick any more. Short holds (≤25 s) and a
+ * sleep-based loop on purpose: the free plan allows 10 ms of CPU per request,
+ * which is what rules out a WebSocket or an SSE stream held for 40 minutes.
+ *
  * Failure policy: a snapshot up to 60 s old is served with `stale:true` rather
  * than an error; with nothing cached the answer is a RETRYABLE error (HTTP
  * 200), never Google's HTML. The client slows down on it but must NOT fall back
- * to direct polling for it, or the storm returns.
+ * to direct polling for it, or the storm returns. None of those are ever held:
+ * a client that must pace itself has to be told so at once.
  */
 
 const BUILD = '2026-09-21';
@@ -56,6 +67,16 @@ const STALE_MS = 60000;           // older than this and we would rather error
 const REREAD_GAP_MS = 2000;       // forced upstream re-read: once per session per gap
 const UPSTREAM_TIMEOUT_MS = 25000;
 const SESSION_RE = /^[A-Z0-9]{6,8}$/;
+
+// The hold. 25 s is short enough to stay far inside Cloudflare's own limits and
+// long enough to cut the request count by 4-5x; one re-evaluation per second is
+// what makes a decision another isolate patched in visible "within a second".
+// HOLD_MAX_STEPS is a CPU guard, not a timing rule: whatever wakes the loop, it
+// evaluates at most this many times and then answers with what it has.
+const WAIT_MIN_S = 1;
+const WAIT_MAX_S = 25;
+const HOLD_TICK_MS = 1000;
+const HOLD_MAX_STEPS = 26;
 
 // The assets binding is addressed by URL; the host is arbitrary and never
 // leaves the isolate. Paths are built from validated numbers only.
@@ -122,6 +143,19 @@ function toIds(list) {
 /** '' for an absent parameter, so "was it given?" is one truthiness test. */
 function param(url, name) {
   return String(url.searchParams.get(name) || '').trim();
+}
+
+/**
+ * `wait` as milliseconds to hold, clamped to [1 s, 25 s]. 0 means "answer now",
+ * and that is what anything else becomes: an empty value, a fraction, a word, a
+ * negative. A typo must degrade to today's immediate poll, never to a surprise
+ * 25 s hold.
+ */
+function waitMillis(raw) {
+  if (raw == null) return 0;
+  const n = Number(String(raw).trim());
+  if (!Number.isInteger(n) || n < WAIT_MIN_S) return 0;
+  return Math.min(n, WAIT_MAX_S) * 1000;
 }
 
 /** A whole number in [min, MAX_PATCH_MINUTES], or null — a bad value is dropped. */
@@ -213,20 +247,86 @@ const NOT_FOUND = {
   status: { status: 'ok', examStatus: 'not_found' }
 };
 
+// --- the fingerprint (`fp`) ------------------------------------------------
+
+/**
+ * `fp` changes exactly when THIS examinee's answer changes — and for nothing
+ * else: not for the snapshot's age, not for another examinee's row, not for
+ * `stale` (a stale answer carries the fingerprint of the answer inside it, so
+ * a client does not churn its `fp` while the upstream is down).
+ *
+ *   approval  a:<approval>:<on|off>:<examMinutes|->   a:approved:on:50
+ *   status    s:<examStatus>:<extraMinutes>           s:in_exam:7
+ *   no row    a:none / s:none        token mismatch   a:tok / s:tok
+ *   errors    x:up (no snapshot at all)               x:kind / x:sess / x:id
+ *
+ * It is opaque to the client, which only ever echoes it back, and short because
+ * it travels in the query string of every single poll.
+ */
+const fpWord = value => String(value == null ? '' : value).trim().replace(/:/g, ';').slice(0, 16);
+
+function fingerprint(kind, answer, missing) {
+  const tag = kind === 'approval' ? 'a' : 's';
+  if (missing) return tag + ':none';
+  if (answer.examineeTokenError) return tag + ':tok';
+  if (kind === 'approval') {
+    return tag + ':' + fpWord(answer.approval) +
+      ':' + (answer.audioMode === 'on' ? 'on' : 'off') +
+      ':' + (answer.examMinutes > 0 ? fpWord(answer.examMinutes) : '-');
+  }
+  return tag + ':' + fpWord(answer.examStatus) + ':' + fpWord(Number(answer.extraMinutes) || 0);
+}
+
+/**
+ * One evaluation of one snapshot for one examinee: the body to answer with, its
+ * fingerprint, whether this id had a row at all, and whether a HELD request may
+ * keep waiting on it.
+ */
+function evaluate(kind, snapshot, idNumber, tokenHex, stale) {
+  let answer = kind === 'approval'
+    ? approvalAnswer(snapshot.rows, idNumber, tokenHex)
+    : statusAnswer(snapshot.rows, idNumber, tokenHex);
+  const missing = answer === null;
+  if (missing) answer = NOT_FOUND[kind];
+  if (stale) answer = Object.assign({}, answer, { stale: true });
+  return {
+    answer: answer,
+    fp: fingerprint(kind, answer, missing),
+    missing: missing,
+    // A stale copy is never held (the client must back off while we cannot
+    // refresh it) and neither is a token mismatch (that one never changes by
+    // waiting — the device has to stop). "No row yet" IS held: the row appears
+    // the moment the examinee registers, which is exactly what to wait for.
+    holdable: !stale && !answer.examineeTokenError
+  };
+}
+
+/** The one answer that means "there is no snapshot at all" — never held. */
+const UNAVAILABLE_VIEW = {
+  answer: {
+    status: 'error', code: 'upstream_unavailable', retryable: true,
+    message: 'השרת עמוס — ננסה שוב אוטומטית'
+  },
+  fp: 'x:up', missing: false, holdable: false
+};
+
 // --- the gateway -----------------------------------------------------------
 
 /**
  * Dependency-injected so tests can drive it with a fake clock, a counting
- * fetch and an in-memory ASSETS binding. The state (in-flight map, memory
- * snapshots, imported HMAC key) lives in the closure, so the module-level
- * singleton below coalesces across requests of one isolate while each test
- * gets its own clean instance.
+ * fetch, an in-memory ASSETS binding and a fake `sleep` (a held request must be
+ * testable without waiting 25 real seconds). The state (in-flight map, memory
+ * snapshots, waiters, imported HMAC key) lives in the closure, so the
+ * module-level singleton below coalesces across requests of one isolate while
+ * each test gets its own clean instance.
  */
-export function createGateway({ fetch, caches, now, env }) {
+export function createGateway({ fetch, caches, now, env, sleep }) {
   const clock = now || (() => Date.now());
+  const nap = sleep || (ms => new Promise(resolve => setTimeout(resolve, ms)));
   const memory = new Map();   // session -> { at, snapshot }
   const inflight = new Map(); // session -> Promise<snapshot|null>
   const lastForced = new Map(); // session -> ms of the last forced re-read
+  const waiters = new Map();  // session -> Set<resolve> — the held requests
 
   const cacheKey = (kind, session) =>
     'https://session-gateway.internal/' + kind + '/' + encodeURIComponent(session);
@@ -259,6 +359,43 @@ export function createGateway({ fetch, caches, now, env }) {
     const hit = memory.get(session);
     if (!hit || clock() - hit.at > maxAgeMs) return null;
     return hit.snapshot;
+  }
+
+  // --- waking the held requests --------------------------------------------
+
+  /**
+   * Everything that can change a session's answer ends here: a patch, a drop,
+   * and a finished upstream read. Every request held on this session wakes and
+   * re-evaluates at once, so an examiner's decision reaches an examinee served
+   * by THIS isolate in ~0 ms, and one served by another within one tick.
+   *
+   * The set is detached before it is resolved: a waiter that immediately parks
+   * again registers in a new one and cannot be woken twice by the same event.
+   */
+  function wake(session) {
+    const parked = waiters.get(session);
+    if (!parked || !parked.size) return;
+    waiters.delete(session);
+    for (const resolve of parked) resolve();
+  }
+
+  /**
+   * Parks until the session changes or `ms` passes, whichever is first, and
+   * ALWAYS takes its resolver back out — a leaked resolver would pin the
+   * session's Set for the life of the isolate.
+   */
+  function waitForChange(session, ms) {
+    let parked = waiters.get(session);
+    if (!parked) { parked = new Set(); waiters.set(session, parked); }
+    let resolve;
+    const woken = new Promise(r => { resolve = r; });
+    parked.add(resolve);
+    return Promise.race([woken, nap(ms)]).then(() => {
+      const current = waiters.get(session);
+      if (!current) return;
+      current.delete(resolve);
+      if (!current.size) waiters.delete(session);
+    });
   }
 
   /** Never rejects: a failed upstream is `null`, and null means "ask the cache". */
@@ -302,6 +439,7 @@ export function createGateway({ fetch, caches, now, env }) {
       if (snapshot) {
         memory.set(session, { at: clock(), snapshot });
         await cacheWrite(session, snapshot);
+        wake(session); // fresh truth: whoever is held on this session re-reads it
       }
       return snapshot;
     });
@@ -364,17 +502,20 @@ export function createGateway({ fetch, caches, now, env }) {
     const snapshot = { at: current.at, rows: rows };       // `at` stays the read time
     memory.set(session, { at: clock(), snapshot: snapshot });
     await cacheWrite(session, snapshot);
+    wake(session); // a request held on this session answers the decision NOW
     return true;
   }
 
   /** The next poll of this session reads upstream instead of a stale snapshot. */
   async function dropSnapshot(session) {
     memory.delete(session);
-    if (!caches || !caches.default) return;
-    try {
-      await Promise.all(['snap', 'stale'].map(kind =>
-        caches.default.delete(new Request(cacheKey(kind, session)))));
-    } catch (e) { /* cache is best effort */ }
+    if (caches && caches.default) {
+      try {
+        await Promise.all(['snap', 'stale'].map(kind =>
+          caches.default.delete(new Request(cacheKey(kind, session)))));
+      } catch (e) { /* cache is best effort */ }
+    }
+    wake(session); // held requests re-read upstream instead of waiting it out
   }
 
   // --- the private question bank (assets) ----------------------------------
@@ -621,51 +762,105 @@ export function createGateway({ fetch, caches, now, env }) {
       (rawId || status) ? { status: 'ok', patched: false } : { status: 'ok' });
   }
 
+  /** The answer as an ordinary poll computes it — today's path, unchanged. */
+  async function firstLook(session, kind, idNumber, tokenHex) {
+    const loaded = await loadSnapshot(session, false);
+    if (!loaded.ok) return UNAVAILABLE_VIEW;
+    const view = evaluate(kind, loaded.snapshot, idNumber, tokenHex, loaded.stale);
+    // A row the examinee just created is missing from a snapshot taken before
+    // it existed — read once more before telling them they are not registered.
+    if (view.missing && loaded.fromCache && mayForceReread(session)) {
+      const refreshed = await loadSnapshot(session, true);
+      if (refreshed.ok) return evaluate(kind, refreshed.snapshot, idNumber, tokenHex, refreshed.stale);
+    }
+    return view;
+  }
+
+  /**
+   * What a HELD request looks at, once per iteration. Memory is free, so it
+   * goes first; `caches.default` is read EVERY iteration, because the decision
+   * may have been patched in by another isolate and delivering it within the
+   * second is the entire point of holding; upstream only when both are past
+   * FRESH_MS, and then through fetchCoalesced — forty held requests still cost
+   * one Apps Script execution per 2 s, exactly like forty ordinary polls.
+   *
+   * The first view that actually DIFFERS from what the client holds wins, so a
+   * memory copy of ours can never hide a newer decision sitting in the cache.
+   * It never spends mayForceReread's budget: that one pays for the examiner's
+   * nudge, and a held request re-reads on the freshness clock anyway.
+   */
+  async function holdLook(session, kind, idNumber, tokenHex, clientFp) {
+    const look = (snapshot, stale) => evaluate(kind, snapshot, idNumber, tokenHex, stale);
+    const mine = memoryRead(session, FRESH_MS);
+    if (mine) {
+      const view = look(mine, false);
+      if (view.fp !== clientFp) return view;
+      const cached = await cacheRead('snap', session);
+      if (cached) {
+        const patched = look(cached, false);
+        if (patched.fp !== clientFp) return patched;
+      }
+      return view;
+    }
+    const cached = await cacheRead('snap', session);
+    if (cached) return look(cached, false);
+    const fetched = await fetchCoalesced(session);
+    if (fetched) return look(fetched, false);
+    const old = memoryRead(session, STALE_MS) || await cacheRead('stale', session);
+    return old ? look(old, true) : UNAVAILABLE_VIEW;
+  }
+
   async function poll(request, url) {
     const kind = url.searchParams.get('kind') || '';
     const session = String(url.searchParams.get('sessionCode') || '').trim();
     const rawId = url.searchParams.get('idNumber') || '';
     const token = String(url.searchParams.get('examineeToken') || '').trim();
+    // A client that speaks long polling names itself by sending either field,
+    // and only it is served `fp`/`held`. For everyone else the answer stays
+    // byte-identical to the server's own checkApproval/getExamStatus, which is
+    // the invariant tests/contracts.test.cjs pins — and the reason the client
+    // can swap a URL rather than logic.
+    const longPoll = url.searchParams.has('wait') || url.searchParams.has('fp');
+    const clientFp = param(url, 'fp');
+    const waitMs = waitMillis(url.searchParams.get('wait'));
+
+    /** Every poll answer leaves through here: CORS, no-store, HTTP 200 as today. */
+    const reply = (body, fp, held, status) => jsonResponse(request,
+      longPoll ? Object.assign({}, body, { fp: fp, held: held | 0 }) : body, status);
 
     if (kind !== 'approval' && kind !== 'status') {
-      return jsonResponse(request, { status: 'error', message: 'kind must be approval or status' }, 400);
+      return reply({ status: 'error', message: 'kind must be approval or status' }, 'x:kind', 0, 400);
     }
     if (!SESSION_RE.test(session)) {
-      return jsonResponse(request, { status: 'error', message: 'קוד סשן לא תקין' }, 400);
+      return reply({ status: 'error', message: 'קוד סשן לא תקין' }, 'x:sess', 0, 400);
     }
     if (!String(rawId).replace(/[^0-9]/g, '')) {
-      return jsonResponse(request, { status: 'error', message: 'חסר מזהה' }, 400);
+      return reply({ status: 'error', message: 'חסר מזהה' }, 'x:id', 0, 400);
     }
 
     const idNumber = normalizeId(rawId);
     const tokenHex = token ? await sha256Hex(token) : '';
-    const compute = rows => (kind === 'approval'
-      ? approvalAnswer(rows, idNumber, tokenHex)
-      : statusAnswer(rows, idNumber, tokenHex));
+    let view = await firstLook(session, kind, idNumber, tokenHex);
 
-    let loaded = await loadSnapshot(session, false);
-    if (!loaded.ok) {
-      return jsonResponse(request, {
-        status: 'error', code: 'upstream_unavailable', retryable: true,
-        message: 'השרת עמוס — ננסה שוב אוטומטית'
-      });
-    }
-    let answer = compute(loaded.snapshot.rows);
-    // A row the examinee just created is missing from a snapshot taken before
-    // it existed — read once more before telling them they are not registered.
-    if (answer === null && loaded.fromCache && mayForceReread(session)) {
-      const refreshed = await loadSnapshot(session, true);
-      if (refreshed.ok) {
-        loaded = refreshed;
-        answer = compute(refreshed.snapshot.rows);
+    // The hold. Only while the answer is EXACTLY the one the client already
+    // has: a changed answer, a stale copy, a dead upstream and a token error
+    // all return at once. Each iteration re-evaluates and either answers or
+    // parks again, until the deadline or the step guard.
+    let held = 0;
+    if (waitMs && clientFp && view.holdable && view.fp === clientFp) {
+      const start = clock();
+      const deadline = start + waitMs;
+      for (let step = 0; step < HOLD_MAX_STEPS && clock() < deadline; step++) {
+        await waitForChange(session, Math.min(HOLD_TICK_MS, deadline - clock()));
+        view = await holdLook(session, kind, idNumber, tokenHex, clientFp);
+        if (!view.holdable || view.fp !== clientFp) break;
       }
+      held = Math.max(0, clock() - start);
     }
-    if (answer === null) answer = NOT_FOUND[kind];
-    if (loaded.stale) answer = Object.assign({}, answer, { stale: true });
-    return jsonResponse(request, answer);
+    return reply(view.answer, view.fp, held);
   }
 
-  return async function handle(request) {
+  const handle = async function handle(request) {
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders(request) });
     }
@@ -687,6 +882,17 @@ export function createGateway({ fetch, caches, now, env }) {
     if (url.pathname === '/v1/bank/full') return bankFull(request, url);
     return jsonResponse(request, { status: 'error', message: 'not found' }, 404);
   };
+
+  // A hook, not a route — nothing from the internet can reach it. It exists so
+  // the bookkeeping can be asserted directly: after every request has answered,
+  // `waiting` must be 0, or a held request leaked a resolver into the isolate.
+  handle._debug = () => ({
+    sessions: waiters.size,
+    waiting: [...waiters.values()].reduce((total, set) => total + set.size, 0),
+    memory: memory.size,
+    inflight: inflight.size
+  });
+  return handle;
 }
 
 // One gateway per isolate: the in-flight map and the memory snapshots must

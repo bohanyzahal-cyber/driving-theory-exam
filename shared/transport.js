@@ -13,7 +13,9 @@
 //      healthy answer, a 30–60 s floor while degraded.
 //   4. createPollLoop — answer → wait → ask again, with an in-flight guard (a
 //      restart while a request is still out must never start a second chain),
-//      a generation counter, and a 60 s poll deadline.
+//      a generation counter, a 60 s poll deadline, and the long-poll gap: when
+//      the answer says the server HELD the request, the wait already happened
+//      on the wire, so the next request goes out at once.
 //   5. createApi — GET/POST helpers with an always-forwarded timeout and a page
 //      supplied decorator that attaches credentials.
 //   6. createFailover — route a call to a primary endpoint (the session gateway)
@@ -39,6 +41,19 @@
   var TIMEOUTS_UNTIL_DEGRADED = 2;
   var LOG_MAX_ENTRIES = 50;
   var LOG_MAX_BYTES = 2048;
+
+  // ---------- long polling ----------
+  // The session gateway can HOLD a poll until the answer for this examinee
+  // actually changes (the examiner's decision), up to LONGPOLL_WAIT_SEC, and
+  // answers unchanged when the hold expires. One request per ~25 s instead of
+  // one per 2-6 s is a ~5x cut in Worker requests, and the decision reaches the
+  // examinee in about a second instead of in a poll interval.
+  // The page asks for the hold (wait + fp in the URL); the loop only needs to
+  // know that the answer came back HELD, because then the wait already happened
+  // on the wire and the next request should go out almost at once.
+  var LONGPOLL_WAIT_SEC = 25;               // what the page asks the server to hold for
+  var LONGPOLL_GAP_MS = 250;                // ...and how long we wait before asking again
+  var LONGPOLL_TIMEOUT_MS = 25000 + 15000;  // request deadline while holding (POLL_TIMEOUT_MS stays the ceiling)
 
   // ---------- 1. bounded fetch ----------
   // noteHealth=false is for endpoints that are NOT the exam backend (the
@@ -132,8 +147,9 @@
   //         onRestart: optional function() — called just before restartIfStuck
   //           revives the chain, so the page can invalidate its own generation
   //           counter before the fresh tick captures it }
-  // info: { ok, slow, elapsedMs, failed, error, result }
+  // info: { ok, slow, elapsedMs, failed, held, error, result }
   // tick() rejecting or returning {status:'error'} counts as failed; the loop never dies.
+  // A resolved answer carrying held > 0 is a long-poll answer: see LONGPOLL_GAP_MS.
   function createPollLoop(opts) {
     var timer = null, running = false, gen = 0, inFlight = false, inFlightSince = 0;
     var delayMs = opts.baseMs;
@@ -155,10 +171,18 @@
           inFlight = false;
           if (!running || myGen !== gen) return;   // stopped or restarted meanwhile: this chain is dead
           var elapsed = Date.now() - t0;
-          var info = { ok: outcome.ok, failed: !outcome.ok, slow: elapsed > SLOW_ANSWER_MS, elapsedMs: elapsed, error: outcome.error, result: outcome.result };
+          // A HELD answer (the server kept the request open until this client's
+          // answer changed, or until the hold expired) is not a slow answer: the
+          // wait is what we asked for. It is also the whole interval — the next
+          // request goes out after LONGPOLL_GAP_MS instead of baseMs, so the
+          // next hold starts immediately and a decision is never more than a
+          // gap away. Failures are untouched: a failed long poll backs off
+          // exactly like any other failed poll, degraded pacing included.
+          var held = (outcome.ok && outcome.result && typeof outcome.result.held === 'number' && outcome.result.held > 0) ? outcome.result.held : 0;
+          var info = { ok: outcome.ok, failed: !outcome.ok, slow: !held && elapsed > SLOW_ANSWER_MS, elapsedMs: elapsed, held: held, error: outcome.error, result: outcome.result };
           delayMs = pacePoll(delayMs, opts.baseMs, opts.maxMs, info.slow || info.failed);
-          var next = delayMs;
-          if (opts.nextDelay) { var override = opts.nextDelay(info, delayMs); if (typeof override === 'number' && override > 0) next = override; }
+          var next = held ? LONGPOLL_GAP_MS : delayMs;
+          if (opts.nextDelay) { var override = opts.nextDelay(info, next); if (typeof override === 'number' && override > 0) next = override; }
           if (opts.onSettled) { try { opts.onSettled(info); } catch (e) {} }
           schedule(next);
         });
@@ -292,6 +316,9 @@
     POLL_TIMEOUT_MS: POLL_TIMEOUT_MS,
     CRITICAL_POST_TIMEOUT_MS: CRITICAL_POST_TIMEOUT_MS,
     SLOW_ANSWER_MS: SLOW_ANSWER_MS,
+    LONGPOLL_WAIT_SEC: LONGPOLL_WAIT_SEC,
+    LONGPOLL_GAP_MS: LONGPOLL_GAP_MS,
+    LONGPOLL_TIMEOUT_MS: LONGPOLL_TIMEOUT_MS,
     fetchJsonWithTimeout: fetchJsonWithTimeout,
     fetchJsonQuiet: fetchJsonQuiet,
     noteTransport: noteTransport,

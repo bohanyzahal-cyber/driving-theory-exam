@@ -246,6 +246,109 @@ test('fleet: twenty devices released together do not re-arrive together', async 
   assert.ok(busiest <= 8, 'jitter spreads the fleet: busiest second had ' + busiest + ' of 20');
 });
 
+/**
+ * A room of WAITING examinees against the session gateway, with and without the
+ * hold. The fake Worker answers at once when this examinee's answer differs from
+ * the fingerprint it was given (or when it was given none), and otherwise holds
+ * the request until the answer changes or `wait` seconds elapse — the contract
+ * the Worker implements.
+ */
+async function approvalFleet({ longPoll, ignoreHold = false, count = 40, minutes = 10, changeAtMs = 5 * 60 * 1000, latency = 300, baseMs = 3000 }) {
+  const clock = new Clock();
+  const requests = [];
+  const live = new Map();               // client -> requests in flight right now
+  let maxLive = 0;
+  const answerAt = t => (t < changeAtMs ? 'waiting' : 'approved');
+
+  const transport = loadTransport(clock, url => {
+    const params = new URL(url).searchParams;
+    const who = params.get('id');
+    const wait = Number(params.get('wait') || 0) * 1000;
+    const fp = params.get('fp') || '';
+    const sent = clock.now;
+    requests.push(sent);
+    live.set(who, (live.get(who) || 0) + 1);
+    maxLive = Math.max(maxLive, live.get(who));
+    return new Promise(resolve => {
+      const deliver = () => {
+        live.set(who, live.get(who) - 1);
+        const approval = answerAt(clock.now);
+        const body = JSON.stringify({ status: 'ok', approval: approval, fp: approval, held: Math.max(0, clock.now - sent - latency) });
+        resolve({ ok: true, status: 200, text: () => Promise.resolve(body) });
+      };
+      // the Worker holds only while its answer still matches the fingerprint it
+      // was given — and an un-upgraded Worker (ignoreHold) never holds at all
+      const holds = !ignoreHold && wait && fp && fp === answerAt(sent);
+      const releaseAt = !holds ? sent : (changeAtMs > sent ? Math.min(sent + wait, changeAtMs) : sent + wait);
+      clock.set(deliver, (releaseAt - sent) + latency);
+    });
+  });
+
+  const clients = [];
+  for (let i = 0; i < count; i++) {
+    const me = { fp: '', sawApprovalAt: null };
+    const loop = transport.createPollLoop({
+      name: 'e' + i, baseMs: baseMs, maxMs: 20000,
+      tick: () => {
+        let url = 'https://gw.test/v1/poll?kind=approval&id=' + i;
+        if (longPoll) {
+          url += '&wait=' + transport.LONGPOLL_WAIT_SEC;
+          if (me.fp) url += '&fp=' + me.fp;
+        }
+        return transport.fetchJsonWithTimeout(url, { cache: 'no-store' },
+          longPoll ? transport.LONGPOLL_TIMEOUT_MS : transport.POLL_TIMEOUT_MS).then(data => {
+            if (data.fp) me.fp = data.fp;
+            if (data.approval === 'approved' && me.sawApprovalAt === null) me.sawApprovalAt = clock.now;
+            return data;
+          });
+      }
+    });
+    me.loop = loop;
+    clients.push(me);
+  }
+  clients.forEach((me, i) => clock.set(() => me.loop.start(), (i * 1000) % baseMs));   // a room does not arrive together
+  await clock.advance(minutes * 60 * 1000);
+  clients.forEach(me => me.loop.stop());
+  return {
+    requests: requests.length,
+    perMinute: requests.length / minutes,
+    maxLivePerClient: maxLive,
+    approvalDelays: clients.map(me => (me.sawApprovalAt === null ? Infinity : me.sawApprovalAt - changeAtMs))
+  };
+}
+
+test('fleet: long polling cuts a waiting room to a quarter of the requests and shows the decision in a second', async () => {
+  // Today: 40 waiting examinees, one poll each every 3 s through the gateway.
+  // The account's cap is 100,000 Worker requests/day and a heavy exam day is
+  // already ~130k, so this is the number that has to come down.
+  const today = await approvalFleet({ longPoll: false });
+  const held = await approvalFleet({ longPoll: true });
+
+  assert.ok(Math.abs(today.perMinute - 40 * 60 / 3.3) < 60,
+    'the baseline is the shipped 3 s cadence: ' + today.perMinute.toFixed(0) + '/min');
+  assert.ok(held.requests <= today.requests / 4,
+    'long polling: ' + held.requests + ' requests where today sends ' + today.requests +
+    ' (' + (today.requests / held.requests).toFixed(1) + 'x)');
+  assert.equal(held.maxLivePerClient, 1, 'and still exactly one request in flight per device');
+
+  const worst = Math.max(...held.approvalDelays);
+  assert.ok(worst <= 1500, 'every examinee saw the approval within ' + worst + ' ms of the examiner\'s decision');
+  const todayWorst = Math.max(...today.approvalDelays);
+  assert.ok(worst < todayWorst, 'which is faster than a 3 s poll ever was (' + todayWorst + ' ms)');
+});
+
+test('fleet: against an un-upgraded Worker the new page costs exactly what today costs', async () => {
+  // The page always offers the hold. A Worker that does not know wait/fp answers
+  // immediately, every answer carries held = 0, and the cadence constants in
+  // examinee.html pace the loop exactly as they do today — so the page can be
+  // deployed before the Worker, or the Worker rolled back under it.
+  const ignoring = await approvalFleet({ longPoll: true, ignoreHold: true, count: 20, minutes: 5 });
+  const today = await approvalFleet({ longPoll: false, count: 20, minutes: 5 });
+  assert.ok(Math.abs(ignoring.requests - today.requests) / today.requests < 0.1,
+    'same cadence, same cost: ' + ignoring.requests + ' vs ' + today.requests);
+  assert.equal(ignoring.maxLivePerClient, 1, 'and still one request in flight per device');
+});
+
 test('fleet: a slow-but-answering server (6 s) backs the fleet off instead of digging in', async () => {
   const fleet = await simulate({ latency: 7000, minutes: 15, clients: [
     { ...APPROVAL_DIRECT, count: 18 }, { ...STATUS_DIRECT, count: 20 }

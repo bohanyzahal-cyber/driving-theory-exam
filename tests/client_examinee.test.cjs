@@ -219,9 +219,13 @@ function completePage({ local = memoryStore(), session = memoryStore(), reply, g
       const data = answer(request);
       if (data && data.__network) return Promise.reject(new TypeError('Failed to fetch'));
       if (data && data.__hang) return new Promise(() => {});
-      const body = data && data.__raw !== undefined ? data.__raw : JSON.stringify(data);
-      return Promise.resolve({ ok: !(data && data.__status >= 400), status: (data && data.__status) || 200,
-        text: () => Promise.resolve(body), json: () => Promise.resolve(JSON.parse(body)) });
+      // the knobs are the harness's, never part of the body the page parses
+      const body = data && data.__raw !== undefined ? data.__raw : JSON.stringify(data, (k, v) => k.slice(0, 2) === '__' ? undefined : v);
+      const response = { ok: !(data && data.__status >= 400), status: (data && data.__status) || 200,
+        text: () => Promise.resolve(body), json: () => Promise.resolve(JSON.parse(body)) };
+      // __delay models a request the server HOLDS (a long poll) before answering
+      if (data && data.__delay) return new Promise(resolve => timer.set(() => resolve(response), data.__delay));
+      return Promise.resolve(response);
     }
   };
   ctx.window = ctx;
@@ -731,7 +735,12 @@ test('D13: the timer-expiry extension check waits the full poll deadline', async
   await register(page);
   await startExam(page);
   const src = examinee.replace(/\r/g, '');
-  assert.match(section(src, '  function onTimerExpired()', '  function updateTimerDisplay()'), /statusPollCall\(\)/,
+  // statusPollCall keeps the 60 s poll deadline (the 30 s API default would
+  // auto-submit an exam whose extension was already granted), and noWait keeps
+  // the Worker from HOLDING this one answer: the examinee is watching a timer
+  // that just hit zero, so it must come back at once, not in up to 25 s.
+  assert.match(section(src, '  function onTimerExpired()', '  function updateTimerDisplay()'),
+    /statusPollCall\(\{ noWait: true \}\)/,
     'the 30 s default would auto-submit an exam whose extension was already granted');
 });
 
@@ -902,6 +911,159 @@ test('gateway: three transport failures of the Worker itself fall back to the di
   page.el('registerBtn').click(); await drain();
   await page.timer.advance(60000);
   assert.ok(page.sent('checkApproval').length >= 1, 'the examinee is not stranded by a broken Worker');
+});
+
+// ===================== 6b. long polling =====================
+// The Worker holds a poll until THIS examinee's answer changes, up to 25 s. The
+// page carries the hold in the URL: `wait` (how long it may hold) and `fp` (the
+// fingerprint of the answer this device already has).
+const pollsOf = (page, kind) => page.requests.filter(r => String(r.__url).includes('/v1/poll') && r.kind === kind);
+const waitingAnswer = fp => ({ status: 'ok', approval: 'waiting', audioMode: 'off', fp: fp, held: 0 });
+
+test('long poll: the approval poll offers a 25 s hold, without a fingerprint the first time', async () => {
+  let fp = 'fp-1';
+  const page = completePage({ gateway: 'https://gw.example/',
+    reply: r => r.kind === 'approval' ? waitingAnswer(fp) : undefined });
+  await register(page);
+  const first = pollsOf(page, 'approval')[0];
+  assert.equal(first.wait, '25', 'every gateway poll offers the Worker the hold');
+  assert.equal(first.fp, undefined, 'the first one has nothing to hold against, so it is answered at once');
+  await page.timer.advance(2000);
+  assert.equal(pollsOf(page, 'approval')[1].fp, 'fp-1', 'from the second on it holds against the answer it already has');
+  fp = 'fp-2';                                   // the examiner did something: the answer, and its fingerprint, changed
+  await page.timer.advance(8000);
+  const last = pollsOf(page, 'approval').pop();
+  assert.equal(last.fp, 'fp-2', 'and the next hold is against the NEW answer');
+  assert.equal(last.wait, '25');
+  assert.equal(page.sent('checkApproval').length, 0, 'none of it reached Apps Script');
+});
+
+test('long poll: the in-exam status poll holds the same way', async () => {
+  const page = completePage({ gateway: 'https://gw.example/',
+    reply: r => r.kind === 'status' ? { status: 'ok', examStatus: 'in_exam', extraMinutes: 0, fp: 'st-1', held: 0 } : undefined });
+  await register(page);
+  await startExam(page);
+  assert.equal(pollsOf(page, 'status')[0].wait, '25');
+  assert.equal(pollsOf(page, 'status')[0].fp, undefined);
+  await page.timer.advance(12000);
+  assert.equal(pollsOf(page, 'status')[1].fp, 'st-1');
+  assert.equal(page.sent('getExamStatus').length, 0);
+});
+
+test('long poll: an approval that lands inside a held answer is applied exactly as before', async () => {
+  let approved = false;
+  const current = () => approved
+    ? { status: 'ok', approval: 'approved', audioMode: 'off', examMinutes: 40, fp: 'f-approved' }
+    : { status: 'ok', approval: 'waiting', audioMode: 'off', fp: 'f-waiting' };
+  const page = completePage({ gateway: 'https://gw.example/', reply(r) {
+    if (r.kind !== 'approval') return undefined;
+    const now = current();
+    // the Worker holds only while its answer still matches the fingerprint it was given
+    return r.fp === now.fp ? Object.assign({ held: 25000, __delay: 25000 }, now) : Object.assign({ held: 0 }, now);
+  } });
+  await register(page);
+  assert.notEqual(page.el('instructionsPhase').style.display, 'block', 'still waiting');
+  await page.timer.advance(2200);                // the un-held first answer is paced as before; then the hold starts
+  assert.equal(pollsOf(page, 'approval').filter(r => r.fp).length, 1,
+    'one request is holding; nothing else is being sent while it does');
+  await page.timer.advance(25500);               // the hold expires unchanged, and the next one starts after the gap
+  assert.equal(pollsOf(page, 'approval').filter(r => r.fp).length, 2);
+  approved = true;                               // the examiner approves
+  await page.timer.advance(26000);               // the pending hold expires, the next request sees the change
+  assert.equal(page.el('instructionsPhase').style.display, 'block', 'the examinee is on the instructions screen');
+  assert.equal(page.t.state().timeMinutes, 40);
+  assert.ok(pollsOf(page, 'approval').length < 10, 'a whole approval wait cost a handful of requests: ' + pollsOf(page, 'approval').length);
+});
+
+test('long poll: a fingerprint never crosses a route change, and the direct call carries neither', async () => {
+  let gatewayDown = false;
+  const page = completePage({ gateway: 'https://gw.example/', reply(r) {
+    if (r.action === 'checkApproval') return { status: 'ok', approval: 'waiting', audioMode: 'off' };
+    if (!String(r.__url).includes('/v1/poll')) return undefined;
+    return gatewayDown ? { __status: 502, __raw: 'bad gateway' } : waitingAnswer('gw-1');
+  } });
+  await register(page);
+  await page.timer.advance(6000);
+  assert.ok(pollsOf(page, 'approval').pop().fp === 'gw-1', 'a fingerprint is established');
+
+  gatewayDown = true;                            // the Worker itself is broken, and the page is on screen
+  await page.timer.advance(60000);
+  const direct = page.sent('checkApproval');
+  assert.ok(direct.length >= 1, 'the examinee is not stranded');
+  assert.ok(direct.every(r => r.wait === undefined && r.fp === undefined), 'Apps Script knows nothing about holds');
+  const parked = pollsOf(page, 'approval').length;
+  await page.timer.advance(120000);
+  assert.equal(pollsOf(page, 'approval').length, parked, 'and the Worker is parked for five minutes');
+
+  gatewayDown = false;
+  await page.timer.advance(240000);              // past the five minutes
+  const back = pollsOf(page, 'approval').slice(parked);
+  assert.ok(back.length >= 1, 'the gateway is tried again');
+  assert.equal(back[0].fp, undefined, 'with no fingerprint: the first poll back on the route is answered at once');
+  assert.equal(back[0].wait, '25');
+});
+
+test('long poll: a held request killed by a screen lock is not a broken Worker', async () => {
+  let mode = 'ok';
+  const page = completePage({ gateway: 'https://gw.example/', reply(r) {
+    if (r.action === 'checkApproval') return { status: 'ok', approval: 'waiting', audioMode: 'off' };
+    if (!String(r.__url).includes('/v1/poll')) return undefined;
+    if (mode === 'network') return { __network: true };
+    if (mode === 'http') return { __status: 502, __raw: 'bad gateway' };
+    return waitingAnswer('gw-1');
+  } });
+  await register(page);
+  page.setVisibility('hidden');
+  mode = 'network';                              // the phone locked: every held request dies
+  await page.timer.advance(180000);
+  assert.equal(page.sent('checkApproval').length, 0,
+    'a room of locked phones must not be answered by sending all of them at Apps Script');
+  const whileHidden = pollsOf(page, 'approval').length;
+  assert.ok(whileHidden >= 3, 'the chain kept trying, backing off: ' + whileHidden);
+  assert.ok(whileHidden < 40, 'and it did back off: ' + whileHidden);
+
+  page.setVisibility('visible');
+  await page.timer.advance(3000);                // past the 2 s wake grace
+  mode = 'http';                                 // now the Worker really is answering 502, on screen
+  await page.timer.advance(180000);
+  assert.ok(page.sent('checkApproval').length >= 1, 'a real failure the examinee can see still falls back');
+});
+
+test('long poll: three screen locks never raise a server error on the waiting screen', async () => {
+  let mode = 'ok';
+  const page = completePage({ gateway: 'https://gw.example/', reply(r) {
+    if (r.action === 'checkApproval') return { status: 'ok', approval: 'waiting', audioMode: 'off' };
+    if (!String(r.__url).includes('/v1/poll')) return undefined;
+    return mode === 'network' ? { __network: true } : waitingAnswer('gw-1');
+  } });
+  await register(page);
+  page.setVisibility('hidden');
+  mode = 'network';
+  await page.timer.advance(120000);
+  const banner = page.el('approvalError');
+  assert.ok(!banner || banner.style.display !== 'block', 'the examinee sees nothing: their phone was asleep');
+});
+
+test('long poll: the DQ-overturn wait is held too, starting from the decision as it is now', async () => {
+  let approval = 'approved';
+  const page = completePage({ gateway: 'https://gw.example/',
+    reply: r => r.kind === 'approval'
+      ? { status: 'ok', approval: approval, audioMode: 'off', examMinutes: 40, fp: 'a-' + approval, held: 0 } : undefined });
+  await register(page);
+  await startExam(page);
+  const before = pollsOf(page, 'approval').length;
+  approval = 'disqualified';
+  page.setVisibility('hidden');                  // tab switch during the exam
+  await page.timer.advance(2100);                // past the grace: disqualified
+  page.setVisibility('visible'); await drain();  // the DQ screen, and the wait for the examiner's decision
+  assert.equal(page.t.state().dq, true);
+  const dqPolls = pollsOf(page, 'approval').slice(before);
+  assert.ok(dqPolls.length >= 1, 'the overturn wait is running');
+  assert.equal(dqPolls[0].wait, '25', 'and it is a held poll, so the decision lands in about a second');
+  assert.equal(dqPolls[0].fp, undefined, 'starting from the decision as it is right now');
+  approval = 'dq_confirmed';
+  await page.timer.advance(8000);
+  assert.match(page.el('dqWaitingMsg').innerHTML, /הבוחן אישר את הפסילה/);
 });
 
 // ===================== 7. restore =====================

@@ -263,6 +263,116 @@ test('poll loop: nextDelay can override the pacing (the 2 s result-sync window)'
   loop.stop();
 });
 
+// ===== 4b. long polling =====
+// The session gateway can HOLD a poll until this client's answer changes. The
+// loop learns that from `held` in the answer, and then the wait has already
+// happened on the wire: the next request goes out after LONGPOLL_GAP_MS.
+test('long poll: the contract constants are the ones both sides code against', () => {
+  const { T } = load();
+  assert.equal(T.LONGPOLL_WAIT_SEC, 25, 'what the page asks the Worker to hold for');
+  assert.equal(T.LONGPOLL_GAP_MS, 250);
+  assert.equal(T.LONGPOLL_TIMEOUT_MS, 40000, 'the hold plus 15 s of slack');
+  assert.ok(T.LONGPOLL_TIMEOUT_MS < T.POLL_TIMEOUT_MS, 'and the 60 s poll deadline stays the ceiling');
+});
+
+test('long poll: a held answer schedules the next tick after the gap, not after baseMs', async () => {
+  const starts = [];
+  let clock = null;
+  const { T, timer, loop } = loopWith(() => {
+    starts.push(clock.now);
+    return new Promise(resolve => clock.set(() => resolve({ status: 'ok', held: 24000 }), 24000));
+  });
+  clock = timer;
+  loop.start(); await drain();
+  await timer.advance(24000);                    // the Worker held the request, then answered
+  assert.equal(starts.length, 1);
+  await timer.advance(T.LONGPOLL_GAP_MS - 1);
+  assert.equal(starts.length, 1, 'the gap has not elapsed yet');
+  await timer.advance(1);
+  assert.equal(starts.length, 2, 'the next hold starts 250 ms later — not baseMs later');
+  assert.equal(starts[1] - starts[0], 24250, 'one request per hold, not one per 5 s');
+  assert.equal(loop.currentDelayMs(), 5000, 'and a 24 s hold is not a "slow" answer: the ladder stays at base');
+  loop.stop();
+});
+
+test('long poll: an answer the server did NOT hold keeps today\'s cadence', async () => {
+  const starts = [];
+  let clock = null;
+  const { timer, loop } = loopWith(() => { starts.push(clock.now); return Promise.resolve({ status: 'ok', held: 0 }); });
+  clock = timer;
+  loop.start(); await drain();
+  await timer.advance(4999);
+  assert.equal(starts.length, 1, 'an un-upgraded Worker answers at once and is paced by baseMs');
+  await timer.advance(1);
+  assert.equal(starts.length, 2);
+  assert.deepEqual(starts, [0, 5000]);
+  loop.stop();
+});
+
+test('long poll: a failed hold backs off exactly like any other failed poll', async () => {
+  // the request died mid-hold
+  const { timer, loop } = loopWith(() => Promise.reject(Object.assign(new Error('gone'), { transport: 'network' })));
+  loop.start(); await drain();
+  assert.equal(loop.currentDelayMs(), 7500, 'a rejected long poll is a failed poll');
+  loop.stop();
+
+  // the Worker answered, but with an error — `held` on a failed answer buys nothing
+  const starts = [];
+  let clock = null;
+  const second = loopWith(() => { starts.push(clock.now); return Promise.resolve({ status: 'error', code: 'upstream_unavailable', held: 24000 }); });
+  clock = second.timer;
+  second.loop.start(); await drain();
+  assert.equal(second.loop.currentDelayMs(), 7500);
+  await second.timer.advance(7499);
+  assert.equal(starts.length, 1, 'it waits the backed-off delay, never the 250 ms gap');
+  await second.timer.advance(1);
+  assert.equal(starts.length, 2);
+  second.loop.stop();
+});
+
+test('long poll: the degraded floor still owns the pacing ladder', async () => {
+  // The Worker does not hold while the upstream is unavailable, but if a held
+  // answer does arrive while the backend is degraded, the ladder underneath is
+  // still floored at 30-60 s — so the first answer that comes back UNHELD waits
+  // the floor. (A hold itself is one request per 25 s of wire time, which is the
+  // request rate the floor is there to enforce.)
+  let held = 24000;
+  let clock = null;
+  const starts = [];
+  const { T, timer, loop } = loopWith(() => {
+    starts.push(clock.now);
+    return new Promise(resolve => clock.set(() => resolve({ status: 'ok', held: held }), held || 0));
+  });
+  clock = timer;
+  T.noteTransport({ transport: 'http' });        // Google answered with an HTML error page
+  assert.equal(T.isBackendDegraded(), true);
+  loop.start(); await drain();
+  await timer.advance(24000);
+  assert.ok(loop.currentDelayMs() >= 30000, 'the ladder is floored: ' + loop.currentDelayMs());
+  await timer.advance(T.LONGPOLL_GAP_MS);
+  assert.equal(starts.length, 2, 'the next hold still starts after the gap');
+  held = 0;                                       // the Worker stops holding
+  await drain();
+  const afterUnheld = starts.length;
+  await timer.advance(29999);
+  assert.equal(starts.length, afterUnheld, 'and an UNHELD answer waits the 30-60 s floor again');
+  loop.stop();
+});
+
+test('long poll: a page that knows nothing about holds sees exactly the old loop', async () => {
+  const seen = [];
+  const starts = [];
+  let clock = null;
+  const { timer, loop } = loopWith(() => { starts.push(clock.now); return Promise.resolve({ status: 'ok', approval: 'waiting' }); },
+    { nextDelay: (info, paced) => { seen.push({ held: info.held, paced: paced }); return undefined; } });
+  clock = timer;
+  loop.start(); await drain();
+  await timer.advance(15000);
+  assert.deepEqual(starts, [0, 5000, 10000, 15000], 'every tick at baseMs, as before');
+  assert.deepEqual(seen[0], { held: 0, paced: 5000 }, 'nextDelay is handed the same paced delay it always was');
+  loop.stop();
+});
+
 // ===== 5. createFailover =====
 function failoverWith(primary, fallback) {
   const { T, timer } = load();

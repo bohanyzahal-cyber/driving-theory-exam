@@ -82,12 +82,84 @@ function cacheDouble(now) {
 }
 
 /**
+ * The fake `sleep` a HELD request parks on. Virtual time moves only while the
+ * gateway is asleep: `fire()` jumps the clock to the earliest deadline and
+ * resolves everything due at once, so forty held requests wake together exactly
+ * as they do at the edge, and a 25 s hold is tested in milliseconds.
+ * `calls` counts iterations — the CPU guard a held request must respect.
+ */
+function timerQueue(state) {
+  const parked = [];
+  const queue = {
+    calls: 0,
+    parked,
+    sleep(ms) {
+      queue.calls++;
+      const at = state.clock + Math.max(0, Number(ms) || 0);
+      return new Promise(resolve => parked.push({ at, resolve }));
+    },
+    /** The earliest deadline parked, or null. */
+    next() {
+      return parked.length ? parked.reduce((soonest, t) => Math.min(soonest, t.at), Infinity) : null;
+    },
+    /** Jumps to that deadline and resolves everything due. false = nothing parked. */
+    fire() {
+      const at = queue.next();
+      if (at == null) return false;
+      if (at > state.clock) state.clock = at;
+      for (let i = parked.length - 1; i >= 0; i--) {
+        if (parked[i].at <= state.clock) parked.splice(i, 1)[0].resolve();
+      }
+      return true;
+    }
+  };
+  return queue;
+}
+
+/** Lets every ready promise callback run. The fake clock does not move here. */
+const flush = async rounds => {
+  for (let i = 0; i < (rounds || 8); i++) await new Promise(r => setImmediate(r));
+};
+
+/**
+ * Awaits work that HOLDS: drains what is ready, and when everything is parked
+ * on a fake sleep, jumps the clock to the next deadline. Nothing here waits on
+ * real time.
+ */
+async function settle(state, promise) {
+  let done = false;
+  const tracked = Promise.resolve(promise).then(
+    value => { done = true; return value; },
+    error => { done = true; throw error; });
+  tracked.catch(() => { /* re-thrown to the caller by `return tracked` */ });
+  for (let guard = 0; guard < 400 && !done; guard++) {
+    await flush();
+    if (!done) state.timers.fire();
+  }
+  return tracked;
+}
+
+/** Runs the fake clock forward, waking every held request on the way. */
+async function advance(state, ms) {
+  const target = state.clock + ms;
+  for (let guard = 0; guard < 400 && state.clock < target; guard++) {
+    await flush();
+    const next = state.timers.next();
+    if (next == null || next > target) break;
+    state.timers.fire();
+  }
+  await flush();
+  if (state.clock < target) state.clock = target;
+}
+
+/**
  * Fake upstream + fake clock; `state.calls` is the Apps Script execution count.
  * `withCache` adds a shared caches.default and `spawn()`, which is a COLD
  * isolate: new memory, same cache, same clock, same upstream counter.
  */
 function harness(snapshots, assets, withCache) {
   const state = { calls: [], clock: CLOCK0, mode: 'ok', snapshots: snapshots || {} };
+  state.timers = timerQueue(state);
   const fetchFn = async url => {
     state.calls.push(String(url));
     if (state.mode === 'error500') return new Response('<html>Google internal error</html>', { status: 500 });
@@ -101,7 +173,8 @@ function harness(snapshots, assets, withCache) {
   const double = withCache ? cacheDouble(() => state.clock) : null;
   state.store = double ? double.store : null;
   const spawn = () => createGateway({
-    fetch: fetchFn, caches: double ? double.caches : undefined, now: () => state.clock, env
+    fetch: fetchFn, caches: double ? double.caches : undefined, now: () => state.clock, env,
+    sleep: ms => state.timers.sleep(ms)
   });
   return { state, gateway: spawn(), spawn };
 }
@@ -726,4 +799,279 @@ test('with only the stale copy left, a nudge still patches it', async () => {
   const after = await poll(spawn(), approvalPoll('900000001'));
   assert.deepEqual(after.body, { status: 'ok', approval: 'approved', audioMode: 'off', examMinutes: 50 });
   assert.equal(state.calls.length, 1, 'still no upstream read — and no stale:true, the copy is fresh again');
+});
+
+// --- long polling: `fp` + `wait` -------------------------------------------
+// The client sends the fingerprint it already has and how long it is willing to
+// wait; the request is HELD here until the answer actually changes. That is
+// ~4-5x fewer requests against the account's 100k/day, and an examiner's
+// decision on the screen in ~1 s instead of one poll interval later.
+
+const WAITING_FP = 'a:waiting:off:-';
+
+test('fp names every answer kind, is stable while the answer is, and changes with it', async () => {
+  const { state, gateway } = harness({ [SESSION]: [
+    row({ id: '900000001', status: 'approved', examMinutes: 50 }),
+    row({ id: '900000002', status: 'waiting' }),
+    row({ id: '900000003', status: 'in_exam', extraMinutes: 7 }),
+    row({ id: '900000004', status: 'approved', tokenHash: sha256Hex('real-token') })
+  ] });
+  const fp = async params => (await poll(gateway, params)).body.fp;
+
+  assert.equal(await fp(approvalPoll('900000001', { wait: 0 })), 'a:approved:off:50');
+  assert.equal(await fp(approvalPoll('900000002', { wait: 0 })), WAITING_FP, 'no minutes until approved');
+  assert.equal(await fp(statusPoll('900000003', { fp: '' })), 's:in_exam:7');
+  assert.equal(await fp(approvalPoll('900000009', { wait: 0 })), 'a:none', 'no row has its own fingerprint');
+  assert.equal(await fp(statusPoll('900000009', { wait: 0 })), 's:none');
+  assert.equal(await fp(approvalPoll('900000004', { wait: 0, examineeToken: 'stolen' })), 'a:tok');
+  assert.equal(await fp(statusPoll('900000004', { wait: 0, examineeToken: 'stolen' })), 's:tok');
+  assert.equal(await fp({ kind: 'nonsense', sessionCode: SESSION, idNumber: '1', wait: 0 }), 'x:kind');
+  assert.equal(await fp({ kind: 'approval', sessionCode: 'nope', idNumber: '1', wait: 0 }), 'x:sess');
+  assert.equal(await fp({ kind: 'approval', sessionCode: SESSION, idNumber: '', wait: 0 }), 'x:id');
+
+  // The same answer, later, from a re-read snapshot: the fingerprint may not
+  // move, or every client would poll on for ever.
+  state.clock += 5000;
+  assert.equal(await fp(approvalPoll('900000001', { wait: 0 })), 'a:approved:off:50');
+  assert.ok(state.calls.length > 1, 'and that really was a fresh read, not the same snapshot');
+
+  // Each of the three things an approval answer carries moves it, and so does
+  // each of the two a status answer carries.
+  state.snapshots[SESSION] = [
+    row({ id: '900000001', status: 'approved', audio: 'on', examMinutes: 50 }),
+    row({ id: '900000003', status: 'in_exam', extraMinutes: 12 })
+  ];
+  state.clock += 5000;
+  assert.equal(await fp(approvalPoll('900000001', { wait: 0 })), 'a:approved:on:50');
+  assert.equal(await fp(statusPoll('900000003', { wait: 0 })), 's:in_exam:12');
+  state.snapshots[SESSION] = [
+    row({ id: '900000001', status: 'in_exam', audio: 'on', examMinutes: 60 }),
+    row({ id: '900000003', status: 'disqualified', extraMinutes: 12 })
+  ];
+  state.clock += 5000;
+  assert.equal(await fp(approvalPoll('900000001', { wait: 0 })), 'a:in_exam:on:60');
+  assert.equal(await fp(statusPoll('900000003', { wait: 0 })), 's:disqualified:12');
+  assert.ok(state.timers.calls === 0, 'nothing here ever held');
+});
+
+test('a client that says nothing about long polling gets byte-for-byte the old answer', async () => {
+  const { gateway } = harness({ [SESSION]: [row({ status: 'approved', examMinutes: 50 })] });
+
+  // This is what tests/contracts.test.cjs pins: the gateway's answer IS the
+  // server's answer. `fp`/`held` are served only to a client that named itself
+  // by sending `wait` or `fp`.
+  const old = await poll(gateway, approvalPoll('900000001'));
+  assert.deepEqual(old.body, { status: 'ok', approval: 'approved', audioMode: 'off', examMinutes: 50 });
+
+  const modern = await poll(gateway, approvalPoll('900000001', { wait: 0 }));
+  assert.deepEqual(modern.body, {
+    status: 'ok', approval: 'approved', audioMode: 'off', examMinutes: 50,
+    fp: 'a:approved:off:50', held: 0
+  });
+  const byFpAlone = await poll(gateway, approvalPoll('900000001', { fp: 'whatever' }));
+  assert.equal(byFpAlone.body.fp, 'a:approved:off:50', 'fp alone opts in too, and never holds');
+  assert.equal(byFpAlone.body.held, 0);
+});
+
+test('a hold runs out its `wait` and answers the same fingerprint', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
+  const first = await poll(gateway, approvalPoll('900000001', { wait: 25, fp: '' }));
+  assert.equal(first.body.fp, WAITING_FP, 'no fp to send yet, so it is answered at once');
+  assert.equal(first.body.held, 0);
+  assert.equal(state.calls.length, 1);
+
+  const { body } = await settle(state, poll(gateway, approvalPoll('900000001', { wait: 5, fp: WAITING_FP })));
+
+  assert.deepEqual(body, { status: 'ok', approval: 'waiting', audioMode: 'off', fp: WAITING_FP, held: 5000 });
+  assert.equal(state.clock, CLOCK0 + 5000, 'it really waited the five seconds');
+  assert.equal(state.timers.calls, 5, 'one evaluation per second, not a spin');
+  assert.equal(state.calls.length, 2, 'five seconds of holding cost one extra execution, not five');
+  assert.deepEqual(gateway._debug().waiting, 0, 'and it took its resolver back out');
+});
+
+test('an examiner nudge ends the hold at once, for zero executions', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
+  await poll(gateway, approvalPoll('900000001'));
+  assert.equal(state.calls.length, 1);
+
+  const holding = poll(gateway, approvalPoll('900000001', { wait: 25, fp: WAITING_FP }));
+  await flush();
+  assert.equal(gateway._debug().waiting, 1, 'parked');
+
+  const pushed = await nudge(gateway, '&idNumber=900000001&status=approved&examMinutes=50&audio=on');
+  assert.deepEqual(pushed.body, { status: 'ok', patched: true });
+
+  const { body } = await settle(state, holding);
+  assert.deepEqual(body, {
+    status: 'ok', approval: 'approved', audioMode: 'on', examMinutes: 50,
+    fp: 'a:approved:on:50', held: 0
+  });
+  assert.equal(state.calls.length, 1, 'the decision reached the device with no upstream read at all');
+  assert.equal(state.clock, CLOCK0, 'and without waiting out a single tick');
+  assert.equal(gateway._debug().waiting, 0);
+});
+
+test('a status hold ends on the disqualification the nudge carries', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'in_exam' })] });
+  await poll(gateway, statusPoll('900000001'));
+
+  const holding = poll(gateway, statusPoll('900000001', { wait: 25, fp: 's:in_exam:0' }));
+  await flush();
+  await nudge(gateway, '&idNumber=900000001&status=disqualified&extraMinutes=15');
+
+  const { body } = await settle(state, holding);
+  assert.deepEqual(body, {
+    status: 'ok', examStatus: 'disqualified', extraMinutes: 15, fp: 's:disqualified:15', held: 0
+  });
+  assert.equal(state.calls.length, 1);
+});
+
+test('a plain drop wakes the hold, which reads the row the server now has', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'in_exam' })] });
+  await poll(gateway, statusPoll('900000001'));
+
+  const holding = poll(gateway, statusPoll('900000001', { wait: 25, fp: 's:in_exam:0' }));
+  await flush();
+
+  // The examiner extended the time: the row is already written, the nudge only
+  // says "the snapshot is behind".
+  state.snapshots[SESSION] = [row({ status: 'in_exam', extraMinutes: 15 })];
+  await nudge(gateway, '');
+
+  const { body } = await settle(state, holding);
+  assert.deepEqual(body, {
+    status: 'ok', examStatus: 'in_exam', extraMinutes: 15, fp: 's:in_exam:15', held: 0
+  });
+  assert.equal(state.calls.length, 2, 'the woken request read the truth once');
+});
+
+test('a patch another isolate wrote reaches a held request through caches.default', async () => {
+  const { state, spawn } = harness({ [SESSION]: [row({ status: 'waiting' })] }, null, true);
+  const first = spawn(), second = spawn();
+
+  await poll(first, approvalPoll('900000001'));
+  const holding = poll(first, approvalPoll('900000001', { wait: 25, fp: WAITING_FP }));
+  await flush();
+
+  // A DIFFERENT isolate takes the examiner's nudge: it cannot wake anything in
+  // the first one, so the only channel left is the cache — which is why a held
+  // request re-reads it on every tick.
+  assert.equal((await nudge(second, '&idNumber=900000001&status=approved&examMinutes=50')).body.patched, true);
+  assert.equal(first._debug().waiting, 1, 'nothing woke it — it is still parked');
+
+  const { body } = await settle(state, holding);
+  assert.deepEqual(body, {
+    status: 'ok', approval: 'approved', audioMode: 'off', examMinutes: 50,
+    fp: 'a:approved:off:50', held: 1000
+  });
+  assert.equal(state.calls.length, 1, 'seen within one tick, and still no upstream read');
+});
+
+test('forty held requests cost one execution per 2 s, and one drop ends them all', async () => {
+  const ids = Array.from({ length: 40 }, (_, i) => String(900000001 + i));
+  const { state, gateway } = harness({ [SESSION]: ids.map(id => row({ id, status: 'waiting' })) });
+
+  await Promise.all(ids.map(id => poll(gateway, approvalPoll(id))));
+  assert.equal(state.calls.length, 1);
+
+  const holds = ids.map(id => poll(gateway, approvalPoll(id, { wait: 25, fp: WAITING_FP })));
+  await flush();
+  assert.equal(gateway._debug().waiting, 40, 'forty parked requests, one session');
+
+  await advance(state, 6000);
+  assert.equal(state.calls.length, 3,
+    'six seconds of holding: one read per freshness window, forty holders or one');
+  assert.equal(gateway._debug().waiting, 40, 'still holding — nothing they care about changed');
+
+  // The examiner approves ONE examinee. Only that request may end.
+  await nudge(gateway, '&idNumber=900000001&status=approved&examMinutes=50');
+  const one = await settle(state, holds[0]);
+  assert.equal(one.body.fp, 'a:approved:off:50');
+  assert.equal(one.body.held, 6000);
+  await flush();
+  assert.equal(gateway._debug().waiting, 39, 'the rest looked, saw their own row unchanged and parked again');
+  assert.equal(state.calls.length, 3, 'and the patch bought no execution');
+
+  // Now the whole class is approved and the examiner fires a plain drop.
+  state.snapshots[SESSION] = ids.map(id => row({ id, status: 'approved', examMinutes: 40 }));
+  await nudge(gateway, '');
+  const rest = await settle(state, Promise.all(holds.slice(1)));
+
+  assert.equal(rest.length, 39);
+  for (const answer of rest) {
+    assert.equal(answer.body.approval, 'approved');
+    assert.equal(answer.body.fp, 'a:approved:off:40');
+  }
+  assert.equal(state.calls.length, 4, 'thirty-nine woken requests shared ONE execution');
+  assert.equal(gateway._debug().waiting, 0, 'no resolver was left behind');
+  assert.equal(gateway._debug().sessions, 0, 'and no empty Set either');
+});
+
+test('nothing that asks the client to slow down is ever held', async () => {
+  // 1. A stale copy: the upstream is down, so waiting on it proves nothing.
+  const stale = harness({ [SESSION]: [row({ status: 'approved', examMinutes: 50 })] });
+  await poll(stale.gateway, approvalPoll('900000001'));
+  stale.state.mode = 'error500';
+  stale.state.clock += 4000;
+  const onStale = await settle(stale.state,
+    poll(stale.gateway, approvalPoll('900000001', { wait: 25, fp: 'a:approved:off:50' })));
+  assert.deepEqual(onStale.body, {
+    status: 'ok', approval: 'approved', audioMode: 'off', examMinutes: 50, stale: true,
+    fp: 'a:approved:off:50', held: 0
+  }, 'the fingerprint is the answer inside it, and it comes back at once');
+  assert.equal(stale.state.timers.calls, 0, 'it never slept');
+
+  // 2. No snapshot at all.
+  const dead = harness({ [SESSION]: [row()] });
+  dead.state.mode = 'error500';
+  const onDead = await settle(dead.state, poll(dead.gateway, approvalPoll('900000001', { wait: 25, fp: 'x:up' })));
+  assert.deepEqual(onDead.body, {
+    status: 'error', code: 'upstream_unavailable', retryable: true,
+    message: 'השרת עמוס — ננסה שוב אוטומטית', fp: 'x:up', held: 0
+  });
+  assert.equal(dead.state.timers.calls, 0);
+
+  // 3. A token mismatch never becomes anything else by waiting.
+  const token = harness({ [SESSION]: [row({ status: 'approved', tokenHash: sha256Hex('real-token') })] });
+  const onToken = await settle(token.state, poll(token.gateway,
+    approvalPoll('900000001', { wait: 25, fp: 'a:tok', examineeToken: 'stolen-token' })));
+  assert.equal(onToken.body.examineeTokenError, 'mismatch');
+  assert.equal(onToken.body.held, 0);
+  assert.equal(token.state.timers.calls, 0);
+
+  // 4. A bad request is a bug in the caller, not something to wait out.
+  const bad = harness({ [SESSION]: [row()] });
+  const onBad = await settle(bad.state, poll(bad.gateway,
+    { kind: 'approval', sessionCode: 'nope', idNumber: '900000001', wait: 25, fp: 'x:sess' }));
+  assert.equal(onBad.res.status, 400);
+  assert.equal(onBad.body.fp, 'x:sess');
+  assert.equal(bad.state.timers.calls, 0);
+  assert.equal(bad.state.calls.length, 0, 'and it never reached Apps Script');
+});
+
+test('a hold is refused when the client is already behind, and `wait` is clamped', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'approved', examMinutes: 50 })] });
+
+  // The answer already differs from what the client holds: nothing to wait for.
+  const behind = await settle(state, poll(gateway, approvalPoll('900000001', { wait: 25, fp: WAITING_FP })));
+  assert.equal(behind.body.fp, 'a:approved:off:50');
+  assert.equal(behind.body.held, 0);
+  assert.equal(state.timers.calls, 0);
+
+  // wait=0, a fraction, a word and a negative all mean "answer now", exactly
+  // like the client that never heard of holding.
+  for (const wait of [0, '0', 2.5, 'abc', -5, '']) {
+    const { body } = await settle(state,
+      poll(gateway, approvalPoll('900000001', { wait: wait, fp: 'a:approved:off:50' })));
+    assert.equal(body.held, 0, 'wait=' + JSON.stringify(wait));
+    assert.equal(state.timers.calls, 0, 'wait=' + JSON.stringify(wait) + ' never slept');
+  }
+
+  // 26 is clamped to 25, and that is also the CPU guard: one evaluation per
+  // second and not one more, whatever wakes it.
+  const { body } = await settle(state, poll(gateway, approvalPoll('900000001', { wait: 26, fp: 'a:approved:off:50' })));
+  assert.equal(body.held, 25000, 'clamped to the 25 s ceiling');
+  assert.ok(state.timers.calls <= 26, 'at most 26 evaluations for a full hold, got ' + state.timers.calls);
+  assert.equal(state.timers.calls, 25);
+  assert.equal(gateway._debug().waiting, 0);
 });

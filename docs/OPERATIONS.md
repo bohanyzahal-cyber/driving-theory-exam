@@ -123,6 +123,8 @@ npx wrangler deploy                       # מעלה את הקוד וגם את 1
 
 Workers פעילים: `session-gateway` (סקר הנבחנים + הבנק, `wrangler.jsonc` עם `assets`), קישורי דו"חות (`steep-night-dd06`, עם KV), TTS עברית (`hebrew-tts`), פרוקסי תמונות.
 
+**תקציב הבקשות (תוכנית חינמית):** 100,000 בקשות ביום לכל ה-Workers של החשבון יחד (`session-gateway`, `hebrew-tts`, פרוקסי התמונות, קישורי הדו"חות), מתאפס ב-00:00 UTC (03:00 ישראל בקיץ). מעבר לזה Cloudflare מחזיר שגיאה 1027 עד האיפוס — מבחנים שרצים ממשיכים (השאלות במכשיר), אבל מבחן חדש לא יכול להתחיל. עם הסקר הארוך (DESIGN §12) הצפי ~100 בקשות לנבחן (400 נבחנים ≈ 40–70 אלף). לקרוא את המונה: Cloudflare → Workers & Pages → `session-gateway` → Metrics (וגם `hebrew-tts`).
+
 אימות `session-gateway`: `curl -s https://session-gateway.bohanyzahal.workers.dev/` מחזיר `bank` לא ריק; `…/v1/bank?grant=bogus` → 403; `…/bank/he.json` → 404 (הבנק אינו נגיש ישירות).
 
 אימות: `curl https://steep-night-dd06.bohanyzahal.workers.dev/` — אמור להחזיר `"links":"permanent"`.
