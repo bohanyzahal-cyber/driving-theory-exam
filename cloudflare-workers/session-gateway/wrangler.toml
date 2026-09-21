@@ -1,0 +1,13 @@
+name = "session-gateway"
+main = "worker.js"
+compatibility_date = "2024-09-23"
+
+# The Apps Script deployment the gateway reads the session snapshot from.
+# A new Apps Script deployment URL means editing this and re-deploying.
+[vars]
+API_URL = "https://script.google.com/macros/s/AKfycbzOI0zrDEngP-GvlRblhOk8tQsYBvWZ2gGliIQHTpS67WrDZl4la8NPpwtJr_Vjsh3Gzg/exec"
+
+# GATEWAY_KEY is a SECRET, never a var — it is the only thing that lets a caller
+# read a whole session's rows:
+#   npx wrangler secret put GATEWAY_KEY
+# The same value goes into the Apps Script ScriptProperty GATEWAY_KEY.

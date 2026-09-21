@@ -34,7 +34,7 @@
 - **`updateSession` מוגבל לבעלים** — רק הבוחן שפתח את הסשן יכול לעדכן. בוחן שני יקבל "אין הרשאה".
 - **הדשבורד מרנדר מחדש כל 5 שניות** מנתוני שרת. כל בחירה בממשק שטרם נשמרה בשרת נמחקת — חייבים מפת override לפי ת.ז. (קיים ל: הארכת זמן, שמע, תיקון טלפון). **זו הייתה תקלת השמע ב-28/07.**
 - **סגירת סשן חסומה** עד שיתוף דו"ח, אם יש תוצאות.
-- הדף מציג באנר עדכון עם שהות 60 שניות — **בטוח לדחוף בכל שעה**.
+- הדף מציג באנר עדכון עם כפתור "רענן עכשיו" — אין רענון אוטומטי. עדיין: **אין דחיפה ב-48 השעות שלפני בחינה** (`OPERATIONS.md` §10).
 
 ---
 
@@ -50,7 +50,7 @@
 
 ### פעולות ב-API
 
-`getSessionInfo` · `registerExaminee` · `cancelRegistration` · `checkApproval` (פולינג 5 שניות) · `getExamQuestions` · `registerExamQuestions` · `markExamStarted` · `markFinished` · `submitResult` (POST) · `submitWrongAnswers` · `disqualify` / `reportWarning` · `submitFailOnClose` / `cancelFailOnClose` · `getQuestionsByIds` (החלפת שפה תוך כדי)
+`getSessionInfo` (מחזיר גם `build` ו-`gateway.url`) · `registerExaminee` · `cancelRegistration` · `checkApproval` (פולינג 5 שניות **דרך ה-session-gateway**; נפילה לישיר רק כשה-Worker עצמו לא עונה) · `startExam` (POST — בחירת 30 מזהים + סדר תשובות + רישום ב"מבחנים", אידמפוטנטי) · `getExamStatus` (8 שניות דרך ה-gateway) · `markFinished` · `submitResult` (POST — התשובות עם הטקסטים שהוצגו) · `disqualify` / `cancelDisqualify` / `reportWarning` · `submitFailOnClose` / `cancelFailOnClose`. הטקסטים: `shared/bank.js` מ-`bank/<lang>.json`; החלפת שפה מקומית.
 
 ### שמור מקומי
 
@@ -69,7 +69,7 @@
 
 - **המבחן רץ מקומית לחלוטין.** רשת נדרשת רק בתחילה ובהגשה. אל "תשפר" את זה — זו עמידות מכוונת.
 - **אסור `confirm()`/`alert()`** בשום זרימה קריטית — ב-iOS זה מפעיל blur (פסילת שווא) ומדוכא תחת `beforeunload`. מודאל בתוך הדף בלבד.
-- **אסור לדחוף בשעות בחינות** — רענון עצמי תוך 2 דקות.
+- **אסור לדחוף ב-48 השעות שלפני בחינה ובבוקרה** (`OPERATIONS.md` §10).
 - תוצאה לעולם לא נמחקת מקומית לפני אישור שרת — כך "תוצאות שנעלמו" נמצאות.
 
 ---
@@ -131,23 +131,23 @@
 
 | מצב | איך נטענות השאלות |
 |---|---|
-| מבחן מלא | `getExamQuestions` עם `mode=exam` |
-| תרגול לפי נושא | `getExamQuestions` עם `mode=category`, עד 15 שאלות |
-| כרטיסיות | `getExamQuestions` דרך `_fetchServerQuestions` |
-| חזרה על שגיאות | `getQuestionsByIds` — מזהי השאלות השגויות מ-`localStorage`, עד 15 |
+| מבחן מלא | `startPractice` עם `mode=exam` — 30 מזהים + `ci` לכל 7 השפות; טקסטים מ-`shared/bank.js` |
+| תרגול לפי נושא | `startPractice` עם `mode=category`, עד 15 |
+| כרטיסיות | `startPractice` |
+| חזרה על שגיאות | `startPractice` עם `mode=ids` — מזהי השאלות השגויות מ-`localStorage` |
 
 ### פעולות ב-API
 
-`studentJoinClass` · `getExamQuestions` · `getQuestionsByIds` · `submitPracticeResult` (POST) · `loadStudentProgress` · `saveStudentProgress` (POST)
+`studentJoinClass` · `startPractice` · `submitPracticeResult` (POST) · `loadStudentProgress` · `saveStudentProgress` (POST)
 
 ### שמור מקומי
 
-`student_wrong_qs` — שאלות שנענו שגוי, הבסיס לחזרה המרווחת. מסונכרן גם לגיליון `התקדמות תלמידים` (streak, היסטוריה).
+`student_wrong_qs_<כיתה|שם>`, `student_streak_<…>`, `student_history_<…>` — ממופתחים לפי כיתה+שם מאז 22/09/2026 (לפני כן תלמיד ב' ירש את השגיאות של תלמיד א' באותו מכשיר). מסונכרן לגיליון `התקדמות תלמידים`.
 
 ### מלכודות
 
-- **התרגול חולק את אותו טוען שאלות, מטמון וחוטי ביצוע עם המבחנים.** גל תרגול משפיע על בחינות חיות — זה מה שהפך את שיא ה-13:00 לתקלה.
-- הדף מרענן את עצמו בשקט כמו דף הנבחן. **מגן הרענון שנוסף ל-`examinee.html` טרם הוחל כאן** — פריט פתוח.
+- התרגול חולק עם הבחינות רק את חריצי הביצוע של Apps Script (בקשה אחת לתרגול — `startPractice` — ואחת להגשה); הגיליונות שלו במסמך נפרד (r24), והטקסטים מהבנק הסטטי.
+- הדף מרענן את עצמו בשקט רק כשאין תרגול פעיל (`version.json`, לא ETag).
 - `buildFlashcardSet` (שורה ~1093) ו-`getFilteredQuestions` (שורה ~669) הם **קוד מת** — שריד מהתקופה שבה הסינון היה מקומי. הכרטיסיות עברו לשרת. אפשר למחוק.
 - **נפרד ממערכת הבחינות** — בטוח יחסית לפרוס אותו גם ביום בחינות, אך לא באמצע תרגול כיתתי.
 
@@ -158,7 +158,7 @@
 | דף | תפקיד | הערה |
 |---|---|---|
 | `admin.html` | ניהול בוחנים, מורים, אתרים | תפקיד `אדמין` |
-| `exam.html` | מבחן standalone ללא בוחן | מסלול ישן; מקבל `ci` ומנקד מקומית |
+| `exam.html` | מבחן standalone ללא בוחן | `startPractice` עם `standaloneIdNumber` + הבנק הסטטי; מנקד מקומית |
 | `report.html` | צפייה בדו"ח שהועלה | **מצביע על deployment אחר של Apps Script** — ראה `KNOWN_ISSUES.md` #13 |
 | `signs.html` | לומדת תמרורים | נשען על `signs_data.js` (~5MB) |
 | `examiner_training.html`, `examiner_cheat_sheet.html` | חומרי הדרכה לבוחן | סטטי |
@@ -169,7 +169,7 @@
 
 - **`API_URL`** — כתובת ה-`/exec`. קיימת בכל דף בנפרד. החלפת deployment דורשת עדכון **בכל הדפים** (וזכור ש-`report.html` שונה).
 - **`API_ORIGIN`** — מזהה מתוך ה-allowlist (`examiner-app`, `examinee-app`, `teacher-app`, `student-app`). חסר → השרת דוחה.
-- **תבנית IIFE** — `(function() { 'use strict'; ... })()`.
+- **תבנית IIFE** — `(function() { 'use strict'; ... })()`, אחרי טעינת `shared/transport.js` (`ExamTransport`: fetch עם deadline, מצב "שרת מדרדר", pacing, לולאות סקר עם מגן in-flight, failover, בדיקת גרסה, יומן לקוח) ו-`shared/bank.js` (`QuestionBank`).
 - **RTL עברית** עם מעבר לשפות אחרות בדפי הנבחן.
-- **עדכון עצמי** — בדיקת ETag כל 2 דקות. שקט בדפי נבחן/תלמיד, באנר בדפי בוחן/מורה.
+- **עדכון עצמי** — `version.json` (hash לכל דף, מיוצר בבנייה) כל 2 דקות; שינוי חייב להיראות בשני סקרים רצופים. נבחן/תלמיד: רענון שקט רק כשהדף פנוי. בוחן/מורה: **באנר וכפתור בלבד, בלי רענון אוטומטי** (מאז 22/09/2026).
 - **service worker** לכל אפליקציה, network-first, + קליפת PWA ב-iframe.

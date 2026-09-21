@@ -11,9 +11,9 @@
 | נכס | איפה | למה זה קריטי |
 |---|---|---|
 | **מפתח התשובות** `deployment/answer_key.gs` (~80KB) | **המחשב המקומי בלבד** | בלעדיו אי אפשר לנקד מבחן. מוחרג במכוון מהגיט — פעם הוא דלף פומבית |
-| **בנקי השאלות לכל שפה** `deployment/generated/*.json` (~81MB) | **המחשב המקומי + תיקיית Drive פרטית** | אלה הקבצים שהשרת באמת מגיש |
+| **בנקי השאלות לכל שפה** `deployment/generated/*.json` (~25MB) | **המחשב המקומי** (לא בגיט); מאז 22/09/2026 מיוצר מהם `bank/` (טקסטים, בגיט) + `deployment/question_index.json` (בגיט); Drive אינו בשימוש עוד |
 | **הגיליון** (14 לשוניות) | Google Sheets | כל הנתונים ההיסטוריים |
-| **תיקיית Drive** | חשבון Google | מקור השאלות בזמן ריצה |
+| ~~**תיקיית Drive**~~ | חשבון Google | היסטורי (עד 22/09/2026): מקור השאלות בזמן ריצה. אפשר למחוק אחרי שבוע יציב |
 | **Cloudflare KV** | חשבון Cloudflare | קישורי הדו"חות שכבר חולקו |
 
 ---
@@ -47,7 +47,7 @@
 | נתיב | גודל | סיבת ההחרגה | למסירה |
 |---|---|---|---|
 | `deployment/answer_key.gs` | 80KB | דלף פומבית בעבר | **חובה** — בערוץ מאובטח |
-| `deployment/generated/questions_*.json` | 81MB (7 שפות) | לא לחשוף את הבנק המלא | **חובה** — או דרך ה-Drive |
+| `deployment/generated/questions_*.json` | ~25MB (7 שפות) | המקור לבנייה; הטקסטים עצמם ציבוריים ב-`bank/` מאז 22/09/2026 (החלטה 1 ב-DESIGN_2026-09-21) — מה שנשאר סודי הוא `answer_key.gs` | להעביר יחד עם `answer_key.gs` |
 | `deployment/meeting-checklist.md` | 8KB | מסמך פנימי | לשיקולך |
 | `questions.js`, `questions_*.js` | | מקור לסקריפט היצירה | ניתן ליצור מחדש |
 | `node_modules/`, `*.bak`, `_zip_extracted/` | | תוצרי בנייה | לא צריך |
@@ -76,8 +76,8 @@
 |---|---|---|
 | הגיליון (14 לשוניות) | Google Sheets | העברת בעלות או הרשאת עורך |
 | פרויקט Apps Script | מקושר לגיליון | עובר עם הגיליון |
-| `QUESTIONS_DRIVE_FOLDER_ID` | ScriptProperties | **להעביר בנפרד — לא בקוד** |
-| תיקיית בנק השאלות | Google Drive | הרשאות + מזהה התיקייה |
+| `GATEWAY_KEY`, `GATEWAY_URL`, `PRACTICE_SPREADSHEET_ID`, `RESULT_UPLOAD_SECRET` | ScriptProperties | **להעביר בנפרד — לא בקוד** (`QUESTIONS_DRIVE_FOLDER_ID` אינו בשימוש מאז 22/09/2026) |
+| session-gateway | Cloudflare Workers | `wrangler` + הסוד `GATEWAY_KEY` |
 | קישורי דו"חות | Cloudflare KV | חשבון Cloudflare |
 | `UPLOAD_SECRET` | Cloudflare secret | להעביר בנפרד |
 | Worker ל-TTS ולפרוקסי תמונות | Cloudflare | אותו חשבון |
@@ -116,12 +116,12 @@
 
 **חשבונות ענן**
 - [ ] Google — הגיליון + Apps Script
-- [ ] Google Drive — תיקיית בנק השאלות + המזהה שלה
+- [ ] Cloudflare — session-gateway (סוד `GATEWAY_KEY`) בנוסף לדו"חות/TTS/פרוקסי
 - [ ] Cloudflare — Workers + KV + secrets
 - [ ] GitHub — `bohanyzahal-cyber`
 
 **סודות תצורה**
-- [ ] `QUESTIONS_DRIVE_FOLDER_ID`
+- [ ] `GATEWAY_KEY` + `GATEWAY_URL`
 - [ ] `UPLOAD_SECRET`
 - [ ] סיסמאות ניהול לגיליונות `בוחנים` ו`מורים`
 
