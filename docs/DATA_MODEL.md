@@ -153,7 +153,7 @@ waiting ──approve──> approved ──start──> in_exam ──submit─
 | מה | איפה | תוקף |
 |---|---|---|
 | בנק השאלות (טקסטים) | `assets/` של ה-Worker `session-gateway` (`q/<id>.json` לכל שאלה בכל השפות + `bank/<lang>.json` מלא), מיוצר מ-`deployment/generated/`; לא בגיט ולא ב-Pages | מוגש רק לפי אישור חתום (HMAC, `GATEWAY_KEY`): מבחן 4 שעות ל-30 מזהים, תרגול 2 שעות, בוחן 8 שעות; הלקוח מחזיק בזיכרון בלבד |
-| מפתח התשובות + אינדקס מזהים | `answer_key.gs` + `QUESTION_INDEX` בתוך קובץ השרת | אין Drive, אין מטמון, אין חימום |
+| מפתח התשובות + אינדקס מזהים | `answer_key.gs` + `QUESTION_INDEX_PACKED` (r31: מחרוזת דחוסה ~11 KB שנפתחת ב-`questionIndex()` פעם אחת להרצה) בתוך קובץ השרת | אין Drive, אין מטמון, אין חימום |
 | מפת המבחן של נבחן (`qmap_<session>_<id>`) | CacheService | 3 שעות; נפילה: סריקת `מבחנים` A–B + שורה אחת |
 | snapshot של `ממתינים` לסשן (`pendsnap_`) | CacheService | 4 שניות; כל כותב סטטוס מבטל דרך `setPendingStatus` |
 | הגבלות קצב, אימות טוקן בוחן (60 שנ'), הארכות (30 שנ') | CacheService | לפי חלון |

@@ -6,7 +6,7 @@
 // a page that really changed also invalidates its offline copy, and a push that
 // did not change it invalidates nothing. (D8: the old hand-bumped vNN drifted
 // eight deploys behind.)
-var CACHE_NAME = 'teacher-4b92e61d';
+var CACHE_NAME = 'teacher-64ca882e';
 
 // Install — cache the page shell plus the shared client modules. transport.js
 // and bank.js are separate files now, so an offline shell without them is a

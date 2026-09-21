@@ -142,7 +142,7 @@ Secrets שורדים פריסה. חיבור ה-KV נשמר כי הוא ב-`wrang
 1. ערוך את ה-JSON של השפה ב-`deployment/generated/`. **התשובה הנכונה חייבת להישאר באותו אינדקס** — אחרת `answer_key.gs` צריך להתעדכן באותו קומיט (`deployment/generate_answer_key.js`).
 2. `node tools/build.js && node tools/test.js` — `bank_invariants` מוודא שלכל שאלה בכל שפה יש מפתח בטווח, שאין תמונה חסרה, שהאינדקס תואם לבנק ושלכל מזהה יש קובץ `q/<id>.json`.
 3. `cd cloudflare-workers/session-gateway && npx wrangler deploy` — מעלה את ה-assets החדשים. הלקוח מקבל תמיד את הגרסה שב-Worker (אין מטמון בדפדפן ל-`/v1/bank`).
-4. אם השתנה `QUESTION_INDEX` (שאלה נוספה/הוסרה/החליפה דרגה) — גם הדבקת קובץ השרת + גרסה חדשה. אם השתנה המפתח — גם הדבקת `answer_key.gs`. שינוי טקסט בלבד = Worker בלבד.
+4. אם השתנה אינדקס השאלות (`deployment/question_index.json` → `QUESTION_INDEX_PACKED` בקובץ השרת; שאלה נוספה/הוסרה/החליפה דרגה) — גם הדבקת קובץ השרת + גרסה חדשה (שני הפרויקטים אחרי הפיצול — התרגול שולף מאותו אינדקס). אם השתנה המפתח — גם הדבקת `answer_key.gs`. שינוי טקסט בלבד = Worker בלבד.
 5. אימות: `curl -s https://session-gateway.bohanyzahal.workers.dev/` מציג `bank` = ה-build החדש (מ-`assets/manifest.json`); `health` מציג `indexIds`.
 
 ---
