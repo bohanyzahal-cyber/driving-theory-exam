@@ -14,7 +14,8 @@
 //         the server and nobody is typing the login form (21/09 message 20)
 //   S3  the "not verified" badge keys on the stored marker, not on "0/"
 //   plus: the dashboard loop never overlaps and honours the 2 s sync window,
-//         the examiner bank grant and the gateway nudge after every decision,
+//         the examiner bank grant and the gateway nudge after every decision
+//         (which carries the decision itself, so the examinee sees it in <=2 s),
 //         top-wrong rendering with and without a grant, and both SWs.
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -335,7 +336,8 @@ test('a successful decision nudges the gateway; a failed one does not', async ()
   setAnswer(() => ({ status: 'ok' }));
   await ctx.examinerDecision({ action: 'approveExaminee', idNumber: '1' });
   assert.equal(posts.length, 1);
-  assert.equal(posts[0].url, 'https://gateway.example/v1/invalidate?sessionCode=ABC12345');
+  assert.equal(posts[0].url, 'https://gateway.example/v1/invalidate?sessionCode=ABC12345&idNumber=1&status=approved',
+    'the nudge carries the decision, so the next poll (<=2 s) already has it');
   assert.equal(posts[0].opts.method, 'POST');
   assert.equal(posts[0].opts.keepalive, true, 'the re-render that follows must not cancel it');
   assert.equal(posts[0].opts.cache, 'no-store');
@@ -343,6 +345,104 @@ test('a successful decision nudges the gateway; a failed one does not', async ()
   setAnswer(() => ({ status: 'error', message: 'busy' }));
   await ctx.examinerDecision({ action: 'approveExaminee', idNumber: '1' });
   assert.equal(posts.length, 1, 'nothing changed, so there is nothing to invalidate');
+});
+
+// The nudge may carry the decision because Apps Script has ALREADY confirmed the
+// write by the time examinerDecision resolves; the gateway's own upstream read
+// overwrites the patch with the same values within 2 s, so the patch can never
+// be ahead of the truth - it only removes the wait.
+test('the status table covers every examinee decision and leaves closeSession alone', () => {
+  const { ctx } = grantContext(() => ({ status: 'ok' }));
+  assert.deepEqual({ ...ctx.DECISION_STATUS }, {
+    approveExaminee: 'approved',
+    rejectExaminee: 'rejected',
+    resetExaminee: 'cancelled',
+    confirmDQ: 'dq_confirmed',
+    overturnDQ: 'in_exam',
+    forceComplete: 'completed',
+    disqualify: 'disqualified',
+    addExamTime: 'current'
+  }, 'closeSession is absent on purpose - it is not about one examinee; a time grant keeps the row\'s CURRENT status');
+});
+
+test('the approval nudge carries the audio choice and the extended exam length', async () => {
+  const { ctx, posts, setAnswer } = grantContext(() => ({ status: 'ok', bank: GRANT }));
+  await ctx.fetchBankGrant(true);
+  setAnswer(() => ({ status: 'ok' }));
+
+  await ctx.examinerDecision({ action: 'approveExaminee', sessionCode: 'ABC12345', idNumber: '123456789', examinerId: '111', timeExtension: '1.25', audioMode: 'on' });
+  assert.equal(posts[0].url,
+    'https://gateway.example/v1/invalidate?sessionCode=ABC12345&idNumber=123456789&status=approved&examMinutes=50&audio=on',
+    '+25% is the 50 minutes the server itself computes as round(40 * 1.25)');
+
+  await ctx.examinerDecision({ action: 'approveExaminee', sessionCode: 'ABC12345', idNumber: '2', timeExtension: '1.5', audioMode: 'off' });
+  assert.equal(posts[1].url,
+    'https://gateway.example/v1/invalidate?sessionCode=ABC12345&idNumber=2&status=approved&examMinutes=60&audio=off',
+    '+50% -> 60 minutes, audio explicitly off');
+
+  await ctx.examinerDecision({ action: 'approveExaminee', sessionCode: 'ABC12345', idNumber: '3', audioMode: 'off' });
+  assert.equal(posts[2].url,
+    'https://gateway.example/v1/invalidate?sessionCode=ABC12345&idNumber=3&status=approved&audio=off',
+    'no extension chosen -> no examMinutes, the examinee keeps the default 40');
+});
+
+test('every other decision nudges with its own status, addExamTime with the running total', async () => {
+  const { ctx, posts, setAnswer } = grantContext(() => ({ status: 'ok', bank: GRANT }));
+  await ctx.fetchBankGrant(true);
+  setAnswer(() => ({ status: 'ok' }));
+  const query = url => url.slice(url.indexOf('?') + 1);
+
+  for (const [action, status] of [['rejectExaminee', 'rejected'], ['resetExaminee', 'cancelled'],
+                                  ['confirmDQ', 'dq_confirmed'], ['overturnDQ', 'in_exam'],
+                                  ['forceComplete', 'completed'], ['disqualify', 'disqualified']]) {
+    posts.length = 0;
+    await ctx.examinerDecision({ action: action, sessionCode: 'ABC12345', idNumber: '5', examinerId: '111' });
+    assert.equal(query(posts[0].url), 'sessionCode=ABC12345&idNumber=5&status=' + status, action);
+  }
+
+  posts.length = 0;
+  setAnswer(() => ({ status: 'ok', addedMinutes: 10, totalExtraMinutes: 25 }));
+  await ctx.examinerDecision({ action: 'addExamTime', sessionCode: 'ABC12345', idNumber: '5', minutes: 10, reason: 'printer jam' },
+                             undefined, { status: 'in_exam' });
+  assert.equal(query(posts[0].url), 'sessionCode=ABC12345&idNumber=5&status=in_exam&extraMinutes=25',
+    'the TOTAL the server just returned, not only the 10 minutes added now');
+
+  posts.length = 0;
+  setAnswer(() => ({ status: 'ok' }));
+  await ctx.examinerDecision({ action: 'addExamTime', sessionCode: 'ABC12345', idNumber: '5', minutes: 10 },
+                             undefined, { status: 'in_exam' });
+  assert.equal(query(posts[0].url), 'sessionCode=ABC12345&idNumber=5&status=in_exam&extraMinutes=10',
+    'an answer without a total falls back to what was just added');
+
+  // A grant to an examinee who has NOT started must never be patched as in_exam:
+  // the waiting screen treats "in_exam" as "your exam already started" and stops
+  // polling for good. Without a running row the nudge is the plain drop.
+  for (const hint of [{ status: 'waiting' }, { status: 'approved' }, undefined]) {
+    posts.length = 0;
+    setAnswer(() => ({ status: 'ok', addedMinutes: 10, totalExtraMinutes: 10 }));
+    await ctx.examinerDecision({ action: 'addExamTime', sessionCode: 'ABC12345', idNumber: '5', minutes: 10 }, undefined, hint);
+    assert.equal(query(posts[0].url), 'sessionCode=ABC12345', 'no status patch for ' + JSON.stringify(hint));
+  }
+});
+
+test('closeSession is about the session, so its nudge names no examinee', async () => {
+  const { ctx, posts, setAnswer } = grantContext(() => ({ status: 'ok', bank: GRANT }));
+  await ctx.fetchBankGrant(true);
+  setAnswer(() => ({ status: 'ok' }));
+  await ctx.examinerDecision({ action: 'closeSession', sessionCode: 'ABC12345', examinerId: '111' });
+  assert.equal(posts[0].url, 'https://gateway.example/v1/invalidate?sessionCode=ABC12345',
+    'the plain drop it always was - no idNumber, no status');
+});
+
+test('a nudge whose fetch throws on the spot still resolves the decision', async () => {
+  const { ctx, setAnswer } = grantContext(() => ({ status: 'ok', bank: GRANT }));
+  await ctx.fetchBankGrant(true);
+  setAnswer(() => ({ status: 'ok', addedMinutes: 5, totalExtraMinutes: 5 }));
+  ctx.fetch = () => { throw new Error('blocked before it left the page'); };
+  const result = await ctx.examinerDecision({ action: 'addExamTime', sessionCode: 'ABC12345', idNumber: '7', minutes: 5 })
+    .then(d => d, e => 'rejected: ' + e.message);
+  assert.equal(result.status, 'ok', 'a gateway that cannot be reached is never a failed decision');
+  assert.equal(result.totalExtraMinutes, 5, 'the caller still gets the whole server answer');
 });
 
 test('a trailing slash on the gateway url does not become a double slash', async () => {

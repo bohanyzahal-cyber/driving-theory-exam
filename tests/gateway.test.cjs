@@ -61,8 +61,32 @@ function grant(payload, key) {
 const examGrant = (ids, over) => grant(Object.assign({ s: 'exam', ids, sub: SESSION + ':012345678' }, over));
 const examinerGrant = over => grant(Object.assign({ s: 'examiner', sub: 'ex:7' }, over));
 
-/** Fake upstream + fake clock; `state.calls` is the Apps Script execution count. */
-function harness(snapshots, assets) {
+/**
+ * `caches.default` in memory: max-age is honoured against the same fake clock
+ * the gateway reads, so an expiring `snap` copy behaves as it does at the edge.
+ */
+function cacheDouble(now) {
+  const store = new Map();
+  return { store, caches: { default: {
+    async match(request) {
+      const hit = store.get(request.url);
+      if (!hit || now() - hit.at > hit.maxAge * 1000) return undefined;
+      return new Response(hit.body, { status: 200 });
+    },
+    async put(request, response) {
+      const maxAge = Number(/max-age=(\d+)/.exec(response.headers.get('Cache-Control') || '')[1]);
+      store.set(request.url, { body: await response.text(), maxAge, at: now() });
+    },
+    async delete(request) { return store.delete(request.url); }
+  } } };
+}
+
+/**
+ * Fake upstream + fake clock; `state.calls` is the Apps Script execution count.
+ * `withCache` adds a shared caches.default and `spawn()`, which is a COLD
+ * isolate: new memory, same cache, same clock, same upstream counter.
+ */
+function harness(snapshots, assets, withCache) {
   const state = { calls: [], clock: CLOCK0, mode: 'ok', snapshots: snapshots || {} };
   const fetchFn = async url => {
     state.calls.push(String(url));
@@ -74,8 +98,12 @@ function harness(snapshots, assets) {
     return new Response(JSON.stringify({ status: 'ok', at: state.clock, rows }), { status: 200 });
   };
   const env = assets ? Object.assign({}, ENV, { ASSETS: assets.fetch ? assets : assetsBinding(assets) }) : ENV;
-  const gateway = createGateway({ fetch: fetchFn, caches: undefined, now: () => state.clock, env });
-  return { state, gateway };
+  const double = withCache ? cacheDouble(() => state.clock) : null;
+  state.store = double ? double.store : null;
+  const spawn = () => createGateway({
+    fetch: fetchFn, caches: double ? double.caches : undefined, now: () => state.clock, env
+  });
+  return { state, gateway: spawn(), spawn };
 }
 
 /** Any route: the raw text matters for the bank, which never re-serialises. */
@@ -271,39 +299,21 @@ test('a snapshot older than 60s is not served at all', async () => {
 test('a second isolate is served from caches.default without a new read', async () => {
   // The in-memory map dies with the isolate; caches.default is what keeps the
   // coalescing working across the isolates of one Cloudflare location.
-  const store = new Map();
-  const fakeCaches = { default: {
-    async match(request) {
-      const hit = store.get(request.url);
-      if (!hit || clock.now - hit.at > hit.maxAge * 1000) return undefined;
-      return new Response(hit.body, { status: 200 });
-    },
-    async put(request, response) {
-      const maxAge = Number(/max-age=(\d+)/.exec(response.headers.get('Cache-Control') || '')[1]);
-      store.set(request.url, { body: await response.text(), maxAge, at: clock.now });
-    }
-  } };
-  const clock = { now: 1000000 };
-  const calls = [];
-  const fetchFn = async url => {
-    calls.push(String(url));
-    return new Response(JSON.stringify({ status: 'ok', at: clock.now, rows: [row({ status: 'approved' })] }));
-  };
-  const spawn = () => createGateway({ fetch: fetchFn, caches: fakeCaches, now: () => clock.now, env: ENV });
+  const { state, spawn } = harness({ [SESSION]: [row({ status: 'approved' })] }, null, true);
 
   const first = await poll(spawn(), approvalPoll('900000001'));
   assert.equal(first.body.approval, 'approved');
-  assert.equal(calls.length, 1);
-  assert.equal(store.size, 2, 'a fresh copy and a stale copy');
+  assert.equal(state.calls.length, 1);
+  assert.equal(state.store.size, 2, 'a fresh copy and a stale copy');
 
   const second = await poll(spawn(), approvalPoll('900000001'));
-  assert.equal(calls.length, 1, 'the cold isolate reused the cached snapshot');
+  assert.equal(state.calls.length, 1, 'the cold isolate reused the cached snapshot');
   assert.equal(second.body.approval, 'approved');
 
-  clock.now += 4000; // fresh copy expired, stale copy still there
+  state.clock += 4000; // fresh copy expired, stale copy still there
   const third = spawn();
   await poll(third, approvalPoll('900000001'));
-  assert.equal(calls.length, 2);
+  assert.equal(state.calls.length, 2);
 });
 
 test('CORS: the Pages origin and localhost are echoed, anything else is not', async () => {
@@ -528,4 +538,162 @@ test('/v1/invalidate drops the snapshot, at most once per 2 s', async () => {
   const junk = await call(gateway, '/v1/invalidate?sessionCode=nope', { method: 'POST' });
   assert.equal(junk.res.status, 400);
   assert.equal(state.calls.length, 3);
+});
+
+// --- the nudge that CARRIES the decision -----------------------------------
+// A drop still costs the examinee one Apps Script read before they see the
+// approval. A patch costs none: the examiner already has the answer Apps Script
+// confirmed, so it is written straight into the snapshot.
+
+/** The examiner's fire-and-forget POST, optionally carrying the decision. */
+const nudge = (gateway, query) =>
+  call(gateway, '/v1/invalidate?sessionCode=' + SESSION + (query || ''), { method: 'POST' });
+
+test('a patched approval is answered on the next poll with no upstream read', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
+
+  const before = await poll(gateway, approvalPoll('900000001'));
+  assert.equal(before.body.approval, 'waiting');
+  assert.equal(state.calls.length, 1);
+
+  // The examiner approved. Apps Script has already written the row — the nudge
+  // carries what it wrote. The fake upstream is deliberately NOT updated here:
+  // what is proven is that the examinee sees the decision without reading it.
+  const patched = await nudge(gateway, '&idNumber=900000001&status=approved&examMinutes=50&audio=on');
+  assert.equal(patched.res.status, 200);
+  assert.deepEqual(patched.body, { status: 'ok', patched: true });
+
+  state.clock += 1000; // the examinee's very next poll, ~1 s after the click
+  const after = await poll(gateway, approvalPoll('900000001'));
+  assert.deepEqual(after.body, { status: 'ok', approval: 'approved', audioMode: 'on', examMinutes: 50 });
+  assert.equal(state.calls.length, 1, 'the decision reached the device for zero executions');
+
+  // And the patch is short lived: past FRESH_MS the server is the truth again.
+  state.snapshots[SESSION] = [row({ status: 'in_exam', examMinutes: 40 })];
+  state.clock += 1500;
+  const truth = await poll(gateway, approvalPoll('900000001'));
+  assert.equal(state.calls.length, 2, 'one read, exactly like an unpatched snapshot');
+  assert.equal(truth.body.approval, 'in_exam');
+});
+
+test('a patched disqualification shows at once in the status kind, with extraMinutes', async () => {
+  const { state, gateway } = harness({ [SESSION]: [
+    row({ id: '900000001', status: 'in_exam' }),
+    row({ id: '900000002', status: 'completed' })
+  ] });
+  await poll(gateway, statusPoll('900000001'));
+  assert.equal(state.calls.length, 1);
+
+  assert.deepEqual((await nudge(gateway,
+    '&idNumber=900000001&status=disqualified&extraMinutes=15')).body, { status: 'ok', patched: true });
+
+  const dq = await poll(gateway, statusPoll('900000001'));
+  assert.deepEqual(dq.body, { status: 'ok', examStatus: 'disqualified', extraMinutes: 15 });
+
+  const neighbour = await poll(gateway, statusPoll('900000002'));
+  assert.deepEqual(neighbour.body, { status: 'ok', examStatus: 'completed', extraMinutes: 0 },
+    'only the named row changes');
+  assert.equal(state.calls.length, 1);
+});
+
+test('invalidate refuses an unknown status, and a nudge with no id just drops', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
+  await poll(gateway, approvalPoll('900000001'));
+  assert.equal(state.calls.length, 1);
+
+  for (const bad of ['&idNumber=900000001&status=approve',
+                     '&idNumber=900000001&status=ended',
+                     '&idNumber=900000001&status=in exam',
+                     '&idNumber=abcdefghi&status=approved']) {
+    const { res, body } = await nudge(gateway, bad);
+    assert.equal(res.status, 400, bad);
+    assert.equal(body.status, 'error');
+  }
+  const stillThere = await poll(gateway, approvalPoll('900000001'));
+  assert.equal(state.calls.length, 1, 'a refused nudge changed nothing and dropped nothing');
+  assert.equal(stillThere.body.approval, 'waiting');
+
+  // A status with no id names no row, so it degrades to today's plain drop.
+  const dropped = await nudge(gateway, '&status=approved');
+  assert.deepEqual(dropped.body, { status: 'ok', patched: false });
+
+  state.snapshots[SESSION] = [row({ status: 'approved' })];
+  const after = await poll(gateway, approvalPoll('900000001'));
+  assert.equal(state.calls.length, 2, 'the snapshot was gone, so the poll read the truth');
+  assert.equal(after.body.approval, 'approved');
+});
+
+test('a patch for an id the snapshot never had falls back to dropping it', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ id: '900000001', status: 'waiting' })] });
+  await poll(gateway, approvalPoll('900000001'));
+  assert.equal(state.calls.length, 1);
+
+  // This examinee registered after the snapshot was taken: there is no row to
+  // write into, and the nudge must not invent one.
+  state.snapshots[SESSION] = [
+    row({ id: '900000001', status: 'waiting' }),
+    row({ id: '900000002', status: 'approved', examMinutes: 40 })
+  ];
+  assert.deepEqual((await nudge(gateway, '&idNumber=900000002&status=approved')).body,
+    { status: 'ok', patched: false });
+
+  const known = await poll(gateway, approvalPoll('900000001'));
+  assert.equal(state.calls.length, 2, 'the snapshot was dropped — even a row it held is re-read');
+  assert.equal(known.body.approval, 'waiting');
+
+  const late = await poll(gateway, approvalPoll('900000002'));
+  assert.equal(late.body.approval, 'approved', 'and the row the server has is there');
+});
+
+test('a patch does not spend the forced re-read budget', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
+  await poll(gateway, approvalPoll('900000001'));
+  assert.equal(state.calls.length, 1);
+
+  assert.equal((await nudge(gateway, '&idNumber=900000001&status=approved')).body.patched, true);
+
+  // A write is not an upstream read, so the plain invalidate right behind it
+  // still gets its drop — the examiner fires several of these in a row.
+  const plain = await nudge(gateway);
+  assert.deepEqual(plain.body, { status: 'ok' }, 'a plain nudge keeps its old body exactly');
+
+  state.snapshots[SESSION] = [row({ status: 'in_exam' })];
+  const after = await poll(gateway, approvalPoll('900000001'));
+  assert.equal(state.calls.length, 2, 'the drop worked: the patch never touched the gate');
+  assert.equal(after.body.approval, 'in_exam');
+});
+
+test('a cold isolate serves the patched snapshot from caches.default', async () => {
+  const { state, spawn } = harness({ [SESSION]: [row({ status: 'waiting' })] }, null, true);
+
+  await poll(spawn(), approvalPoll('900000001'));
+  assert.equal(state.calls.length, 1);
+
+  // A different isolate takes the nudge: it has no memory of the session and
+  // must patch the cached copy.
+  const patched = await nudge(spawn(), '&idNumber=900000001&status=approved&examMinutes=50&audio=on');
+  assert.deepEqual(patched.body, { status: 'ok', patched: true });
+
+  state.clock += 1000;
+  const after = await poll(spawn(), approvalPoll('900000001'));
+  assert.deepEqual(after.body, { status: 'ok', approval: 'approved', audioMode: 'on', examMinutes: 50 });
+  assert.equal(state.calls.length, 1, 'a third isolate needed no upstream read either');
+
+  state.snapshots[SESSION] = [row({ status: 'in_exam' })];
+  state.clock += 1500; // the patched copy has expired like any other
+  await poll(spawn(), approvalPoll('900000001'));
+  assert.equal(state.calls.length, 2);
+});
+
+test('with only the stale copy left, a nudge still patches it', async () => {
+  const { state, spawn } = harness({ [SESSION]: [row({ status: 'waiting' })] }, null, true);
+  await poll(spawn(), approvalPoll('900000001'));
+
+  state.clock += 3000;  // the `snap` copy is gone; `stale` lives 60 s
+  const patched = await nudge(spawn(), '&idNumber=900000001&status=approved&examMinutes=50');
+  assert.deepEqual(patched.body, { status: 'ok', patched: true });
+
+  const after = await poll(spawn(), approvalPoll('900000001'));
+  assert.deepEqual(after.body, { status: 'ok', approval: 'approved', audioMode: 'off', examMinutes: 50 });
+  assert.equal(state.calls.length, 1, 'still no upstream read — and no stale:true, the copy is fresh again');
 });

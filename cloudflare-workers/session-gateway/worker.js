@@ -32,7 +32,9 @@
  *   GET  /v1/poll?kind=approval|status&sessionCode&idNumber&examineeToken
  *   GET  /v1/bank?grant=…[&ids=1,2&langs=he,en]   — texts for the granted ids
  *   GET  /v1/bank/full?grant=…&lang=he            — a whole language (examiner)
- *   POST /v1/invalidate?sessionCode=X             — drop the session snapshot
+ *   POST /v1/invalidate?sessionCode=X[&idNumber&status&…]
+ *                         — drop the session snapshot, or patch the decision
+ *                           straight into it (see `invalidate`)
  *   OPTIONS *             — CORS preflight
  *
  * Failure policy: a snapshot up to 60 s old is served with `stale:true` rather
@@ -69,6 +71,19 @@ const BANK_UNAVAILABLE = { status: 'error', code: 'bank_unavailable', retryable:
 // long comment there about the shared-ID incident that put 'rejected' on it.
 const TERMINAL_APPROVALS = { completed: 1, disqualified: 1, cancelled: 1, rejected: 1 };
 
+// The statuses a /v1/invalidate nudge may write into a snapshot — the complete
+// set ממתינים ever holds. Anything else is a bug or a probe, and the examinee
+// would be answered it as gospel until the next upstream read.
+const PATCH_STATUSES = {
+  waiting: 1, approved: 1, rejected: 1, cancelled: 1,
+  in_exam: 1, completed: 1, disqualified: 1, dq_confirmed: 1
+};
+// A bound on the minutes a nudge may carry. The real values are 20-120 (the
+// server itself caps one time grant at 180); the point is only that an
+// unauthenticated caller cannot put an absurd timer in front of an examinee,
+// not even for the two seconds until the truth is read.
+const MAX_PATCH_MINUTES = 600;
+
 // --- small helpers ---------------------------------------------------------
 
 /** Same as the server's normalizeId: digits only, left-padded to 9. */
@@ -102,6 +117,18 @@ function toIds(list) {
     if (Number.isInteger(n) && n > 0 && n < 1e7) out.push(n);
   }
   return out;
+}
+
+/** '' for an absent parameter, so "was it given?" is one truthiness test. */
+function param(url, name) {
+  return String(url.searchParams.get(name) || '').trim();
+}
+
+/** A whole number in [min, MAX_PATCH_MINUTES], or null — a bad value is dropped. */
+function patchMinutes(raw, min) {
+  if (!raw) return null;
+  const n = Number(raw);
+  return (Number.isInteger(n) && n >= min && n <= MAX_PATCH_MINUTES) ? n : null;
 }
 
 function corsHeaders(request) {
@@ -309,6 +336,37 @@ export function createGateway({ fetch, caches, now, env }) {
     return true;
   }
 
+  /**
+   * Writes a decision into the session's newest row for one id and stores the
+   * result as a FRESH snapshot, so the next poll answers it with no upstream
+   * call at all. `false` = there was nothing to patch (no snapshot for the
+   * session, or this id has no row in it) and the caller drops instead.
+   *
+   * The whole snapshot is re-stamped fresh, not just the row: for the next
+   * FRESH_MS the other rows are served as they were read, which is at most the
+   * age they already had. The copy dies on the normal clock, so the poll after
+   * it reads the truth upstream either way.
+   */
+  async function patchSnapshot(session, idNumber, fields) {
+    const current = memoryRead(session, STALE_MS)
+      || await cacheRead('snap', session)
+      || await cacheRead('stale', session);
+    if (!current || !Array.isArray(current.rows)) return false;
+    // Sheet order, oldest first — the last match is the live attempt, exactly
+    // the row approvalAnswer/statusAnswer would have answered from.
+    let index = -1;
+    for (let i = current.rows.length - 1; i >= 0; i--) {
+      if (normalizeId(current.rows[i].id) === idNumber) { index = i; break; }
+    }
+    if (index < 0) return false;
+    const rows = current.rows.slice();
+    rows[index] = Object.assign({}, rows[index], fields);  // only the named row
+    const snapshot = { at: current.at, rows: rows };       // `at` stays the read time
+    memory.set(session, { at: clock(), snapshot: snapshot });
+    await cacheWrite(session, snapshot);
+    return true;
+  }
+
   /** The next poll of this session reads upstream instead of a stale snapshot. */
   async function dropSnapshot(session) {
     memory.delete(session);
@@ -494,13 +552,64 @@ export function createGateway({ fetch, caches, now, env }) {
     return out;
   }
 
+  /**
+   * The examiner's nudge after a decision. Two shapes:
+   *
+   *   ?sessionCode=X                    drop the snapshot, so the examinee's
+   *                                     next poll reads the server at once
+   *                                     instead of waiting out FRESH_MS.
+   *   …&idNumber=Y&status=S[&extraMinutes&examMinutes&audio]
+   *                                     PATCH: write the decision into the
+   *                                     cached snapshot, so the next poll —
+   *                                     about a second after the click —
+   *                                     answers it with ZERO upstream calls.
+   *
+   * WHY a patch is not a lie: examiner.html fires the nudge only AFTER Apps
+   * Script answered `status:'ok'`, i.e. after the row was written, so the patch
+   * can never be ahead of the truth by more than that one confirmed write. And
+   * it is short lived — the patched copy expires on the normal FRESH_MS clock
+   * and the poll behind it reads the row from the server, which overwrites it
+   * either way. This is what turns the 2-4 s of DESIGN §11.8 into ≈1 s for an
+   * approval without a push channel; the floor that remains is Google's own
+   * ~1 s sheet write.
+   *
+   * Always HTTP 200 `{status:'ok'}` for a well-formed nudge: the examiner fires
+   * it and forgets it. `patched` tells a caller that ASKED for a patch whether
+   * it landed; a plain invalidate keeps its old body exactly.
+   */
   async function invalidate(request, url) {
-    const session = String(url.searchParams.get('sessionCode') || '').trim();
+    const session = param(url, 'sessionCode');
     if (!SESSION_RE.test(session)) return badRequest(request, 'קוד סשן לא תקין');
-    // Always 'ok': the examiner fires this and forgets it. Whether it actually
-    // dropped anything is the throttle's business, not the caller's.
+
+    const rawId = param(url, 'idNumber');
+    const status = param(url, 'status');
+    if (status && !PATCH_STATUSES[status]) return badRequest(request, 'סטטוס לא תקין');
+    if (rawId && !rawId.replace(/[^0-9]/g, '')) return badRequest(request, 'מזהה לא תקין');
+
+    if (rawId && status) {
+      // Only what came through validation is written — a nudge that carries a
+      // broken `audio` still delivers its status rather than failing whole.
+      const fields = { status: status };
+      const extra = patchMinutes(param(url, 'extraMinutes'), 0);
+      const exam = patchMinutes(param(url, 'examMinutes'), 1);
+      const audio = param(url, 'audio');
+      if (extra !== null) fields.extraMinutes = extra;
+      if (exam !== null) fields.examMinutes = exam;
+      if (audio === 'on' || audio === 'off') fields.audio = audio;
+      // A patch is a WRITE. It must not spend mayForceReread's budget, which
+      // pays for upstream READS — this nudge is the one case that saves one.
+      if (await patchSnapshot(session, normalizeId(rawId), fields)) {
+        return jsonResponse(request, { status: 'ok', patched: true });
+      }
+    }
+
+    // No patch was asked for, or there was no row to write into (the examinee
+    // registered after the snapshot was taken). Drop it: the next poll re-reads
+    // upstream and finds the row itself. Whether the drop actually happened is
+    // the throttle's business, not the caller's.
     if (mayForceReread(session)) await dropSnapshot(session);
-    return jsonResponse(request, { status: 'ok' });
+    return jsonResponse(request,
+      (rawId || status) ? { status: 'ok', patched: false } : { status: 'ok' });
   }
 
   async function poll(request, url) {

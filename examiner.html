@@ -1292,11 +1292,69 @@
   // served from the copy taken BEFORE this decision. keepalive, because the list
   // re-render that follows must not be able to cancel it; failures are ignored -
   // the snapshot expires by itself a moment later.
-  function nudgeGateway() {
+  //
+  // WHY the nudge may carry the DECISION itself (idNumber + status + a detail or
+  // two) and not just "drop your copy": we only get here AFTER Apps Script
+  // answered status:'ok', i.e. the write is already committed upstream, so the
+  // decision IS the truth. The gateway patches that one row, and its own next
+  // upstream read (<=2 s) overwrites the patch with the very same values. The
+  // patch can therefore never be ahead of the truth for longer than one refresh
+  // - all it removes is the wait. With no decision (closeSession, or an action
+  // that is not in the table below) it stays the plain drop it always was.
+  var DECISION_STATUS = {
+    approveExaminee: 'approved',
+    rejectExaminee:  'rejected',
+    resetExaminee:   'cancelled',
+    confirmDQ:       'dq_confirmed',
+    overturnDQ:      'in_exam',
+    forceComplete:   'completed',
+    disqualify:      'disqualified',
+    // 'current' = whatever status the row has NOW, as this page knows it: a time
+    // grant changes nothing but the minutes. Hard-coding in_exam here would, for a
+    // grant to a still-WAITING examinee, show that examinee "your exam already
+    // started" for two seconds - and that screen stops polling and never recovers.
+    addExamTime:     'current'
+    // closeSession is deliberately absent: it is about the session, not about
+    // one examinee, so it can only ever be a plain drop.
+  };
+  // The extras mirror exactly what the examinee's own checkApproval answer
+  // carries, so a patched row and a freshly read one are indistinguishable:
+  // examMinutes = the server's Math.round(40 * timeExtension) (1.25 -> 50,
+  // 1.5 -> 60), audio = the per-examinee choice that ships with the approval
+  // (the waiting-list row's audio column), extraMinutes = the running total
+  // addExamTime just returned. Anything this page does not know is left out.
+  function decisionNudgeDetail(params, data, hint) {
+    var action = params && params.action;
+    var status = DECISION_STATUS[action];
+    if (typeof status !== 'string' || !params.idNumber) return null;   // prototype keys are not actions
+    // Only a running exam is patched with a time grant; anything else (waiting,
+    // unknown) is a plain drop and the truth arrives with the next read.
+    if (status === 'current') status = (hint && hint.status === 'in_exam') ? 'in_exam' : null;
+    if (!status) return null;
+    var detail = { idNumber: params.idNumber, status: status };
+    if (action === 'approveExaminee') {
+      if (params.audioMode === 'on' || params.audioMode === 'off') detail.audio = params.audioMode;
+      var ext = Number(params.timeExtension);              // '1.25' / '1.5'; absent = no extension
+      if (ext > 0) detail.examMinutes = Math.round(40 * ext);
+    } else if (action === 'addExamTime') {
+      var total = Number(data && data.totalExtraMinutes);
+      if (!(total > 0)) total = Number(params.minutes);    // fall back to what we just added
+      if (total > 0) detail.extraMinutes = total;
+    }
+    return detail;
+  }
+  function nudgeGateway(detail) {
     if (!examinerBank || !examinerBank.url || !sessionCode) return;
-    var url = String(examinerBank.url).replace(/\/+$/, '') +
-              '/v1/invalidate?sessionCode=' + encodeURIComponent(sessionCode);
     try {
+      var url = String(examinerBank.url).replace(/\/+$/, '') +
+                '/v1/invalidate?sessionCode=' + encodeURIComponent(sessionCode);
+      if (detail && detail.idNumber && detail.status) {
+        url += '&idNumber=' + encodeURIComponent(detail.idNumber) +
+               '&status=' + encodeURIComponent(detail.status);
+        if (detail.extraMinutes > 0) url += '&extraMinutes=' + encodeURIComponent(detail.extraMinutes);
+        if (detail.examMinutes > 0) url += '&examMinutes=' + encodeURIComponent(detail.examMinutes);
+        if (detail.audio) url += '&audio=' + encodeURIComponent(detail.audio);
+      }
       fetch(url, { method: 'POST', mode: 'cors', keepalive: true, cache: 'no-store' })
         .catch(function() {});
     } catch (e) {}
@@ -1307,14 +1365,17 @@
   // close the session. Two things happen around the plain apiGet:
   //   1. it is counted while in flight, so the self-reload below can never fire
   //      on top of a decision the server has not answered yet;
-  //   2. a SUCCESSFUL decision nudges the gateway, so the examinee sees it on
-  //      the next poll instead of waiting out a stale snapshot.
+  //   2. a SUCCESSFUL decision nudges the gateway WITH the decision itself, so
+  //      the examinee's next poll (<=2 s) already carries it instead of waiting
+  //      out a stale snapshot.
   var decisionsInFlight = 0;
-  function examinerDecision(params, timeoutMs) {
+  // hint (optional): { status } - the row's current status as this page knows it,
+  // needed only by the decisions that do not change the status (addExamTime).
+  function examinerDecision(params, timeoutMs, hint) {
     decisionsInFlight++;
     return apiGet(params, timeoutMs).then(function(data) {
       decisionsInFlight--;
-      if (data && data.status === 'ok') nudgeGateway();
+      if (data && data.status === 'ok') nudgeGateway(decisionNudgeDetail(params, data, hint));
       return data;
     }, function(err) {
       decisionsInFlight--;
@@ -2304,7 +2365,8 @@
       }
       var confirmBtn = this;
       confirmBtn.disabled = true; confirmBtn.textContent = 'מוסיף…';
-      examinerDecision({ action: 'addExamTime', sessionCode: sessionCode, idNumber: item.idNumber, minutes: minutes, reason: reason }).then(function(data) {
+      examinerDecision({ action: 'addExamTime', sessionCode: sessionCode, idNumber: item.idNumber, minutes: minutes, reason: reason },
+                       undefined, { status: item.status }).then(function(data) {
         if (data && data.status === 'ok') {
           close();
           showToast('נוספו ' + data.addedMinutes + ' דקות ל' + item.name + '.\nסך תוספת הזמן: ' + data.totalExtraMinutes + ' דקות.');
