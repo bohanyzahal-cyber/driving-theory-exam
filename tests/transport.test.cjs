@@ -295,7 +295,12 @@ test('long poll: a held answer schedules the next tick after the gap, not after 
   loop.stop();
 });
 
-test('long poll: an answer the server did NOT hold keeps today\'s cadence', async () => {
+test('long poll: an answer from a Worker that cannot hold keeps today\'s cadence', async () => {
+  // r31 (§13.4) narrowed this case to what it was always about: an UN-UPGRADED
+  // Worker. It does not know wait/fp, so it returns no fingerprint — there is
+  // nothing for the next request to be held against, and pacing it at 250 ms
+  // would be a 12x request storm for no gain. An answer that DOES carry a
+  // fingerprint re-arms in 250 ms even when held is 0 (the next two tests).
   const starts = [];
   let clock = null;
   const { timer, loop } = loopWith(() => { starts.push(clock.now); return Promise.resolve({ status: 'ok', held: 0 }); });
@@ -307,6 +312,83 @@ test('long poll: an answer the server did NOT hold keeps today\'s cadence', asyn
   assert.equal(starts.length, 2);
   assert.deepEqual(starts, [0, 5000]);
   loop.stop();
+});
+
+// ===== 4b'. re-arm: "why not 0" (r31, DESIGN §13.4) =====
+// The first answer of every chain, and every answer that CHANGED, comes back
+// unheld — and used to be followed by a 2-6 s wait before the next request,
+// which is the request the Worker would have held. So the hold began seconds
+// after the moment it could have. An ok answer carrying a fingerprint is now
+// followed by the gap instead: the hold starts 250 ms later, and the examiner's
+// decision is never more than a gap away from the screen.
+test('re-arm: an ok answer that carries a fingerprint schedules the next tick after the gap', async () => {
+  const starts = [];
+  let clock = null;
+  const { T, timer, loop } = loopWith(() => { starts.push(clock.now); return Promise.resolve({ status: 'ok', held: 0, fp: 'a:waiting:off:-' }); });
+  clock = timer;
+  loop.start(); await drain();
+  await timer.advance(T.LONGPOLL_GAP_MS - 1);
+  assert.equal(starts.length, 1, 'the gap has not elapsed yet');
+  await timer.advance(1);
+  assert.deepEqual(starts, [0, 250], 'held 0 but holdable: the next request IS the hold, so it goes out now');
+  assert.equal(loop.currentDelayMs(), 5000, 'and the ladder underneath is untouched — this is not a faster cadence');
+  loop.stop();
+});
+
+test('re-arm: a STALE answer keeps the fallback cadence — the Worker never holds a stale copy', async () => {
+  // Re-arming against a stale answer would hammer the Worker at 250 ms for as
+  // long as Google is unreachable behind it, which is the one moment it must not
+  // be hammered.
+  const starts = [];
+  let clock = null;
+  const { timer, loop } = loopWith(() => { starts.push(clock.now); return Promise.resolve({ status: 'ok', held: 0, fp: 's:in_exam:0', stale: true }); });
+  clock = timer;
+  loop.start(); await drain();
+  await timer.advance(4999);
+  assert.equal(starts.length, 1, 'still waiting out baseMs, not 250 ms');
+  await timer.advance(1);
+  assert.deepEqual(starts, [0, 5000]);
+  loop.stop();
+});
+
+test('re-arm: a fingerprint on a FAILED answer buys nothing — it backs off like any failure', async () => {
+  const starts = [];
+  let clock = null;
+  const { timer, loop } = loopWith(() => { starts.push(clock.now); return Promise.resolve({ status: 'error', code: 'upstream_unavailable', held: 0, fp: 'x:up' }); });
+  clock = timer;
+  loop.start(); await drain();
+  assert.equal(loop.currentDelayMs(), 7500, 'a JSON error is a failed poll, fingerprint or not');
+  await timer.advance(7499);
+  assert.equal(starts.length, 1, 'it waits the backed-off delay, never the 250 ms gap');
+  await timer.advance(1);
+  assert.deepEqual(starts, [0, 7500]);
+  loop.stop();
+});
+
+test('re-arm: info.rearm is reported to the page, for held and for holdable answers alike', async () => {
+  const seen = [];
+  const answers = [
+    { status: 'ok', held: 0, fp: 'a:waiting:off:-' },     // holdable: the first answer of a chain
+    { status: 'ok', held: 24000, fp: 'a:waiting:off:-' }, // held by the Worker for 24 s
+    { status: 'ok', held: 0, fp: '' },                    // an old Worker: no fingerprint
+    { status: 'ok', held: 0 },                            // ...not even the field
+    { status: 'ok', held: 0, fp: 's:in_exam:0', stale: true },
+    { status: 'error', code: 'upstream_unavailable', fp: 'x:up' }
+  ];
+  let i = 0;
+  const { timer, loop } = loopWith(() => Promise.resolve(answers[Math.min(i++, answers.length - 1)]),
+    { onSettled: info => seen.push({ ok: info.ok, held: info.held, rearm: info.rearm }) });
+  loop.start(); await drain();
+  await timer.advance(10 * 60 * 1000);
+  loop.stop();
+  assert.deepEqual(seen.slice(0, 6), [
+    { ok: true, held: 0, rearm: true },
+    { ok: true, held: 24000, rearm: true },
+    { ok: true, held: 0, rearm: false },
+    { ok: true, held: 0, rearm: false },
+    { ok: true, held: 0, rearm: false },
+    { ok: false, held: 0, rearm: false }
+  ]);
 });
 
 test('long poll: a failed hold backs off exactly like any other failed poll', async () => {
@@ -556,4 +638,69 @@ test('api: the caller always gets a deadline, even without asking for one', asyn
   await drain();
   await timer.advance(T.API_TIMEOUT_MS);
   assert.equal((await out).error.name, 'TimeoutError');
+});
+
+// ===== 8b. two deployments (r31, DESIGN §13.3) =====
+// Google loads and compiles the whole script on every request, so the exam file
+// carries nothing that never runs during an exam. The cold half (reports,
+// commander, teachers, practice, admin) moves to a second Apps Script project
+// and the client routes to it BY ACTION. tests/server_split.test.cjs pins the
+// list below to the server's own ACTION_TARGETS table; here we only prove the
+// routing itself, and that a page which has not been given a second url behaves
+// exactly as it did before the split.
+function apiWith(config) {
+  const seen = [];
+  const { T } = load((url, opts) => { seen.push({ url, opts }); return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{"status":"ok"}') }); });
+  return { T, seen, api: T.createApi(Object.assign({ origin: 'test-page' }, config)) };
+}
+
+test('api: the 22 reports actions are exactly one list, with no duplicates', () => {
+  const { T } = load();
+  assert.equal(T.REPORTS_ACTIONS.length, 22, 'DESIGN §13.3 names 22 actions for the reports deployment');
+  assert.equal(new Set(T.REPORTS_ACTIONS).size, 22, 'and each one appears once');
+  assert.ok(T.REPORTS_ACTIONS.every(a => typeof a === 'string' && a));
+  assert.equal(T.isReportsAction('teacherDashboard'), true);
+  assert.equal(T.isReportsAction('examinerDashboard'), false, 'the dashboard is the hot half — it stays with the exam');
+  assert.equal(T.isReportsAction('submitResult'), false);
+  assert.equal(T.isReportsAction(''), false);
+  assert.equal(T.isReportsAction(undefined), false);
+});
+
+test('api: a reports action goes to the reports deployment, everything else to the exam one', async () => {
+  const { api, seen } = apiWith({ apiUrl: 'https://exam/exec', reportsUrl: 'https://reports/exec' });
+  await api.get({ action: 'commanderDashboard' });
+  await api.get({ action: 'examinerDashboard' });
+  await api.post({ action: 'submitPracticeResult' });
+  await api.post({ action: 'submitResult' });
+  api.postNoWait({ action: 'saveStudentProgress' });
+  api.postNoWait({ action: 'markFinished' });
+  assert.deepEqual(seen.map(s => s.url.split('?')[0]), [
+    'https://reports/exec', 'https://exam/exec',
+    'https://reports/exec', 'https://exam/exec',
+    'https://reports/exec', 'https://exam/exec'
+  ], 'get, post and postNoWait all route the same way');
+  assert.equal(api.url({ action: 'teacherLogin' }).split('?')[0], 'https://reports/exec');
+  assert.equal(api.url({ action: 'getSessionInfo' }).split('?')[0], 'https://exam/exec');
+  assert.equal(api.urlFor('teacherExportData'), 'https://reports/exec');
+  assert.equal(api.urlFor('startExam'), 'https://exam/exec');
+  // and the routing changes nothing else about the request
+  assert.match(seen[0].url, /origin=test-page/);
+  assert.match(seen[0].url, /_t=\d+/);
+});
+
+test('api: with no second url — or the same one twice — every action goes to apiUrl', async () => {
+  // The state until Yossi deploys the reports project, and the state a monolith
+  // stays in forever: one address serves all of it, exactly as before r31.
+  for (const config of [{ apiUrl: 'https://api/exec' },
+                        { apiUrl: 'https://api/exec', reportsUrl: '' },
+                        { apiUrl: 'https://api/exec', reportsUrl: 'https://api/exec' }]) {
+    const { api, seen } = apiWith(config);
+    await api.get({ action: 'commanderDashboard' });
+    await api.post({ action: 'teacherDashboard' });
+    api.postNoWait({ action: 'startPractice' });
+    assert.deepEqual(seen.map(s => s.url.split('?')[0]), ['https://api/exec', 'https://api/exec', 'https://api/exec'],
+      JSON.stringify(config));
+    assert.equal(api.url({ action: 'teacherAtRiskList' }).split('?')[0], 'https://api/exec');
+    assert.equal(api.urlFor('adminDashboard'), 'https://api/exec');
+  }
 });

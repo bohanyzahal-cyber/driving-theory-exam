@@ -305,6 +305,14 @@ test('fleet: twenty devices released together do not re-arrive together', async 
  * the fingerprint it was given (or when it was given none), and otherwise holds
  * the request until the answer changes or `wait` seconds elapse — the contract
  * the Worker implements.
+ *
+ * Two details of that contract matter to the numbers below, and both were wrong
+ * here until r31 (DESIGN §12.1, §13.4): the answer carries `fp` ONLY for a
+ * client that sent `wait` or `fp` (a client that sent neither gets a body
+ * identical to the server's, byte for byte — `tests/contracts.test.cjs`), and an
+ * un-upgraded Worker knows neither parameter, so it never returns one. Since
+ * r31 a fingerprint is what makes the client re-arm in 250 ms, so handing one to
+ * the no-hold baselines would have measured a page nobody ships.
  */
 async function approvalFleet({ longPoll, ignoreHold = false, count = 40, minutes = 10, changeAtMs = 5 * 60 * 1000, latency = 300, baseMs = 3000 }) {
   const clock = new Clock();
@@ -322,12 +330,16 @@ async function approvalFleet({ longPoll, ignoreHold = false, count = 40, minutes
     requests.push(sent);
     live.set(who, (live.get(who) || 0) + 1);
     maxLive = Math.max(maxLive, live.get(who));
+    // Only a client that asked for the hold is told the fingerprint, and an
+    // un-upgraded Worker (ignoreHold) has never heard of either parameter.
+    const carriesFp = !ignoreHold && (wait || fp);
     return new Promise(resolve => {
       const deliver = () => {
         live.set(who, live.get(who) - 1);
         const approval = answerAt(clock.now);
-        const body = JSON.stringify({ status: 'ok', approval: approval, fp: approval, held: Math.max(0, clock.now - sent - latency) });
-        resolve({ ok: true, status: 200, text: () => Promise.resolve(body) });
+        const answer = { status: 'ok', approval: approval, held: Math.max(0, clock.now - sent - latency) };
+        if (carriesFp) answer.fp = approval;
+        resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(answer)) });
       };
       // the Worker holds only while its answer still matches the fingerprint it
       // was given — and an un-upgraded Worker (ignoreHold) never holds at all
@@ -382,6 +394,17 @@ test('fleet: long polling cuts a waiting room to a quarter of the requests and s
   assert.ok(held.requests <= today.requests / 4,
     'long polling: ' + held.requests + ' requests where today sends ' + today.requests +
     ' (' + (today.requests / held.requests).toFixed(1) + 'x)');
+  assert.ok(Math.abs(held.requests - 1000) < 80,
+    'DESIGN §12.3 promises ~1,000 for this room; measured ' + held.requests);
+  // r31 (§13.4) re-arms the chain 250 ms after ANY holdable answer, not only a
+  // held one, so the 2-3 s that used to sit between a chain's first answer and
+  // its first hold is gone. It does not change this number: the steady state is
+  // one 25 s hold + ~300 ms of answer + a 250 ms gap per device, and the shorter
+  // opening gap only moves the very first request of a chain (and the one after
+  // the decision) forward by a couple of seconds.
+  const perDevice = held.requests / 40;
+  assert.ok(Math.abs(600 / perDevice - 25.25) < 1.5,
+    'one first answer and then one hold per ~25.25 s: measured ' + (600 / perDevice).toFixed(1) + ' s per request');
   assert.equal(held.maxLivePerClient, 1, 'and still exactly one request in flight per device');
 
   const worst = Math.max(...held.approvalDelays);

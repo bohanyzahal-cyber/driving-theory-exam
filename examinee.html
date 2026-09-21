@@ -1339,6 +1339,39 @@
   // means anything for the session it was issued in.
   function resetPollRoutes() { approvalRoute = null; statusRoute = null; resetPollFps(); }
 
+  // ----- Pushing OUR OWN writes to the Worker (r31, DESIGN §13.5) -----
+  // Until now only the examiner pushed. A submitted result and a "finished on
+  // device" ping are writes the EXAMINEE makes, and the examiner's dashboard
+  // learned of them only when the Worker next re-read Google (<= 2 s) and then
+  // only on the dashboard's next tick — up to ~7 s after the device was done.
+  // Now the device says so itself, with a POST that carries NO decision at all:
+  // no grant, no status, nothing the Worker could write into the answer other
+  // examinees read (only the examiner may do that, §11.3). It carries only proof
+  // of who is speaking — the examinee's own token, which the Worker hashes and
+  // compares with the newest row for this id in the snapshot it is holding. On a
+  // match it DROPS that snapshot, so the examiner's watch and every other poller
+  // of this session re-read Google at once.
+  // Fire-and-forget by design: nothing on this screen depends on it, a failure
+  // is never displayed and never counted as a poll failure — by the time we send
+  // it the server has already confirmed the write it is announcing.
+  // The three identifiers may be passed in: a result resent after the examinee
+  // re-registered must announce itself with the token THAT ATTEMPT was stamped
+  // with (submitAttemptKey), not with whatever token the page holds now.
+  function nudgeGatewayAfterWrite(forSession, forId, forToken) {
+    try {
+      var base = gatewayUrl();
+      var code = forSession || sessionCode;
+      var id = forId || (examineeData && examineeData.idNumber) || '';
+      var token = forToken || examineeToken || '';
+      if (!base || !code || !id || !token) return;
+      fetch(base.replace(/\/+$/, '') + '/v1/invalidate' +
+        '?sessionCode=' + encodeURIComponent(code) +
+        '&idNumber=' + encodeURIComponent(id) +
+        '&examineeToken=' + encodeURIComponent(token),
+        { method: 'POST', mode: 'cors', keepalive: true, cache: 'no-store' }).catch(function() {});
+    } catch (e) {}
+  }
+
   // A server that does not know an action is an OLD server behind a new page
   // (or the reverse) — never a data error the examinee can fix by re-clicking.
   function isOutdatedClientResponse(response) {
@@ -1907,18 +1940,22 @@
   // ===== Approval polling =====
   // Every poll goes through the Worker, where it costs Apps Script nothing (the
   // Worker coalesces a whole session into one upstream call per 2 s), so the
-  // cadence is free: 2 s for the first two minutes — the window in which the
-  // examiner actually walks the room and approves, and the one the examinee
-  // watches — then 3 s.
+  // cadence was free: 2 s for the first two minutes — the window in which the
+  // examiner actually walks the room and approves — then 3 s.
   //
-  // Since long polling these constants are a FALLBACK cadence: they pace the
-  // loop only when the Worker answered WITHOUT holding — an old Worker that
-  // ignores wait/fp, the first poll of a route (no fingerprint yet), or a poll
-  // the Worker refused to hold (upstream busy, stale snapshot). A held answer is
-  // paced by ExamTransport.LONGPOLL_GAP_MS instead, and a FAILED poll by the
-  // loop's own x1.5 ladder up to APPROVAL_POLL_MAX_MS (a Worker failure never
-  // marks the backend degraded: fetchJsonQuiet) — which is the whole of this page's
-  // answer to a Worker that stops answering.
+  // Since r31 ("why not 0", DESIGN §13.4) these constants pace almost nothing.
+  // They are the FALLBACK for the three answers that CANNOT be held against:
+  // an answer with no fingerprint at all (an old Worker that ignores wait/fp),
+  // a 'stale' answer (the Worker never holds a stale copy, and re-arming at
+  // 250 ms against it would hammer it for as long as Google is down), and a
+  // failed poll. Every other answer — held or not — hands us the fingerprint
+  // the NEXT request will be held against, so that next request IS the hold and
+  // it goes out after ExamTransport.LONGPOLL_GAP_MS (250 ms): the hold now
+  // begins a quarter of a second after the first answer of a chain instead of
+  // 2-3 s later. A FAILED poll still climbs the loop's own x1.5 ladder up to
+  // APPROVAL_POLL_MAX_MS (a Worker failure never marks the backend degraded:
+  // fetchJsonQuiet) — which is the whole of this page's answer to a Worker that
+  // stops answering.
   var APPROVAL_GATEWAY_BASE_MS = 3000;
   var APPROVAL_GATEWAY_FAST_MS = 2000;
   var APPROVAL_FAST_WINDOW_MS = 120000;
@@ -1947,10 +1984,13 @@
       // The fast opening window. Like the examiner dashboard, it may pull the
       // next tick in ONLY when the answer was healthy and the pacing is already
       // back at base: a struggling Worker always wins.
-      // A HELD answer needs no cadence at all: the Worker already did the
-      // waiting, and transport hands back its 250 ms gap as 'paced'.
+      // A re-armable answer needs no cadence at all: either the Worker already
+      // did the waiting (held > 0), or it handed back a fingerprint and the next
+      // request is the one it will hold (info.rearm, r31 §13.4). Transport hands
+      // back its 250 ms gap as 'paced' in both cases, and the fast window must
+      // not slow it back down to 2 s.
       nextDelay: function(info, paced) {
-        if (info.held > 0) return paced;
+        if (info.held > 0 || info.rearm) return paced;
         if (info.slow || info.failed || paced > baseMs) return paced;
         return (Date.now() - approvalPollStartedAt) < APPROVAL_FAST_WINDOW_MS ? APPROVAL_GATEWAY_FAST_MS : baseMs;
       },
@@ -2730,7 +2770,11 @@
   // Same route as the approval poll (the gateway serves checkApproval), so a
   // disqualified examinee waiting for the examiner's decision costs nothing —
   // and it long-polls like the approval poll, so the decision lands in about a
-  // second. DQ_POLL_BASE_MS is the cadence for an answer that was NOT held.
+  // second. This loop passes no nextDelay, so it simply follows transport's
+  // re-arm (r31 §13.4): any answer carrying a fingerprint, held or not, is
+  // followed 250 ms later by the request that will be held. DQ_POLL_BASE_MS is
+  // the fallback for the rest — an old Worker with no fingerprint, a stale
+  // answer, a failure.
   var DQ_POLL_BASE_MS = 3000;
   var DQ_POLL_MAX_MS = 20000;
   var dqOverturnLoop = null;
@@ -3327,12 +3371,14 @@
   // The exam runs locally, so an examiner who disqualifies from the dashboard
   // would otherwise be INVISIBLE to the examinee. This poll also carries the
   // mid-exam time extensions. In-exam examinees are the majority of connected
-  // clients on an exam day, and through the Worker the poll is free (6 s — it
+  // clients on an exam day, and through the Worker the poll is free (it
   // coalesces the whole session into one upstream call). As on the approval
-  // poll, the constant is the cadence for an answer that was NOT held (an old
-  // Worker, the first poll of a route, or a poll the Worker refused to hold); a
-  // held answer is paced by ExamTransport.LONGPOLL_GAP_MS, and a failed one by
-  // the loop's x1.5 ladder up to EXAMSTATUS_POLL_MAX_MS.
+  // poll, and for the same reason (r31 §13.4), the constant is now only the
+  // FALLBACK cadence: an answer with no fingerprint (an old Worker), a stale
+  // answer, or a failure. This loop passes no nextDelay, so transport re-arms it
+  // 250 ms after every other answer — a mid-exam disqualification or a time
+  // extension no longer waits out a 6 s tick before the hold even starts. A
+  // failed poll climbs the loop's x1.5 ladder up to EXAMSTATUS_POLL_MAX_MS.
   var EXAMSTATUS_GATEWAY_BASE_MS = 6000;
   var EXAMSTATUS_POLL_MAX_MS = 20000;
   var examStatusLoop = null;
@@ -4635,6 +4681,13 @@
     var finishedPing = { action: 'markFinished', sessionCode: sessionCode, idNumber: examineeData.idNumber,
       examineeToken: examineeToken, origin: API_ORIGIN };
     if (!beaconToApi(finishedPing)) apiPostNoWait(finishedPing);
+    // ...and 2 s later tell the Worker to drop its copy of the session (r31
+    // §13.5), so the examiner sees "סיים — מסנכרן" at once. The delay is not a
+    // wait anybody is looking at — the banner is already on this screen: the
+    // ping above is a beacon on its way to Google, and a Worker that re-read the
+    // sheet BEFORE it landed would cache the row exactly as it was and show
+    // nothing new. Two seconds is one Apps Script write plus slack.
+    setTimeout(nudgeGatewayAfterWrite, 2000);
 
     showSubmitStatus('sending');
     submitWithRetry(payload, 3);
@@ -5017,6 +5070,13 @@
       console.log('[SUBMIT] Response:', JSON.stringify(data));
       if (data && data.status === 'ok') {
         _submitCompleted[key] = true;
+        // The server has the result; tell the Worker to drop its copy of the
+        // session so the examiner's dashboard shows it now instead of after the
+        // Worker's next read of Google (r31 §13.5). This attempt's OWN identity
+        // goes on the wire — a resend after a re-registration carries the token
+        // it was stamped with at save time, and the Worker accepts only the
+        // token that matches the row it is holding.
+        nudgeGatewayAfterWrite(payload.sessionCode, payload.idNumber, payload.examineeToken);
         delete _submitSlowDelay[key];
         clearSubmitRetry(payload);
         if (isDisplayedResult(payload)) {

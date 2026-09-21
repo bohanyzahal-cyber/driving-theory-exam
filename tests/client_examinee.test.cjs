@@ -217,8 +217,15 @@ function completePage({ local = memoryStore(), session = memoryStore(), reply, g
     location: { search: '', pathname: '/examinee.html', reload() { reloads++; if (onReload) onReload(); } },
     fetch(url, opts = {}) {
       const isPost = opts && opts.method === 'POST';
-      const request = isPost ? JSON.parse(opts.body) : Object.fromEntries(new URL(url, 'https://synthetic.test/').searchParams);
+      // A POST with NO body is a real shape on this page since r31: the nudge to
+      // the Worker (§13.5) says everything it has to say in the query string.
+      const request = (isPost && opts.body !== undefined)
+        ? JSON.parse(opts.body)
+        : Object.fromEntries(new URL(url, 'https://synthetic.test/').searchParams);
       request.__url = String(url);
+      request.__method = isPost ? 'POST' : 'GET';
+      request.__keepalive = !!(opts && opts.keepalive);
+      request.__mode = (opts && opts.mode) || '';
       request.__at = timer.now;      // when it left the device, for cadence assertions
       const data = answer(request);
       if (data && data.__network) return Promise.reject(new TypeError('Failed to fetch'));
@@ -252,7 +259,8 @@ function completePage({ local = memoryStore(), session = memoryStore(), reply, g
     answerCurrent: function(i) { var b = document.querySelectorAll('.answer-audio-btn')[i]; if (b) b.click(); return !!b; },
     goTo: function(i) { currentIndex = i; renderQuestion(); },
     images: imageSources, setDegraded: function() { ExamTransport.noteTransport({ transport: 'http' }); },
-    retryDelay: submitRetryDelayMs, hasPending: hasAnyPendingResult
+    retryDelay: submitRetryDelayMs, hasPending: hasAnyPendingResult,
+    nudge: nudgeGatewayAfterWrite, degraded: function() { return ExamTransport.isBackendDegraded(); }
   };
 `;
   const scripts = [...examinee.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)].map(m => m[1]).filter(code => code.trim());
@@ -931,9 +939,13 @@ test('gateway: both polls go to the Worker — it is the only route there is', a
   assert.equal(page.sent('checkApproval').length, 0, 'nothing reached Apps Script');
 });
 
-test('gateway: the approval poll runs at 2 s for the first two minutes, then settles to 3 s', async () => {
-  // Through the Worker a poll costs Apps Script nothing, so the window in which
-  // the examiner is actually walking the room is the fast one.
+test('gateway: against an OLD Worker the approval poll falls back to 2 s, then to 3 s', async () => {
+  // The FALLBACK cadence, and since r31 (§13.4) that is all it is. This Worker
+  // answers without a fingerprint — it has never heard of wait/fp — so there is
+  // nothing the next request could be held against and the page paces itself:
+  // 2 s through the window in which the examiner is actually walking the room,
+  // then 3 s. Against an upgraded Worker the same chain re-arms in 250 ms and
+  // spends its time inside a hold instead (the re-arm tests below).
   const page = completePage({ gateway: 'https://gw.example/',
     reply: r => String(r.__url).includes('/v1/poll') ? { status: 'ok', approval: 'waiting', audioMode: 'off' } : undefined });
   await register(page);
@@ -950,8 +962,14 @@ test('gateway: the approval poll runs at 2 s for the first two minutes, then set
   assert.equal(page.sent('checkApproval').length, 0, 'none of it reached Apps Script');
 });
 
-test('gateway: the in-exam status poll runs at 6 s', async () => {
-  const page = completePage({ gateway: 'https://gw.example/' });
+test('gateway: against an OLD Worker the in-exam status poll falls back to 6 s', async () => {
+  // Same as above: no fingerprint in either answer, so nothing can be held and
+  // nothing can be re-armed, and the constant in the page is what paces it.
+  const page = completePage({ gateway: 'https://gw.example/', reply(r) {
+    if (r.kind === 'approval') return { status: 'ok', approval: 'approved', audioMode: 'off', examMinutes: 40 };
+    if (r.kind === 'status') return { status: 'ok', examStatus: 'in_exam', extraMinutes: 0 };
+    return undefined;
+  } });
   await register(page);
   await startExam(page);
   const polls = () => page.requests.filter(r => String(r.__url).includes('/v1/poll') && r.kind === 'status').length;
@@ -1190,6 +1208,194 @@ test('the DQ-overturn wait ignores a rejected/cancelled answer instead of acting
   await page.timer.advance(10000);
   assert.equal(page.t.state().screen, 'screenExam');
   assert.equal(page.t.state().inProgress, false, 'and the suspended exam is still suspended');
+});
+
+// ===================== 6c. re-arm: "why not 0" (r31, DESIGN §13.4) =====================
+// The first answer of a chain, and every answer that CHANGED, comes back
+// unheld — and used to be followed by 2-3 s (6 in the exam) before the next
+// request went out, which is the request the Worker would have held. So the
+// hold began seconds after it could have. Now any answer that carries a
+// fingerprint is followed by the 250 ms gap: the chain spends its life inside a
+// hold, and the examiner's decision is never more than a gap from the screen.
+const gapsOf = polls => polls.slice(1).map((p, i) => p.__at - polls[i].__at);
+
+test('re-arm: the approval chain re-arms 250 ms after a holdable answer, carrying its fingerprint', async () => {
+  const page = completePage({ gateway: 'https://gw.example/',
+    reply: r => r.kind === 'approval' ? waitingAnswer('fp-1') : undefined });   // held 0, but holdable
+  await register(page);
+  await page.timer.advance(1000);
+  const polls = pollsOf(page, 'approval');
+  assert.deepEqual(gapsOf(polls).slice(0, 4), [250, 250, 250, 250],
+    'not 2 s, not 3 s: the next request IS the hold, so it goes out now');
+  assert.equal(polls[0].fp, undefined, 'the first of a chain still has nothing to hold against');
+  assert.equal(polls[1].fp, 'fp-1', 'and every one after it carries the fingerprint it was given');
+  assert.equal(polls[1].wait, '25', 'while still offering the hold');
+  assert.equal(page.sent('checkApproval').length, 0);
+});
+
+test('re-arm: the in-exam status chain re-arms the same way', async () => {
+  const page = completePage({ gateway: 'https://gw.example/',
+    reply: r => r.kind === 'status' ? { status: 'ok', examStatus: 'in_exam', extraMinutes: 0, fp: 'st-1', held: 0 } : undefined });
+  await register(page);
+  await startExam(page);
+  const from = pollsOf(page, 'status').length;
+  await page.timer.advance(1000);
+  const polls = pollsOf(page, 'status').slice(from - 1);
+  assert.deepEqual(gapsOf(polls).slice(0, 3), [250, 250, 250], 'a mid-exam DQ or extension no longer waits out a 6 s tick');
+  assert.equal(polls[1].fp, 'st-1');
+  assert.equal(page.sent('getExamStatus').length, 0);
+});
+
+test('re-arm: the DQ-overturn wait re-arms too — the examiner\'s decision lands in a gap', async () => {
+  let approval = 'approved';
+  const page = completePage({ gateway: 'https://gw.example/',
+    reply: r => r.kind === 'approval'
+      ? { status: 'ok', approval: approval, audioMode: 'off', examMinutes: 40, fp: 'a-' + approval, held: 0 } : undefined });
+  await register(page);
+  await startExam(page);
+  const before = pollsOf(page, 'approval').length;
+  approval = 'disqualified';
+  page.setVisibility('hidden');
+  await page.timer.advance(2100);                // past the grace: disqualified
+  page.setVisibility('visible'); await drain();
+  assert.equal(page.t.state().dq, true);
+  const from = pollsOf(page, 'approval').length;
+  await page.timer.advance(1000);
+  const dqPolls = pollsOf(page, 'approval').slice(Math.max(before, from - 1));
+  assert.deepEqual(gapsOf(dqPolls).slice(0, 3), [250, 250, 250]);
+  assert.equal(dqPolls[1].fp, 'a-disqualified', 'held against the decision as it stands');
+});
+
+test('re-arm: a STALE answer does not re-arm — the Worker never holds a stale copy', async () => {
+  // Re-arming against one would hammer the Worker every 250 ms for as long as
+  // Google is unreachable behind it, which is the one moment it must not be.
+  const page = completePage({ gateway: 'https://gw.example/',
+    reply: r => r.kind === 'approval'
+      ? { status: 'ok', approval: 'waiting', audioMode: 'off', fp: 'fp-1', held: 0, stale: true } : undefined });
+  await register(page);
+  const t0 = pollsOf(page, 'approval')[0].__at;
+  await page.timer.advance(6000);
+  const polls = pollsOf(page, 'approval');
+  assert.deepEqual(polls.slice(0, 4).map(p => p.__at - t0), [0, 2000, 4000, 6000],
+    'the fallback cadence, exactly as before r31');
+  assert.equal(polls[1].fp, 'fp-1', 'the fingerprint is still offered — the Worker will hold once its copy is fresh');
+});
+
+// ===================== 6d. pushing our own writes (r31, DESIGN §13.5) =====================
+// A submitted result and a "finished on device" ping are writes the EXAMINEE
+// makes. Until r31 the examiner's dashboard learned of them only when the Worker
+// next re-read Google (<= 2 s) and then only on its own next tick. Now the
+// device says so itself — with a POST that carries no decision at all, only
+// proof of who is speaking.
+const nudges = page => page.requests.filter(r => String(r.__url).includes('/v1/invalidate'));
+
+test('nudge: a confirmed result is pushed at once — with the token, and with nothing else', async () => {
+  const page = completePage({ gateway: 'https://gw.example/' });
+  await register(page);
+  await startExam(page);
+  page.t.finish();
+  await drain();
+  assert.equal(page.sent('submitResult').length, 1);
+  const sent = nudges(page);
+  assert.equal(sent.length, 1, 'exactly one push, the moment the server confirmed the result');
+  assert.equal(String(sent[0].__url).split('?')[0], 'https://gw.example/v1/invalidate');
+  assert.equal(sent[0].__method, 'POST');
+  assert.equal(sent[0].__keepalive, true, 'it has to survive the examinee closing the tab behind it');
+  assert.equal(sent[0].sessionCode, 'ABC12345');
+  assert.equal(sent[0].idNumber, '123456789');
+  assert.equal(sent[0].examineeToken, 'tok-1');
+  assert.equal(sent[0].grant, undefined, 'an examinee holds no examiner grant and must never need one');
+  assert.equal(sent[0].status, undefined, 'and pushes no decision: only the examiner writes into what examinees read');
+  assert.equal(sent[0].extraMinutes, undefined);
+  assert.equal(page.sent('markFinished').length, 0, 'the finished ping is a beacon, not a POST');
+  assert.ok(page.beacons.some(b => b.action === 'markFinished'));
+});
+
+test('nudge: "finished on device" is pushed 2 s later, so the beacon lands in Google first', async () => {
+  // A Worker that re-read the sheet BEFORE the beacon landed would cache the row
+  // exactly as it was and show the examiner nothing new. Nobody is watching this
+  // timer: the green banner is already on the examinee's screen.
+  const page = completePage({ gateway: 'https://gw.example/',
+    reply: r => r.action === 'submitResult' ? { __hang: true } : undefined });
+  await register(page);
+  await startExam(page);
+  page.t.finish();
+  await drain();
+  assert.ok(page.beacons.some(b => b.action === 'markFinished'));
+  assert.equal(nudges(page).length, 0, 'nothing is pushed while the beacon is still in the air');
+  await page.timer.advance(1999);
+  assert.equal(nudges(page).length, 0);
+  await page.timer.advance(1);
+  const [push] = nudges(page);
+  assert.ok(push, 'and then the Worker is told to drop its copy of the session');
+  assert.equal(push.__method, 'POST');
+  assert.equal(push.__keepalive, true);
+  assert.equal(push.examineeToken, 'tok-1');
+  assert.equal(push.grant, undefined);
+  assert.equal(push.status, undefined);
+});
+
+test('nudge: a result the server did NOT confirm pushes nothing', async () => {
+  for (const failure of [{ __network: true }, { status: 'error', examineeTokenError: 'mismatch' }]) {
+    const page = completePage({ gateway: 'https://gw.example/',
+      reply: r => r.action === 'submitResult' ? failure : undefined });
+    await register(page);
+    await startExam(page);
+    page.t.finish();
+    await drain();
+    await page.timer.advance(1999);              // before the markFinished push, which is a different write
+    assert.equal(page.sent('submitResult').length, 1);
+    assert.equal(nudges(page).length, 0, 'the Worker is told about a write only once the server owns it');
+  }
+});
+
+test('nudge: its own failure changes nothing on screen and is counted nowhere', async () => {
+  const page = completePage({ gateway: 'https://gw.example/',
+    reply: r => String(r.__url).includes('/v1/invalidate') ? { __network: true } : undefined });
+  await register(page);
+  await startExam(page);
+  page.t.finish();
+  await drain();
+  await page.timer.advance(5000);
+  assert.ok(nudges(page).length >= 1, 'it was attempted (and it failed)');
+  assert.ok(!page.el('submitFailBanner'), 'the result IS on the server: the examinee is shown no failure');
+  assert.match(page.el('submitStatusBanner').innerHTML, /התקבלה/);
+  assert.equal(page.t.hasPending(), false, 'nothing was re-armed for retry');
+  assert.equal(page.sent('submitResult').length, 1, 'and the result was not sent again');
+  assert.equal(page.t.degraded(), false, 'a failed push must never mark Apps Script degraded');
+});
+
+test('nudge: it is never sent without a Worker url', async () => {
+  // A session that names no Worker never gets past the code screen (§11.5), so
+  // there is no url to push to — and the guard says so even when the caller
+  // hands over a complete identity.
+  const noGateway = completePage({ gateway: '' });
+  noGateway.el('sessionCodeInput').value = 'ABC12345';
+  noGateway.el('codeSubmitBtn').click();
+  await drain();
+  noGateway.t.nudge('ABC12345', '123456789', 'tok-1');
+  await drain();
+  assert.equal(nudges(noGateway).length, 0);
+
+  // ...and a page that knows nothing yet (no code, no id, no token) pushes
+  // nothing either, however it is called.
+  const fresh = completePage({ gateway: 'https://gw.example/' });
+  fresh.t.nudge();
+  await drain();
+  assert.equal(nudges(fresh).length, 0);
+
+  // With all three, it goes — this is the path a RESEND uses, announcing itself
+  // with the identity the stored attempt carries rather than the page's current one.
+  const live = completePage({ gateway: 'https://gw.example/' });
+  await register(live);
+  const before = nudges(live).length;
+  live.t.nudge('OLD12345', '987654321', 'tok-old');
+  await drain();
+  const pushed = nudges(live).slice(before);
+  assert.equal(pushed.length, 1);
+  assert.equal(pushed[0].sessionCode, 'OLD12345');
+  assert.equal(pushed[0].idNumber, '987654321');
+  assert.equal(pushed[0].examineeToken, 'tok-old');
 });
 
 // ===================== 7. restore =====================
@@ -1489,6 +1695,31 @@ test('source: the direct poll route is gone — the Worker is the only one', () 
   assert.ok(!/gatewayUrl\(\)\s*\?/.test(src), 'and no cadence branches on whether a gateway exists');
   assert.ok(src.includes('המערכת אינה מוגדרת (Worker) — פנה למנהל המערכת'), 'a missing Worker is named, not polled');
   assert.ok(!/falls? back to (the )?direct|five minutes/.test(src), 'and the comments do not promise a fallback');
+});
+
+test('source: the re-arm and the device push are wired exactly where §13.4/§13.5 put them', () => {
+  const src = examinee.replace(/\r/g, '');
+  // §13.4: the ONE loop that overrides the pacing must let a re-armed answer
+  // through, or the fast window would pull it back to 2 s. The other two chains
+  // pass no nextDelay at all, so transport's gap is already the last word.
+  assert.match(src, /nextDelay: function\(info, paced\) \{\s*\n\s*if \(info\.held > 0 \|\| info\.rearm\) return paced;/,
+    'the approval loop follows info.rearm');
+  assert.equal((src.match(/nextDelay:/g) || []).length, 1, 'and it is still the only loop that overrides the pacing');
+  // §13.5: a RESEND after a re-registration must announce itself with the token
+  // the stored attempt was stamped with, never with whatever the page holds now.
+  assert.match(src, /nudgeGatewayAfterWrite\(payload\.sessionCode, payload\.idNumber, payload\.examineeToken\);/,
+    'the submit push carries the payload\'s own identity');
+  assert.match(src, /setTimeout\(nudgeGatewayAfterWrite, 2000\);/, 'and the finished ping is pushed 2 s later');
+  assert.equal((src.match(/\bnudgeGatewayAfterWrite\b/g) || []).length, 3, 'declared once, reached from the two writes');
+  // never a decision, and never an examiner's grant, from this page
+  const fn = section(src, 'function nudgeGatewayAfterWrite(', '\n  }\n');
+  assert.ok(!/grant|&status=|examinerId/.test(fn), 'an examinee pushes no decision and holds no grant');
+  assert.match(fn, /keepalive: true/);
+  assert.match(fn, /catch/, 'and it can never throw into the caller');
+  // submitFailOnClose is a sendBeacon on the way out (onBeforeUnload): nothing
+  // reads its answer, so there is no "the server owns it" moment to announce.
+  assert.match(src, /action: 'submitFailOnClose'/);
+  assert.ok(!/submitFailOnClose[\s\S]{0,1200}nudgeGatewayAfterWrite/.test(src));
 });
 
 test('source: the service worker precaches the shared layers and never the question texts', () => {
