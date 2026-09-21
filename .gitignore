@@ -33,3 +33,6 @@ deployment/meeting-checklist.md
 # Tooling / build artifacts
 node_modules/
 .claude/
+
+# --- private analysis (user messages verbatim, review appendices): kept OUTSIDE the public repo in ../docs_private/ ---
+docs/reviews/
