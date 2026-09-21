@@ -116,9 +116,37 @@ function timerQueue(state) {
   return queue;
 }
 
+/**
+ * WebCrypto is answered on Node's THREAD POOL, not on the microtask queue a
+ * few `setImmediate` rounds drain — and the gateway is full of it: the grant
+ * `verify` on every watch and every nudge, the `digest` behind every session
+ * fingerprint (r31) and every examinee token. Virtual time must never move
+ * while one of those is in flight, or a hold's grace timer beats the very
+ * fingerprint it was about to be woken with and the test measures this harness
+ * instead of the Worker. Counting them here is the only way to know; the
+ * gateway itself is told nothing.
+ */
+let subtleInFlight = 0;
+for (const name of ['digest', 'verify', 'importKey']) {
+  const real = globalThis.crypto.subtle[name];
+  globalThis.crypto.subtle[name] = function (...args) {
+    subtleInFlight++;
+    return real.apply(globalThis.crypto.subtle, args).finally(() => { subtleInFlight--; });
+  };
+}
+
 /** Lets every ready promise callback run. The fake clock does not move here. */
 const flush = async rounds => {
   for (let i = 0; i < (rounds || 8); i++) await new Promise(r => setImmediate(r));
+  // ...and never hands control back while WebCrypto is still working, or with
+  // the next call about to be made: the caller is either about to assert on
+  // what it produces or about to move the clock past it. "Quiet" therefore
+  // means quiet for several turns, because one request chains verify -> read
+  // -> digest with ordinary async between the links.
+  for (let quiet = 0, guard = 0; quiet < 4 && guard < 200; guard++) {
+    quiet = subtleInFlight ? 0 : quiet + 1;
+    await new Promise(r => setImmediate(r));
+  }
 };
 
 /**
@@ -1201,4 +1229,398 @@ test('the abandoned look still lands, and the next poll is served from it', asyn
   });
   assert.equal(state.calls.length, 2, 'the abandoned read paid for this answer');
   assert.equal(gateway._debug().waiting, 0);
+});
+
+// --- the examiner's watch: GET /v1/session/watch (r31, DESIGN §13.2) -------
+// The dashboard used to re-read the whole session from Apps Script every 5 s
+// whether or not anything had happened. Now it holds ONE request here and asks
+// "did this session change?" — and reads Apps Script only when the answer is
+// yes. The watch itself costs Google nothing extra: it fingerprints the very
+// snapshot the examinees' own polls keep fresh.
+
+const watchParams = over => Object.assign({ sessionCode: SESSION, grant: examinerGrant() }, over);
+
+async function watch(gateway, params, ctx) {
+  const url = 'https://session-gateway.test/v1/session/watch?' + new URLSearchParams(params).toString();
+  const res = await gateway(new Request(url), ctx);
+  return { res, body: await res.json() };
+}
+
+/** The fingerprint a session of exactly these rows produces, in isolation. */
+async function sessionFp(rows) {
+  const { gateway } = harness({ [SESSION]: rows });
+  return (await watch(gateway, watchParams())).body.fp;
+}
+
+test('watch: only a valid examiner grant opens it, and a bad session code is 400', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
+
+  for (const [name, bad] of [
+    ['none', ''],
+    ['exam scope', examGrant([14])],
+    ['forged', grant({ s: 'examiner', sub: 'ex:7' }, 'not-the-key')],
+    ['expired', examinerGrant({ exp: CLOCK0 - 1 })],
+    ['rubbish', 'bogus']
+  ]) {
+    const { res, body } = await watch(gateway, { sessionCode: SESSION, grant: bad });
+    assert.equal(res.status, 403, name);
+    assert.deepEqual(body, { status: 'error', code: 'grant_invalid' }, name);
+  }
+  assert.equal(state.calls.length, 0, 'a refused watch never reaches Apps Script');
+
+  const badSession = await watch(gateway, { sessionCode: 'nope', grant: examinerGrant() });
+  assert.equal(badSession.res.status, 400);
+  assert.equal(badSession.body.status, 'error');
+  assert.equal(state.calls.length, 0);
+
+  const ok = await watch(gateway, watchParams());
+  assert.equal(ok.res.status, 200);
+  assert.equal(ok.res.headers.get('Cache-Control'), 'no-store');
+  assert.equal(ok.res.headers.get('Access-Control-Allow-Origin'), PAGES_ORIGIN);
+  assert.equal(ok.body.status, 'ok');
+  assert.equal(ok.body.rows, 1, 'how many rows, never the rows themselves');
+  assert.equal(ok.body.at, CLOCK0);
+  assert.equal(ok.body.held, 0);
+  assert.match(ok.body.fp, /^s:[0-9a-f]{12}$/);
+});
+
+test('watch: the session fingerprint moves on every field the dashboard shows, and on nothing else', async () => {
+  const base = [
+    row({ id: '900000001', status: 'in_exam', audio: 'on', examMinutes: 50, extraMinutes: 5,
+          warn: 1, fin: 0, ext: 0, dq: '' }),
+    row({ id: '900000002', status: 'waiting' })
+  ];
+  const baseline = await sessionFp(base);
+  assert.match(baseline, /^s:[0-9a-f]{12}$/);
+
+  // The examiner never sees the token hash, and it cannot change inside an
+  // attempt: hashing it would wake the dashboard for nothing.
+  const tokened = base.slice();
+  tokened[0] = Object.assign({}, base[0], { tokenHash: sha256Hex('real-token') });
+  assert.equal(await sessionFp(tokened), baseline, 'tokenHash is not watched');
+
+  // Every field r31's sessionSnapshot carries is watched — this is the whole
+  // list, and a change to any one of them must reach the screen.
+  for (const [field, value] of [
+    ['status', 'completed'], ['audio', 'off'], ['examMinutes', 60], ['extraMinutes', 6],
+    ['warn', 2], ['fin', 1], ['ext', 1], ['dq', 1], ['id', '900000007']
+  ]) {
+    const changed = base.slice();
+    changed[0] = Object.assign({}, base[0], { [field]: value });
+    assert.notEqual(await sessionFp(changed), baseline, field + ' must move the fingerprint');
+  }
+
+  assert.notEqual(await sessionFp(base.concat([row({ id: '900000003', status: 'waiting' })])), baseline,
+    'a new registration must move it');
+  assert.notEqual(await sessionFp([base[1], base[0]]), baseline, 'and so must the row order');
+  assert.equal(await sessionFp([]), 's:none', 'a session with no rows has its own fingerprint');
+});
+
+test('watch: a re-read of unchanged rows answers the same fingerprint', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
+  const first = await watch(gateway, watchParams());
+
+  state.clock += 5000;
+  const second = await watch(gateway, watchParams());
+  assert.equal(state.calls.length, 2, 'that really was a second read');
+  assert.ok(second.body.at > first.body.at, 'of a newer snapshot');
+  assert.equal(second.body.fp, first.body.fp,
+    '`at` is not in the fingerprint — otherwise the dashboard would re-read every 2 s for ever');
+});
+
+test("watch: an older server's rows (no warn/fin/ext/dq) hash exactly like empty ones", async () => {
+  // A Worker deployed ahead of the server (§13.8: the Worker goes out at
+  // night, the paste is Yossi's in the morning) must be stable, not noisy.
+  const legacy = { id: '900000001', status: 'waiting', tokenHash: '', audio: 'off', examMinutes: 40, extraMinutes: 0 };
+  const fp = await sessionFp([legacy]);
+  assert.equal(await sessionFp([Object.assign({}, legacy, { warn: '', fin: '', ext: '', dq: '' })]), fp);
+  assert.equal(await sessionFp([Object.assign({}, legacy, { warn: undefined, fin: null, ext: '', dq: undefined })]), fp);
+  assert.notEqual(await sessionFp([Object.assign({}, legacy, { fin: 1 })]), fp,
+    'and the moment the new server sends one, it counts');
+});
+
+test('watch: a hold runs out its `wait` and answers the same fingerprint', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
+  const first = await watch(gateway, watchParams());
+  assert.equal(first.body.held, 0, 'no fp to send yet, so it is answered at once');
+  assert.equal(state.calls.length, 1);
+
+  const { body } = await settle(state, watch(gateway, watchParams({ wait: 5, fp: first.body.fp })));
+
+  assert.equal(body.fp, first.body.fp);
+  assert.equal(body.held, 5000);
+  assert.equal(body.rows, 1);
+  assert.equal(state.clock, CLOCK0 + 5000, 'it really waited the five seconds');
+  assert.equal(state.timers.calls, 10, 'five evaluations, one per second, not a spin');
+  assert.equal(state.calls.length, 2, 'five seconds of watching cost one extra execution, not five');
+  assert.equal(gateway._debug().waiting, 0, 'and it took its resolver back out');
+});
+
+test('watch: an examiner nudge wakes it at once with a new fingerprint', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
+  const first = await watch(gateway, watchParams());
+
+  const holding = watch(gateway, watchParams({ wait: 25, fp: first.body.fp }));
+  await flush();
+  assert.equal(gateway._debug().waiting, 1, 'parked');
+
+  // The examiner approved in another tab: the decision-carrying nudge patches
+  // the snapshot, which is exactly what the dashboard is watching.
+  assert.equal((await nudge(gateway, '&idNumber=900000001&status=approved&examMinutes=50&audio=on')).body.patched, true);
+
+  const { body } = await settle(state, holding);
+  assert.notEqual(body.fp, first.body.fp, 'the dashboard now knows to re-read examinerDashboard');
+  assert.equal(body.rows, 1);
+  assert.equal(body.held, 0);
+  assert.equal(state.clock, CLOCK0, 'without waiting out a single tick');
+  assert.equal(state.calls.length, 1, 'and without an upstream read');
+  assert.equal(gateway._debug().waiting, 0);
+});
+
+test('watch: a drop wakes it, and the rows the server now has move the fingerprint', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
+  const first = await watch(gateway, watchParams());
+
+  const holding = watch(gateway, watchParams({ wait: 25, fp: first.body.fp }));
+  await flush();
+
+  // A second examinee registered; the nudge says only "the snapshot is behind".
+  state.snapshots[SESSION] = [row({ status: 'waiting' }), row({ id: '900000002', status: 'waiting' })];
+  await nudge(gateway, '');
+
+  const { body } = await settle(state, holding);
+  assert.equal(body.rows, 2);
+  assert.notEqual(body.fp, first.body.fp);
+  assert.equal(body.held, 0);
+  assert.equal(state.calls.length, 2, 'the woken watch read the truth once');
+  assert.equal(gateway._debug().waiting, 0);
+});
+
+test('watch: an upstream read that changes nothing keeps it holding to the deadline', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
+  const first = await watch(gateway, watchParams());
+
+  // While it holds, the freshness clock runs out and Google is read again — a
+  // NEW snapshot, with a new `at` and a token hash that was not there before.
+  // Neither is in the fingerprint, so the dashboard must not be woken by it.
+  state.snapshots[SESSION] = [row({ status: 'waiting', tokenHash: sha256Hex('real-token') })];
+  const { body } = await settle(state, watch(gateway, watchParams({ wait: 6, fp: first.body.fp })));
+
+  assert.ok(state.calls.length >= 2, 'the hold really did re-read Google');
+  assert.equal(body.fp, first.body.fp, 'same fingerprint: nothing the examiner sees changed');
+  assert.equal(body.held, 6000, 'so it held all the way to its own deadline');
+  assert.ok(body.at > CLOCK0, 'even though it answers from a newer snapshot');
+  assert.equal(gateway._debug().waiting, 0);
+});
+
+test('watch: a full hold is clamped to 25 s and costs at most HOLD_MAX_STEPS evaluations', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
+  const first = await watch(gateway, watchParams());
+
+  const { body } = await settle(state, watch(gateway, watchParams({ wait: 26, fp: first.body.fp })));
+  assert.equal(body.held, 25000, 'clamped to the 25 s ceiling');
+  assert.ok(state.timers.calls <= 26 * 2, 'at most 26 evaluations, got ' + state.timers.calls / 2);
+  assert.equal(state.timers.calls, 50, '25 evaluations, each parking a tick and a grace timer');
+  assert.equal(gateway._debug().waiting, 0);
+
+  // wait=0, a fraction, a word and a negative all mean "answer now".
+  for (const wait of [0, '0', 2.5, 'abc', -5, '']) {
+    const now = await settle(state, watch(gateway, watchParams({ wait: wait, fp: first.body.fp })));
+    assert.equal(now.body.held, 0, 'wait=' + JSON.stringify(wait));
+  }
+});
+
+test('watch: a stale copy and a dead upstream are never held', async () => {
+  const stale = harness({ [SESSION]: [row({ status: 'waiting' })] });
+  const first = await watch(stale.gateway, watchParams());
+  stale.state.mode = 'error500';
+  stale.state.clock += 4000;
+
+  const onStale = await settle(stale.state, watch(stale.gateway, watchParams({ wait: 25, fp: first.body.fp })));
+  assert.equal(onStale.res.status, 200);
+  assert.equal(onStale.body.stale, true);
+  assert.equal(onStale.body.fp, first.body.fp, 'the fingerprint of the copy inside it');
+  assert.equal(onStale.body.held, 0, 'the dashboard falls back to its own safety net instead');
+  assert.equal(stale.state.timers.calls, 0, 'it never slept');
+
+  const dead = harness({ [SESSION]: [row()] });
+  dead.state.mode = 'error500';
+  const onDead = await settle(dead.state, watch(dead.gateway, watchParams({ wait: 25, fp: 'x:up' })));
+  assert.equal(onDead.res.status, 200);
+  assert.deepEqual(onDead.body, {
+    status: 'error', code: 'upstream_unavailable', retryable: true,
+    message: 'השרת עמוס — ננסה שוב אוטומטית', fp: 'x:up', held: 0
+  });
+  assert.equal(dead.state.timers.calls, 0);
+});
+
+test('watch: an empty session is held, and the first registration wakes it', async () => {
+  const { state, gateway } = harness({ [SESSION]: [] });
+  const empty = await watch(gateway, watchParams());
+  assert.equal(empty.body.fp, 's:none');
+  assert.equal(empty.body.rows, 0);
+
+  const holding = watch(gateway, watchParams({ wait: 25, fp: 's:none' }));
+  await flush();
+  assert.equal(gateway._debug().waiting, 1, 's:none is exactly the wait that matters before a class starts');
+
+  // The first examinee registers. Nobody nudges the Worker: the watch's own
+  // re-read on the freshness clock is what finds the row.
+  state.snapshots[SESSION] = [row({ status: 'waiting' })];
+  const { body } = await settle(state, holding);
+  assert.equal(body.rows, 1);
+  assert.notEqual(body.fp, 's:none');
+  assert.ok(body.held <= 3000, 'seen within one freshness window, got ' + body.held);
+  assert.equal(gateway._debug().waiting, 0);
+});
+
+test('forty held polls and one held watch still cost one execution per 2 s', async () => {
+  const ids = Array.from({ length: 40 }, (_, i) => String(900000001 + i));
+  const { state, gateway } = harness({ [SESSION]: ids.map(id => row({ id, status: 'waiting' })) });
+
+  await Promise.all(ids.map(id => poll(gateway, approvalPoll(id))));
+  const seen = await watch(gateway, watchParams());
+  assert.equal(state.calls.length, 1, 'the watch rode on the snapshot the polls had already read');
+
+  const holds = ids.map(id => poll(gateway, approvalPoll(id, { wait: 25, fp: WAITING_FP })));
+  const watching = watch(gateway, watchParams({ wait: 25, fp: seen.body.fp }));
+  await flush();
+  assert.equal(gateway._debug().waiting, 41, 'forty examinees and one dashboard, one session');
+
+  await advance(state, 6000);
+  assert.equal(state.calls.length, 3,
+    'six seconds of holding: one read per freshness window, forty-one holders or one');
+  assert.equal(gateway._debug().waiting, 41, 'still holding — nothing anyone cares about changed');
+
+  // The examiner approves the whole class: the dashboard and every examinee
+  // learn it from the SAME execution.
+  state.snapshots[SESSION] = ids.map(id => row({ id, status: 'approved', examMinutes: 40 }));
+  await nudge(gateway, '');
+  const answers = await settle(state, Promise.all(holds.concat([watching])));
+
+  assert.equal(state.calls.length, 4, 'forty-one woken requests shared ONE execution');
+  for (const answer of answers.slice(0, 40)) assert.equal(answer.body.approval, 'approved');
+  const dashboard = answers[40].body;
+  assert.equal(dashboard.rows, 40);
+  assert.notEqual(dashboard.fp, seen.body.fp, 'and the dashboard reads examinerDashboard once, now');
+  assert.equal(gateway._debug().waiting, 0, 'no resolver was left behind');
+  assert.equal(gateway._debug().sessions, 0);
+});
+
+// --- the examinee's own nudge (r31, DESIGN §13.5) --------------------------
+// Until r31 only the examiner pushed, so a submit reached the dashboard only
+// on the Worker's next read of Google (≤2 s) and then on the dashboard's next
+// tick (≤5 s). The device now says "look again" itself — authenticated by its
+// own token, and never carrying a decision.
+
+const TOKEN = 'examinee-token-7';
+const devicePush = (gateway, query) =>
+  call(gateway, '/v1/invalidate?sessionCode=' + SESSION + query, { method: 'POST' });
+
+test('the examinee pushes their own submit: the token matches, the snapshot is dropped', async () => {
+  const { state, gateway } = harness({ [SESSION]: [
+    row({ status: 'in_exam', tokenHash: sha256Hex(TOKEN) })
+  ] });
+  const seen = await watch(gateway, watchParams());
+  assert.equal(state.calls.length, 1);
+
+  const holding = watch(gateway, watchParams({ wait: 25, fp: seen.body.fp }));
+  const polling = poll(gateway, statusPoll('900000001', { wait: 25, fp: 's:in_exam:0', examineeToken: TOKEN }));
+  await flush();
+  assert.equal(gateway._debug().waiting, 2, 'the dashboard and the device itself');
+
+  // The result POST answered ok — the row is already 'completed' in the sheet.
+  state.snapshots[SESSION] = [row({ status: 'completed', tokenHash: sha256Hex(TOKEN) })];
+  const pushed = await devicePush(gateway, '&idNumber=900000001&examineeToken=' + TOKEN);
+  assert.equal(pushed.res.status, 200);
+  assert.deepEqual(pushed.body, { status: 'ok', dropped: true });
+
+  const dash = await settle(state, holding);
+  assert.notEqual(dash.body.fp, seen.body.fp, 'the dashboard sees the submit at once');
+  assert.equal(dash.body.held, 0);
+  const device = await settle(state, polling);
+  assert.equal(device.body.examStatus, 'completed');
+  assert.equal(state.calls.length, 2, 'the two woken requests shared ONE re-read');
+  assert.equal(state.clock, CLOCK0, 'and nothing waited out a tick');
+  assert.equal(gateway._debug().waiting, 0);
+});
+
+test('an examinee nudge with the wrong token, no token or no row of its own is refused', async () => {
+  const { state, gateway } = harness({ [SESSION]: [
+    row({ id: '900000001', status: 'in_exam', tokenHash: sha256Hex(TOKEN) }),
+    row({ id: '900000002', status: 'in_exam' })            // an older row: no token stored
+  ] });
+  await poll(gateway, statusPoll('900000001'));
+  assert.equal(state.calls.length, 1);
+
+  for (const [name, query] of [
+    ['a stolen token', '&idNumber=900000001&examineeToken=not-the-token'],
+    ["a classmate's row with no stored hash", '&idNumber=900000002&examineeToken=' + TOKEN],
+    ['an id with no row at all', '&idNumber=900000009&examineeToken=' + TOKEN],
+    ['no token at all', '&idNumber=900000001'],
+    ['no id at all', '&examineeToken=' + TOKEN]
+  ]) {
+    const { res, body } = await devicePush(gateway, query);
+    assert.equal(res.status, 403, name);
+    assert.deepEqual(body, { status: 'error', code: 'grant_invalid' }, name);
+  }
+
+  state.snapshots[SESSION] = [row({ status: 'completed' })];
+  const after = await poll(gateway, statusPoll('900000001'));
+  assert.equal(state.calls.length, 1, 'a refused nudge never dropped anything, and never read upstream');
+  assert.equal(after.body.examStatus, 'in_exam');
+});
+
+test('an examinee may say "look again" but never what to look at', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'in_exam', tokenHash: sha256Hex(TOKEN) })] });
+  await poll(gateway, statusPoll('900000001'));
+
+  // The one thing this door must never open: a device writing its own verdict.
+  // Carrying `status` takes the request straight to the examiner's door.
+  const forged = await devicePush(gateway,
+    '&idNumber=900000001&examineeToken=' + TOKEN + '&status=completed&extraMinutes=600');
+  assert.equal(forged.res.status, 403);
+  assert.deepEqual(forged.body, { status: 'error', code: 'grant_invalid' });
+
+  const after = await poll(gateway, statusPoll('900000001'));
+  assert.deepEqual(after.body, { status: 'ok', examStatus: 'in_exam', extraMinutes: 0 }, 'nothing was patched');
+  assert.equal(state.calls.length, 1, 'and nothing was dropped');
+
+  const badSession = await call(gateway,
+    '/v1/invalidate?sessionCode=nope&idNumber=900000001&examineeToken=' + TOKEN, { method: 'POST' });
+  assert.equal(badSession.res.status, 400);
+});
+
+test('an examinee nudge for a session with no snapshot is ok, dropped:false, and free', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'in_exam', tokenHash: sha256Hex(TOKEN) })] });
+
+  const { res, body } = await devicePush(gateway, '&idNumber=900000001&examineeToken=' + TOKEN);
+  assert.equal(res.status, 200);
+  assert.deepEqual(body, { status: 'ok', dropped: false });
+  assert.equal(state.calls.length, 0, 'nothing to drop is not a reason to read Apps Script');
+});
+
+test('the examinee nudge spends the same re-read budget as the examiner', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'in_exam', tokenHash: sha256Hex(TOKEN) })] });
+  await poll(gateway, statusPoll('900000001'));
+  assert.equal(state.calls.length, 1);
+
+  const query = '&idNumber=900000001&examineeToken=' + TOKEN;
+  assert.deepEqual((await devicePush(gateway, query)).body, { status: 'ok', dropped: true });
+
+  // submitResult and markFinished push within a couple of seconds of each
+  // other, and a flaky device may fire either twice: the second must not buy a
+  // second Apps Script execution, and neither must the examiner's own drop.
+  state.clock += 500;
+  assert.deepEqual((await devicePush(gateway, query)).body, { status: 'ok', dropped: false });
+  assert.deepEqual((await nudge(gateway, '')).body, { status: 'ok' });
+
+  state.snapshots[SESSION] = [row({ status: 'completed', tokenHash: sha256Hex(TOKEN) })];
+  const after = await poll(gateway, statusPoll('900000001'));
+  assert.equal(after.body.examStatus, 'completed');
+  assert.equal(state.calls.length, 2, 'the first drop is the only one that was paid for');
+
+  state.clock += 2000;
+  assert.deepEqual((await devicePush(gateway, query)).body, { status: 'ok', dropped: true },
+    'past the gap it works again');
 });

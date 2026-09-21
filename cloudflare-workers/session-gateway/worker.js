@@ -31,11 +31,18 @@
  *   GET  /                — health: {status:'ok', service, build, bank}
  *   GET  /v1/poll?kind=approval|status&sessionCode&idNumber&examineeToken
  *                         [&wait=<1-25>&fp=<the last fingerprint>] — long poll
+ *   GET  /v1/session/watch?grant=<examiner>&sessionCode=X[&wait=1-25&fp=…]
+ *                         — the examiner dashboard's long poll: it answers
+ *                           when the session's ROWS change (r31, §13.2)
  *   GET  /v1/bank?grant=…[&ids=1,2&langs=he,en]   — texts for the granted ids
  *   GET  /v1/bank/full?grant=…&lang=he            — a whole language (examiner)
  *   POST /v1/invalidate?grant=<examiner>&sessionCode=X[&idNumber&status&…]
  *                         — drop the session snapshot, or patch the decision
  *                           straight into it (see `invalidate`)
+ *   POST /v1/invalidate?sessionCode=X&idNumber=Y&examineeToken=T
+ *                         — the EXAMINEE's own nudge after a write of theirs
+ *                           (submit, "finished on device"); drop only, never a
+ *                           patch (r31, §13.5)
  *   OPTIONS *             — CORS preflight
  *
  * WHY (3) — the HOLD: a client that sends `wait` and the `fp` it already has
@@ -47,6 +54,15 @@
  * sleep-based loop on purpose: the free plan allows 10 ms of CPU per request,
  * which is what rules out a WebSocket or an SSE stream held for 40 minutes.
  *
+ * WHY (4) — the WATCH (r31, "everything fast, no timers"): the examiner's
+ * dashboard used to re-read the whole session from Apps Script every 5 s
+ * whether or not anything had happened, and still showed a registration ~20 s
+ * late. It now holds ONE request here and asks "did this session change?". The
+ * answer costs Google nothing extra: the snapshot being fingerprinted is the
+ * same one the examinees' own polls keep fresh. The dashboard reads Apps
+ * Script only when the fingerprint moves — i.e. only when there is something
+ * to see. Both holds are the SAME loop (`holdUntilChanged`), never a copy.
+ *
  * Failure policy: a snapshot up to 60 s old is served with `stale:true` rather
  * than an error; with nothing cached the answer is a RETRYABLE error (HTTP
  * 200), never Google's HTML. The client slows down on it but must NOT fall back
@@ -54,7 +70,7 @@
  * a client that must pace itself has to be told so at once.
  */
 
-const BUILD = '2026-09-21';
+const BUILD = '2026-09-22';
 
 const ALLOWED_ORIGINS = [
   'https://bohanyzahal-cyber.github.io',
@@ -352,6 +368,65 @@ const UNAVAILABLE_VIEW = {
   },
   fp: 'x:up', missing: false, provisional: false, holdable: false
 };
+
+// --- the SESSION fingerprint (the examiner's watch, r31 §13.2) -------------
+
+/**
+ * What the examiner's dashboard holds on. It changes exactly when something
+ * the dashboard DISPLAYS changes, and for nothing else:
+ *
+ *   s:<12 hex of SHA-256 over the rows, in snapshot order>
+ *   s:none    a session with no rows at all — HELD, because the very next
+ *             registration creates one and wakes the watch
+ *
+ * Deliberately NOT in it: `snapshot.at` (every upstream read moves it, and the
+ * dashboard would re-read Apps Script every 2 s for nothing — that is the 5 s
+ * timer this replaces) and `tokenHash` (the examiner never sees it, and it
+ * cannot change inside an attempt anyway). A field an older server does not
+ * send — warn/fin/ext/dq arrive with r31's sessionSnapshot (§13.6) — hashes as
+ * '', so a Worker deployed ahead of the server simply watches fewer fields and
+ * still wakes on a status change or a new registration.
+ *
+ * 12 hex = 48 bits. This is a change detector, not a security boundary: a
+ * collision would only delay one dashboard read until its own safety-net read
+ * (examiner.html, 60 s) or the next change.
+ */
+const SESSION_FP_FIELDS = ['id', 'status', 'audio', 'examMinutes', 'extraMinutes', 'warn', 'fin', 'ext', 'dq'];
+
+// Per snapshot OBJECT, so a request held for 25 s hashes each copy once:
+// memory hands back the same object on every tick of the hold. A WeakMap, so
+// a snapshot that falls out of memory takes its entry with it; and the PROMISE
+// is what is cached, so two holds that meet on one snapshot share one digest.
+const sessionFpCache = new WeakMap();
+
+function sessionFingerprint(snapshot) {
+  const known = sessionFpCache.get(snapshot);
+  if (known) return known;
+  const rows = Array.isArray(snapshot.rows) ? snapshot.rows : [];
+  const pending = rows.length
+    ? sha256Hex(rows.map(row => SESSION_FP_FIELDS
+        .map(field => row[field] == null ? '' : String(row[field])).join('|')).join(';'))
+        .then(hex => 's:' + hex.slice(0, 12))
+    : Promise.resolve('s:none');
+  sessionFpCache.set(snapshot, pending);
+  return pending;
+}
+
+/**
+ * One evaluation of one snapshot for the examiner: how many rows the session
+ * has and when it was read — a change detector, not the data itself, which the
+ * dashboard reads from Apps Script the moment `fp` moves.
+ *
+ * A stale copy answers at once with `stale:true` and is NEVER held, exactly
+ * like a stale poll answer: while we cannot refresh, the dashboard has to fall
+ * back to its own safety-net read instead of parking here.
+ */
+async function sessionView(snapshot, stale) {
+  const rows = Array.isArray(snapshot.rows) ? snapshot.rows : [];
+  const answer = { status: 'ok', rows: rows.length, at: Number(snapshot.at) || 0 };
+  if (stale) answer.stale = true;
+  return { answer: answer, fp: await sessionFingerprint(snapshot), holdable: !stale };
+}
 
 // --- the gateway -----------------------------------------------------------
 
@@ -737,6 +812,54 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
   }
 
   /**
+   * The EXAMINEE's own nudge, after a write of theirs (r31, §13.5): the result
+   * POST that answered `ok`, and `markFinished`. Until r31 only the examiner
+   * pushed, so a submit reached the dashboard only on the Worker's next read
+   * of Google (≤2 s) and then on the dashboard's next tick (≤5 s).
+   *
+   * It is authenticated by the examinee's OWN token — the one thing this
+   * device has that nobody else does. The snapshot carries `tokenHash`
+   * (SHA-256, computed in Apps Script), so the comparison is hash to hash and
+   * the token itself still never leaves Google. The newest row of that id is
+   * the live attempt, exactly the row the poll answers from.
+   *
+   * It DROPS and never patches: a patch writes into what every examinee of the
+   * session is then answered from, and only the examiner may do that. The drop
+   * costs at most one extra upstream read per REREAD_GAP_MS — the same budget
+   * as the examiner's plain nudge, deliberately shared, so a device looping on
+   * it cannot buy more Apps Script executions than one examiner clicking.
+   */
+  async function examineeNudge(request, session, rawId, token) {
+    // Memory → snap → stale, exactly like patchSnapshot: whatever copy the
+    // session has is the one the row has to be found in.
+    const current = memoryRead(session, STALE_MS)
+      || await cacheRead('snap', session)
+      || await cacheRead('stale', session);
+    // Nothing cached for this session: there is nothing to drop, nobody parked
+    // on it, and the re-read budget stays whole for the examiner.
+    if (!current || !Array.isArray(current.rows)) {
+      return jsonResponse(request, { status: 'ok', dropped: false });
+    }
+
+    const idNumber = normalizeId(rawId);
+    let newest = null;
+    for (let i = current.rows.length - 1; i >= 0; i--) {
+      if (normalizeId(current.rows[i].id) === idNumber) { newest = current.rows[i]; break; }
+    }
+    // A row with no stored hash cannot authenticate anyone: that is a refusal,
+    // not a free pass (tokenMismatch may let it through on the READ path, where
+    // the worst case is answering an old sheet's row).
+    const stored = newest ? String(newest.tokenHash || '').trim().toLowerCase() : '';
+    if (!stored || stored !== await sha256Hex(token)) {
+      return jsonResponse(request, GRANT_INVALID, 403);
+    }
+
+    const dropped = mayForceReread(session);
+    if (dropped) await dropSnapshot(session);
+    return jsonResponse(request, { status: 'ok', dropped: dropped });
+  }
+
+  /**
    * The examiner's nudge after a decision. Two shapes:
    *
    *   ?sessionCode=X                    drop the snapshot, so the examinee's
@@ -762,6 +885,21 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
    * it landed; a plain invalidate keeps its old body exactly.
    */
   async function invalidate(request, url) {
+    const session = param(url, 'sessionCode');
+    const rawId = param(url, 'idNumber');
+    const status = param(url, 'status');
+    const examineeToken = param(url, 'examineeToken');
+
+    // The examinee's door, before the examiner's: no grant and NO `status` at
+    // all — a device may only ever say "look again", never what to look at.
+    // A request carrying `status` without a grant falls through to the
+    // examiner's check below and is refused there, and so is one with no
+    // token: these three parameters and no others open this door.
+    if (!param(url, 'grant') && !status && session && rawId && examineeToken) {
+      if (!SESSION_RE.test(session)) return badRequest(request, 'קוד סשן לא תקין');
+      return examineeNudge(request, session, rawId, examineeToken);
+    }
+
     // An examiner-only door. A nudge writes a status straight into what the
     // examinees are answered from: without this check anyone who knows a
     // session code and a classmate's id could show them "disqualified" or
@@ -771,11 +909,8 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
     if (!(await verifyGrant(url.searchParams.get('grant'), ['examiner']))) {
       return jsonResponse(request, GRANT_INVALID, 403);
     }
-    const session = param(url, 'sessionCode');
     if (!SESSION_RE.test(session)) return badRequest(request, 'קוד סשן לא תקין');
 
-    const rawId = param(url, 'idNumber');
-    const status = param(url, 'status');
     if (status && !PATCH_STATUSES[status]) return badRequest(request, 'סטטוס לא תקין');
     if (rawId && !rawId.replace(/[^0-9]/g, '')) return badRequest(request, 'מזהה לא תקין');
 
@@ -821,37 +956,130 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
   }
 
   /**
-   * What a HELD request looks at, once per iteration. Memory is free, so it
-   * goes first; `caches.default` is read EVERY iteration, because the decision
-   * may have been patched in by another isolate and delivering it within the
-   * second is the entire point of holding; upstream only when both are past
-   * FRESH_MS, and then through fetchCoalesced — forty held requests still cost
-   * one Apps Script execution per 2 s, exactly like forty ordinary polls.
+   * What a HELD request looks at, once per iteration. This is the read ORDER,
+   * which is identical for both holds; `view(snapshot, stale)` is the only
+   * thing that differs between the examinee's poll and the examiner's watch.
+   *
+   * Memory is free, so it goes first; `caches.default` is read EVERY
+   * iteration, because the decision may have been patched in by another
+   * isolate and delivering it within the second is the entire point of
+   * holding; upstream only when both are past FRESH_MS, and then through
+   * fetchCoalesced — forty held requests still cost one Apps Script execution
+   * per 2 s, exactly like forty ordinary polls.
    *
    * The first view that actually DIFFERS from what the client holds wins, so a
    * memory copy of ours can never hide a newer decision sitting in the cache.
    * It never spends mayForceReread's budget: that one pays for the examiner's
    * nudge, and a held request re-reads on the freshness clock anyway.
    */
-  async function holdLook(session, kind, idNumber, tokenHex, clientFp) {
-    const look = (snapshot, stale) => evaluate(kind, snapshot, idNumber, tokenHex, stale);
+  async function lookAtNewest(session, clientFp, view) {
     const mine = memoryRead(session, FRESH_MS);
     if (mine) {
-      const view = look(mine, false);
-      if (view.fp !== clientFp) return view;
+      const fromMemory = await view(mine, false);
+      if (fromMemory.fp !== clientFp) return fromMemory;
       const cached = await cacheRead('snap', session);
       if (cached) {
-        const patched = look(cached, false);
+        const patched = await view(cached, false);
         if (patched.fp !== clientFp) return patched;
       }
-      return view;
+      return fromMemory;
     }
     const cached = await cacheRead('snap', session);
-    if (cached) return look(cached, false);
+    if (cached) return view(cached, false);
     const fetched = await fetchCoalesced(session);
-    if (fetched) return look(fetched, false);
+    if (fetched) return view(fetched, false);
     const old = memoryRead(session, STALE_MS) || await cacheRead('stale', session);
-    return old ? look(old, true) : UNAVAILABLE_VIEW;
+    return old ? view(old, true) : UNAVAILABLE_VIEW;
+  }
+
+  /** One iteration of an examinee's held poll. */
+  function holdLook(session, kind, idNumber, tokenHex, clientFp) {
+    return lookAtNewest(session, clientFp,
+      (snapshot, stale) => evaluate(kind, snapshot, idNumber, tokenHex, stale));
+  }
+
+  /** One iteration of an examiner's held watch — same order, session view. */
+  function holdLookSession(session, clientFp) {
+    return lookAtNewest(session, clientFp, sessionView);
+  }
+
+  /**
+   * THE hold — one implementation for both routes (§13.2 asks for exactly
+   * that, not a copy). Park until something wakes this session, look again,
+   * and answer the moment the view stops being the one the client already has
+   * — or when `wait` runs out, which answers that same view with its same
+   * fingerprint and lets the client simply ask again.
+   *
+   * `look(clientFp)` is the route's own reader and must return a promise of a
+   * view `{ answer, fp, holdable }`. Returns `{ view, held }`; a view that is
+   * not holdable, an empty `clientFp` or a `wait` of 0 answers at once with
+   * held = 0, which is what a client that must pace itself has to be told.
+   */
+  async function holdUntilChanged({ session, view, clientFp, waitMs, ctx, look }) {
+    if (!(waitMs && clientFp && view.holdable && view.fp === clientFp)) return { view: view, held: 0 };
+    const start = clock();
+    const deadline = start + waitMs;
+    for (let step = 0; step < HOLD_MAX_STEPS && clock() < deadline; step++) {
+      await waitForChange(session, Math.min(HOLD_TICK_MS, deadline - clock()));
+      // The look may open an upstream read, so it races what is left of the
+      // hold plus HOLD_GRACE_MS. A read started a second before the deadline
+      // and answered 10 s later would otherwise hold the request past the
+      // client's own 40 s abort: a slow Google must never turn a held poll
+      // into a client-side communication failure.
+      const grace = Math.max(0, deadline - clock()) + HOLD_GRACE_MS;
+      const pending = look(clientFp);
+      const next = await Promise.race([pending, nap(grace).then(() => HOLD_TIMED_OUT)]);
+      if (next === HOLD_TIMED_OUT) {
+        // Abandoned, not cancelled. The read is coalesced, so letting it
+        // finish lands the snapshot in memory and in caches.default for the
+        // other holders and for this client's next request; without waitUntil
+        // the runtime may kill it together with this response and the next
+        // one pays for the same read again. The answer is the view we already
+        // had - same fp, so the client just asks again.
+        const abandoned = pending.catch(() => { /* a late failure is no longer ours */ });
+        if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(abandoned);
+        break;
+      }
+      view = next;
+      if (!view.holdable || view.fp !== clientFp) break;
+    }
+    return { view: view, held: Math.max(0, clock() - start) };
+  }
+
+  /**
+   * The examiner dashboard's long poll (§13.2). It never answers WHAT changed,
+   * only THAT something did: the dashboard then calls `examinerDashboard`
+   * once, and that single Apps Script execution is the whole cost of the
+   * screen. The watch itself costs Google nothing extra — the snapshot it
+   * fingerprints is the one the examinees' polls already keep fresh.
+   *
+   * An examiner grant is required: `rows`/`at` describe a session's state, and
+   * more to the point an open door here would let anyone holding a session
+   * code park a request and buy one upstream read per 2 s with it.
+   */
+  async function watch(request, url, ctx) {
+    if (!(await verifyGrant(url.searchParams.get('grant'), ['examiner']))) {
+      return jsonResponse(request, GRANT_INVALID, 403);
+    }
+    const session = param(url, 'sessionCode');
+    if (!SESSION_RE.test(session)) return badRequest(request, 'קוד סשן לא תקין');
+
+    const clientFp = param(url, 'fp');
+    const waitMs = waitMillis(url.searchParams.get('wait'));
+
+    // No `provisional` re-read here, unlike firstLook: an empty session is not
+    // a mistake to correct, it is the normal state before the first examinee
+    // registers — and `s:none` is held until that registration wakes it.
+    const loaded = await loadSnapshot(session, false);
+    const first = loaded.ok ? await sessionView(loaded.snapshot, loaded.stale) : UNAVAILABLE_VIEW;
+    const held = await holdUntilChanged({
+      session: session, view: first, clientFp: clientFp, waitMs: waitMs, ctx: ctx,
+      look: fp => holdLookSession(session, fp)
+    });
+    // `status` leads, then the two long-poll fields, then the view's own body
+    // (whose `status` re-states the same value and keeps that first place).
+    return jsonResponse(request,
+      Object.assign({ status: 'ok', fp: held.view.fp, held: held.held | 0 }, held.view.answer));
   }
 
   async function poll(request, url, ctx) {
@@ -884,43 +1112,17 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
 
     const idNumber = normalizeId(rawId);
     const tokenHex = token ? await sha256Hex(token) : '';
-    let view = await firstLook(session, kind, idNumber, tokenHex);
+    const first = await firstLook(session, kind, idNumber, tokenHex);
 
     // The hold. Only while the answer is EXACTLY the one the client already
     // has: a changed answer, a stale copy, a dead upstream and a token error
     // all return at once. Each iteration re-evaluates and either answers or
     // parks again, until the deadline or the step guard.
-    let held = 0;
-    if (waitMs && clientFp && view.holdable && view.fp === clientFp) {
-      const start = clock();
-      const deadline = start + waitMs;
-      for (let step = 0; step < HOLD_MAX_STEPS && clock() < deadline; step++) {
-        await waitForChange(session, Math.min(HOLD_TICK_MS, deadline - clock()));
-        // The look may open an upstream read, so it races what is left of the
-        // hold plus HOLD_GRACE_MS. A read started a second before the deadline
-        // and answered 10 s later would otherwise hold the request past the
-        // client's own 40 s abort: a slow Google must never turn a held poll
-        // into a client-side communication failure.
-        const grace = Math.max(0, deadline - clock()) + HOLD_GRACE_MS;
-        const look = holdLook(session, kind, idNumber, tokenHex, clientFp);
-        const next = await Promise.race([look, nap(grace).then(() => HOLD_TIMED_OUT)]);
-        if (next === HOLD_TIMED_OUT) {
-          // Abandoned, not cancelled. The read is coalesced, so letting it
-          // finish lands the snapshot in memory and in caches.default for the
-          // other holders and for this client's next poll; without waitUntil
-          // the runtime may kill it together with this response and the next
-          // poll pays for the same read again. The answer is the view we
-          // already had - same fp, so the client just polls again.
-          const abandoned = look.catch(() => { /* a late failure is no longer ours */ });
-          if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(abandoned);
-          break;
-        }
-        view = next;
-        if (!view.holdable || view.fp !== clientFp) break;
-      }
-      held = Math.max(0, clock() - start);
-    }
-    return reply(view.answer, view.fp, held);
+    const held = await holdUntilChanged({
+      session: session, view: first, clientFp: clientFp, waitMs: waitMs, ctx: ctx,
+      look: fp => holdLook(session, kind, idNumber, tokenHex, fp)
+    });
+    return reply(held.view.answer, held.view.fp, held.held);
   }
 
   // `ctx` is the Workers execution context and may be absent (a test, a direct
@@ -943,6 +1145,7 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
       });
     }
     if (url.pathname === '/v1/poll') return poll(request, url, ctx);
+    if (url.pathname === '/v1/session/watch') return watch(request, url, ctx);
     if (url.pathname === '/v1/bank') return bank(request, url);
     if (url.pathname === '/v1/bank/full') return bankFull(request, url);
     return jsonResponse(request, { status: 'error', message: 'not found' }, 404);

@@ -1,11 +1,13 @@
 # session-gateway — שער סקרים מאחד + מאגר השאלות הפרטי
 
-Worker עם שני תפקידים (DESIGN_2026-09-21 §3.4 ו‑§11):
+Worker עם שלושה תפקידים (DESIGN_2026-09-21 §3.4, §11 ו‑§13):
 
 1. **מאחד את סקרי הנבחנים:** **בקשה אחת לסשן כל 2 שניות** ל‑Apps Script, כמה נבחנים שלא יסקרו.
    במקום ~480 הרצות לדקה ל‑40 נבחנים ממתינים — 30 לדקה לסשן.
 2. **מגיש את טקסטי השאלות.** הבנק **אינו ציבורי**: הוא נכס סטטי פרטי של ה‑Worker
    (`run_worker_first`), וכל מכשיר מקבל **רק את המזהים שהאישור החתום שלו נוקב בהם**.
+3. **מודיע ללוח הבוחן שמשהו השתנה** (r31): הלוח מחזיק בקשה אחת פתוחה כאן במקום לקרוא
+   ל‑Apps Script כל 5 שניות, וקורא את הלוח **רק** כשטביעת האצבע של הסשן זזה.
 
 ## נקודות קצה
 
@@ -15,11 +17,13 @@ Worker עם שני תפקידים (DESIGN_2026-09-21 §3.4 ו‑§11):
 | `GET /v1/poll?kind=approval&sessionCode=ABC12345&idNumber=…&examineeToken=…` | — | בדיוק כמו `checkApproval` בשרת (כולל `approval:rejected`/`cancelled` כשזו השורה החדשה ביותר ואין רישום חי — 21/09 ערב) |
 | `GET /v1/poll?kind=status&…` | — | בדיוק כמו `getExamStatus` בשרת |
 | `GET /v1/poll?…&wait=25&fp=<טביעת האצבע האחרונה>` | — | **סקר ארוך:** אותה תשובה, אבל הבקשה מוחזקת עד שהתשובה משתנה |
+| `GET /v1/session/watch?grant=…&sessionCode=ABC12345[&wait=25&fp=…]` | scope `examiner` בלבד | **הצפייה של הלוח:** `{"status":"ok","fp":"s:…","held":<ms>,"rows":<n>,"at":<ms>}` — נענית ברגע שמשהו בסשן השתנה |
 | `GET /v1/bank?grant=…` | scope `exam`/`practice` | המזהים שב‑grant, בכל 7 השפות |
 | `GET /v1/bank?grant=…&ids=1,2,3[&langs=he,en]` | scope `examiner` | עד 60 מזהים; `langs` מסנן שפות |
 | `GET /v1/bank/full?grant=…&lang=he` | scope `examiner` בלבד | הבנק המלא של השפה, כזרם |
 | `POST /v1/invalidate?grant=…&sessionCode=ABC12345` | scope `examiner` בלבד | `{"status":"ok"}` — מוחק את ה‑snapshot של הסשן |
 | `POST /v1/invalidate?grant=…&sessionCode=…&idNumber=…&status=approved` <br>`[&examMinutes=50&extraMinutes=0&audio=on]` | scope `examiner` בלבד | `{"status":"ok","patched":true}` — כותב את ההחלטה **לתוך** ה‑snapshot |
+| `POST /v1/invalidate?sessionCode=…&idNumber=…&examineeToken=…` <br>(**בלי** `grant` ו**בלי** `status`) | הנבחן עצמו, לפי הטוקן שלו | `{"status":"ok","dropped":true\|false}` — דחיפה אחרי הגשה/"סיים במכשיר"; **מוחקת בלבד, לעולם לא כותבת** |
 
 תשובת הבנק: `{"status":"ok","build":"…","questions":[…],"missing":[…]}` — `questions` הוא
 תוכן `assets/q/<id>.json` **כמות שהוא** (ללא `JSON.parse` בנתיב החם), לפי סדר המזהים;
@@ -93,6 +97,44 @@ GET /v1/poll?kind=approval&sessionCode=ABC12345&idNumber=…&wait=25&fp=a%3Await
 אין fp ביד, שולחים `fp=` ריק (או `wait=`)** — אחרת לא יחזור `fp` בגוף התשובה ולא יהיה מה
 לשלוח בסקר הבא.
 
+### `/v1/session/watch` — לוח הבוחן בלי טיימר (r31, DESIGN §13.2)
+
+עד r31 לוח הבוחן קרא ל‑`examinerDashboard` כל 5 שניות — הרצת Apps Script מלאה, גם כשלא קרה
+כלום — והרשמה או הגשה הופיעו בו אחרי ~20 שניות. עכשיו הלוח מחזיק **בקשה אחת** כאן ושואל רק
+"משהו בסשן הזה השתנה?", וקורא את הלוח מהשרת **רק** כשהתשובה חיובית:
+
+```
+GET /v1/session/watch?grant=<אישור בוחן>&sessionCode=ABC12345&wait=25&fp=s%3A9f1c0a2b7d43
+→ {"status":"ok","fp":"s:9f1c0a2b7d43","held":25000,"rows":12,"at":1758480000123}
+```
+
+* **`grant` חובה — scope `examiner`** (אותו grant מ‑`bankGrant`). בלי אישור תקף: **HTTP 403**
+  `{"status":"error","code":"grant_invalid"}`. `sessionCode` לא תקין → **400**.
+* `wait` ו‑`fp` בדיוק כמו בסקר הארוך (1–25 שניות, כל ערך אחר = תשובה מיידית; `fp` חייב
+  `encodeURIComponent` — יש בו נקודתיים). הבקשה הראשונה, בלי `fp`, נענית מיד.
+* התשובה **לא אומרת מה השתנה**, רק **שמשהו** השתנה: `rows` (כמה שורות יש בסשן) ו‑`at`
+  (מתי נקרא ה‑snapshot) הם דיאגנוסטיקה. הלוח קורא `examinerDashboard` פעם אחת כש‑`fp` זז.
+* **אין snapshot בכלל** → `{"status":"error","code":"upstream_unavailable","retryable":true,…,"fp":"x:up","held":0}`;
+  עותק ישן → אותה תשובה עם `"stale":true`. שניהם **לעולם לא מוחזקים** — הלוח חוזר לרשת
+  הביטחון שלו (5 שניות) עד שה‑Worker מתאושש.
+
+**זה לא עולה לגוגל כלום נוסף.** ה‑snapshot שהצפייה מטביעה הוא אותו snapshot שהסקרים של
+הנבחנים ממילא מרעננים כל ≤2 שניות; הצפייה רוכבת עליו ועל אותן יקיצות (`patchSnapshot`,
+`dropSnapshot`, קריאה שהסתיימה). 40 נבחנים מוחזקים + לוח אחד מוחזק = **הרצה אחת ל‑2 שניות**,
+בדיוק כמו בלי הלוח. ההחזקה עצמה היא **אותה לולאה בדיוק** של `/v1/poll` (`holdUntilChanged`),
+כולל תקרת 26 החישובים לבקשה.
+
+**טביעת האצבע של הסשן** — `s:` + 12 ההקסה הראשונות של SHA‑256 על השורות, בסדר ה‑snapshot:
+
+| | |
+|---|---|
+| מה נכנס להטבעה | לכל שורה `id \| status \| audio \| examMinutes \| extraMinutes \| warn \| fin \| ext \| dq`, מופרד ב‑`;` בין שורות |
+| מה **לא** נכנס | `snapshot.at` (זז בכל קריאה מגוגל — אחרת הלוח היה נקרא כל 2 שניות לנצח) ו‑`tokenHash` (הבוחן לא רואה אותו) |
+| סשן בלי שורות | `s:none` — **ומוחזק**: ההרשמה הראשונה יוצרת שורה ומעירה את הצפייה |
+| שרת ישן | `warn/fin/ext/dq` הגיעו רק ב‑r31 (§13.6); שדה חסר מוטבע כ‑`''`, כך ש‑Worker חדש מול שרת ישן פשוט מנטר פחות שדות — ועדיין מתעורר על שינוי סטטוס ועל הרשמה |
+
+מחושבת פעם אחת לכל אובייקט snapshot (WeakMap): בקשה שמוחזקת 25 שניות לא מגבבת שוב ושוב.
+
 ### `/v1/invalidate` — דחיפה אחרי החלטת בוחן
 
 אחרי אישור/דחייה/איפוס/פסילה/הארכת זמן, דף הבוחן שולח `POST` (fire‑and‑forget, `keepalive`).
@@ -132,6 +174,34 @@ Apps Script. התשובה תמיד `{"status":"ok"}`, גם כשהמגבלה בל
 | `examMinutes` | לא | שלם 1–600; ערך לא תקין מתעלמים ממנו (שאר הטלאי עדיין נכתב) |
 | `extraMinutes` | לא | שלם 0–600, כנ"ל |
 | `audio` | לא | `on` / `off` בדיוק, כנ"ל |
+
+### דחיפה **מהמכשיר של הנבחן** (r31, DESIGN §13.5)
+
+עד r31 רק הבוחן דחף. הגשה ו"סיים במכשיר" הן כתיבות של **הנבחן**, ולוח הבוחן ראה אותן רק
+בקריאה הבאה של ה‑Worker מגוגל (≤2 שנ׳) ואז בטיק הבא של הלוח (≤5 שנ׳). עכשיו המכשיר דוחף
+בעצמו — `fetch(..., {method:'POST', keepalive:true})`, fire‑and‑forget, אחרי `submitResult`
+שענה `ok` ו‑2 שניות אחרי `markFinished`:
+
+```
+POST /v1/invalidate?sessionCode=ABC12345&idNumber=012345678&examineeToken=<הטוקן>
+→ {"status":"ok","dropped":true}
+```
+
+**בלי `grant` ובלי `status`** — זה מה שמפנה את הבקשה לדלת הזאת. ה‑Worker מגבב את הטוקן
+(SHA‑256) ומשווה ל‑`tokenHash` של **השורה החדשה ביותר** של אותה ת.ז. ב‑snapshot הנוכחי
+(זיכרון → `snap` → `stale`) — הטוקן עצמו ממילא לא עוזב את Apps Script:
+
+| מצב | תשובה |
+|---|---|
+| תואם, והתקציב פנוי | `{"status":"ok","dropped":true}` — `dropSnapshot`, והסקרים והצפיות המוחזקות של הסשן מתעוררות וקוראות מיד |
+| תואם, אבל היתה כבר קריאה כפויה ב‑2 השניות האחרונות | `{"status":"ok","dropped":false}` |
+| **אין snapshot לסשן** | `{"status":"ok","dropped":false}` — אין מה למחוק, אין את מי להעיר, והתקציב לא נגע |
+| טוקן חסר / לא תואם / השורה בלי `tokenHash` / אין שורה כזאת | **403** `{"status":"error","code":"grant_invalid"}` |
+| הבקשה נושאת `status` (או `grant`) | נשפטת בדלת של הבוחן — בלי אישור תקף **403**, ושום דבר לא נכתב |
+
+**לעולם לא טלאי.** מכשיר יכול לומר "תסתכל שוב", לעולם לא "מה לראות": רק הבוחן כותב לתוך מה
+שכל הנבחנים בסשן נקראים ממנו. התקציב הוא **אותו** `mayForceReread` של הבוחן (קריאה כפויה אחת
+לסשן ל‑2 שניות), כך שמכשיר שדוחף בלולאה לא יכול לקנות יותר הרצות Apps Script מבוחן אחד שלוחץ.
 
 ### האישור החתום (grant)
 
@@ -180,11 +250,23 @@ npx wrangler deploy                     # מעלה את worker.js ואת כל ת
 
 ```bash
 curl -s https://session-gateway.<account>.workers.dev/
-# {"status":"ok","service":"session-gateway","build":"2026-09-21","bank":"3dbb0d70…"}
-#  ^ אם "bank" ריק — הנכסים לא עלו: הרץ build_bank.js ופרוס שוב
+# {"status":"ok","service":"session-gateway","build":"2026-09-22","bank":"3dbb0d70…"}
+#  ^ "build" הוא איך יודעים ש-r31 באמת עלה; אם "bank" ריק — הנכסים לא עלו:
+#    הרץ build_bank.js ופרוס שוב
 
 curl -s -o /dev/null -w '%{http_code}\n' "https://session-gateway.<account>.workers.dev/v1/bank?grant=bogus"
 # 403   (ובגוף: {"status":"error","code":"grant_invalid"})
+
+# הצפייה של הלוח (r31) — בלי אישור בוחן, ועם אישור מזויף: שתיהן 403
+curl -s "https://session-gateway.<account>.workers.dev/v1/session/watch?sessionCode=<קוד>"
+# {"status":"error","code":"grant_invalid"}
+curl -s -o /dev/null -w '%{http_code}\n' "https://session-gateway.<account>.workers.dev/v1/session/watch?sessionCode=<קוד>&grant=bogus"
+# 403
+#  ^ זו בדיקת הפריסה של §13.8: הנתיב קיים (לא 404) והדלת סגורה
+
+# דחיפה מהמכשיר בלי טוקן / עם טוקן שגוי — 403, ושום snapshot לא נמחק
+curl -s -X POST "https://session-gateway.<account>.workers.dev/v1/invalidate?sessionCode=<קוד>&idNumber=<ת.ז.>&examineeToken=nope"
+# {"status":"error","code":"grant_invalid"}
 
 curl -s "https://session-gateway.<account>.workers.dev/v1/poll?kind=approval&sessionCode=<קוד>&idNumber=<ת.ז.>"
 # {"status":"error","message":"לא נמצא רישום"} לפני הרשמה, ואחריה {"status":"ok","approval":"waiting",…}
@@ -205,6 +287,10 @@ time curl -s "https://session-gateway.<account>.workers.dev/v1/poll?kind=approva
 התקציב Cloudflare מחזיר 5xx (שגיאה 1027 עד חצות UTC), והלקוח ממשיך לנסות את ה‑Worker עם backoff (אין נפילה לסקר ישיר). עם
 הסקר הארוך הצפי ~100 בקשות לנבחן ביום.
 
+הצפייה של הלוח (r31) מוסיפה **בקשה אחת ל‑25 שניות לכל בוחן פתוח** — ~145 ליום לבוחן, כלומר
+רעש ברמת הרצפה; בצד של Apps Script היא **מורידה** הרצות (הלוח נקרא רק כשיש שינוי, במקום 720
+לשעה).
+
 בלי הסקר הארוך: בוקר בחינות של 40 נבחנים ≈ 18k בקשות; שלושה אתרים ≈ 55k (טעינת הבנק היא
 בקשה אחת למכשיר לכל מבחן, לא לכל שאלה). **עם** הסקר הארוך הסקרים עצמם — שהם כמעט כל הנפח —
 יורדים פי ~4–5 (בקשה אחת ל‑25 שניות במקום אחת ל‑2–6), כלומר אותו בוקר ≈ 5k, ושלושה אתרים
@@ -212,7 +298,9 @@ time curl -s "https://session-gateway.<account>.workers.dev/v1/poll?kind=approva
 
 ## בדיקות
 
-`node tests/gateway.test.cjs` (בלי רשת: fetch מזויף וסָפוּר, שעון מזויף, `env.ASSETS` בזיכרון,
-ו‑`sleep` מזויף — כך החזקה של 25 שניות נבדקת במילישניות ובלי תלות בזמן אמת).
+`node tools/test.js gateway` (בלי רשת: fetch מזויף וסָפוּר, שעון מזויף, `env.ASSETS` בזיכרון,
+ו‑`sleep` מזויף — כך החזקה של 25 שניות נבדקת במילישניות ובלי תלות בזמן אמת). הבדיקות גם סופרות
+את קריאות ה‑WebCrypto: השעון המדומה **אסור** שיזוז בזמן ש‑`digest`/`verify` עוד רצים על ה‑thread
+pool של Node, אחרת טיימר ה‑grace של החזקה מנצח את טביעת האצבע שבדיוק עמדה להעיר אותה.
 `node tests/bank_invariants.test.cjs` (קורא את הבנק מתוך `assets/`).
 `package.json` כאן קיים רק כדי ש‑`worker.js` ייטען כ‑ESM ב‑Node.
