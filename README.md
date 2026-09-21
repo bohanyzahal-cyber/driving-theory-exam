@@ -118,7 +118,7 @@
 
 | קובץ | גודל | מה זה |
 |---|---|---|
-| `server/src/*.js` → `external_exam_apps_script.js` | ~40 מודולים | **כל ה-API.** הקובץ הגדול **מיוצר** (`node tools/build.js`) ומודבק בעורך; עורכים רק את המודולים |
+| `server/src/*.js` → `external_exam_apps_script.js` / `.exam.js` / `.reports.js` | ~35 מודולים | **כל ה-API.** הקבצים **מיוצרים** (`node tools/build.js`: בלי הערות, אינדקס דחוס; `server/BUILD_TARGETS.json` קובע איזה מודול באיזה קובץ) ומודבקים בעורך — המונוליט או הזוג מבחנים/דו"חות (DESIGN §13.3); עורכים רק את המודולים |
 | `shared/transport.js`, `shared/bank.js` | | שכבת התקשורת והקורא של בנק השאלות (מה-Worker, לפי אישור חתום) המשותפים לכל הדפים |
 | `cloudflare-workers/session-gateway/assets/` | 1,700 + 7 קבצים | בנק השאלות הפרטי (ללא תשובות), **לא בגיט** — מיוצר ב-`node tools/build.js` ועולה עם `wrangler deploy` |
 | `examiner.html` | ~468KB | אפליקציית הבוחן, self-contained |

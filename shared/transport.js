@@ -195,11 +195,21 @@
           // gap away. Failures are untouched: a failed long poll backs off
           // exactly like any other failed poll, degraded pacing included.
           var held = (outcome.ok && outcome.result && typeof outcome.result.held === 'number' && outcome.result.held > 0) ? outcome.result.held : 0;
-          var info = { ok: outcome.ok, failed: !outcome.ok, slow: !held && elapsed > SLOW_ANSWER_MS, elapsedMs: elapsed, held: held, error: outcome.error, result: outcome.result };
+          // r31 ("why not 0", DESIGN §13.4): an ok answer that CARRIES a
+          // fingerprint came from a server that will hold the next request
+          // against it — so the next request is the hold, and waiting baseMs
+          // before sending it only delays the moment the hold begins (the first
+          // answer of every chain, and every answer that changed, used to wait
+          // 2-6 s here). A stale answer is excluded on purpose: the server never
+          // holds a stale copy, and re-arming at 250 ms against it would hammer
+          // the Worker for as long as Google is down.
+          var rearm = held > 0 || Boolean(outcome.ok && outcome.result && typeof outcome.result.fp === 'string' &&
+            outcome.result.fp && !outcome.result.stale);
+          var info = { ok: outcome.ok, failed: !outcome.ok, slow: !held && elapsed > SLOW_ANSWER_MS, elapsedMs: elapsed, held: held, rearm: rearm, error: outcome.error, result: outcome.result };
           // steady mode: one chain per page, so the answer time is the throttle
           // and the ladder/floor would only add a wait on top of a wait.
           delayMs = opts.steady ? opts.baseMs : pacePoll(delayMs, opts.baseMs, opts.maxMs, info.slow || info.failed);
-          var next = held ? LONGPOLL_GAP_MS : delayMs;
+          var next = rearm ? LONGPOLL_GAP_MS : delayMs;
           if (opts.nextDelay) { var override = opts.nextDelay(info, next); if (typeof override === 'number' && override > 0) next = override; }
           if (opts.onSettled) { try { opts.onSettled(info); } catch (e) {} }
           schedule(next);
@@ -226,10 +236,33 @@
   }
 
   // ---------- 5. api helpers ----------
+  // The server is TWO Apps Script deployments since r31 (DESIGN §13.3): the
+  // exam deployment (sessions, registration, exam, results, dashboard) and the
+  // reports deployment (reports, commander, teachers, practice, admin,
+  // nightly jobs). Google loads and compiles the whole script on every request,
+  // so the exam file carries nothing that never runs during an exam. The
+  // client routes by ACTION: these actions live only in the reports deployment;
+  // everything else is served by the exam deployment. A page passes
+  // { apiUrl, reportsUrl }; while reportsUrl is empty or equal to apiUrl (the
+  // state before the second deployment exists) everything goes to apiUrl, so
+  // a monolith serves all of it exactly as before. tests/server_split.test.cjs
+  // pins this list to the server's own ACTION_TARGETS table.
+  var REPORTS_ACTIONS = [
+    'startPractice', 'submitPracticeResult', 'loadStudentProgress', 'saveStudentProgress', 'studentJoinClass',
+    'teacherLogin', 'teacherVerifyLogin', 'teacherDashboard', 'teacherCreateClass', 'teacherCloseClass',
+    'teacherDeleteClass', 'teacherRemoveStudent', 'teacherGetClasses', 'teacherClassDetails', 'teacherExportData',
+    'teacherCommanderDashboard', 'teacherAtRiskList', 'adminDashboard',
+    'commanderDashboard', 'centerManagerReport', 'siteCombinedReport', 'examinerForecast'
+  ];
+  function isReportsAction(action) { return REPORTS_ACTIONS.indexOf(String(action || '')) >= 0; }
+
   // decorate(params, method) may add credentials/origin; must return the params.
+  // config: { apiUrl, reportsUrl (optional), origin, decorate }
   function createApi(config) {
     var apiUrl = config.apiUrl, origin = config.origin;
+    var reportsUrl = (config.reportsUrl && config.reportsUrl !== apiUrl) ? config.reportsUrl : '';
     var decorate = config.decorate || function (p) { return p; };
+    function urlFor(action) { return (reportsUrl && isReportsAction(action)) ? reportsUrl : apiUrl; }
     function query(params) {
       var qs = [];
       for (var k in params) if (Object.prototype.hasOwnProperty.call(params, k) && params[k] !== undefined) qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
@@ -240,20 +273,22 @@
       get: function (params, timeoutMs) {
         var p = decorate(params || {}, 'GET');
         if (!p.origin) p.origin = origin;
-        return fetchJsonWithTimeout(apiUrl + '?' + query(p), { cache: 'no-store' }, timeoutMs || API_TIMEOUT_MS);
+        return fetchJsonWithTimeout(urlFor(p.action) + '?' + query(p), { cache: 'no-store' }, timeoutMs || API_TIMEOUT_MS);
       },
       post: function (payload, timeoutMs) {
         var p = decorate(payload || {}, 'POST');
         if (!p.origin) p.origin = origin;
-        return fetchJsonWithTimeout(apiUrl, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(p) }, timeoutMs || API_TIMEOUT_MS);
+        return fetchJsonWithTimeout(urlFor(p.action), { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(p) }, timeoutMs || API_TIMEOUT_MS);
       },
       // fire-and-forget; no answer is read
       postNoWait: function (payload) {
         var p = decorate(payload || {}, 'POST');
         if (!p.origin) p.origin = origin;
-        try { fetch(apiUrl, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(p) }).catch(function () {}); } catch (e) {}
+        try { fetch(urlFor(p.action), { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(p) }).catch(function () {}); } catch (e) {}
       },
-      url: function (params) { var p = decorate(params || {}, 'GET'); if (!p.origin) p.origin = origin; return apiUrl + '?' + query(p); }
+      url: function (params) { var p = decorate(params || {}, 'GET'); if (!p.origin) p.origin = origin; return urlFor(p.action) + '?' + query(p); },
+      // which deployment an action is sent to — for pages that build a URL by hand
+      urlFor: urlFor
     };
   }
 
@@ -325,6 +360,8 @@
     pacePoll: pacePoll,
     createPollLoop: createPollLoop,
     createApi: createApi,
+    REPORTS_ACTIONS: REPORTS_ACTIONS,
+    isReportsAction: isReportsAction,
     createUpdateCheck: createUpdateCheck,
     log: log,
     drainLog: drainLog,

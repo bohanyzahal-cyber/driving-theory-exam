@@ -11,7 +11,7 @@
 | יעד | מה נפרס | איך | מי יכול |
 |---|---|---|---|
 | GitHub Pages | קבצי HTML/JS/PWA | `git push` לענף `master` | אוטומטי |
-| Google Apps Script | `external_exam_apps_script.js` (**קובץ מיוצר** מ-`server/src/`) | הדבקה ידנית בעורך + גרסה חדשה | רק בעל החשבון |
+| Google Apps Script | שלושה קבצים **מיוצרים** מ-`server/src/` (r31, DESIGN §13.3): `external_exam_apps_script.js` (מונוליט — כל הפעולות), `external_exam_apps_script.exam.js` (מבחנים — הפרויקט הקיים), `external_exam_apps_script.reports.js` (דו"חות/מורים/תרגול/ניהול/לילה — פרויקט עצמאי שני) | הדבקה ידנית בעורך + גרסה חדשה | רק בעל החשבון |
 | Cloudflare Workers | `cloudflare-workers/*` (דו"חות, session-gateway) | `npx wrangler deploy` | בעל חשבון Cloudflare |
 
 שינוי בקובץ ה-Apps Script שנדחף לגיט **אינו באוויר**. זה תפס אנשים שוב ושוב.
@@ -69,14 +69,14 @@ curl -s -H 'Cache-Control: no-cache' "https://bohanyzahal-cyber.github.io/drivin
 
 ### הנוהל
 
-0. **הקובץ מיוצר.** מקור השרת הוא `server/src/*.js` (סדר ב-`server/BUILD_ORDER.json`). לעולם לא עורכים את `external_exam_apps_script.js` ישירות:
+0. **הקבצים מיוצרים.** מקור השרת הוא `server/src/*.js` (סדר ב-`server/BUILD_ORDER.json`, שיוך לפריסה ב-`server/BUILD_TARGETS.json`). לעולם לא עורכים את `external_exam_apps_script*.js` ישירות. הבנייה מסירה הערות (acorn, `tools/vendor/`) ומאמתת שה-AST זהה למקור, ומזריקה את אינדקס השאלות כמחרוזת דחוסה (DESIGN §13.1):
    ```bash
    node tools/build.js
    ```
    בונה את הבנק הסטטי (`bank/`), את `deployment/question_index.json`, מרכיב את קובץ השרת (כולל `node --check`), ומעדכן `version.json` ושמות המטמון ב-service workers. `node tools/build_server.js --check` אומר אם הקובץ המחויב בגיט מעודכן.
 1. **בדיקות:** `node tools/test.js` — כל החבילות חייבות להיות ירוקות.
 2. פתח את פרויקט ה-Apps Script המקושר לגיליון.
-3. החלף את **כל** תוכן הקובץ (הדבקה מלאה — כך זה נעשה תמיד כאן). `answer_key.gs` הוא קובץ נפרד בעורך ומודבק רק כשהמפתח משתנה.
+3. החלף את **כל** תוכן הקובץ (הדבקה מלאה — כך זה נעשה תמיד כאן). **איזה קובץ:** בפרויקט הקיים (מבחנים) `external_exam_apps_script.exam.js` אחרי הפעלת הפיצול, או `external_exam_apps_script.js` (המונוליט) לפניה; בפרויקט הדו"חות `external_exam_apps_script.reports.js`. `health` מחזיר `deployment` — `exam` / `reports` / `all` — ואפשר לוודא שהודבק הקובץ הנכון. `answer_key.gs` הוא קובץ נפרד בעורך (בשני הפרויקטים — התרגול מנקד ממנו) ומודבק רק כשהמפתח משתנה. פעולה שנשלחה לפרויקט הלא-נכון עונה `wrong_deployment` (הדפים מנתבים לפי פעולה: `ExamTransport.REPORTS_ACTIONS`).
 4. `Deploy` → `Manage deployments` → עיפרון → `Version: New version` → `Deploy`.
 
 **קריטי:** בלי בחירת `New version` הקוד נשמר אבל הכתובת הציבורית ממשיכה להגיש את הגרסה הישנה. תקלה שקטה ומבלבלת. (טריגרים, לעומת זאת, רצים על הקוד החדש מיד עם השמירה.)
@@ -125,7 +125,7 @@ Workers פעילים: `session-gateway` (סקר הנבחנים + הבנק, `wran
 
 **תקציב הבקשות (תוכנית חינמית):** 100,000 בקשות ביום לכל ה-Workers של החשבון יחד (`session-gateway`, `hebrew-tts`, פרוקסי התמונות, קישורי הדו"חות), מתאפס ב-00:00 UTC (03:00 ישראל בקיץ). מעבר לזה Cloudflare מחזיר שגיאה 1027 עד האיפוס — מבחנים שרצים ממשיכים (השאלות במכשיר), אבל מבחן חדש לא יכול להתחיל. עם הסקר הארוך (DESIGN §12) הצפי ~100 בקשות לנבחן (400 נבחנים ≈ 40–70 אלף). לקרוא את המונה: Cloudflare → Workers & Pages → `session-gateway` → Metrics (וגם `hebrew-tts`).
 
-אימות `session-gateway`: `curl -s https://session-gateway.bohanyzahal.workers.dev/` מחזיר `bank` לא ריק; `…/v1/bank?grant=bogus` → 403; `…/bank/he.json` → 404 (הבנק אינו נגיש ישירות).
+אימות `session-gateway`: `curl -s https://session-gateway.bohanyzahal.workers.dev/` מחזיר `bank` לא ריק; `…/v1/bank?grant=bogus` → 403; `…/bank/he.json` → 404 (הבנק אינו נגיש ישירות); r31: `…/v1/session/watch?sessionCode=ABCDEFGH` (בלי אישור) → 403; `curl -X POST "…/v1/invalidate?sessionCode=ABCDEFGH&idNumber=1&examineeToken=x"` → 403 (טוקן לא תואם).
 
 אימות: `curl https://steep-night-dd06.bohanyzahal.workers.dev/` — אמור להחזיר `"links":"permanent"`.
 
@@ -200,7 +200,7 @@ git push origin master
 1. **המקום הראשון להסתכל בו כשמשהו איטי הוא גיליון הווטשדוג** (`tools/exam_watchdog.gs`, סקריפט נפרד שמודד כל דקה 07:00–13:00): עמודת `verdict` אומרת `our-document` (המסמך שלנו נתקע), `dispatch`/`google/account` (גוגל), או `ok` בזמן שהבוחנים מתלוננים (הבעיה בלקוח/ברשת). התקנה חד-פעמית מתוארת בראש הקובץ.
 2. **אישורים מדורגים** — לאשר כ-5 נבחנים כל 2 דקות ולא כיתה שלמה בבת אחת. גל של 43 רישומי מבחן בדקה (17/09, 09:21) הוא הכתיבה הכבדה ביותר על המסמך, ובדיוק בדקות האלה נתקעו הקריאות.
 3. **מורים לא פותחים "פרטי כיתה" בין 09:00 ל-11:00 בימי בחינות** — כל פתיחה היא קריאה מלאה של 107 אלף שורות מאותו מסמך. זה מגבר, לא הסיבה, אבל מגבר שאפשר לכבות בטלפון אחד.
-4. **באנר "השרת עמוס / משיב בשגיאה" בלוח הבוחן = לא לרענן ולא להתחבר מחדש.** הדף ממשיך לנסות לבד כל 5 שניות (מאז 21/09 ערב: לוח הבוחן לא מאט את עצמו יותר — בקשה אחת בכל פעם לבוחן, וזמן התשובה של גוגל הוא הבלם היחיד; 2 שניות כשתוצאה בדרך). רענונים והתחברויות בו-זמנית מכל הארץ הם שיצרו ב-16/09 את הפרצים של 200+ בקשות בדקה.
+4. **באנר "השרת עמוס / משיב בשגיאה" בלוח הבוחן = לא לרענן ולא להתחבר מחדש.** הדף ממשיך לבד (מאז r31 הלוח מחכה ל-Worker שיגיד "משהו השתנה" וקורא את גוגל רק אז; אם ה-Worker לא עונה הוא חוזר לקריאה כל 5 שניות; אף פעם לא מאט את עצמו). רענונים והתחברויות בו-זמנית מכל הארץ הם שיצרו ב-16/09 את הפרצים של 200+ בקשות בדקה.
 5. **גיליון אבחון ריק בזמן איטיות ≠ "לא היה כלום"** — להריץ `flushDiagnostics` מהעורך (ראו למעלה).
 6. אחרי הבוקר: לקרוא את עמודת ההערות באבחון — `ss:open`, `auth:token`, `tail:full` אומרים איפה עברו השניות שלפני המטפל.
 
