@@ -1,3 +1,9 @@
+// ============================================================================
+// GENERATED FILE — do not edit here. Source: server/src/*.js (order: server/BUILD_ORDER.json).
+// Rebuild with:  node tools/build_server.js     (tools/build.js runs it too)
+// Deploy: paste this whole file into the Apps Script editor → Deploy → Manage deployments → New version.
+// Modules: 00_config, 05_registry, 10_spreadsheet, 08_pending_writes, 98_migration_practice, 12_reads, 14_pending_archive, 16_lookup_util, 18_whatsapp, 20_auth, 22_util, 30_api, 40_sessions_login, 82_report_center, 42_sessions_manage, 84_report_site, 44_sessions_misc, 50_pending, 55_dashboard, 52_pending_status, 65_dq, 60_exam, 70_question_cache, 75_diag, 72_question_meta, 74_question_structure, 76_question_cache_records, 78_question_handlers, 86_commander, 88_predictive, 90_teacher, 92_at_risk, 94_forecast, 96_admin, 91_teacher_classes
+// ============================================================================
 // © 2026 Vitaly Gitelman. All Rights Reserved.
 // Unauthorized copying, modification or distribution is prohibited.
 // ===== Google Apps Script — מערכת בחינות חיצונית =====
@@ -71,6 +77,31 @@ function isExaminerSelfTest(name, id, excl) {
   return !!(nk && excl.names[nk]);           // name match — fuzzy fallback
 }
 
+// ========== API action registry ==========
+// Every handler module declares its own actions with defineAction(); doGet/doPost
+// dispatch through the registry instead of a 300-line switch, so adding an
+// action is one line next to its handler and the auth rule lives with it.
+//   defineAction('startExam', { methods: ['POST'], auth: 'examinee', handler: handleStartExam });
+//   auth: 'none' | 'examiner' | 'teacher' | 'examinee' | 'gateway'
+//   methods: any of 'GET', 'POST' (a GET to a POST-only action is refused).
+//   rateLimit: optional { max, windowSec, id: function(p) -> identifier }
+// The registry is kept on the function object so module load order does not
+// matter (a module may register before this file's vars would have run).
+function apiRegistry() {
+  if (!apiRegistry._actions) apiRegistry._actions = {};
+  return apiRegistry._actions;
+}
+function defineAction(name, spec) {
+  if (!name || !spec || typeof spec.handler !== 'function') throw new Error('defineAction: bad spec for ' + name);
+  apiRegistry()[name] = {
+    name: name,
+    methods: spec.methods || ['GET'],
+    auth: spec.auth || 'none',
+    handler: spec.handler,
+    rateLimit: spec.rateLimit || null
+  };
+}
+function apiActionNames() { return Object.keys(apiRegistry()).sort(); }
 // One spreadsheet handle per execution, and the first open is marked: on 17/09
 // an examinerDashboard spent 84.8 s before its first sheet mark, and the trail
 // could not say whether opening the document or reading 'בוחנים' took it.
@@ -146,6 +177,64 @@ function getSheet(name) {
 
 function getSheetIfExists(name) {
   return spreadsheetFor(name).getSheetByName(name);
+}
+
+// ========== Writes to ממתינים shared by several modules ==========
+// Every status change of an examinee row goes through setPendingStatus so that
+// (a) the per-session snapshot the pollers read is dropped at once — a status
+// written past the snapshot was the r23 gap (review C R8), and (b) the flush
+// happens exactly once. Column numbers are 1-based getRange columns.
+var PENDING_STATUS_COL = 6;
+var PENDING_COLS = { status: 6, language: 7, population: 8, license: 9, audio: 10, timeExtension: 11, examStart: 12, token: 13, dqCount: 14, extScreen: 15, warnCount: 16, lastWarning: 17, site: 18, finishedOnDevice: 19 };
+// extras: optional { <PENDING_COLS name>: value } written in the same flush.
+function setPendingStatus(sheet, rowNumber, sessionCode, status, extras) {
+  sheet.getRange(rowNumber, PENDING_STATUS_COL).setValue(status);
+  if (extras) {
+    for (var name in extras) {
+      if (!Object.prototype.hasOwnProperty.call(extras, name) || !PENDING_COLS[name]) continue;
+      sheet.getRange(rowNumber, PENDING_COLS[name]).setValue(extras[name]);
+    }
+  }
+  SpreadsheetApp.flush();
+  invalidatePendingSnapshot(sessionCode);
+}
+
+// Refresh current rows without repeatedly copying the whole growing sheet.
+// Full snapshots retain old recovery rows; a changed row count/identity falls
+// back to a full read so registration, retakes and maintenance remain visible.
+function refreshExamineePendingRows(sheet, rows, sessionCode, idNumber) {
+  if (!rows || sheet.getLastRow() !== rows.length) return sheet.getDataRange().getValues();
+  var matchingRows = 0;
+  for (var m = 1; m < rows.length; m++) {
+    if (String(rows[m][0]) === String(sessionCode) && normalizeId(rows[m][1]) === normalizeId(idNumber)) matchingRows++;
+  }
+  if (matchingRows > 4) return sheet.getDataRange().getValues();
+  for (var i = rows.length - 1; i >= 1; i--) {
+    if (String(rows[i][0]) !== String(sessionCode) || normalizeId(rows[i][1]) !== normalizeId(idNumber)) continue;
+    var live = sheet.getRange(i + 1, 1, 1, rows[i].length).getValues()[0];
+    if (!live || String(live[0]) !== String(sessionCode) || normalizeId(live[1]) !== normalizeId(idNumber)) {
+      return sheet.getDataRange().getValues();
+    }
+    rows[i] = live;
+  }
+  return rows;
+}
+
+// Helper: mark ALL active pending rows for this session+ID as completed.
+// Closes EVERY in_exam/approved row (not just the latest) — a duplicate pending
+// row otherwise leaves the soldier stuck on the board even though they finished
+// and submitted (reported: "stuck in ממתינים/במבחן despite finishing").
+function markPendingCompleted(sessionCode, idNumber, pendingSnapshot) {
+  var pendSheet = pendingSnapshot ? pendingSnapshot.sheet : getSheet('ממתינים');
+  var pendData = pendingSnapshot
+    ? refreshExamineePendingRows(pendSheet, pendingSnapshot.rows, sessionCode, idNumber)
+    : pendSheet.getDataRange().getValues();
+  for (var j = pendData.length - 1; j >= 1; j--) {
+    if (String(pendData[j][0]) === String(sessionCode) && normalizeId(pendData[j][1]) === normalizeId(idNumber) && (String(pendData[j][5]).trim() === 'in_exam' || String(pendData[j][5]).trim() === 'approved')) {
+      pendSheet.getRange(j + 1, 6).setValue('completed');
+      pendData[j][5] = 'completed';
+    }
+  }
 }
 
 // ---- Migration: run from the editor, in this order, see docs/OPERATIONS.md ----
@@ -4215,44 +4304,6 @@ function handleSubmitResult(data) {
 
   diagMark('compute:submit-done');
   return jsonResponse({ status: 'ok', waLink: waLink });
-}
-
-// Refresh current rows without repeatedly copying the whole growing sheet.
-// Full snapshots retain old recovery rows; a changed row count/identity falls
-// back to a full read so registration, retakes and maintenance remain visible.
-function refreshExamineePendingRows(sheet, rows, sessionCode, idNumber) {
-  if (!rows || sheet.getLastRow() !== rows.length) return sheet.getDataRange().getValues();
-  var matchingRows = 0;
-  for (var m = 1; m < rows.length; m++) {
-    if (String(rows[m][0]) === String(sessionCode) && normalizeId(rows[m][1]) === normalizeId(idNumber)) matchingRows++;
-  }
-  if (matchingRows > 4) return sheet.getDataRange().getValues();
-  for (var i = rows.length - 1; i >= 1; i--) {
-    if (String(rows[i][0]) !== String(sessionCode) || normalizeId(rows[i][1]) !== normalizeId(idNumber)) continue;
-    var live = sheet.getRange(i + 1, 1, 1, rows[i].length).getValues()[0];
-    if (!live || String(live[0]) !== String(sessionCode) || normalizeId(live[1]) !== normalizeId(idNumber)) {
-      return sheet.getDataRange().getValues();
-    }
-    rows[i] = live;
-  }
-  return rows;
-}
-
-// Helper: mark ALL active pending rows for this session+ID as completed.
-// Closes EVERY in_exam/approved row (not just the latest) — a duplicate pending
-// row otherwise leaves the soldier stuck on the board even though they finished
-// and submitted (reported: "stuck in ממתינים/במבחן despite finishing").
-function markPendingCompleted(sessionCode, idNumber, pendingSnapshot) {
-  var pendSheet = pendingSnapshot ? pendingSnapshot.sheet : getSheet('ממתינים');
-  var pendData = pendingSnapshot
-    ? refreshExamineePendingRows(pendSheet, pendingSnapshot.rows, sessionCode, idNumber)
-    : pendSheet.getDataRange().getValues();
-  for (var j = pendData.length - 1; j >= 1; j--) {
-    if (String(pendData[j][0]) === String(sessionCode) && normalizeId(pendData[j][1]) === normalizeId(idNumber) && (String(pendData[j][5]).trim() === 'in_exam' || String(pendData[j][5]).trim() === 'approved')) {
-      pendSheet.getRange(j + 1, 6).setValue('completed');
-      pendData[j][5] = 'completed';
-    }
-  }
 }
 
 function handleSubmitWrongAnswers(p) {
