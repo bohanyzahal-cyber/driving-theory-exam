@@ -13,7 +13,7 @@ function generateToken() {
 var TOKEN_VERDICT_CACHE_SEC = 60;
 function verifyToken(examinerId, token) {
   if (!examinerId || !token) return false;
-  var key = QUESTION_CACHE_PREFIX + 'tok_' + normalizeId(examinerId) + '_' + String(token).slice(0, 80), cache = null;
+  var key = CACHE_KEY_PREFIX + 'tok_' + normalizeId(examinerId) + '_' + String(token).slice(0, 80), cache = null;
   try { cache = CacheService.getScriptCache(); if (cache.get(key) === '1') return true; } catch (eGet) { cache = null; }
   var sheet = getSheet('בוחנים');
   var data = sheet.getDataRange().getValues();
@@ -55,13 +55,13 @@ var ALLOWED_ORIGINS = [
   'student-app',       // student.html
   'admin-app',         // admin.html
   'bohanyzahal-site',  // bohan-site (IDF portal — server-side auth)
+  'gateway',           // the session-poll Worker (sessionSnapshot; it also holds GATEWAY_KEY)
   'localhost-dev'      // local development
 ];
 function checkOrigin(p) {
   // Allowed: actions called from external services (none currently) or no origin enforcement on certain reads
-  // For now: reject unknown origins on all actions except 'viewResult' (HTML output, opened in browser tab).
-  var action = p.action || '';
-  if (action === 'viewResult' || action === '') return null;
+  // An empty action is the public 'is the API running' ping and needs no origin.
+  if (String(p.action || '') === '') return null;
   var origin = String(p.origin || '').trim();
   if (!origin) {
     return jsonResponse({ status: 'error', message: 'Missing origin', code: 'origin_required' });
@@ -138,26 +138,57 @@ function generateExamineeToken() {
   return (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
 }
 
-// Returns { valid: bool, legacy: bool, reason: string }
+// One row of 'ממתינים' → token verdict. Per-examinee audio (column J) rides
+// along on the row we already read, so callers get it without a second scan.
 // - legacy: true when the stored row predates token support (empty cell) —
 //   we accept the call but flag it so we can audit / tighten later.
 // - reason values (when invalid): 'not_found', 'missing', 'mismatch'.
-function verifyExamineeToken(sessionCode, idNumber, examineeToken) {
-  var data = readPendingTail().rows;   // read-only: no row-index writes here
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]) === String(sessionCode) && normalizeId(data[i][1]) === normalizeId(idNumber)) {
-      // Per-examinee audio (column J) rides along on the row we already read, so
-      // callers get it without a second sheet scan — matters on getExamQuestions,
-      // which is the exam-start hot path.
-      var rowAudio = String(data[i][9] || '').trim() === 'on' ? 'on' : 'off';
-      var storedToken = String((data[i].length > 12 ? data[i][12] : '') || '').trim();
-      if (!storedToken) return { valid: true, legacy: true, audioMode: rowAudio };
-      if (!examineeToken) return { valid: false, reason: 'missing' };
-      if (String(examineeToken).trim() === storedToken) return { valid: true, legacy: false, audioMode: rowAudio };
-      return { valid: false, reason: 'mismatch' };
-    }
+function examineeTokenVerdict(row, examineeToken) {
+  var rowAudio = String(row[9] || '').trim() === 'on' ? 'on' : 'off';
+  var storedToken = String((row.length > 12 ? row[12] : '') || '').trim();
+  if (!storedToken) return { valid: true, legacy: true, audioMode: rowAudio };
+  if (!examineeToken) return { valid: false, reason: 'missing' };
+  if (String(examineeToken).trim() === storedToken) return { valid: true, legacy: false, audioMode: rowAudio };
+  return { valid: false, reason: 'mismatch' };
+}
+
+// The token check reads the tail of 'ממתינים'; the handler that runs right after
+// it needs the very same row — its status, its sheet row number (the status
+// write needs it), the audio flag and the time extension. Handing that read
+// forward is what keeps startExam and submitResult at ONE read of the sheet.
+// The context is SINGLE USE — the auth check hands it to the handler that runs
+// immediately after it, and anything later reads the sheet again. Nothing is
+// ever decided from a row this request did not just read.
+//   latest = the newest row of this examinee, whatever its status (the token
+//            and the "may they submit" rule are decided on it, as before)
+//   active = the newest approved/in_exam row (the attempt being started)
+var EXAMINEE_ROW_CONTEXT = null;
+function examineeRowContext(sessionCode, idNumber, fresh) {
+  var cached = EXAMINEE_ROW_CONTEXT;
+  EXAMINEE_ROW_CONTEXT = null;
+  if (!fresh && cached && String(cached.sessionCode) === String(sessionCode) &&
+      normalizeId(cached.idNumber) === normalizeId(idNumber)) return cached;
+  diagMark('sheet:pending-examinee');
+  var tail = readPendingTail(), rows = tail.rows;
+  var ctx = { sessionCode: sessionCode, idNumber: idNumber, tail: tail, latest: null, active: null };
+  for (var i = rows.length - 1; i >= 1; i--) {
+    if (String(rows[i][0]) !== String(sessionCode) || normalizeId(rows[i][1]) !== normalizeId(idNumber)) continue;
+    var entry = { row: rows[i], rowNumber: i + tail.off + 1, status: String(rows[i][5] || '').trim() };
+    if (!ctx.latest) ctx.latest = entry;
+    if (!ctx.active && (entry.status === 'approved' || entry.status === 'in_exam')) ctx.active = entry;
+    if (ctx.latest && ctx.active) break;
   }
-  return { valid: false, reason: 'not_found' };
+  EXAMINEE_ROW_CONTEXT = ctx;
+  return ctx;
+}
+
+// Returns { valid: bool, legacy: bool, reason: string }
+function verifyExamineeToken(sessionCode, idNumber, examineeToken) {
+  var ctx = examineeRowContext(sessionCode, idNumber, true);   // auth always reads fresh
+  if (!ctx.latest) return { valid: false, reason: 'not_found' };
+  var verdict = examineeTokenVerdict(ctx.latest.row, examineeToken);
+  ctx.audioMode = verdict.audioMode || 'off';
+  return verdict;
 }
 
 // Convenience wrapper for handlers. Returns null when OK, or a jsonResponse error.
@@ -204,14 +235,9 @@ function getExaminerRole(examinerId) {
 
 // Verify examiner owns the session (for sensitive actions)
 function verifyExaminerForSession(sessionCode, examinerId) {
-  if (!examinerId) return false;
-  var sheet = getSheet('סשנים');
-  var data = sheet.getDataRange().getValues();
-  for (var i = 1; i < data.length; i++) {
-    if (String(data[i][0]).trim() === String(sessionCode).trim()) {
-      return normalizeId(data[i][1]) === normalizeId(examinerId);
-    }
-  }
-  return false;
+  // One rule, one read: examinerOwnsSession (44_sessions_misc.js) serves the
+  // check from the per-execution memo of 'סשנים', so a handler that verifies
+  // ownership and then reads the session row pays for the sheet once.
+  return examinerOwnsSession(sessionCode, examinerId);
 }
 

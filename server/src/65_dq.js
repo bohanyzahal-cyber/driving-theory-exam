@@ -6,27 +6,25 @@ function handleDisqualify(p) {
   // from disqualifying other examinees.
   var pendSheet = getSheet('ממתינים');
   var pendData = pendSheet.getDataRange().getValues();
+  var hit = findLatestPendingRow(pendData, p.sessionCode, p.idNumber);
   var name = '', phone = '', population = '', examineeLicense = '', examineeAudio = 'off';
-  var pendRowIdx = -1, pendStatus = '';
-  for (var j = pendData.length - 1; j >= 1; j--) {
-    if (String(pendData[j][0]) === String(p.sessionCode) && normalizeId(pendData[j][1]) === normalizeId(p.idNumber)) {
-      name = pendData[j][2] || '';
-      phone = pendData[j][3] || '';
-      population = pendData[j][7] || '';
-      examineeLicense = pendData[j][8] || '';
-      examineeAudio = pendData[j][9] || 'off';
-      pendRowIdx = j;
-      pendStatus = String(pendData[j][5] || '').trim();
-      break;
-    }
+  var pendRowIdx = hit.idx, pendStatus = hit.status;
+  if (hit.idx !== -1) {
+    name = hit.row[2] || '';
+    phone = hit.row[3] || '';
+    population = hit.row[7] || '';
+    examineeLicense = hit.row[8] || '';
+    examineeAudio = hit.row[9] || 'off';
   }
 
   if (p.examinerId) {
-    // Path A: examiner-initiated — require valid token + ownership
+    // Path A: examiner-initiated — require valid token + ownership.
+    // examinerOwnsSession reads 'סשנים' through the per-execution memo the
+    // result row below reuses; this handler read the sheet twice (C R12).
     if (!verifyToken(p.examinerId, p.token)) {
       return jsonResponse({ status: 'error', message: 'טוקן בוחן לא תקין', tokenExpired: true });
     }
-    if (!verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+    if (!examinerOwnsSession(p.sessionCode, p.examinerId)) {
       return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
     }
   } else {
@@ -55,10 +53,8 @@ function handleDisqualify(p) {
   // examinee triggered an anti-cheat event — even if some were auto-reverted in
   // grace period via cancelDisqualify.
   if (pendRowIdx !== -1) {
-    pendSheet.getRange(pendRowIdx + 1, 6).setValue('disqualified');
-    var prevCount = 0;
-    if (pendData[pendRowIdx].length > 13) prevCount = Number(pendData[pendRowIdx][13]) || 0;
-    pendSheet.getRange(pendRowIdx + 1, 14).setValue(prevCount + 1);
+    var prevCount = (pendData[pendRowIdx].length > 13) ? (Number(pendData[pendRowIdx][13]) || 0) : 0;
+    setPendingStatus(pendSheet, pendRowIdx + 1, p.sessionCode, 'disqualified', { dqCount: prevCount + 1 });
     // Clear any OTHER active (in_exam/approved) rows for this examinee so a
     // duplicate row doesn't linger on the board beside the disqualified one.
     for (var dqd = 1; dqd < pendData.length; dqd++) {
@@ -66,7 +62,7 @@ function handleDisqualify(p) {
       if (String(pendData[dqd][0]) !== String(p.sessionCode) || normalizeId(pendData[dqd][1]) !== normalizeId(p.idNumber)) continue;
       var dqdStatus = String(pendData[dqd][5]).trim();
       if (dqdStatus === 'in_exam' || dqdStatus === 'approved') {
-        pendSheet.getRange(dqd + 1, 6).setValue('cancelled');
+        setPendingStatus(pendSheet, dqd + 1, p.sessionCode, 'cancelled');
       }
     }
   }
@@ -80,7 +76,9 @@ function handleDisqualify(p) {
   //   3. Otherwise (latest is not פסול, or it's old/cancelled) -> create new row.
   var dqEventId = String(p.dqEventId || '');
   var sheet = getSheet('תוצאות');
-  var data = sheet.getDataRange().getValues();
+  // The dedupe window is 2 minutes and a retry lands within seconds, so the tail
+  // is always enough — this used to read every result ever recorded.
+  var data = readResultsTail().rows;
   var nowMs = Date.now();
   for (var i = data.length - 1; i >= 1; i--) {
     if (String(data[i][13]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
@@ -114,18 +112,14 @@ function handleDisqualify(p) {
   }
 
   // Create new disqualified result row
-  var sesSheet = getSheet('סשנים');
-  var sesData = sesSheet.getDataRange().getValues();
+  var sesRow = sessionRowByCode(p.sessionCode);
   var license = '', language = 'he', site = '', classroom = '', examinerName = '';
-  for (var s = 1; s < sesData.length; s++) {
-    if (String(sesData[s][0]).trim() === String(p.sessionCode).trim()) {
-      examinerName = sesData[s][2] || '';
-      site = sesData[s][3] || '';
-      classroom = sesData[s][4] || '';
-      license = examineeLicense || sesData[s][5] || '';
-      language = sesData[s][6] || 'he';
-      break;
-    }
+  if (sesRow) {
+    examinerName = sesRow[2] || '';
+    site = sesRow[3] || '';
+    classroom = sesRow[4] || '';
+    license = examineeLicense || sesRow[5] || '';
+    language = sesRow[6] || 'he';
   }
   if (!license) license = examineeLicense;
   var attemptNum = countAttempts(String(p.idNumber), license) + 1;
@@ -152,39 +146,27 @@ function handleCancelDisqualify(p) {
   // 1. Revert pending status from 'disqualified' back to 'in_exam'
   var pendSheet = getSheet('ממתינים');
   var pendData = pendSheet.getDataRange().getValues();
-  for (var j = pendData.length - 1; j >= 1; j--) {
-    if (String(pendData[j][0]) === sc && normalizeId(pendData[j][1]) === id) {
-      if (String(pendData[j][5]).trim() === 'disqualified') {
-        pendSheet.getRange(j + 1, 6).setValue('in_exam');
-        break;
-      }
-    }
+  var pendHit = findLatestPendingRow(pendData, sc, id);
+  if (pendHit.idx !== -1 && pendHit.status === 'disqualified') {
+    setPendingStatus(pendSheet, pendHit.idx + 1, sc, 'in_exam');
   }
 
-  // 2. Delete the DQ result row matching this dqEventId (or latest פסול if no eventId)
+  // 2. Cancel the DQ result row matching this dqEventId (or the latest פסול).
+  // The row was written seconds ago, inside the grace period — tail is enough.
   var dqEventId = String(p.dqEventId || '');
   var resSheet = getSheet('תוצאות');
-  var resData = resSheet.getDataRange().getValues();
-  for (var i = resData.length - 1; i >= 1; i--) {
-    if (String(resData[i][13]) === sc && normalizeId(resData[i][1]) === id) {
-      if (String(resData[i][7]).trim() === 'פסול') {
-        // Only delete if dqEventId matches (or if no eventId provided for backwards compat)
-        if (!dqEventId || String(resData[i][24] || '') === dqEventId) {
-          resSheet.getRange(i + 1, 8).setValue('בוטל');
-          break;
-        }
-      }
-      // If latest result is NOT פסול or eventId doesn't match — stop
-      break;
-    }
+  var resRead = readResultsTail();
+  var resHit = findLatestResultRow(resRead.rows, sc, id, false);
+  if (resHit.idx !== -1 && resHit.status === 'פסול' &&
+      (!dqEventId || String(resHit.row[24] || '') === dqEventId)) {
+    resSheet.getRange(resHit.idx + 1 + resRead.off, 8).setValue('בוטל');
+    SpreadsheetApp.flush();
   }
-
-  SpreadsheetApp.flush();
   return jsonResponse({ status: 'ok' });
 }
 
 function handleResetExaminee(p) {
-  if (p.examinerId && !verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+  if (p.examinerId && !examinerOwnsSession(p.sessionCode, p.examinerId)) {
     return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
   }
   var sheet = getSheet('ממתינים');
@@ -193,26 +175,23 @@ function handleResetExaminee(p) {
   // ALL stuck states — including 'disqualified'/'dq_confirmed'. Previously reset
   // refused those, so a soldier stuck on a pending DQ could not be cleared at all.
   // "אפס" should fully remove a stuck soldier from the board so they can re-register.
+  var RESETTABLE = { waiting: 1, approved: 1, in_exam: 1, disqualified: 1, dq_confirmed: 1 };
   var resetCount = 0;
   for (var i = 1; i < data.length; i++) {
     if (String(data[i][0]) !== String(p.sessionCode) || normalizeId(data[i][1]) !== normalizeId(p.idNumber)) continue;
-    var s = String(data[i][5]).trim();
-    if (s === 'waiting' || s === 'approved' || s === 'in_exam' || s === 'disqualified' || s === 'dq_confirmed') {
-      sheet.getRange(i + 1, 6).setValue('cancelled');
-      resetCount++;
-    }
+    if (!RESETTABLE[String(data[i][5]).trim()]) continue;
+    setPendingStatus(sheet, i + 1, p.sessionCode, 'cancelled');
+    resetCount++;
   }
   if (resetCount === 0) {
     return jsonResponse({ status: 'error', message: 'לא נמצא נבחן פעיל לאיפוס' });
   }
-  SpreadsheetApp.flush();
-  invalidatePendingSnapshot(p.sessionCode);   // r23
   return jsonResponse({ status: 'ok', resetCount: resetCount });
 }
 
 // Force-complete a stuck in_exam examinee (examiner manual action)
 function handleForceComplete(p) {
-  if (p.examinerId && !verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+  if (p.examinerId && !examinerOwnsSession(p.sessionCode, p.examinerId)) {
     return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
   }
   var pendSheet = getSheet('ממתינים');
@@ -234,35 +213,29 @@ function handleForceComplete(p) {
       examineeLicense = pendData[j][8] || '';
       examineeAudio = pendData[j][9] || 'off';
     }
-    pendSheet.getRange(j + 1, 6).setValue('completed');
+    setPendingStatus(pendSheet, j + 1, p.sessionCode, 'completed');
     found = true;
   }
   if (!found) {
     return jsonResponse({ status: 'error', message: 'לא נמצא נבחן עם סטטוס in_exam/approved' });
   }
 
-  // Check if result already exists — if so, just mark pending as completed (done above)
+  // Check if result already exists — if so, just mark pending as completed (done
+  // above). The examinee is in THIS session, so their row is in the tail.
   var resSheet = getSheet('תוצאות');
-  var resData = resSheet.getDataRange().getValues();
-  for (var i = resData.length - 1; i >= 1; i--) {
-    if (String(resData[i][13]) === String(p.sessionCode) && normalizeId(resData[i][1]) === normalizeId(p.idNumber)) {
-      SpreadsheetApp.flush();
-      return jsonResponse({ status: 'ok', message: 'נמצאה תוצאה קיימת — הסטטוס עודכן' });
-    }
+  var resData = readResultsTail().rows;
+  if (findLatestResultRow(resData, p.sessionCode, p.idNumber, false).idx !== -1) {
+    return jsonResponse({ status: 'ok', message: 'נמצאה תוצאה קיימת — הסטטוס עודכן' });
   }
 
   // No result exists — create a fail result
-  var sesSheet = getSheet('סשנים');
-  var sesData = sesSheet.getDataRange().getValues();
+  var sesRow = sessionRowByCode(p.sessionCode);
   var license = examineeLicense, site = '', classroom = '', examinerName = '';
-  for (var s = 1; s < sesData.length; s++) {
-    if (String(sesData[s][0]).trim() === String(p.sessionCode).trim()) {
-      examinerName = sesData[s][2] || '';
-      site = sesData[s][3] || '';
-      classroom = sesData[s][4] || '';
-      if (!license) license = sesData[s][5] || '';
-      break;
-    }
+  if (sesRow) {
+    examinerName = sesRow[2] || '';
+    site = sesRow[3] || '';
+    classroom = sesRow[4] || '';
+    if (!license) license = sesRow[5] || '';
   }
   var attemptNum = countAttempts(String(p.idNumber), license) + 1;
   resSheet.appendRow([
@@ -277,34 +250,21 @@ function handleForceComplete(p) {
 }
 
 function handleOverturnDQ(p) {
-  if (p.examinerId && !verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+  if (p.examinerId && !examinerOwnsSession(p.sessionCode, p.examinerId)) {
     return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
   }
 
-  // Find the latest result row + the pending row for this examinee in one pass each.
+  // Find the latest result row + the pending row for this examinee in one pass
+  // each. An overturn always targets a result of the running session.
   var sheet = getSheet('תוצאות');
-  var data = sheet.getDataRange().getValues();
-  var resultRowIdx = -1;
-  var resultStatus = '';
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][13]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
-      resultRowIdx = i;
-      resultStatus = String(data[i][7]).trim();
-      break;
-    }
-  }
+  var resRead = readResultsTail();
+  var resHit = findLatestResultRow(resRead.rows, p.sessionCode, p.idNumber, false);
+  var resultRowIdx = resHit.idx, resultStatus = resHit.status;
 
   var pendSheet = getSheet('ממתינים');
   var pendData = pendSheet.getDataRange().getValues();
-  var pendRowIdx = -1;
-  var pendStatusNow = '';
-  for (var j = pendData.length - 1; j >= 1; j--) {
-    if (String(pendData[j][0]) === String(p.sessionCode) && normalizeId(pendData[j][1]) === normalizeId(p.idNumber)) {
-      pendRowIdx = j;
-      pendStatusNow = String(pendData[j][5] || '').trim();
-      break;
-    }
-  }
+  var pendHit = findLatestPendingRow(pendData, p.sessionCode, p.idNumber);
+  var pendRowIdx = pendHit.idx, pendStatusNow = pendHit.status;
 
   // Case 1: latest result is פסול → normal overturn flow.
   // Pending revert covers BOTH 'disqualified' (auto-DQ, not yet confirmed) and
@@ -313,12 +273,12 @@ function handleOverturnDQ(p) {
   // result row but the examinee stays locked out — they'd need a fresh
   // registration, which is what created duplicate rows at base 14.
   if (resultStatus === 'פסול') {
-    sheet.getRange(resultRowIdx + 1, 8).setValue('בוטל');
-    sheet.getRange(resultRowIdx + 1, 18).setValue(false);
-    if (pendRowIdx !== -1 && (pendStatusNow === 'disqualified' || pendStatusNow === 'dq_confirmed')) {
-      pendSheet.getRange(pendRowIdx + 1, 6).setValue('in_exam');
-    }
+    sheet.getRange(resultRowIdx + 1 + resRead.off, 8).setValue('בוטל');
+    sheet.getRange(resultRowIdx + 1 + resRead.off, 18).setValue(false);
     SpreadsheetApp.flush();
+    if (pendRowIdx !== -1 && (pendStatusNow === 'disqualified' || pendStatusNow === 'dq_confirmed')) {
+      setPendingStatus(pendSheet, pendRowIdx + 1, p.sessionCode, 'in_exam');
+    }
     return jsonResponse({ status: 'ok' });
   }
 
@@ -328,16 +288,14 @@ function handleOverturnDQ(p) {
   // the pending row stayed stuck. Just clean up the pending row.
   if (pendRowIdx !== -1 && pendStatusNow === 'disqualified' &&
       (resultStatus === 'עבר' || resultStatus === 'נכשל' || resultStatus === 'בוטל')) {
-    pendSheet.getRange(pendRowIdx + 1, 6).setValue('completed');
-    SpreadsheetApp.flush();
+    setPendingStatus(pendSheet, pendRowIdx + 1, p.sessionCode, 'completed');
     return jsonResponse({ status: 'ok', resolved: 'stale_dq_cleared' });
   }
 
   // Case 3: pending is disqualified but no result row yet → revert so the
   // examinee can resume the exam (in_exam state, just like case 1).
   if (pendRowIdx !== -1 && pendStatusNow === 'disqualified' && resultRowIdx === -1) {
-    pendSheet.getRange(pendRowIdx + 1, 6).setValue('in_exam');
-    SpreadsheetApp.flush();
+    setPendingStatus(pendSheet, pendRowIdx + 1, p.sessionCode, 'in_exam');
     return jsonResponse({ status: 'ok', resolved: 'no_result_reverted' });
   }
 
@@ -350,61 +308,50 @@ function handleConfirmDQ(p) {
   // already forced a valid examinerId. The old `if (p.examinerId && ...)` form could
   // be bypassed by simply OMITTING examinerId, letting anyone who knows session+id
   // finalize a victim's provisional DQ (robbing their grace-period recovery).
-  if (!verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+  if (!examinerOwnsSession(p.sessionCode, p.examinerId)) {
     return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
   }
   // Mark pending status as dq_confirmed so examinee polling gets a final answer
   var pendSheet = getSheet('ממתינים');
   var pendData = pendSheet.getDataRange().getValues();
-  for (var j = pendData.length - 1; j >= 1; j--) {
-    if (String(pendData[j][0]) === String(p.sessionCode) && normalizeId(pendData[j][1]) === normalizeId(p.idNumber)) {
-      if (String(pendData[j][5]).trim() === 'disqualified') {
-        pendSheet.getRange(j + 1, 6).setValue('dq_confirmed');
-        SpreadsheetApp.flush();
-        return jsonResponse({ status: 'ok' });
-      }
-      break;
-    }
+  var hit = findLatestPendingRow(pendData, p.sessionCode, p.idNumber);
+  if (hit.idx === -1 || hit.status !== 'disqualified') {
+    return jsonResponse({ status: 'error', message: 'לא נמצא רישום פסול לאישור' });
   }
-  return jsonResponse({ status: 'error', message: 'לא נמצא רישום פסול לאישור' });
+  setPendingStatus(pendSheet, hit.idx + 1, p.sessionCode, 'dq_confirmed');
+  return jsonResponse({ status: 'ok' });
 }
 
 function handleCorrectToPass(p) {
-  if (p.examinerId && !verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+  if (p.examinerId && !examinerOwnsSession(p.sessionCode, p.examinerId)) {
     return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
   }
   var sheet = getSheet('תוצאות');
-  var data = sheet.getDataRange().getValues();
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][13]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
-      // Verify score is eligible (>= 24/30)
-      var scoreParts = String(data[i][5]).split('/');
-      var scoreNum = parseInt(scoreParts[0]) || 0;
-      if (scoreNum < 24) {
-        return jsonResponse({ status: 'error', message: 'ציון נמוך מדי לתיקון (מתחת ל-24)' });
-      }
-      // Update pass/fail to עבר
-      sheet.getRange(i + 1, 8).setValue('עבר');     // column H = עבר/נכשל
-      // Clear disqualified flag (in case correcting a DQ result directly)
-      sheet.getRange(i + 1, 18).setValue(false);     // column R = disqualified
-      // Mark as corrected
-      sheet.getRange(i + 1, 21).setValue(true);      // column U = תוקן?
-      // Regenerate WhatsApp link — corrected result shows only "עבר" (no score/errors)
-      var phone = formatPhoneForWA(data[i][3]);
-      var waMsg = '*🚗 אישור תוצאת מבחן תאוריה חיצוני*\n\n' +
-        'שם: ' + data[i][2] + '\n' +
-        'ת.ז.: ' + data[i][1] + '\n' +
-        'דרגה: ' + data[i][4] + '\n' +
-        (data[i][19] ? 'אוכלוסיה: ' + data[i][19] + '\n' : '') +
-        'תאריך: ' + data[i][0] + '\n' +
-        'תוצאה: *עבר*\n';
-      var waLink = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(waMsg);
-      sheet.getRange(i + 1, 19).setValue(waLink);    // column S = קישור וואטסאפ
-      SpreadsheetApp.flush();
-      return jsonResponse({ status: 'ok' });
-    }
+  var read = readResultsTail();
+  // skipCancelled: a 'בוטל' row was already overturned/superseded — correcting
+  // it would resurrect a dead row and leave two live results (review E S7).
+  var hit = findLatestResultRow(read.rows, p.sessionCode, p.idNumber, true);
+  if (hit.idx === -1) return jsonResponse({ status: 'error', message: 'תוצאה לא נמצאה' });
+  var row = hit.row, rowNumber = hit.idx + 1 + read.off;
+  // Verify score is eligible (>= 24/30)
+  var scoreNum = parseInt(String(row[5]).split('/')[0]) || 0;
+  if (scoreNum < 24) {
+    return jsonResponse({ status: 'error', message: 'ציון נמוך מדי לתיקון (מתחת ל-24)' });
   }
-  return jsonResponse({ status: 'error', message: 'תוצאה לא נמצאה' });
+  sheet.getRange(rowNumber, 8).setValue('עבר');      // column H = עבר/נכשל
+  sheet.getRange(rowNumber, 18).setValue(false);     // column R = disqualified (may be a DQ row)
+  sheet.getRange(rowNumber, 21).setValue(true);      // column U = תוקן?
+  // Regenerate WhatsApp link — corrected result shows only "עבר" (no score/errors)
+  var waMsg = '*🚗 אישור תוצאת מבחן תאוריה חיצוני*\n\n' +
+    'שם: ' + row[2] + '\n' +
+    'ת.ז.: ' + row[1] + '\n' +
+    'דרגה: ' + row[4] + '\n' +
+    (row[19] ? 'אוכלוסיה: ' + row[19] + '\n' : '') +
+    'תאריך: ' + row[0] + '\n' +
+    'תוצאה: *עבר*\n';
+  sheet.getRange(rowNumber, 19).setValue('https://wa.me/' + formatPhoneForWA(row[3]) + '?text=' + encodeURIComponent(waMsg));
+  SpreadsheetApp.flush();
+  return jsonResponse({ status: 'ok' });
 }
 
 // Commander-only result correction. Allows changing score and pass/fail/DQ
@@ -439,17 +386,13 @@ function handleSubmitManualResult(p) {
   // Pull session context so manual rows match the rest of the session's rows
   // (same site/classroom/language) without the examiner re-typing them.
   var site = '', classroom = '', sessLicense = '', sessLanguage = 'he', examinerName = '';
-  var sesSheet = getSheet('סשנים');
-  var sesData = sesSheet.getDataRange().getValues();
-  for (var s = 1; s < sesData.length; s++) {
-    if (String(sesData[s][0]).trim() === String(p.sessionCode).trim()) {
-      examinerName = sesData[s][2] || '';
-      site = sesData[s][3] || '';
-      classroom = sesData[s][4] || '';
-      sessLicense = sesData[s][5] || '';
-      sessLanguage = sesData[s][6] || 'he';
-      break;
-    }
+  var sesRow = sessionRowByCode(p.sessionCode);
+  if (sesRow) {
+    examinerName = sesRow[2] || '';
+    site = sesRow[3] || '';
+    classroom = sesRow[4] || '';
+    sessLicense = sesRow[5] || '';
+    sessLanguage = sesRow[6] || 'he';
   }
   var license = String(p.license || sessLicense || 'B');
   var language = String(p.language || sessLanguage || 'he');
@@ -479,8 +422,9 @@ function handleSubmitManualResult(p) {
   var sheet = getSheet('תוצאות');
   // Idempotency: a lost-response retry (request landed, reply dropped, examiner
   // re-saves) must not create a second identical manual row. Skip if a non-בוטל
-  // row already exists for this session+id+license+score.
-  var manExisting = sheet.getDataRange().getValues();
+  // row already exists for this session+id+license+score. The retry follows
+  // within seconds, so the tail covers it.
+  var manExisting = readResultsTail().rows;
   for (var mx = manExisting.length - 1; mx >= 1; mx--) {
     if (String(manExisting[mx][13]) === String(p.sessionCode) &&
         normalizeId(manExisting[mx][1]) === normalizeId(idNumber) &&
@@ -538,7 +482,7 @@ function handleCorrectExamineeMeta(p) {
   if (!verifyToken(p.examinerId, p.token)) {
     return jsonResponse({ status: 'error', message: 'טוקן בוחן לא תקין', tokenExpired: true });
   }
-  if (!verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+  if (!examinerOwnsSession(p.sessionCode, p.examinerId)) {
     return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
   }
   var newSite = (typeof p.site !== 'undefined' && p.site !== null) ? String(p.site).trim() : '';
@@ -551,10 +495,11 @@ function handleCorrectExamineeMeta(p) {
     return jsonResponse({ status: 'error', message: 'לא הוזנו שדות לעדכון' });
   }
   var sheet = getSheet('תוצאות');
-  var rows = sheet.getDataRange().getValues();
+  var metaRead = readResultsTail();   // the examiner fixes a row of the session in front of them
+  var rows = metaRead.rows;
   for (var i = rows.length - 1; i >= 1; i--) {
     if (String(rows[i][13]) === String(p.sessionCode) && normalizeId(rows[i][1]) === normalizeId(p.idNumber)) {
-      var rowIdx = i + 1;
+      var rowIdx = i + 1 + metaRead.off;
       if (applyId) {
         var idCell = sheet.getRange(rowIdx, 2);   // B (idx 1) = ת.ז.
         idCell.setNumberFormat('@');              // store as text — preserve leading zeros / avoid number formatting
@@ -600,60 +545,52 @@ function handleCommanderCorrectResult(data) {
     return jsonResponse({ status: 'error', message: 'סטטוס חדש לא תקין' });
   }
 
+  // A commander corrects results of ANY session, including one from weeks ago,
+  // so this is the one correction handler that keeps the full live read (it runs
+  // a handful of times a month and must not miss a row a tail would cut off).
   var sheet = getSheet('תוצאות');
-  var rows = sheet.getDataRange().getValues();
-  for (var i = rows.length - 1; i >= 1; i--) {
-    if (String(rows[i][13]) === String(data.sessionCode) && normalizeId(rows[i][1]) === normalizeId(data.idNumber)) {
-      var rowIdx = i + 1;
-      var pct = Math.round((newScore / newTotal) * 100);
-      // Apply updates
-      sheet.getRange(rowIdx, 6).setValue(newScore + '/' + newTotal);  // F: ציון
-      sheet.getRange(rowIdx, 7).setValue(pct + '%');                   // G: אחוז
-      sheet.getRange(rowIdx, 8).setValue(newStatus);                   // H: עבר/נכשל
-      sheet.getRange(rowIdx, 18).setValue(newStatus === 'פסול');       // R: פסול?
-      sheet.getRange(rowIdx, 21).setValue(true);                       // U: תוקן?
-      // Audit trail (columns Z=26, AA=27, AB=28)
-      // Look up commander's display name from בוחנים sheet
-      var commanderName = '';
-      try {
-        var examSheet = getSheet('בוחנים');
-        var examData = examSheet.getDataRange().getValues();
-        for (var x = 1; x < examData.length; x++) {
-          if (normalizeId(examData[x][1]) === normalizeId(data.examinerId)) {
-            commanderName = String(examData[x][0] || '');
-            break;
-          }
-        }
-      } catch(e) {}
-      sheet.getRange(rowIdx, 26).setValue(commanderName + ' (' + normalizeId(data.examinerId) + ')');
-      sheet.getRange(rowIdx, 27).setValue(reason);
-      sheet.getRange(rowIdx, 28).setValue(todayStr());
-      SpreadsheetApp.flush();
-      return jsonResponse({ status: 'ok' });
+  var hit = findLatestResultRow(sheet.getDataRange().getValues(), data.sessionCode, data.idNumber, true);   // skip 'בוטל' (E S7)
+  if (hit.idx === -1) return jsonResponse({ status: 'error', message: 'תוצאה לא נמצאה' });
+  var rowIdx = hit.idx + 1;
+  var pct = Math.round((newScore / newTotal) * 100);
+  sheet.getRange(rowIdx, 6).setValue(newScore + '/' + newTotal);  // F: ציון
+  sheet.getRange(rowIdx, 7).setValue(pct + '%');                   // G: אחוז
+  sheet.getRange(rowIdx, 8).setValue(newStatus);                   // H: עבר/נכשל
+  sheet.getRange(rowIdx, 18).setValue(newStatus === 'פסול');       // R: פסול?
+  sheet.getRange(rowIdx, 21).setValue(true);                       // U: תוקן?
+  // Audit trail (columns Z=26, AA=27, AB=28) — commander's display name from בוחנים
+  var commanderName = '';
+  try {
+    var examData = getSheet('בוחנים').getDataRange().getValues();
+    for (var x = 1; x < examData.length; x++) {
+      if (normalizeId(examData[x][1]) === normalizeId(data.examinerId)) { commanderName = String(examData[x][0] || ''); break; }
     }
-  }
-  return jsonResponse({ status: 'error', message: 'תוצאה לא נמצאה' });
+  } catch(e) {}
+  sheet.getRange(rowIdx, 26).setValue(commanderName + ' (' + normalizeId(data.examinerId) + ')');
+  sheet.getRange(rowIdx, 27).setValue(reason);
+  sheet.getRange(rowIdx, 28).setValue(todayStr());
+  SpreadsheetApp.flush();
+  return jsonResponse({ status: 'ok' });
 }
 
 function handleMarkSent(p) {
   // Ownership check — consistent with the other examiner mutations; prevents an
   // authenticated examiner from flipping the "נשלח?" flag on another session's rows.
-  if (!verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+  if (!examinerOwnsSession(p.sessionCode, p.examinerId)) {
     return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
   }
   var sheet = getSheet('תוצאות');
-  var data = sheet.getDataRange().getValues();
+  var read = readResultsTail();   // rows of the session the examiner is sending from
+  var data = read.rows;
+  var wanted = {};
   var ids = p.idNumbers ? p.idNumbers.split(',') : [p.idNumber];
+  for (var k = 0; k < ids.length; k++) wanted[normalizeId(ids[k])] = true;
   var count = 0;
   for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][13]) === String(p.sessionCode)) {
-      for (var k = 0; k < ids.length; k++) {
-        if (normalizeId(data[i][1]) === normalizeId(ids[k])) {
-          sheet.getRange(i + 1, 17).setValue(true);  // נשלח? — column Q (17)
-          count++;
-        }
-      }
-    }
+    if (String(data[i][13]) !== String(p.sessionCode)) continue;
+    if (!wanted[normalizeId(data[i][1])]) continue;
+    sheet.getRange(i + 1 + read.off, 17).setValue(true);  // נשלח? — column Q (17)
+    count++;
   }
   return jsonResponse({ status: 'ok', updated: count });
 }

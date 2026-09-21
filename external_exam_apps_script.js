@@ -2,7 +2,7 @@
 // GENERATED FILE — do not edit here. Source: server/src/*.js (order: server/BUILD_ORDER.json).
 // Rebuild with:  node tools/build_server.js     (tools/build.js runs it too)
 // Deploy: paste this whole file into the Apps Script editor → Deploy → Manage deployments → New version.
-// Modules: 00_config, 05_registry, 10_spreadsheet, 08_pending_writes, 98_migration_practice, 12_reads, 14_pending_archive, 16_lookup_util, 18_whatsapp, 20_auth, 22_util, 30_api, 40_sessions_login, 82_report_center, 42_sessions_manage, 84_report_site, 44_sessions_misc, 50_pending, 55_dashboard, 52_pending_status, 65_dq, 60_exam, 70_question_cache, 75_diag, 72_question_meta, 74_question_structure, 76_question_cache_records, 78_question_handlers, 86_commander, 88_predictive, 90_teacher, 92_at_risk, 94_forecast, 96_admin, 91_teacher_classes
+// Modules: 00_config, 05_registry, 10_spreadsheet, 08_pending_writes, 98_migration_practice, 12_reads, 14_pending_archive, 16_lookup_util, 18_whatsapp, 20_auth, 22_util, 70_questions, 30_api, 40_sessions_login, 82_report_center, 42_sessions_manage, 84_report_site, 44_sessions_misc, 50_pending, 55_dashboard, 52_pending_status, 65_dq, 60_exam, 75_diag, 86_commander, 88_predictive, 90_teacher, 92_at_risk, 94_forecast, 96_admin, 91_teacher_classes
 // ============================================================================
 // © 2026 Vitaly Gitelman. All Rights Reserved.
 // Unauthorized copying, modification or distribution is prohibited.
@@ -17,14 +17,28 @@
 var SHEET_HEADERS = {
   'בוחנים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'מס בוחן', 'תפקיד', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד', 'אתרים מנוהלים'],
   'אתרים': ['שם אתר', 'מזהה', 'טלפון מנהל', 'כיתות'],
-  'סשנים': ['קוד', 'בוחן ת.ז.', 'שם בוחן', 'אתר', 'כיתה', 'דרגה', 'שפה', 'מצב שמע', 'זמן יצירה', 'תקף עד', 'פעיל', 'כמויות JSON', 'מאושרים JSON', 'בוחן אחראי'],
-  'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה', 'דרגה', 'שמע', 'הארכת זמן', 'התחלת מבחן', 'טוקן נבחן', 'ספירת DQ', 'מסך נוסף'],
-  // Rows moved out of ממתינים by archiveOldPendingRows (full 19-col width, nothing deleted).
+  // 15 columns: createSession appends the default population (idx 14) and
+  // getSessionInfo / listSessions read it (same drift as ממתינים, review E §5).
+  'סשנים': ['קוד', 'בוחן ת.ז.', 'שם בוחן', 'אתר', 'כיתה', 'דרגה', 'שפה', 'מצב שמע', 'זמן יצירה', 'תקף עד', 'פעיל', 'כמויות JSON', 'מאושרים JSON', 'בוחן אחראי', 'אוכלוסיית ברירת מחדל'],
+  // 19 columns: the code reads 15-18 and writes 19 (review E §5 — a sheet
+  // re-created from a 15-column header would be born four columns short and the
+  // warning counter / site / "finished on device" writes would land outside it).
+  'ממתינים': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה', 'דרגה', 'שמע', 'הארכת זמן', 'התחלת מבחן', 'טוקן נבחן', 'ספירת DQ', 'מסך נוסף', 'ספירת אזהרות', 'אזהרה אחרונה', 'אתר', 'סיים במכשיר'],
+  // Rows moved out of ממתינים by archiveSheets (full 19-col width, nothing deleted).
   'ממתינים_ארכיון': ['קוד סשן', 'ת.ז.', 'שם', 'טלפון', 'זמן הרשמה', 'סטטוס', 'שפה', 'אוכלוסיה', 'דרגה', 'שמע', 'הארכת זמן', 'התחלת מבחן', 'טוקן נבחן', 'ספירת DQ', 'מסך נוסף', 'ספירת אזהרות', 'אזהרה אחרונה', 'אתר', 'סיים במכשיר'],
   'תוצאות': ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר', 'כיתה', 'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ', 'אוכלוסיה', 'תוקן?', 'שמע', 'מאומת', 'חשוד', 'dqEventId', 'תוקן ע"י', 'סיבת תיקון', 'תאריך תיקון', 'מסלול שפות', 'מכשיר'],
+  // Rows moved out of תוצאות by archiveSheets (30 days) — same 30 columns.
+  'תוצאות_ארכיון': ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר', 'כיתה', 'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ', 'אוכלוסיה', 'תוקן?', 'שמע', 'מאומת', 'חשוד', 'dqEventId', 'תוקן ע"י', 'סיבת תיקון', 'תאריך תיקון', 'מסלול שפות', 'מכשיר'],
+  // The question map of one attempt. Written only by the exam-start path and
+  // read only while that attempt is scored, so it is archived after 2 days.
+  'מבחנים': ['קוד סשן', 'ת.ז.', 'שאלות JSON', 'זמן רישום', 'שפה', 'שגויות לא מאומתות'],
+  'מבחנים_ארכיון': ['קוד סשן', 'ת.ז.', 'שאלות JSON', 'זמן רישום', 'שפה', 'שגויות לא מאומתות'],
   'הארכות זמן': ['תאריך', 'קוד סשן', 'ת.ז.', 'שם', 'דקות', 'סיבה', 'בוחן'],
-  'מורים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד'],
-  'כיתות': ['קוד כיתה', 'שם כיתה', 'מורה ת.ז.', 'שם מורה', 'דרגה', 'תאריך יצירה', 'פעיל'],
+  // 10 columns: role (idx 8) and site (idx 9) are read by teacherLogin,
+  // teacherVerifyLogin, teacherCommanderDashboard and adminDashboard.
+  'מורים': ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד', 'תפקיד', 'אתר'],
+  // 8 columns: createClass appends the site (idx 7) and every commander report reads it.
+  'כיתות': ['קוד כיתה', 'שם כיתה', 'מורה ת.ז.', 'שם מורה', 'דרגה', 'תאריך יצירה', 'פעיל', 'אתר'],
   'כיתות שנמחקו': ['קוד כיתה', 'שם כיתה', 'מורה ת.ז.', 'שם מורה', 'דרגה', 'אתר', 'תאריך מחיקה'],
   'תלמידי כיתות': ['קוד כיתה', 'שם תלמיד', 'מזהה תלמיד', 'תאריך הצטרפות'],
   'תוצאות תרגול': ['תאריך', 'מזהה תלמיד', 'שם תלמיד', 'קוד כיתה', 'מצב', 'דרגה', 'ציון', 'סה"כ', 'אחוז', 'עבר/נכשל', 'זמן', 'נושא', 'שפה', 'פירוט שגויות', 'פירוט לפי נושא', 'טלפון'],
@@ -490,7 +504,7 @@ function readResultsTail() { return readTail(getSheet('תוצאות'), 0); }    
 var PENDING_SNAPSHOT_SEC = 4;
 var PENDING_SNAPSHOT_PREFIX = 'pendsnap_';
 function pendingSnapshotKey(sessionCode) {
-  return QUESTION_CACHE_PREFIX + PENDING_SNAPSHOT_PREFIX + String(sessionCode || '').trim();
+  return CACHE_KEY_PREFIX + PENDING_SNAPSHOT_PREFIX + String(sessionCode || '').trim();
 }
 // Returns { rows, cached }. rows[0] is a header placeholder so the callers'
 // `i >= 1` loops stay exactly as they were.
@@ -616,87 +630,237 @@ function readRowsSince(sheet, tsColIdx, cutoff, colSpec) {
   return { rows: sheet.getDataRange().getValues(), off: 0, mode: 'full/' + lastRow };
 }
 
-// ========== Nightly archive of ממתינים (perf) ==========
-// Every live-path reader of ממתינים filters by the current sessionCode; the only
-// history reader is the commander wait-time stat, which reads the archive too.
-// Rows older than PENDING_ARCHIVE_RETAIN_DAYS are therefore dead weight on the
-// hot path → moved (not deleted) to 'ממתינים_ארכיון'.
-// Run archiveOldPendingRows() once by hand, then installPendingArchiveTrigger()
-// for a daily 03:00 run (script time zone).
+// ---- History readers: live sheet + its archive, as one table ---------------
+// The nightly job (B5) moves rows older than the retention window out of
+// 'תוצאות' / 'ממתינים'. Every date-bounded aggregation must therefore read BOTH
+// or it would silently report a shorter history than it did yesterday. Rows
+// come back oldest-first (archive rows, then live rows) under ONE header, in
+// the requested columns only.
+//
+// The archive is read only when it can still hold a row in range:
+//   • readRowsSince answering 'rows…'/'none…' means it FOUND the boundary
+//     inside the live sheet — everything above it, archive included, is older;
+//   • otherwise the oldest live row decides; an unbounded cutoff always reads.
+// No `off` is returned: a merged table has no single sheet-row mapping, so a
+// caller that writes by row index must read the live sheet itself.
+function readHistorySince(sheetName, archiveName, tsColIdx, cutoff, colSpec) {
+  var live = readRowsSince(getSheet(sheetName), tsColIdx, cutoff, colSpec);
+  var bounded = cutoff instanceof Date && !isNaN(cutoff.getTime());
+  var needArchive = true;
+  if (bounded && /^(rows|none)/.test(String(live.mode))) needArchive = false;
+  if (bounded && needArchive && live.rows.length > 1) {
+    var oldestLive = parseSheetDateTime(live.rows[1][tsColIdx]);
+    if (oldestLive && oldestLive.getTime() <= cutoff.getTime()) needArchive = false;
+  }
+  var arch = needArchive ? getSheetIfExists(archiveName) : null;
+  if (!arch || arch.getLastRow() < 2) return { rows: live.rows, mode: live.mode + '+arch:0' };
+  var archRead = readRowsSince(arch, tsColIdx, cutoff, colSpec);
+  var header = live.rows.length ? live.rows.slice(0, 1) : archRead.rows.slice(0, 1);
+  return { rows: header.concat(archRead.rows.slice(1), live.rows.slice(1)),
+    mode: live.mode + '+arch:' + Math.max(0, archRead.rows.length - 1) };
+}
+function readResultsSince(cutoff, colSpec) { return readHistorySince('תוצאות', RESULTS_ARCHIVE_SHEET, 0, cutoff, colSpec); }
+function readPendingSince(cutoff, colSpec) { return readHistorySince('ממתינים', PENDING_ARCHIVE_SHEET, 4, cutoff, colSpec); }
+
+// ========== Nightly archive of the sheets that grow forever (B5) ==========
+// Every remaining heavy handler reads a sheet that grows with every exam ever
+// taken: submitResult pulled ~15 MB per call (8.2 MB of it 'מבחנים', read whole
+// to use ONE row), and the dashboards read 'תוצאות' several times per poll.
+// 'ממתינים' has been archived since r5; this job does the same for the other
+// two, under one lock, one guard and one time budget:
+//   ממתינים 14 days → ממתינים_ארכיון   (live readers filter by session code)
+//   מבחנים   2 days → מבחנים_ארכיון    (a question map is read while the attempt is scored)
+//   תוצאות  30 days → תוצאות_ארכיון    (history readers use readResultsSince)
+// Nothing is deleted: every row is copied first and the archive keeps the full
+// width. Run archiveSheets() once by hand, then installNightlyJobs().
 var PENDING_ARCHIVE_SHEET = 'ממתינים_ארכיון';
+var RESULTS_ARCHIVE_SHEET = 'תוצאות_ארכיון';
+var EXAMS_ARCHIVE_SHEET = 'מבחנים_ארכיון';
 var PENDING_ARCHIVE_RETAIN_DAYS = 14;
 var PENDING_TERMINAL = { completed: 1, disqualified: 1, dq_confirmed: 1, cancelled: 1, rejected: 1 };
 
-function archiveOldPendingRows() {
-  var lock = LockService.getScriptLock();
-  if (!lock.tryLock(5000)) { Logger.log('archive: another run holds the lock'); return; }
-  markJobRunning('archiveOldPendingRows', true);   // the lock already keeps the cache check away; the flag names it
-  var t0 = Date.now();
-  var BUDGET_MS = 4.5 * 60 * 1000;   // stay under the 6-min ceiling; the rest moves next run
-  try {
-    var src = getSheet('ממתינים');
-    var rows = src.getDataRange().getValues();
-    if (rows.length <= 1) return;
-    var now = Date.now();
-    var cutoff = now - PENDING_ARCHIVE_RETAIN_DAYS * 86400000;
-    var quietSince = now - 3 * 3600000;
-    var rowNums = [];   // 1-based sheet rows to move, ascending
-    var vals = [];
-    for (var i = 1; i < rows.length; i++) {
-      var st = String(rows[i][5] || '').trim();
-      var reg = parseSheetDateTime(rows[i][4]);
-      // Safety: never run while an exam may be in progress (a non-terminal row
-      // registered in the last 3h) — concurrent handlers hold row indexes.
-      if (!PENDING_TERMINAL[st] && reg && reg.getTime() > quietSince) {
-        Logger.log('archive: exam activity detected — skipping this run');
-        return;
-      }
-      if (reg && reg.getTime() < cutoff) { rowNums.push(i + 1); vals.push(rows[i]); }
-    }
-    if (!rowNums.length) { Logger.log('archive: nothing to move'); return; }
+// tsCol is the 0-based index of the timestamp column each sheet is ordered by.
+var ARCHIVE_PLAN = [
+  { name: 'ממתינים', archive: PENDING_ARCHIVE_SHEET, tsCol: 4, retainDays: PENDING_ARCHIVE_RETAIN_DAYS },
+  { name: 'מבחנים', archive: EXAMS_ARCHIVE_SHEET, tsCol: 3, retainDays: 2 },
+  { name: 'תוצאות', archive: RESULTS_ARCHIVE_SHEET, tsCol: 0, retainDays: 30 }
+];
+var ARCHIVE_BUDGET_MS = 4.5 * 60 * 1000;   // stay under the 6-min ceiling; the rest moves next run
+var ARCHIVE_CHUNK = 300;
+var ARCHIVE_QUIET_HOURS = 3;               // no non-terminal registration this recent
 
-    var arch = getSheet(PENDING_ARCHIVE_SHEET);
-    var width = rows[0].length;
-    var CHUNK = 300;
-    var moved = 0;
-    // Chunks from the BOTTOM: copy → delete → next. Deleting bottom-up keeps the
-    // remaining (smaller) row numbers valid, and concurrent registrations append
-    // BELOW the snapshot so they are never touched.
-    for (var c = rowNums.length; c > 0; c -= CHUNK) {
-      var from = Math.max(0, c - CHUNK);
-      var chunkRows = rowNums.slice(from, c);
-      var chunkVals = vals.slice(from, c);
-      arch.getRange(arch.getLastRow() + 1, 1, chunkVals.length, width).setValues(chunkVals);
-      SpreadsheetApp.flush();
-      var k = chunkRows.length - 1;
-      while (k >= 0) {
-        var end = chunkRows[k], start = end;
-        while (k - 1 >= 0 && chunkRows[k - 1] === start - 1) { k--; start = chunkRows[k]; }
-        src.deleteRows(start, end - start + 1);
-        k--;
-      }
-      moved += chunkVals.length;
-      if (Date.now() - t0 > BUDGET_MS) {
-        Logger.log('archive: time budget hit — ' + moved + '/' + rowNums.length + ' moved, rest next run');
-        return;
-      }
+function archiveSheets() {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) { Logger.log('archive: another run holds the lock'); return { skipped: 'locked' }; }
+  var t0 = Date.now(), deadline = t0 + ARCHIVE_BUDGET_MS;
+  try {
+    var pendingRows = getSheet('ממתינים').getDataRange().getValues();
+    var blocker = archiveBlockedReason(pendingRows);
+    if (blocker) { Logger.log('archive: ' + blocker + ' — skipping this run'); return { skipped: blocker }; }
+    var moved = {}, stopped = '';
+    for (var i = 0; i < ARCHIVE_PLAN.length; i++) {
+      var plan = ARCHIVE_PLAN[i];
+      if (Date.now() > deadline) { stopped = plan.name; break; }
+      var res = archiveOneSheet(plan, deadline, plan.name === 'ממתינים' ? pendingRows : null);
+      moved[plan.name] = res.moved;
+      if (res.stopped) { stopped = plan.name; break; }
     }
-    Logger.log('archive: moved ' + moved + ' rows in ' + (Date.now() - t0) + 'ms');
+    // The only scheduled run of the day is also the only sweeper of the
+    // diagnostics that a killed execution left behind (the hourly warmup used
+    // to do it, and the warmup is gone). flushDiagnostics() does it on demand.
+    var diag = diagSweep(null);
+    Logger.log('archive: ' + JSON.stringify(moved) + (stopped ? ' — budget hit at ' + stopped + ', rest next run' : '') +
+      ' in ' + (Date.now() - t0) + 'ms; diagnostics: ' + diag.swept + ' killed / ' + diag.flushed + ' parked');
+    return { moved: moved, stopped: stopped, diagnostics: diag, ms: Date.now() - t0 };
   } finally {
-    markJobRunning('archiveOldPendingRows', false);
     lock.releaseLock();
   }
 }
 
-function installPendingArchiveTrigger() {
-  var trigs = ScriptApp.getProjectTriggers();
-  for (var i = 0; i < trigs.length; i++) {
-    if (trigs[i].getHandlerFunction() === 'archiveOldPendingRows') ScriptApp.deleteTrigger(trigs[i]);
+// Safety: never move a row while an exam may be in progress — a live handler
+// holds row indexes across its own reads and writes. Two independent signals,
+// either one blocks the WHOLE run (all three sheets share the same risk).
+function archiveBlockedReason(pendingRows) {
+  var quietSince = Date.now() - ARCHIVE_QUIET_HOURS * 3600000;
+  for (var i = 1; i < pendingRows.length; i++) {
+    var st = String(pendingRows[i][5] || '').trim();
+    if (PENDING_TERMINAL[st]) continue;
+    var reg = parseSheetDateTime(pendingRows[i][4]);
+    if (reg && reg.getTime() > quietSince) return 'a non-terminal registration in the last ' + ARCHIVE_QUIET_HOURS + 'h';
   }
-  // 01:00 — deliberately BEFORE the nightly rebuildAtRiskCache (03:00 Asia/Jerusalem)
-  // so the two jobs never overlap and the forecast sees a settled sheet.
-  ScriptApp.newTrigger('archiveOldPendingRows').timeBased().atHour(1).everyDays(1).inTimezone('Asia/Jerusalem').create();
-  Logger.log('installed daily 01:00 Asia/Jerusalem trigger for archiveOldPendingRows');
+  var sessions = getSheet('סשנים').getDataRange().getValues();
+  var now = Date.now();
+  for (var s = 1; s < sessions.length; s++) {
+    var active = sessions[s][10] === true || String(sessions[s][10]).toUpperCase() === 'TRUE';
+    if (!active) continue;
+    var validUntil = parseSheetDateTime(sessions[s][9]);
+    if (!validUntil || validUntil.getTime() > now) return 'session ' + String(sessions[s][0]) + ' is still open';
+  }
+  return '';
+}
+
+// Copy → delete, in chunks, OLDEST FIRST. Two invariants depend on the order:
+//   • within a chunk the rows are deleted bottom-up, so the row numbers still
+//     to be deleted stay valid;
+//   • across chunks the oldest rows leave first, so an interrupted run (time
+//     budget) still leaves "live = the newest rows, archive = everything older"
+//     — which is exactly what readHistorySince relies on when it decides it can
+//     skip the archive. Moving the newest candidates first would shuffle the
+//     two sheets and make that decision wrong.
+// Each chunk deletes rows ABOVE every later candidate, so the row numbers of
+// the later chunks shift up by the number already deleted; `deleted` tracks it.
+// Rows appended by a concurrent execution sit BELOW the whole set.
+function archiveOneSheet(plan, deadline, preloadedRows) {
+  var src = getSheetIfExists(plan.name);
+  if (!src || src.getLastRow() <= 1) return { moved: 0, stopped: false };
+  var rows = preloadedRows || src.getDataRange().getValues();
+  if (rows.length <= 1) return { moved: 0, stopped: false };
+  var cutoff = Date.now() - plan.retainDays * 86400000;
+  var rowNums = [], vals = [], width = rows[0].length;
+  for (var i = 1; i < rows.length; i++) {
+    var ts = parseSheetDateTime(rows[i][plan.tsCol]);
+    if (!ts || ts.getTime() >= cutoff) continue;   // unparseable timestamp → keep the row
+    rowNums.push(i + 1);
+    vals.push(rows[i]);
+    if (rows[i].length > width) width = rows[i].length;
+  }
+  if (!rowNums.length) return { moved: 0, stopped: false };
+
+  var arch = getSheet(plan.archive);
+  if (arch.getLastRow() === 0) arch.getRange(1, 1, 1, width).setValues([padArchiveRow(rows[0], width)]);
+  var moved = 0, deleted = 0;
+  for (var from = 0; from < rowNums.length; from += ARCHIVE_CHUNK) {
+    var to = Math.min(rowNums.length, from + ARCHIVE_CHUNK);
+    var chunkRows = [], chunkVals = [];
+    for (var v = from; v < to; v++) {
+      chunkRows.push(rowNums[v] - deleted);
+      chunkVals.push(padArchiveRow(vals[v], width));
+    }
+    arch.getRange(arch.getLastRow() + 1, 1, chunkVals.length, width).setValues(chunkVals);
+    SpreadsheetApp.flush();
+    deleteRowRuns(src, chunkRows);
+    deleted += chunkRows.length;
+    moved += chunkVals.length;
+    if (Date.now() > deadline) return { moved: moved, stopped: true };
+  }
+  return { moved: moved, stopped: false };
+}
+
+function padArchiveRow(row, width) {
+  var out = row.slice(0, width);
+  while (out.length < width) out.push('');
+  return out;
+}
+
+// chunkRows is ascending; delete contiguous runs from the bottom up.
+function deleteRowRuns(sheet, chunkRows) {
+  var k = chunkRows.length - 1;
+  while (k >= 0) {
+    var end = chunkRows[k], start = end;
+    while (k - 1 >= 0 && chunkRows[k - 1] === start - 1) { k--; start = chunkRows[k]; }
+    sheet.deleteRows(start, end - start + 1);
+    k--;
+  }
+}
+
+// Kept for one release: the 01:00 trigger of the previous version calls this
+// name, and an operator may still have it in a runbook. Delete after 10/2026.
+function archiveOldPendingRows() { return archiveSheets(); }
+
+// Run ONCE from the editor after a deploy. Leaves EXACTLY two time triggers:
+// archiveSheets 01:00 and rebuildAtRiskCache 03:00 (Asia/Jerusalem). Every
+// trigger of a retired job is removed by NAME — the functions themselves may no
+// longer exist in the script, but Apps Script keeps running their triggers and
+// each run burns from the 90-minutes-a-day trigger budget.
+var NIGHTLY_OBSOLETE_HANDLERS = ['archiveOldPendingRows', 'archiveSheets', 'warmupQuestionCaches',
+  'ensureQuestionCachesWarm', 'rebuildMissingQuestionCaches', 'rebuildAtRiskCache'];
+function installNightlyJobs() {
+  var trigs = ScriptApp.getProjectTriggers(), removed = [];
+  for (var i = 0; i < trigs.length; i++) {
+    var fn = trigs[i].getHandlerFunction();
+    if (NIGHTLY_OBSOLETE_HANDLERS.indexOf(fn) === -1) continue;
+    ScriptApp.deleteTrigger(trigs[i]);
+    removed.push(fn);
+  }
+  // 01:00 archive before the 03:00 forecast rebuild, so the forecast reads a settled sheet.
+  ScriptApp.newTrigger('archiveSheets').timeBased().atHour(1).everyDays(1).inTimezone('Asia/Jerusalem').create();
+  ScriptApp.newTrigger('rebuildAtRiskCache').timeBased().atHour(3).everyDays(1).inTimezone('Asia/Jerusalem').create();
+  var msg = 'installNightlyJobs: removed ' + removed.length + ' old trigger(s) [' + removed.join(', ') +
+    ']; created archiveSheets 01:00 + rebuildAtRiskCache 03:00 (Asia/Jerusalem)';
+  Logger.log(msg);
+  return msg;
+}
+// ---- One scan for "this examinee's current row" ----------------------------
+// Ten handlers wrote this reverse loop by hand, which is how their status and
+// 'בוטל' filters drifted apart (review E S7, C R12). rows[0] is a header.
+//
+// findLatestPendingRow: newest ממתינים row of (session, id). `statuses`, when
+// given, keeps scanning past rows in other states instead of stopping at the
+// first match — that is what "reset every stuck row" and "approve the waiting
+// one" need. Returns { idx, row, status }; idx is an index into `rows` (the
+// sheet row is idx + 1 + off) and is -1 when nothing matched.
+function findLatestPendingRow(rows, sessionCode, idNumber, statuses) {
+  var code = String(sessionCode || '').trim(), id = normalizeId(idNumber);
+  for (var i = rows.length - 1; i >= 1; i--) {
+    if (String(rows[i][0]).trim() !== code || normalizeId(rows[i][1]) !== id) continue;
+    var st = String(rows[i][5] || '').trim();
+    if (statuses && statuses.indexOf(st) === -1) continue;
+    return { idx: i, row: rows[i], status: st };
+  }
+  return { idx: -1, row: null, status: '' };
+}
+
+// Newest 'תוצאות' row of (session, id). skipCancelled leaves 'בוטל' rows out:
+// a correction must never land on a row that was already overturned (E S7).
+function findLatestResultRow(rows, sessionCode, idNumber, skipCancelled) {
+  var code = String(sessionCode || '').trim(), id = normalizeId(idNumber);
+  for (var i = rows.length - 1; i >= 1; i--) {
+    if (String(rows[i][13]).trim() !== code || normalizeId(rows[i][1]) !== id) continue;
+    var st = String(rows[i][7] || '').trim();
+    if (skipCancelled && st === 'בוטל') continue;
+    return { idx: i, row: rows[i], status: st };
+  }
+  return { idx: -1, row: null, status: '' };
 }
 
 function findRow(sheet, colIndex, value) {
@@ -770,7 +934,7 @@ function generateToken() {
 var TOKEN_VERDICT_CACHE_SEC = 60;
 function verifyToken(examinerId, token) {
   if (!examinerId || !token) return false;
-  var key = QUESTION_CACHE_PREFIX + 'tok_' + normalizeId(examinerId) + '_' + String(token).slice(0, 80), cache = null;
+  var key = CACHE_KEY_PREFIX + 'tok_' + normalizeId(examinerId) + '_' + String(token).slice(0, 80), cache = null;
   try { cache = CacheService.getScriptCache(); if (cache.get(key) === '1') return true; } catch (eGet) { cache = null; }
   var sheet = getSheet('בוחנים');
   var data = sheet.getDataRange().getValues();
@@ -812,13 +976,13 @@ var ALLOWED_ORIGINS = [
   'student-app',       // student.html
   'admin-app',         // admin.html
   'bohanyzahal-site',  // bohan-site (IDF portal — server-side auth)
+  'gateway',           // the session-poll Worker (sessionSnapshot; it also holds GATEWAY_KEY)
   'localhost-dev'      // local development
 ];
 function checkOrigin(p) {
   // Allowed: actions called from external services (none currently) or no origin enforcement on certain reads
-  // For now: reject unknown origins on all actions except 'viewResult' (HTML output, opened in browser tab).
-  var action = p.action || '';
-  if (action === 'viewResult' || action === '') return null;
+  // An empty action is the public 'is the API running' ping and needs no origin.
+  if (String(p.action || '') === '') return null;
   var origin = String(p.origin || '').trim();
   if (!origin) {
     return jsonResponse({ status: 'error', message: 'Missing origin', code: 'origin_required' });
@@ -895,26 +1059,57 @@ function generateExamineeToken() {
   return (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
 }
 
-// Returns { valid: bool, legacy: bool, reason: string }
+// One row of 'ממתינים' → token verdict. Per-examinee audio (column J) rides
+// along on the row we already read, so callers get it without a second scan.
 // - legacy: true when the stored row predates token support (empty cell) —
 //   we accept the call but flag it so we can audit / tighten later.
 // - reason values (when invalid): 'not_found', 'missing', 'mismatch'.
-function verifyExamineeToken(sessionCode, idNumber, examineeToken) {
-  var data = readPendingTail().rows;   // read-only: no row-index writes here
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]) === String(sessionCode) && normalizeId(data[i][1]) === normalizeId(idNumber)) {
-      // Per-examinee audio (column J) rides along on the row we already read, so
-      // callers get it without a second sheet scan — matters on getExamQuestions,
-      // which is the exam-start hot path.
-      var rowAudio = String(data[i][9] || '').trim() === 'on' ? 'on' : 'off';
-      var storedToken = String((data[i].length > 12 ? data[i][12] : '') || '').trim();
-      if (!storedToken) return { valid: true, legacy: true, audioMode: rowAudio };
-      if (!examineeToken) return { valid: false, reason: 'missing' };
-      if (String(examineeToken).trim() === storedToken) return { valid: true, legacy: false, audioMode: rowAudio };
-      return { valid: false, reason: 'mismatch' };
-    }
+function examineeTokenVerdict(row, examineeToken) {
+  var rowAudio = String(row[9] || '').trim() === 'on' ? 'on' : 'off';
+  var storedToken = String((row.length > 12 ? row[12] : '') || '').trim();
+  if (!storedToken) return { valid: true, legacy: true, audioMode: rowAudio };
+  if (!examineeToken) return { valid: false, reason: 'missing' };
+  if (String(examineeToken).trim() === storedToken) return { valid: true, legacy: false, audioMode: rowAudio };
+  return { valid: false, reason: 'mismatch' };
+}
+
+// The token check reads the tail of 'ממתינים'; the handler that runs right after
+// it needs the very same row — its status, its sheet row number (the status
+// write needs it), the audio flag and the time extension. Handing that read
+// forward is what keeps startExam and submitResult at ONE read of the sheet.
+// The context is SINGLE USE — the auth check hands it to the handler that runs
+// immediately after it, and anything later reads the sheet again. Nothing is
+// ever decided from a row this request did not just read.
+//   latest = the newest row of this examinee, whatever its status (the token
+//            and the "may they submit" rule are decided on it, as before)
+//   active = the newest approved/in_exam row (the attempt being started)
+var EXAMINEE_ROW_CONTEXT = null;
+function examineeRowContext(sessionCode, idNumber, fresh) {
+  var cached = EXAMINEE_ROW_CONTEXT;
+  EXAMINEE_ROW_CONTEXT = null;
+  if (!fresh && cached && String(cached.sessionCode) === String(sessionCode) &&
+      normalizeId(cached.idNumber) === normalizeId(idNumber)) return cached;
+  diagMark('sheet:pending-examinee');
+  var tail = readPendingTail(), rows = tail.rows;
+  var ctx = { sessionCode: sessionCode, idNumber: idNumber, tail: tail, latest: null, active: null };
+  for (var i = rows.length - 1; i >= 1; i--) {
+    if (String(rows[i][0]) !== String(sessionCode) || normalizeId(rows[i][1]) !== normalizeId(idNumber)) continue;
+    var entry = { row: rows[i], rowNumber: i + tail.off + 1, status: String(rows[i][5] || '').trim() };
+    if (!ctx.latest) ctx.latest = entry;
+    if (!ctx.active && (entry.status === 'approved' || entry.status === 'in_exam')) ctx.active = entry;
+    if (ctx.latest && ctx.active) break;
   }
-  return { valid: false, reason: 'not_found' };
+  EXAMINEE_ROW_CONTEXT = ctx;
+  return ctx;
+}
+
+// Returns { valid: bool, legacy: bool, reason: string }
+function verifyExamineeToken(sessionCode, idNumber, examineeToken) {
+  var ctx = examineeRowContext(sessionCode, idNumber, true);   // auth always reads fresh
+  if (!ctx.latest) return { valid: false, reason: 'not_found' };
+  var verdict = examineeTokenVerdict(ctx.latest.row, examineeToken);
+  ctx.audioMode = verdict.audioMode || 'off';
+  return verdict;
 }
 
 // Convenience wrapper for handlers. Returns null when OK, or a jsonResponse error.
@@ -961,48 +1156,59 @@ function getExaminerRole(examinerId) {
 
 // Verify examiner owns the session (for sensitive actions)
 function verifyExaminerForSession(sessionCode, examinerId) {
-  if (!examinerId) return false;
-  var sheet = getSheet('סשנים');
-  var data = sheet.getDataRange().getValues();
-  for (var i = 1; i < data.length; i++) {
-    if (String(data[i][0]).trim() === String(sessionCode).trim()) {
-      return normalizeId(data[i][1]) === normalizeId(examinerId);
-    }
-  }
-  return false;
+  // One rule, one read: examinerOwnsSession (44_sessions_misc.js) serves the
+  // check from the per-execution memo of 'סשנים', so a handler that verifies
+  // ownership and then reads the session row pays for the sheet once.
+  return examinerOwnsSession(sessionCode, examinerId);
 }
 
-function countAttempts(idNumber, license, resultRows, resultSheet) {
-  // A submit already has the complete history. Other callers keep the full read.
-  var data = resultRows || getSheet('תוצאות').getDataRange().getValues();
-  if (resultRows && resultSheet && resultSheet.getLastRow() !== data.length) {
-    return countAttempts(idNumber, license);
-  }
-  if (resultRows && resultSheet) {
-    var matchingHistory = 0;
-    for (var h = 1; h < data.length; h++) {
-      if (normalizeId(data[h][1]) === normalizeId(idNumber) && String(data[h][4]) === String(license)) matchingHistory++;
-    }
-    // Many retakes are cheaper to refresh in one request than many tiny reads.
-    if (matchingHistory > 4) return countAttempts(idNumber, license);
-  }
+// Key prefix shared by every CacheService / ScriptProperties entry this script
+// owns (pending snapshots, extra-minutes maps, token verdicts, diagnostics).
+// Declared here — a module that nothing in the roadmap deletes — so the live
+// keys keep their names no matter which subsystem is retired; the question
+// cache declares the same literal value for as long as it exists.
+var CACHE_KEY_PREFIX = 'qv2_';
+
+// Attempt number = how many non-'בוטל' result rows this examinee already has
+// for this licence — in the LIVE sheet and in the archive (B5: 'תוצאות' is
+// archived after 30 days, and without the archive a retake three months later
+// would be recorded as attempt 1).
+// `liveRows` is an optional rows array the caller already holds (rows[0] =
+// header); without it we read the live sheet ourselves in the three columns
+// this needs: B (ת.ז.), E (דרגה), H (עבר/נכשל). The old version re-read the
+// whole sheet up to three times per call to re-validate its own input.
+var RESULTS_ATTEMPT_COLSPEC = [[2, 1], [5, 1], [8, 1]];
+function countAttempts(idNumber, license, liveRows) {
+  var wantId = normalizeId(idNumber), wantLic = String(license);
+  var count = countAttemptRows(liveRows || readAttemptColumns(getSheet('תוצאות')), wantId, wantLic);
+  var arch = getSheetIfExists(RESULTS_ARCHIVE_SHEET);
+  if (arch) count += countAttemptRows(readAttemptColumns(arch), wantId, wantLic);
+  return count;
+}
+// Live + archive attempt columns as ONE table (oldest first), for a caller that
+// counts attempts for SEVERAL examinees in one request — the dashboard's
+// reconciliation used to re-read the whole 'תוצאות' sheet once per stale row
+// (review C R1: 40 stale rows = 6.8 M cells in one poll).
+function readAttemptHistory() {
+  var live = readAttemptColumns(getSheet('תוצאות'));
+  var arch = getSheetIfExists(RESULTS_ARCHIVE_SHEET);
+  if (!arch) return live;
+  var archRows = readAttemptColumns(arch);
+  var header = live.length ? live.slice(0, 1) : archRows.slice(0, 1);
+  return header.concat(archRows.slice(1), live.slice(1));
+}
+
+function readAttemptColumns(sheet) {
+  var lastRow = sheet.getLastRow(), lastCol = sheet.getLastColumn();
+  if (lastRow < 2 || lastCol < 1) return [];
+  return readSheetSlice(sheet, 1, lastRow, lastCol, RESULTS_ATTEMPT_COLSPEC);
+}
+function countAttemptRows(rows, wantId, wantLic) {
   var count = 0;
-  for (var i = 1; i < data.length; i++) {
-    if (normalizeId(data[i][1]) === normalizeId(idNumber) && String(data[i][4]) === String(license)) {
-      var row = data[i];
-      if (resultRows && resultSheet) {
-        // An examiner may have overturned an old result without appending a
-        // row. Refresh this examinee's history before assigning the attempt.
-        var live = resultSheet.getRange(i + 1, 1, 1, 14).getValues()[0];
-        if (!live || normalizeId(live[1]) !== normalizeId(idNumber) || String(live[4]) !== String(license) || String(live[13]) !== String(row[13])) {
-          return countAttempts(idNumber, license);
-        }
-        row = live;
-      }
-      var status = String(row[7] || '').trim();
-      if (status === 'בוטל') continue; // overturned DQ is not a real attempt
-      count++;
-    }
+  for (var i = 1; i < rows.length; i++) {
+    if (normalizeId(rows[i][1]) !== wantId || String(rows[i][4]) !== wantLic) continue;
+    if (String(rows[i][7] || '').trim() === 'בוטל') continue;   // overturned DQ is not a real attempt
+    count++;
   }
   return count;
 }
@@ -1041,37 +1247,2104 @@ function todayStr() {
   return dd + '/' + mm + '/' + yyyy + ' ' + hh + ':' + mi;
 }
 
+// ========== The question index — all the server knows about questions ========
+//
+// Until 21/09/2026 the server held the question TEXTS: seven language banks in a
+// private Drive folder, copied into CacheService as per-license pools, kept warm
+// by a trigger, guarded by leases and rebuilt out of band. That subsystem was
+// ~1,500 lines and it is what a killed execution died inside (the 360s kills of
+// 09-09/09-11), what Drive reads added to every commander dashboard (r12/r13),
+// and what made exam-start a 10-second request. It bought nothing: the texts AND
+// the correct answers were already served to anyone who asked (getQuestionsByIds
+// with any studentId, verified live 21/09).
+//
+// So the texts are now static files the client loads (bank/<lang>.json, built by
+// tools/build_bank.js), and the server keeps only:
+//   * QUESTION_INDEX — id → { c: {license: topic}, l: language bitmask, img }
+//     (generated into this file at build time from deployment/question_index.json)
+//   * the answer key (deployment/answer_key.gs, pasted separately, never public)
+// From those two it can draw an exam and score it, with zero Drive and zero
+// question data in CacheService.
+
+// Generated from deployment/question_index.json by tools/build_server.js — 1700 ids. Do not edit.
+var QUESTION_INDEX = {
+"1":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"2":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"3":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"4":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":0},
+"5":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"6":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"7":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"8":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"9":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"10":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"11":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"12":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"13":{"c":{"1":"חוק","B":"חוק","C1":"חוק"},"l":127,"img":0},
+"14":{"c":{"1":"חוק","B":"חוק","C1":"חוק"},"l":127,"img":0},
+"15":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"16":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"17":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"18":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"19":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"20":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"21":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"22":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":0},
+"23":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"24":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"25":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"26":{"c":{"1":"חוק","C1":"חוק","C":"חוק"},"l":127,"img":0},
+"28":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"29":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":0},
+"30":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"31":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"32":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"33":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"34":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"35":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"36":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"37":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"39":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":0},
+"40":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":0},
+"41":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"42":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"43":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"44":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"45":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"46":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":1},
+"47":{"c":{"B":"חוק","C1":"חוק","C":"חוק"},"l":127,"img":0},
+"48":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"50":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"52":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"54":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":0},
+"55":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":0},
+"56":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"57":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"58":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"59":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"60":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"61":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"62":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"63":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"64":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"65":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"66":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"67":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"68":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"69":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"70":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"71":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"72":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"73":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"74":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"75":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"76":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"77":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"78":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"79":{"c":{"B":"חוק"},"l":127,"img":1},
+"80":{"c":{"B":"חוק","C1":"חוק","D":"חוק"},"l":127,"img":0},
+"81":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"82":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"83":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"84":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"85":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"86":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"87":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"88":{"c":{"1":"ספציפי"},"l":127,"img":1},
+"89":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"90":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"91":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":0},
+"92":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"93":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"94":{"c":{"1":"חוק","B":"חוק","C1":"חוק"},"l":127,"img":1},
+"95":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"96":{"c":{"1":"חוק","B":"חוק","C1":"חוק"},"l":127,"img":0},
+"97":{"c":{"1":"חוק","B":"חוק","C1":"חוק"},"l":127,"img":0},
+"98":{"c":{"1":"חוק","B":"חוק","C1":"חוק"},"l":127,"img":0},
+"99":{"c":{"1":"חוק","B":"חוק","C1":"חוק"},"l":127,"img":0},
+"100":{"c":{"1":"חוק","B":"חוק","C1":"חוק"},"l":127,"img":0},
+"101":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"102":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"103":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"104":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"105":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"106":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"107":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"108":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"109":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"110":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"111":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"112":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"113":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"114":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"115":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"116":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"117":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"118":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"119":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"120":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"121":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"122":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"123":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"124":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"125":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"126":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"127":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"128":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"129":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"130":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"131":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"132":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"133":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"134":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"135":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"136":{"c":{"1":"חוק","C1":"חוק","C":"חוק"},"l":127,"img":0},
+"137":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"138":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"139":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"140":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"141":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"142":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"143":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"144":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"145":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"146":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"147":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"148":{"c":{"1":"חוק","B":"חוק","C1":"חוק"},"l":127,"img":1},
+"149":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"150":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":1},
+"151":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":1},
+"152":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":1},
+"153":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"154":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"155":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"156":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"157":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"158":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"159":{"c":{"B":"חוק","C1":"חוק","C":"חוק"},"l":127,"img":0},
+"160":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"161":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"162":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"163":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"164":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"165":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"166":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"167":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"168":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"169":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"170":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"171":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"172":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"173":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"174":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"175":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"176":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"177":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"178":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"179":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"180":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"181":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"182":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"183":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"184":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"185":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"186":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"187":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"188":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"189":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"190":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"191":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"192":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"193":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"194":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"195":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"196":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"197":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"198":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"199":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"200":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"201":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":0},
+"202":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":4,"img":0},
+"203":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"205":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"206":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"207":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"208":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"209":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"210":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"211":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"212":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"213":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"214":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"215":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"216":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":4,"img":1},
+"217":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"218":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"219":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"220":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"221":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"222":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"223":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"224":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":0},
+"225":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":1},
+"226":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":0},
+"227":{"c":{"B":"חוק","C1":"חוק","C":"חוק"},"l":127,"img":1},
+"228":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"229":{"c":{"B":"חוק","C1":"חוק","C":"חוק"},"l":127,"img":0},
+"230":{"c":{"B":"חוק","C1":"חוק","C":"חוק"},"l":127,"img":0},
+"231":{"c":{"B":"חוק","C1":"חוק","C":"חוק"},"l":127,"img":1},
+"232":{"c":{"B":"חוק","C1":"חוק","C":"חוק"},"l":127,"img":0},
+"233":{"c":{"B":"חוק","C1":"חוק","C":"חוק"},"l":127,"img":0},
+"234":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"235":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":0},
+"236":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":0},
+"237":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"238":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":0},
+"240":{"c":{"1":"חוק","B":"חוק","C1":"חוק"},"l":127,"img":0},
+"241":{"c":{"B":"חוק","C1":"חוק","C":"חוק"},"l":127,"img":0},
+"242":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"243":{"c":{"1":"חוק","C1":"חוק","C":"חוק"},"l":127,"img":0},
+"244":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"245":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"246":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"247":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"248":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":4,"img":0},
+"249":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"250":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"252":{"c":{"1":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"253":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"254":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"255":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"256":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"257":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"258":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"259":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"260":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":0},
+"261":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":0},
+"262":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":0},
+"263":{"c":{"1":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":0},
+"264":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"265":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"266":{"c":{"B":"חוק","C1":"חוק"},"l":4,"img":0},
+"267":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":0},
+"268":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":0},
+"269":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"270":{"c":{"1":"חוק","B":"חוק","C1":"חוק"},"l":127,"img":0},
+"271":{"c":{"1":"חוק","B":"חוק","C1":"חוק"},"l":127,"img":0},
+"272":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"273":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"274":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"275":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"276":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"277":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"278":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"279":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"280":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"282":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"283":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"284":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"285":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"286":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"287":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":0},
+"288":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"289":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"290":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"291":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"292":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"293":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"294":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":0},
+"295":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"296":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":0},
+"297":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"298":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"299":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"300":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"301":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"302":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"303":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"304":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"305":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"306":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"307":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"308":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"309":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"310":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"311":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"312":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"313":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"314":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"315":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"316":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"317":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"318":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"319":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"320":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"321":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"322":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"323":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"324":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":0},
+"325":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"326":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"327":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"328":{"c":{"1":"חוק","B":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"329":{"c":{"1":"חוק","B":"חוק","C1":"חוק"},"l":127,"img":0},
+"330":{"c":{"1":"חוק","B":"חוק","C1":"חוק"},"l":127,"img":0},
+"331":{"c":{"B":"חוק","C1":"חוק","C":"חוק"},"l":127,"img":0},
+"332":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"333":{"c":{"B":"חוק"},"l":127,"img":0},
+"334":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"335":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"336":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"337":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"338":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"339":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":0},
+"340":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"341":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"342":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"343":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"344":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":0},
+"345":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"346":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"347":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"348":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"349":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"350":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"351":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"352":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":0},
+"353":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":0},
+"354":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":0},
+"355":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"356":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"357":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"358":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"359":{"c":{"C1":"ספציפי","C":"ספציפי"},"l":127,"img":1},
+"360":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"361":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"362":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"363":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"364":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"365":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"366":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"367":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"368":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"369":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"370":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"371":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"372":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"373":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"374":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"375":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"376":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"377":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"378":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"379":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"380":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"381":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"382":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"383":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"384":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"385":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"386":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"387":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"388":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"389":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"390":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"391":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"392":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"393":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"394":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"395":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"396":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"397":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"398":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":0},
+"399":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"400":{"c":{"B":"תמרורים","C1":"תמרורים"},"l":127,"img":1},
+"401":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":0},
+"402":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"403":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"404":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"405":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"406":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"407":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"408":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"409":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"410":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"411":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"412":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"413":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"414":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"415":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"416":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"417":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"418":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"419":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"420":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"421":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"422":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"423":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"424":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"425":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"426":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"427":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"428":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"429":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"430":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"431":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"432":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"433":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"434":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"435":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"436":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"437":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"438":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"439":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"440":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"441":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"442":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"443":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"444":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"445":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"446":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"447":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"448":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"449":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"450":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"451":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"452":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"453":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"454":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"455":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"456":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"457":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"458":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"459":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"460":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"461":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"462":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"463":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"464":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"465":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"466":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"467":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"468":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"469":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"470":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"471":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"472":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"473":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"474":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"475":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"476":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"477":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":0},
+"478":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"479":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"480":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"481":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"482":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"484":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"485":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"486":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"487":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"488":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"489":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים"},"l":127,"img":1},
+"490":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"491":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"492":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"493":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"494":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"495":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"496":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"497":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"498":{"c":{"B":"תמרורים"},"l":127,"img":1},
+"499":{"c":{"C1":"ספציפי","C":"ספציפי"},"l":127,"img":1},
+"500":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"501":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"502":{"c":{"B":"תמרורים"},"l":127,"img":1},
+"503":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"504":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"505":{"c":{"B":"תמרורים"},"l":127,"img":1},
+"506":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"507":{"c":{"C":"ספציפי","D":"ספציפי"},"l":127,"img":1},
+"508":{"c":{"C":"ספציפי","D":"ספציפי"},"l":127,"img":1},
+"509":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים"},"l":127,"img":1},
+"510":{"c":{"C1":"ספציפי","C":"ספציפי"},"l":127,"img":1},
+"511":{"c":{"C":"ספציפי","D":"ספציפי"},"l":127,"img":1},
+"512":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"513":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"514":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"515":{"c":{"C":"ספציפי","D":"ספציפי"},"l":127,"img":1},
+"516":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"517":{"c":{"D":"ספציפי"},"l":127,"img":1},
+"518":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"519":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"520":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"521":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"522":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"523":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"524":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"525":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"526":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"527":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"528":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"529":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"530":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"531":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"532":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"533":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"534":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"535":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"536":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"537":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"538":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"539":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"540":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"541":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"542":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"543":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"544":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"545":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"546":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"547":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"548":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"549":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"550":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"551":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"552":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"553":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"554":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"555":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"556":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"557":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"558":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"559":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"560":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"561":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"562":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"563":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"564":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"565":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"566":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"567":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"568":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"569":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"570":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"571":{"c":{"1":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"572":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"573":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"574":{"c":{"C1":"תמרורים","C":"תמרורים"},"l":4,"img":1},
+"575":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"576":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"577":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"578":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"579":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"580":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"581":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"582":{"c":{"C1":"ספציפי","C":"ספציפי"},"l":127,"img":1},
+"583":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"584":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"585":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"586":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"587":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"588":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"589":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"590":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"591":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"592":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"593":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"594":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"595":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"596":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"597":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"598":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"599":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"600":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"601":{"c":{"D":"ספציפי"},"l":127,"img":1},
+"602":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"603":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"604":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"605":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"606":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":0},
+"607":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"608":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"609":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"610":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"611":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"612":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"613":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"614":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"615":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"616":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"617":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"618":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"619":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"620":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"621":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"622":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"623":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"624":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"625":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"626":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"627":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"628":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"629":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"630":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"631":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"632":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"633":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"634":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"635":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"636":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"637":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"638":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"639":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"640":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"641":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"642":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"643":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"644":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"645":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"646":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"647":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"648":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"649":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"650":{"c":{"D":"ספציפי"},"l":127,"img":1},
+"651":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"652":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"653":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":1},
+"654":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"655":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":0},
+"656":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"657":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"658":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"659":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"660":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"661":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"662":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"663":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"664":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"665":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"666":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"667":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"668":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"669":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"670":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"671":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"672":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"673":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"674":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"675":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"676":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"677":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"678":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"679":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"680":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"681":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"682":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"683":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"684":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"685":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"686":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"687":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"688":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב","C":"הכרת הרכב","D":"הכרת הרכב"},"l":127,"img":0},
+"689":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב","C":"הכרת הרכב","D":"הכרת הרכב"},"l":127,"img":0},
+"690":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"691":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":0},
+"692":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"693":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"694":{"c":{"C1":"ספציפי","C":"ספציפי"},"l":127,"img":1},
+"695":{"c":{"C1":"ספציפי","C":"ספציפי"},"l":127,"img":1},
+"696":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב","C":"הכרת הרכב","D":"הכרת הרכב"},"l":127,"img":0},
+"697":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"698":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"699":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"700":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"701":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"702":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"703":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"704":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"705":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"706":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"707":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"708":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"709":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"710":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"711":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"712":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"714":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"715":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"716":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"717":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"718":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"719":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"720":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"721":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"722":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"723":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"724":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"725":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"726":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"727":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"728":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"729":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"730":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"731":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"732":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"733":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"734":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"735":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"736":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"737":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות"},"l":127,"img":0},
+"738":{"c":{"B":"בטיחות","C1":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"739":{"c":{"B":"בטיחות","C1":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"740":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"741":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"742":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב","C":"הכרת הרכב","D":"הכרת הרכב"},"l":127,"img":0},
+"744":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"745":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"746":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":4,"img":1},
+"747":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"748":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"749":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"750":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"752":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"753":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"754":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"755":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"756":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"757":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"758":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"759":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"760":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"761":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"762":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"763":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"764":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"765":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב","C":"הכרת הרכב","D":"הכרת הרכב"},"l":127,"img":0},
+"766":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"767":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"768":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"769":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"770":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"771":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"772":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"774":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"775":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"776":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"777":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"778":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"779":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"780":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"781":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"782":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"783":{"c":{"B":"חוק"},"l":127,"img":0},
+"784":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"785":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"786":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"787":{"c":{"D":"ספציפי"},"l":127,"img":1},
+"788":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"789":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"790":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"791":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"792":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"793":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"794":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"795":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"796":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"797":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"798":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"799":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"800":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"801":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"802":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"803":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"804":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"805":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"806":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"807":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"808":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"809":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"810":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"811":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"812":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"813":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"814":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"815":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"816":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"817":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"818":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"819":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"820":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"821":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"822":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"823":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"824":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"825":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"826":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"827":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"828":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"829":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"830":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב","C":"הכרת הרכב","D":"הכרת הרכב"},"l":127,"img":0},
+"831":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"832":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"833":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"834":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"835":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"836":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"837":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"838":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"839":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"840":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"841":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"842":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"843":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"844":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"845":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"846":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"847":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"848":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"849":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"850":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"851":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"852":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"853":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"854":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"855":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"856":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"857":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"858":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"859":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"860":{"c":{"B":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"861":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"862":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"863":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"864":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"865":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"866":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"867":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"868":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"869":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"870":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"871":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"872":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"873":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"874":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"875":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"876":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"877":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"878":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"879":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"880":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"881":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"882":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"883":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":1},
+"884":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"885":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"886":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב","C":"הכרת הרכב","D":"הכרת הרכב"},"l":127,"img":0},
+"887":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"888":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"889":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"890":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"891":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"892":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"893":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"895":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"896":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"897":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"898":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"899":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"900":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"901":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"902":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"903":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"904":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"905":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"906":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"907":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות"},"l":125,"img":1},
+"908":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"909":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"910":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"911":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"912":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"913":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"914":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"915":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"916":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"917":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"918":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"919":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"920":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"921":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"922":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"923":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"924":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"925":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"926":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"927":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"928":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"929":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"930":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"931":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"932":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"933":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"934":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"935":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב","C":"הכרת הרכב","D":"הכרת הרכב"},"l":127,"img":0},
+"936":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"937":{"c":{"B":"בטיחות","C1":"בטיחות"},"l":127,"img":1},
+"938":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"939":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"940":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"941":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":1},
+"942":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"943":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"944":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"945":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"946":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"947":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"948":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"949":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"950":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"951":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"952":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"953":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"954":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"955":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"956":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"957":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"958":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"960":{"c":{"B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"ספציפי"},"l":127,"img":1},
+"961":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"962":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"963":{"c":{"B":"חוק"},"l":127,"img":1},
+"964":{"c":{"B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"ספציפי"},"l":127,"img":1},
+"965":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"966":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"967":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"968":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"969":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"970":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"971":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"972":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"973":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"974":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"975":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"976":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"977":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"978":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"979":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"980":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"981":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"982":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"983":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"984":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"985":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"986":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב","C":"הכרת הרכב","D":"הכרת הרכב"},"l":127,"img":1},
+"987":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב","C":"הכרת הרכב","D":"הכרת הרכב"},"l":127,"img":0},
+"988":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב","C":"הכרת הרכב","D":"הכרת הרכב"},"l":127,"img":0},
+"989":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"990":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"991":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"992":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"993":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"994":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"995":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"996":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב"},"l":127,"img":0},
+"997":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"998":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"999":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב","C":"הכרת הרכב","D":"הכרת הרכב"},"l":127,"img":0},
+"1000":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1001":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1002":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1003":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1004":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1005":{"c":{"B":"הכרת הרכב"},"l":127,"img":0},
+"1006":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1007":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1008":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1009":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1010":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1011":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1012":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1013":{"c":{"B":"הכרת הרכב"},"l":127,"img":0},
+"1014":{"c":{"B":"הכרת הרכב"},"l":127,"img":0},
+"1015":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1016":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1017":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1018":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1019":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1020":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1021":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1022":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1023":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1024":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1025":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1026":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1027":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב","C":"הכרת הרכב","D":"הכרת הרכב"},"l":127,"img":0},
+"1028":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1029":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1030":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1031":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1032":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1033":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1034":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1035":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1036":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1037":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1038":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1039":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1040":{"c":{"B":"הכרת הרכב"},"l":127,"img":0},
+"1041":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1042":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1043":{"c":{"B":"בטיחות"},"l":127,"img":0},
+"1044":{"c":{"B":"בטיחות","C1":"בטיחות"},"l":127,"img":0},
+"1045":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1046":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1047":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1048":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1049":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1050":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1051":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1052":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1053":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1054":{"c":{"B":"בטיחות","C1":"בטיחות"},"l":127,"img":0},
+"1055":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1056":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1057":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1058":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1059":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1060":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1061":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1062":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1063":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות"},"l":127,"img":0},
+"1064":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1065":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1066":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1067":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1068":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1069":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1070":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1071":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1072":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1073":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1074":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1075":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1076":{"c":{"B":"בטיחות"},"l":127,"img":0},
+"1077":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1078":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1079":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1080":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1081":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1082":{"c":{"B":"בטיחות","C1":"בטיחות"},"l":127,"img":0},
+"1083":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1084":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1085":{"c":{"1":"בטיחות"},"l":127,"img":0},
+"1086":{"c":{"1":"בטיחות"},"l":127,"img":0},
+"1087":{"c":{"1":"בטיחות"},"l":127,"img":0},
+"1088":{"c":{"1":"בטיחות"},"l":127,"img":0},
+"1089":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1090":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1091":{"c":{"1":"בטיחות"},"l":127,"img":0},
+"1092":{"c":{"1":"בטיחות"},"l":127,"img":0},
+"1093":{"c":{"1":"בטיחות"},"l":127,"img":0},
+"1094":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1095":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1096":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1097":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1098":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1099":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1100":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1101":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1102":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1103":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1104":{"c":{"1":"בטיחות"},"l":127,"img":0},
+"1105":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1106":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1107":{"c":{"1":"בטיחות"},"l":127,"img":0},
+"1108":{"c":{"1":"בטיחות"},"l":127,"img":0},
+"1109":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1110":{"c":{"1":"בטיחות"},"l":127,"img":0},
+"1111":{"c":{"1":"בטיחות"},"l":127,"img":0},
+"1112":{"c":{"1":"בטיחות"},"l":127,"img":0},
+"1113":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1114":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1115":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1116":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1117":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1118":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1119":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1120":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1121":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":0},
+"1122":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1123":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1124":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1125":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1126":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1127":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1128":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1129":{"c":{"B":"חוק","D":"חוק"},"l":127,"img":0},
+"1130":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1131":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1132":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1133":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1134":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1135":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1136":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1137":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1138":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1139":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1140":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1141":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1142":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1143":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1144":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1145":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1146":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1147":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1148":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1149":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1150":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1151":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1152":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1153":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1154":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1155":{"c":{"1":"חוק","D":"ספציפי"},"l":127,"img":0},
+"1156":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1157":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1158":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1159":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1160":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1161":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1162":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1163":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1164":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1165":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1166":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1167":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1168":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1169":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1170":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1171":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1172":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1173":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1174":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1175":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1176":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1177":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1178":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1179":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1180":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1181":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1182":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1183":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1184":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1185":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1186":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1187":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1188":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1189":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1190":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1191":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1192":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1193":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1194":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1195":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1196":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1197":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1198":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1199":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1200":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1201":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1202":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1203":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1204":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1205":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1206":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1207":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1208":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1209":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1210":{"c":{"B":"חוק","C1":"חוק","D":"חוק"},"l":127,"img":0},
+"1211":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1212":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1213":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1214":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1215":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1216":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1217":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1218":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":0},
+"1219":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1220":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1221":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1222":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1223":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1224":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1225":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":0},
+"1226":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1227":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1228":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1229":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1230":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1231":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1232":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1233":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1234":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1235":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1236":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1237":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1238":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1239":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1240":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1241":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1242":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1243":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1244":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1245":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1246":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1247":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1248":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1249":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1250":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1251":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1252":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1253":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1254":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1255":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1256":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1257":{"c":{"D":"ספציפי"},"l":127,"img":1},
+"1258":{"c":{"D":"ספציפי"},"l":127,"img":1},
+"1259":{"c":{"D":"ספציפי"},"l":127,"img":1},
+"1260":{"c":{"D":"ספציפי"},"l":127,"img":1},
+"1261":{"c":{"D":"ספציפי"},"l":127,"img":1},
+"1262":{"c":{"D":"ספציפי"},"l":127,"img":1},
+"1263":{"c":{"D":"ספציפי"},"l":127,"img":1},
+"1264":{"c":{"D":"ספציפי"},"l":127,"img":1},
+"1265":{"c":{"D":"ספציפי"},"l":127,"img":1},
+"1266":{"c":{"D":"ספציפי"},"l":127,"img":1},
+"1267":{"c":{"B":"תמרורים","D":"ספציפי"},"l":127,"img":1},
+"1268":{"c":{"D":"ספציפי"},"l":127,"img":1},
+"1269":{"c":{"D":"ספציפי"},"l":127,"img":1},
+"1270":{"c":{"D":"ספציפי"},"l":127,"img":1},
+"1271":{"c":{"D":"ספציפי"},"l":127,"img":1},
+"1272":{"c":{"D":"ספציפי"},"l":127,"img":1},
+"1273":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1274":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1275":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1276":{"c":{"C1":"ספציפי","C":"ספציפי"},"l":127,"img":1},
+"1277":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1278":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1279":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1280":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1281":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1282":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1283":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1284":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1285":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1286":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1287":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1288":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1289":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1290":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1291":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1292":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1293":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1294":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1295":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1296":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1297":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1298":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1299":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1300":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1301":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1302":{"c":{"1":"חוק","C":"חוק"},"l":127,"img":0},
+"1303":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1304":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1305":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1306":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1307":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1308":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1309":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1310":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1311":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1312":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1313":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1314":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1315":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1316":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1317":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1318":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1319":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1320":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק"},"l":127,"img":0},
+"1321":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"1322":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1323":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1324":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1325":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":0},
+"1326":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1327":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1328":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1329":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1330":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1331":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1332":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1333":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1334":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":0},
+"1335":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1336":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1337":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1338":{"c":{"1":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":0},
+"1339":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1340":{"c":{"1":"חוק","C1":"חוק","C":"חוק"},"l":127,"img":0},
+"1341":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1342":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1343":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1344":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1345":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":0},
+"1346":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":0},
+"1347":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":0},
+"1348":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1349":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1350":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1351":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1352":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1353":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1354":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1355":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1356":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1357":{"c":{"B":"חוק","C1":"חוק","C":"חוק"},"l":127,"img":0},
+"1358":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1359":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1360":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":0},
+"1361":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1362":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1363":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":0},
+"1364":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":0},
+"1365":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1366":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1367":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1368":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1369":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1370":{"c":{"1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1371":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":0},
+"1372":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":0},
+"1373":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1374":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1375":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1376":{"c":{"1":"חוק","B":"חוק","C1":"חוק"},"l":127,"img":0},
+"1377":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":0},
+"1378":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":0},
+"1379":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1380":{"c":{"1":"חוק","C":"חוק"},"l":127,"img":0},
+"1381":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":0},
+"1382":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1383":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1384":{"c":{"C1":"חוק","C":"חוק"},"l":127,"img":0},
+"1385":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1386":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1387":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1388":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":0},
+"1389":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1390":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1391":{"c":{"C1":"ספציפי"},"l":127,"img":1},
+"1392":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1393":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1394":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":0},
+"1395":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1396":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":0},
+"1397":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1398":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1399":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1400":{"c":{"1":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":0},
+"1401":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1402":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק"},"l":127,"img":0},
+"1403":{"c":{"B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"ספציפי"},"l":127,"img":0},
+"1404":{"c":{"1":"חוק","B":"חוק","C1":"חוק"},"l":127,"img":0},
+"1405":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1406":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1407":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1408":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1409":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1410":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1411":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1412":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1413":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1414":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1415":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1416":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1417":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1418":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1419":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1420":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1421":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1422":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1423":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1424":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1425":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1426":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1427":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1428":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1429":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1430":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1431":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1432":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1433":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1434":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1435":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":0},
+"1436":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1437":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1438":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1439":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1440":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1441":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1442":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1443":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1444":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1445":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1446":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":0},
+"1447":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1448":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1449":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1450":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1451":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1452":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1453":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1454":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1455":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1456":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1457":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1458":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1459":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1460":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1461":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1462":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1463":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":0},
+"1464":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1465":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1466":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":0},
+"1467":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1468":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב","C":"הכרת הרכב","D":"הכרת הרכב"},"l":127,"img":0},
+"1469":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1470":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1471":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":0},
+"1472":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1473":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1474":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1475":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1476":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1477":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1478":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1479":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1480":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1481":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1482":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1483":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1484":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1485":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1486":{"c":{"B":"חוק"},"l":127,"img":0},
+"1487":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1488":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1489":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1490":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1491":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1492":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1493":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1494":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1495":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1496":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1497":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1498":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1499":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1500":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1501":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":1},
+"1502":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1503":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1504":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1505":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1506":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1507":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1508":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1509":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1510":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1511":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1513":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1514":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1515":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1516":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1517":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":1},
+"1518":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1519":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1520":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1521":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1522":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1523":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1524":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1525":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1526":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1527":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1528":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1529":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1530":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1531":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1532":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1533":{"c":{"B":"חוק","C1":"חוק","C":"חוק"},"l":127,"img":0},
+"1534":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1535":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1536":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1537":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1538":{"c":{"B":"חוק","C1":"חוק","C":"חוק"},"l":127,"img":0},
+"1539":{"c":{"B":"חוק","C1":"חוק","C":"חוק"},"l":127,"img":0},
+"1540":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1541":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1542":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1543":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1544":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1545":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1546":{"c":{"B":"חוק","C1":"חוק","C":"חוק"},"l":127,"img":0},
+"1547":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1548":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1549":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1550":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1551":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1552":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1553":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":0},
+"1554":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1555":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1556":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1557":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1558":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1559":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1560":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1561":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":0},
+"1562":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1563":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1564":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1565":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":0},
+"1566":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":0},
+"1567":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":0},
+"1568":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1569":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1570":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1572":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1573":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1574":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1578":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1580":{"c":{"B":"בטיחות","C1":"בטיחות"},"l":127,"img":0},
+"1582":{"c":{"B":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1590":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1591":{"c":{"B":"חוק"},"l":127,"img":0},
+"1593":{"c":{"B":"חוק"},"l":127,"img":0},
+"1598":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1607":{"c":{"D":"ספציפי"},"l":127,"img":1},
+"1608":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1622":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1625":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1628":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1636":{"c":{"C1":"ספציפי"},"l":127,"img":0},
+"1637":{"c":{"C1":"ספציפי"},"l":127,"img":1},
+"1638":{"c":{"D":"ספציפי"},"l":127,"img":1},
+"1641":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1646":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1650":{"c":{"1":"חוק","B":"חוק","C1":"חוק"},"l":127,"img":0},
+"1652":{"c":{"C1":"ספציפי"},"l":127,"img":1},
+"1664":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1665":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1671":{"c":{"C":"ספציפי"},"l":127,"img":1},
+"1672":{"c":{"C":"ספציפי"},"l":127,"img":1},
+"1673":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב","C":"הכרת הרכב","D":"הכרת הרכב"},"l":127,"img":0},
+"1674":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":0},
+"1675":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב","C":"הכרת הרכב","D":"הכרת הרכב"},"l":127,"img":0},
+"1676":{"c":{"C1":"ספציפי","D":"ספציפי"},"l":127,"img":0},
+"1677":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1678":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1679":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1681":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":0},
+"1682":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1683":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1684":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1685":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":0},
+"1686":{"c":{"1":"חוק","B":"חוק","C1":"חוק"},"l":127,"img":0},
+"1687":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":0},
+"1688":{"c":{"1":"חוק","B":"חוק","C1":"חוק"},"l":127,"img":1},
+"1690":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1691":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב","C":"הכרת הרכב","D":"הכרת הרכב"},"l":127,"img":0},
+"1692":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1693":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1694":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1695":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1696":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1697":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1698":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1699":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1700":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"ספציפי"},"l":127,"img":0},
+"1701":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1702":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב","C":"הכרת הרכב","D":"הכרת הרכב"},"l":127,"img":0},
+"1703":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1704":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1705":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1706":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב","C":"הכרת הרכב","D":"הכרת הרכב"},"l":127,"img":0},
+"1707":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1708":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":1},
+"1709":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1710":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1711":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1712":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1713":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1714":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1715":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1716":{"c":{"1":"חוק","B":"חוק","C1":"חוק"},"l":127,"img":0},
+"1717":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1718":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1719":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1720":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1721":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1722":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1723":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":1},
+"1724":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1725":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1726":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1727":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":1},
+"1729":{"c":{"D":"ספציפי"},"l":127,"img":1},
+"1731":{"c":{"D":"ספציפי"},"l":127,"img":1},
+"1736":{"c":{"1":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1737":{"c":{"1":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1738":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1739":{"c":{"1":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1740":{"c":{"B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1741":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1742":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1743":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1744":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1745":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1746":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1747":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1748":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1749":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1750":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":0},
+"1751":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1752":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1753":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1754":{"c":{"B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1755":{"c":{"B":"חוק","C1":"חוק"},"l":127,"img":0},
+"1756":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1757":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1758":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1759":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1760":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1761":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":0},
+"1762":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1763":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":0},
+"1764":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1765":{"c":{"B":"בטיחות","C1":"בטיחות"},"l":127,"img":0},
+"1766":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1767":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1768":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1769":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1770":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1771":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1772":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":0},
+"1773":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1774":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1775":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1776":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":0},
+"1777":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1778":{"c":{"1":"הכרת הרכב","B":"הכרת הרכב","C1":"הכרת הרכב","C":"הכרת הרכב","D":"הכרת הרכב"},"l":127,"img":0},
+"1779":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1780":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1781":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1782":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1783":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1784":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1785":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1786":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1787":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":0},
+"1788":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1789":{"c":{"B":"הכרת הרכב","C1":"הכרת הרכב"},"l":127,"img":0},
+"1790":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1791":{"c":{"1":"בטיחות","B":"בטיחות","C1":"בטיחות","C":"בטיחות","D":"בטיחות"},"l":127,"img":0},
+"1792":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1793":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1794":{"c":{"D":"ספציפי"},"l":127,"img":0},
+"1795":{"c":{"1":"ספציפי"},"l":127,"img":0},
+"1797":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1798":{"c":{"1":"חוק","B":"חוק","C1":"חוק","C":"חוק","D":"חוק"},"l":127,"img":0},
+"1799":{"c":{"C":"ספציפי"},"l":127,"img":1},
+"1800":{"c":{"C":"ספציפי"},"l":127,"img":0},
+"1801":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1},
+"1803":{"c":{"1":"תמרורים","B":"תמרורים","C1":"תמרורים","C":"תמרורים","D":"תמרורים"},"l":127,"img":1}
+};
+
+// Bit 0 = he … bit 6 = am in QUESTION_INDEX[id].l — the order tools/build_bank.js
+// writes. A bit says the id exists in that language's bank, which is also what
+// makes its answer key trustworthy for that language (en/fr/es/ar order their
+// answers differently from Hebrew — see TRANSLATION_LINEAGE_2026-09-20.md).
+var QUESTION_LANGS = ['he', 'ru', 'en', 'ar', 'fr', 'es', 'am'];
+// Every question in every one of the seven generated banks has exactly four
+// answers (checked over all 6,245-6,270 rows per bank, 21/09/2026), so the
+// displayed order is a permutation of [0..3].
+var QUESTION_ANSWER_COUNT = 4;
+
+var EXAM_STRUCTURE_SERVER = {
+  'B':  { 'בטיחות': 7, 'הכרת הרכב': 7, 'חוק': 7, 'תמרורים': 9 },
+  '1':  { 'בטיחות': 5, 'הכרת הרכב': 5, 'חוק': 6, 'תמרורים': 6, 'ספציפי': 8 },
+  'C1': { 'בטיחות': 5, 'הכרת הרכב': 5, 'חוק': 5, 'תמרורים': 5, 'ספציפי': 10 },
+  'C':  { 'בטיחות': 5, 'הכרת הרכב': 4, 'חוק': 3, 'תמרורים': 4, 'ספציפי': 14 },
+  'D':  { 'בטיחות': 4, 'הכרת הרכב': 2, 'חוק': 5, 'תמרורים': 4, 'ספציפי': 15 }
+};
+
+// The bank's raw category → one of the five blueprint topics. Kept on the server
+// because the index stores the classified topic and the reports classify the
+// categories they read out of result rows.
+function classifyCategoryServer(cat) {
+  var c = String(cat || '').trim();
+  if (/ספציפי/.test(c)) return 'ספציפי'; // ספציפי
+  if (/בטיחות/.test(c)) return 'בטיחות'; // בטיחות
+  if (/הכרת הרכב/.test(c)) return 'הכרת הרכב'; // הכרת הרכב
+  if (/חוק/.test(c)) return 'חוק'; // חוק
+  if (/תמרורים/.test(c)) return 'תמרורים'; // תמרורים
+  if (/זכות קדימה/.test(c)) return 'חוק'; // זכות קדימה → חוק
+  return '';
+}
+
+function shuffleArrayServer(arr) {
+  var a = arr.slice();
+  for (var i = a.length - 1; i > 0; i--) {
+    var j = Math.floor(Math.random() * (i + 1));
+    var t = a[i]; a[i] = a[j]; a[j] = t;
+  }
+  return a;
+}
+
+function questionIndexEntry(id) {
+  var entry = QUESTION_INDEX[String(id)];
+  return entry || null;
+}
+
+function questionIndexCount() { return Object.keys(QUESTION_INDEX).length; }
+
+function questionLangBit(lang) {
+  var i = QUESTION_LANGS.indexOf(String(lang || 'he').toLowerCase());
+  return i < 0 ? 0 : (1 << i);
+}
+
+// The blueprint topic of a question for one license ('' when the question does
+// not belong to that license at all).
+function questionTopic(id, license) {
+  var entry = questionIndexEntry(id);
+  return (entry && entry.c[String(license)]) || '';
+}
+
+// The one place that reads the answer key. null means "the key cannot answer for
+// this id in this language" — callers must treat that as NOT VERIFIABLE and
+// never as index 0, which is how the false 0/30 of 03/06/2026 happened.
+function answerKeyIndex(id, lang) {
+  if (typeof lookupCorrectIndex !== 'function') return null;
+  var idx = lookupCorrectIndex(Number(id), String(lang || 'he').toLowerCase());
+  if (idx === null || idx === undefined) return null;
+  var n = Number(idx);
+  return (isFinite(n) && n >= 0 && n < QUESTION_ANSWER_COUNT) ? n : null;
+}
+
+// ids of one license+language grouped by blueprint topic. One pass over 1,700
+// index entries — measured in microseconds, so no cache (and no cache bug).
+function indexIdsByTopic(license, lang) {
+  var bit = questionLangBit(lang), lic = String(license), byTopic = {};
+  for (var id in QUESTION_INDEX) {
+    if (!Object.prototype.hasOwnProperty.call(QUESTION_INDEX, id)) continue;
+    var entry = QUESTION_INDEX[id];
+    if (!(entry.l & bit)) continue;
+    var topic = entry.c[lic];
+    if (!topic) continue;
+    if (!byTopic[topic]) byTopic[topic] = [];
+    byTopic[topic].push(Number(id));
+  }
+  return byTopic;
+}
+
+// Every id available for a license+language, whatever its topic.
+function indexIdsFor(license, lang) {
+  var byTopic = indexIdsByTopic(license, lang), out = [];
+  for (var topic in byTopic) {
+    if (!Object.prototype.hasOwnProperty.call(byTopic, topic)) continue;
+    out = out.concat(byTopic[topic]);
+  }
+  return out;
+}
+
+function questionBankUnavailable(message, detail) {
+  var err = new Error(message);
+  err.code = 'bank_unavailable';
+  err.detail = detail || '';
+  return err;
+}
+
+// 30 ids per the license blueprint, as [{id, topic}] in random order.
+// A question whose answer key is missing for THIS language is skipped here:
+// registering it would mean scoring it later against a key that does not exist.
+function drawExamIds(license, lang) {
+  var blueprint = EXAM_STRUCTURE_SERVER[String(license)];
+  if (!blueprint) throw questionBankUnavailable('דרגה לא מוכרת: ' + license, String(license));
+  var byTopic = indexIdsByTopic(license, lang), picked = [], used = {};
+  for (var topic in blueprint) {
+    if (!Object.prototype.hasOwnProperty.call(blueprint, topic)) continue;
+    var need = blueprint[topic], pool = shuffleArrayServer(byTopic[topic] || []), got = 0;
+    for (var i = 0; i < pool.length && got < need; i++) {
+      var id = pool[i];
+      if (used[id] || answerKeyIndex(id, lang) === null) continue;
+      used[id] = true;
+      picked.push({ id: id, topic: topic });
+      got++;
+    }
+    if (got < need) {
+      throw questionBankUnavailable('אין מספיק שאלות בנושא ' + topic, topic + ' ' + got + '/' + need);
+    }
+  }
+  return shuffleArrayServer(picked);
+}
+
+// A fresh display order for one question: a permutation of the answer positions.
+function drawShuffleOrder() {
+  var order = [];
+  for (var i = 0; i < QUESTION_ANSWER_COUNT; i++) order.push(i);
+  return shuffleArrayServer(order);
+}
+
+// Practice scores locally, so it needs the correct index for every language the
+// question exists in, XOR-encoded exactly as the legacy questions.js did
+// (ci = correctIndex ^ (id % 256)) so the client keeps a single decoder.
+// Languages the question is not translated into are omitted — the answer key
+// falls back to Hebrew, and for en/fr/es/ar that fallback is a different order.
+function practiceCiByLang(id) {
+  var entry = questionIndexEntry(id);
+  if (!entry) return null;
+  var out = {};
+  for (var i = 0; i < QUESTION_LANGS.length; i++) {
+    if (!(entry.l & (1 << i))) continue;
+    var idx = answerKeyIndex(id, QUESTION_LANGS[i]);
+    if (idx === null) continue;
+    out[QUESTION_LANGS[i]] = idx ^ (Number(id) % 256);
+  }
+  return out;
+}
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-19-r24';
-var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
+var THEORY_API_BUILD = '2026-09-22-r30';
+// When the current request entered the script — health&deep=1 reports the whole
+// request against it, so a watchdog can separate our time from Google's.
+var API_STARTED_AT = 0;
+
+// Every action name known to the deployment, for the timing log (which must
+// never echo an arbitrary string a caller sent) and for feature detection.
+function apiActionList() {
+  ensureLegacyActions();
+  return apiActionNames();
+}
 
 function logTheoryApiTiming(phase, method, action, startedAt) {
   // Never log request parameters, IDs, credentials, answers or arbitrary action text.
   // A start without an end can identify a runtime timeout in the execution log.
   try {
     Logger.log('[API] ' + JSON.stringify({ build: THEORY_API_BUILD, phase: phase,
-      method: method, action: THEORY_API_ACTIONS.indexOf(action) >= 0 ? action : 'unknown',
+      method: method, action: apiActionList().indexOf(action) >= 0 ? action : 'unknown',
       elapsedMs: Math.max(0, Date.now() - startedAt) }));
   } catch (logErr) { /* diagnostics must never break an exam */ }
 }
 
 function theoryRetryableErrorResponse(err) {
   if (!err || err.retryable !== true) return null;
-  return jsonResponse({ status: 'error', code: 'question_cache_busy', retryable: true,
+  return jsonResponse({ status: 'error', code: err.code || 'retry_later', retryable: true,
     waitSec: Math.max(1, Math.min(30, Number(err.waitSec) || 3)),
-    message: 'מאגר השאלות מתעדכן כעת. אפשר לנסות שוב בעוד מספר שניות.' });
+    message: err.userMessage || 'המערכת עמוסה כעת. אפשר לנסות שוב בעוד מספר שניות.' });
 }
 
-function questionRequestRateId(p, auth) {
-  // A class starting together must not share one candidate's allowance.
-  if (auth === 'examinee') return String(p.sessionCode || '') + '_' + normalizeId(p.idNumber);
-  return p.idNumber || p.examinerId || p.studentId || p.standaloneIdNumber || p.sessionCode || 'anon';
+// ========== Dispatch ==========
+// doGet/doPost were a 300-line switch plus three hand-maintained lists of which
+// action needs which token. Now every action is a registry row (name, methods,
+// auth, handler) and the two entry points do the same four things: parse, check
+// the method, check the auth rule, call the handler.
+
+function dispatchApiAction(method, action, p) {
+  ensureLegacyActions();
+  var spec = apiRegistry()[action];
+  if (!spec) return jsonResponse({ status: 'error', message: 'Unknown action: ' + action });
+  if (spec.methods.indexOf(method) === -1) {
+    return jsonResponse({ status: 'error',
+      message: method === 'GET' ? 'פעולה זו דורשת POST' : 'פעולה זו דורשת GET' });
+  }
+  var authErr = requireActionAuth(spec.auth, p);
+  if (authErr) return authErr;
+  if (spec.rateLimit) {
+    var rlErr = requireRateLimit(action, spec.rateLimit.id(p), spec.rateLimit.max, spec.rateLimit.windowSec || 60);
+    if (rlErr) return rlErr;
+  }
+  return spec.handler(p);
 }
+
+function requireActionAuth(auth, p) {
+  if (auth === 'examiner') return requireToken(p);
+  if (auth === 'teacher') return requireTeacherToken(p);
+  if (auth === 'examinee') return requireExamineeToken(p);
+  if (auth === 'gateway') return requireGatewayKey(p);
+  return null;   // 'none' — either public, or the handler enforces its own rule
+}
+
+// The session-poll Worker is the only caller that reads a whole session's rows
+// in one request; it authenticates with a shared secret kept in ScriptProperties
+// (never in the client), so an examinee token is not involved.
+function requireGatewayKey(p) {
+  var expected = '';
+  try { expected = String(PropertiesService.getScriptProperties().getProperty('GATEWAY_KEY') || ''); } catch (e) { expected = ''; }
+  if (!expected || String(p.gatewayKey || '') !== expected) {
+    return jsonResponse({ status: 'error', code: 'gateway_denied', message: 'gateway key invalid' });
+  }
+  return null;
+}
+
+// ---- Actions owned by this package -----------------------------------------
+defineAction('startExam', { methods: ['POST'], auth: 'examinee', handler: handleStartExam,
+  rateLimit: { max: 10, windowSec: 60, id: function(p) { return String(p.sessionCode || '') + '_' + normalizeId(p.idNumber); } } });
+defineAction('startPractice', { methods: ['GET'], auth: 'none', handler: handleStartPractice });
+defineAction('markExamStarted', { methods: ['GET'], auth: 'examinee', handler: handleMarkExamStartedNoop });
+defineAction('getExamQuestions', { methods: ['GET'], auth: 'none', handler: handleClientOutdated });
+defineAction('registerExamQuestions', { methods: ['POST'], auth: 'none', handler: handleClientOutdated });
+defineAction('submitResult', { methods: ['POST'], auth: 'examinee', handler: handleSubmitResult });
+defineAction('submitFailOnClose', { methods: ['POST'], auth: 'examinee', handler: handleSubmitFailOnClose });
+defineAction('cancelFailOnClose', { methods: ['POST'], auth: 'examinee', handler: handleCancelFailOnClose });
+defineAction('getResultUploadToken', { methods: ['GET'], auth: 'examiner', handler: handleGetResultUploadToken });
+
+// ---- Every other action, with today's method and auth rule ------------------
+// S2 will move these rows next to their handlers; until then this table is the
+// single declaration of them, and it reproduces exactly what the old doGet/doPost
+// enforced (its examinerActions / teacherActions / postOnlyActions lists), so the
+// dispatcher is a refactor and not a policy change. Handlers are named, not
+// referenced, so a module that replaces one is picked up at call time.
+//   [name, methods, auth, handler function name]
+function legacyActionTable() {
+  return [
+    // -- examiner token (the old examinerActions list) --
+    ['getSites', 'GET', 'examiner', 'handleGetSites'],
+    ['listSessions', 'GET', 'examiner', 'handleListSessions'],
+    ['listAllSessions', 'GET', 'examiner', 'handleListAllSessions'],
+    ['createSession', 'GET', 'examiner', 'handleCreateSession'],
+    ['updateSession', 'GET', 'examiner', 'handleUpdateSession'],
+    ['closeSession', 'GET', 'examiner', 'handleCloseSession'],
+    ['approveExaminee', 'GET', 'examiner', 'handleApproveExaminee'],
+    ['rejectExaminee', 'GET', 'examiner', 'handleRejectExaminee'],
+    ['examinerDashboard', 'GET', 'examiner', 'handleExaminerDashboard'],
+    ['resetExaminee', 'GET', 'examiner', 'handleResetExaminee'],
+    ['correctToPass', 'GET', 'examiner', 'handleCorrectToPass'],
+    ['overturnDQ', 'GET', 'examiner', 'handleOverturnDQ'],
+    ['confirmDQ', 'GET', 'examiner', 'handleConfirmDQ'],
+    ['forceComplete', 'GET', 'examiner', 'handleForceComplete'],
+    ['markSent', 'GET', 'examiner', 'handleMarkSent'],
+    ['commanderDashboard', 'GET', 'examiner', 'handleCommanderDashboard'],
+    ['centerManagerReport', 'GET', 'examiner', 'handleCenterManagerReport'],
+    ['examinerForecast', 'GET', 'examiner', 'handleExaminerForecast'],
+    // POST-only in the old router; the handlers verify the examiner themselves too
+    ['commanderCorrectResult', 'POST', 'examiner', 'handleCommanderCorrectResult'],
+    ['submitManualResult', 'POST', 'examiner', 'handleSubmitManualResult'],
+    ['correctExamineeMeta', 'GET,POST', 'examiner', 'handleCorrectExamineeMeta'],
+    // -- teacher token (the old teacherActions list) --
+    ['teacherDashboard', 'GET', 'teacher', 'handleTeacherDashboard'],
+    ['teacherCreateClass', 'GET', 'teacher', 'handleTeacherCreateClass'],
+    ['teacherCloseClass', 'GET', 'teacher', 'handleTeacherCloseClass'],
+    ['teacherDeleteClass', 'GET', 'teacher', 'handleTeacherDeleteClass'],
+    ['teacherRemoveStudent', 'GET', 'teacher', 'handleTeacherRemoveStudent'],
+    ['teacherGetClasses', 'GET', 'teacher', 'handleTeacherGetClasses'],
+    ['teacherClassDetails', 'GET', 'teacher', 'handleTeacherClassDetails'],
+    ['teacherExportData', 'GET', 'teacher', 'handleTeacherExportData'],
+    ['teacherCommanderDashboard', 'GET', 'teacher', 'handleTeacherCommanderDashboard'],
+    ['teacherAtRiskList', 'GET', 'teacher', 'handleTeacherAtRiskList'],
+    ['adminDashboard', 'GET', 'teacher', 'handleAdminDashboard'],
+    // -- public / handler-enforced auth --
+    ['login', 'POST', 'none', 'handleLogin'],
+    ['verifyLogin', 'GET', 'none', 'handleVerifyLogin'],
+    ['teacherLogin', 'POST', 'none', 'handleTeacherLogin'],
+    ['teacherVerifyLogin', 'GET', 'none', 'handleTeacherVerifyLogin'],
+    ['getOfficeNumber', 'GET', 'none', 'handleGetOfficeNumber'],
+    ['listActiveExaminers', 'GET', 'none', 'handleListActiveExaminers'],
+    ['siteCombinedReport', 'GET', 'none', 'handleSiteCombinedReport'],
+    ['getSessionInfo', 'GET', 'none', 'handleGetSessionInfo'],
+    ['registerExaminee', 'GET', 'none', 'handleRegisterExaminee'],
+    ['cancelRegistration', 'GET', 'none', 'handleCancelRegistration'],
+    ['checkApproval', 'GET', 'none', 'handleCheckApproval'],
+    ['getExamStatus', 'GET', 'none', 'handleGetExamStatus'],
+    ['addExamTime', 'GET', 'none', 'handleAddExamTime'],
+    ['markFinished', 'GET', 'none', 'handleMarkFinished'],
+    // 'disqualify' is deliberately not examiner-gated: the examinee client sends
+    // it too, and handleDisqualify accepts either an examiner token or an active
+    // pending row of that examinee.
+    ['disqualify', 'GET,POST', 'none', 'handleDisqualify'],
+    ['reportWarning', 'GET,POST', 'none', 'handleReportWarning'],
+    ['cancelDisqualify', 'GET,POST', 'none', 'handleCancelDisqualify'],
+    ['studentJoinClass', 'GET', 'none', 'handleStudentJoinClass'],
+    ['submitPracticeResult', 'GET,POST', 'none', 'handleSubmitPracticeResult'],
+    ['loadStudentProgress', 'GET', 'none', 'handleLoadStudentProgress'],
+    ['saveStudentProgress', 'POST', 'none', 'handleSaveStudentProgress']
+  ];
+}
+
+// Registered on first dispatch rather than at load time, so a module that
+// declared the same action with defineAction() wins and a DIFFERENT declaration
+// of the same name — a merge accident between two packages — throws instead of
+// silently taking effect.
+function ensureLegacyActions() {
+  if (ensureLegacyActions._done) return;
+  ensureLegacyActions._done = true;
+  var table = legacyActionTable();
+  for (var i = 0; i < table.length; i++) {
+    var name = table[i][0], methods = table[i][1].split(','), auth = table[i][2], fnName = table[i][3];
+    var existing = apiRegistry()[name];
+    if (!existing) {
+      defineAction(name, { methods: methods, auth: auth, handler: namedHandler(fnName) });
+      continue;
+    }
+    if (existing.auth !== auth || existing.methods.join(',') !== methods.join(',')) {
+      throw new Error('conflicting defineAction for ' + name + ': ' + existing.methods.join('/') + '/' + existing.auth +
+        ' vs ' + methods.join('/') + '/' + auth);
+    }
+  }
+}
+
+// Resolved at call time: the handler may live in any module, and a test or a
+// later module may replace it.
+function namedHandler(fnName) {
+  return function(p) {
+    var fn = globalFunction(fnName);
+    if (!fn) return jsonResponse({ status: 'error', message: 'Action not available: ' + fnName });
+    return fn(p);
+  };
+}
+function globalFunction(fnName) {
+  var fn = null;
+  try { fn = globalThis[fnName]; } catch (e) { fn = null; }
+  return (typeof fn === 'function') ? fn : null;
+}
+
+function handleGetOfficeNumber() {
+  // Public read of the office WA number — used by clients for display.
+  return jsonResponse({ status: 'ok', officeWhatsApp: getOfficeWhatsAppNumber() });
+}
+
+// health&deep=1 (2026-09-19, review action 7): the plain health does no work at
+// all, so it can only say "Google is slow". This one also reads a single cell of
+// OUR document and reports that time separately, so a watchdog can tell "our
+// document stalls" from "Google's front door stalls" every minute of an exam
+// morning (tools/exam_watchdog.gs). indexIds is the deployed question index —
+// the client compares it against the static bank it loaded.
+function handleHealth(p) {
+  var body = { status: 'ok', build: THEORY_API_BUILD, indexIds: questionIndexCount() };
+  if (String(p.deep || '') !== '1') return jsonResponse(body);
+  var deepT0 = Date.now(), sheetMs = -1, sheetError = '';
+  try { getSheet('אתרים').getRange(1, 1).getValue(); sheetMs = Date.now() - deepT0; }
+  catch (eDeep) { sheetError = String(eDeep && eDeep.message ? eDeep.message : eDeep).slice(0, 120); }
+  body.deep = true;
+  body.sheetMs = sheetMs;
+  body.sheetError = sheetError;
+  body.totalMs = Date.now() - API_STARTED_AT;
+  return jsonResponse(body);
+}
+defineAction('health', { methods: ['GET'], auth: 'none', handler: handleHealth });
 
 // ========== doGet — קריאות קריאה + פעולות קלות ==========
 
 function doGet(e) {
-  var apiStartedAt = Date.now();
+  var apiStartedAt = API_STARTED_AT = Date.now();
   var action = '';
   diagBegin('GET');
   try {
@@ -1080,289 +3353,12 @@ function doGet(e) {
     if (DIAG_EXEC) { DIAG_EXEC.action = action; DIAG_EXEC.t0 = apiStartedAt; }
     logTheoryApiTiming('start', 'GET', action, apiStartedAt);
 
-    // Block sensitive state-mutating actions from GET — must come via POST.
-    // Prevents URL-based forging (URLs leak to logs/history; trivially craftable).
-    // Clients already use POST for these (apiPost / sendBeacon with JSON body).
-    var postOnlyActions = ['submitResult','submitFailOnClose','submitWrongAnswers','uploadResultHtml','registerExamQuestions','saveStudentProgress','commanderCorrectResult','submitManualResult'];
-    if (postOnlyActions.indexOf(action) !== -1) {
-      return jsonResponse({ status: 'error', message: 'פעולה זו דורשת POST' });
-    }
-
     // Soft origin check — log unauthorized origins (deterrent, bypassable but raises bar)
     var originErr = checkOrigin(p);
     if (originErr) return originErr;
 
-    if (action === 'health') {
-      if (String(p.deep || '') === '1') {
-        // health&deep=1 (2026-09-19, review action 7): the plain health does no
-        // work at all, so it can only say "Google is slow". This one also reads a
-        // single cell of OUR document and reports that time separately, so a
-        // watchdog can tell "our document stalls" from "Google's front door
-        // stalls" every minute of an exam morning (tools/exam_watchdog.gs).
-        var deepT0 = Date.now(), sheetMs = -1, sheetError = '';
-        try { getSheet('אתרים').getRange(1, 1).getValue(); sheetMs = Date.now() - deepT0; }
-        catch (eDeep) { sheetError = String(eDeep && eDeep.message ? eDeep.message : eDeep).slice(0, 120); }
-        return jsonResponse({ status: 'ok', build: THEORY_API_BUILD, deep: true, sheetMs: sheetMs, sheetError: sheetError,
-          totalMs: Date.now() - apiStartedAt });
-      }
-      return jsonResponse({ status: 'ok', build: THEORY_API_BUILD });
-    }
-
-    // Actions that require examiner token authentication
-    var examinerActions = ['getSites','listSessions','listAllSessions','createSession','updateSession','closeSession',
-      'approveExaminee','rejectExaminee','examinerDashboard','resetExaminee',
-      'correctToPass','overturnDQ','confirmDQ','forceComplete','markSent','commanderDashboard',
-      'commanderCorrectResult','correctExamineeMeta','getResultUploadToken','centerManagerReport',
-      'predictiveModelPreview','examinerForecast'];
-    // Note: 'disqualify' is NOT in this list because it can be sent by the examinee client (no token)
-    // — auth is enforced inside handleDisqualify itself (examiner token OR active pending row).
-    if (examinerActions.indexOf(action) !== -1) {
-      var tokenErr = requireToken(p);
-      if (tokenErr) return tokenErr;
-    }
-
-    // Actions that require teacher token authentication
-    var teacherActions = ['teacherDashboard','teacherCreateClass','teacherCloseClass','teacherDeleteClass',
-      'teacherRemoveStudent','teacherGetClasses','teacherClassDetails','teacherExportData',
-      'teacherCommanderDashboard','teacherAtRiskList','adminDashboard'];
-    if (teacherActions.indexOf(action) !== -1) {
-      var tErr = requireTeacherToken(p);
-      if (tErr) return tErr;
-    }
-
-    switch (action) {
-
-      case 'login':
-        // Login only via POST — block GET to prevent password in URL
-        return jsonResponse({ status: 'error', message: 'יש להתחבר דרך POST בלבד' });
-
-      case 'verifyLogin':
-        return handleVerifyLogin(p);
-
-      case 'getSites':
-        return handleGetSites();
-
-      case 'listSessions':
-        return handleListSessions(p);
-
-      case 'listAllSessions':
-        return handleListAllSessions(p);
-
-      case 'centerManagerReport':
-        return handleCenterManagerReport(p);
-
-      case 'getOfficeNumber':
-        // Public read of the office WA number — used by clients for display.
-        return jsonResponse({ status: 'ok', officeWhatsApp: getOfficeWhatsAppNumber() });
-
-      case 'createSession':
-        return handleCreateSession(p);
-
-      case 'listActiveExaminers':
-        return handleListActiveExaminers(p);
-
-      case 'siteCombinedReport':
-        return handleSiteCombinedReport(p);
-
-      case 'updateSession':
-        return handleUpdateSession(p);
-
-      case 'closeSession':
-        return handleCloseSession(p);
-
-      case 'getSessionInfo':
-        return handleGetSessionInfo(p);
-
-      case 'registerExaminee':
-        return handleRegisterExaminee(p);
-
-      case 'cancelRegistration':
-        return handleCancelRegistration(p);
-
-      case 'checkApproval':
-        return handleCheckApproval(p);
-
-      case 'approveExaminee':
-        return handleApproveExaminee(p);
-
-      case 'rejectExaminee':
-        return handleRejectExaminee(p);
-
-      case 'markExamStarted':
-        return handleMarkExamStarted(p);
-
-      case 'examinerDashboard':
-        return handleExaminerDashboard(p);
-
-      case 'disqualify':
-        return handleDisqualify(p);
-
-      case 'reportWarning':
-        return handleReportWarning(p);
-
-      case 'getExamStatus':
-        return handleGetExamStatus(p);
-
-      case 'addExamTime':
-        return handleAddExamTime(p);
-
-      case 'markFinished':
-        return handleMarkFinished(p);
-
-      case 'cancelDisqualify':
-        return handleCancelDisqualify(p);
-
-      case 'resetExaminee':
-        return handleResetExaminee(p);
-
-      case 'overturnDQ':
-        return handleOverturnDQ(p);
-
-      case 'confirmDQ':
-        return handleConfirmDQ(p);
-
-      case 'correctToPass':
-        return handleCorrectToPass(p);
-
-      case 'correctExamineeMeta':
-        return handleCorrectExamineeMeta(p);
-
-      case 'forceComplete':
-        return handleForceComplete(p);
-
-      case 'markSent':
-        return handleMarkSent(p);
-
-      case 'commanderDashboard':
-        return handleCommanderDashboard(p);
-
-      case 'predictiveModelPreview':
-        return handlePredictiveModelPreview(p);
-
-      case 'examinerForecast':
-        return handleExaminerForecast(p);
-
-      case 'submitResult':
-        // Decode wrongAnswers from JSON string parameter
-        var resultData = {
-          action: 'submitResult',
-          sessionCode: p.sessionCode || '',
-          idNumber: p.idNumber || '',
-          fullName: p.fullName || '',
-          phone: p.phone || '',
-          license: p.license || 'B',
-          language: p.language || 'he',
-          score: Number(p.score) || 0,
-          total: Number(p.total) || 30,
-          percent: Number(p.percent) || 0,
-          passed: p.passed === 'true' || p.passed === true,
-          time: p.time || '',
-          examinerName: p.examinerName || '',
-          site: p.site || '',
-          classroom: p.classroom || '',
-          population: p.population || '',
-          audioMode: p.audioMode || 'off',
-          device: p.device || '',
-          wrongAnswers: []
-        };
-        try { if (p.wrongAnswers) resultData.wrongAnswers = JSON.parse(p.wrongAnswers); } catch(ex) {}
-        return handleSubmitResult(resultData);
-
-      case 'submitWrongAnswers':
-        return handleSubmitWrongAnswers(p);
-
-      case 'submitFailOnClose':
-        var failData = {
-          action: 'submitFailOnClose',
-          sessionCode: p.sessionCode || '',
-          idNumber: p.idNumber || '',
-          fullName: p.fullName || '',
-          phone: p.phone || '',
-          license: p.license || 'B',
-          language: p.language || 'he',
-          examinerName: p.examinerName || '',
-          site: p.site || '',
-          classroom: p.classroom || '',
-          answeredCount: Number(p.answeredCount) || 0,
-          totalQuestions: Number(p.totalQuestions) || 30,
-          time: p.time || '',
-          population: p.population || '',
-          audioMode: p.audioMode || 'off',
-          device: p.device || ''
-        };
-        return handleSubmitFailOnClose(failData);
-
-      case 'getUploadResult':
-        return handleGetUploadResult(p);
-
-      case 'getResultUploadToken':
-        return handleGetResultUploadToken(p);
-
-      case 'getExamQuestions':
-        return handleGetExamQuestions(p);
-
-      case 'searchQuestions':
-        return handleSearchQuestions(p);
-
-      case 'getQuestionsByIds':
-        return handleGetQuestionsByIds(p);
-
-      case 'viewResult':
-        // DISABLED: see handleUploadResultHtml. Result viewing moved to the
-        // authenticated Cloudflare Worker; this no longer serves cached HTML (it
-        // used ALLOWALL framing on the trusted Google origin \u2014 an XSS/phishing vector).
-        return HtmlService.createHtmlOutput('<h1 style="text-align:center;padding:40px;font-family:Arial;direction:rtl;">\u05DC\u05D0 \u05D6\u05DE\u05D9\u05DF</h1>');
-
-      // ===== Teacher actions =====
-      case 'teacherVerifyLogin':
-        return handleTeacherVerifyLogin(p);
-
-      case 'teacherGetClasses':
-        return handleTeacherGetClasses(p);
-
-      case 'teacherCreateClass':
-        return handleTeacherCreateClass(p);
-
-      case 'teacherCloseClass':
-        return handleTeacherCloseClass(p);
-
-      case 'teacherDeleteClass':
-        return handleTeacherDeleteClass(p);
-
-      case 'teacherRemoveStudent':
-        return handleTeacherRemoveStudent(p);
-
-      case 'teacherDashboard':
-        return handleTeacherDashboard(p);
-
-      case 'teacherClassDetails':
-        return handleTeacherClassDetails(p);
-
-      case 'teacherExportData':
-        return handleTeacherExportData(p);
-
-      case 'teacherCommanderDashboard':
-        return handleTeacherCommanderDashboard(p);
-
-      case 'teacherAtRiskList':
-        return handleTeacherAtRiskList(p);
-
-      case 'adminDashboard':
-        return handleAdminDashboard(p);
-
-      // ===== Student join class (no auth) =====
-      case 'studentJoinClass':
-        return handleStudentJoinClass(p);
-
-      case 'submitPracticeResult':
-        return handleSubmitPracticeResult(p);
-
-      case 'loadStudentProgress':
-        return handleLoadStudentProgress(p);
-      default:
-        return jsonResponse({ status: 'ok', message: 'External Exam API is running' });
-    }
-
+    if (action === '') return jsonResponse({ status: 'ok', message: 'External Exam API is running' });
+    return dispatchApiAction('GET', action, p);
   } catch (err) {
     return theoryRetryableErrorResponse(err) || jsonResponse({ status: 'error', message: err.toString() });
   } finally {
@@ -1374,15 +3370,14 @@ function doGet(e) {
 // ========== doPost — שמירת תוצאות (נתונים גדולים) ==========
 
 function doPost(e) {
-  var apiStartedAt = Date.now();
+  var apiStartedAt = API_STARTED_AT = Date.now();
   var action = '';
   diagBegin('POST');
   try {
     if (!e || !e.postData || !e.postData.contents) {
       return jsonResponse({ status: 'error', message: 'No POST data received' });
     }
-    var raw = e.postData.contents;
-    var data = JSON.parse(raw);
+    var data = JSON.parse(e.postData.contents);
     action = data.action || '';
     if (DIAG_EXEC) { DIAG_EXEC.action = action; DIAG_EXEC.t0 = apiStartedAt; }
     logTheoryApiTiming('start', 'POST', action, apiStartedAt);
@@ -1391,42 +3386,7 @@ function doPost(e) {
     var originErr = checkOrigin(data);
     if (originErr) return originErr;
 
-    if (action === 'login') {
-      return handleLogin(data);
-    } else if (action === 'teacherLogin') {
-      return handleTeacherLogin(data);
-    } else if (action === 'submitPracticeResult') {
-      return handleSubmitPracticeResult(data);
-    } else if (action === 'registerExamQuestions') {
-      return handleRegisterExamQuestions(data);
-    } else if (action === 'submitResult') {
-      return handleSubmitResult(data);
-    } else if (action === 'submitFailOnClose') {
-      return handleSubmitFailOnClose(data);
-    } else if (action === 'submitWrongAnswers') {
-      return handleSubmitWrongAnswersBulk(data);
-    } else if (action === 'cancelFailOnClose') {
-      return handleCancelFailOnClose(data);
-    } else if (action === 'uploadResultHtml') {
-      return handleUploadResultHtml(data);
-    } else if (action === 'disqualify') {
-      return handleDisqualify(data);
-    } else if (action === 'reportWarning') {
-      return handleReportWarning(data);
-    } else if (action === 'cancelDisqualify') {
-      return handleCancelDisqualify(data);
-    } else if (action === 'saveStudentProgress') {
-      return handleSaveStudentProgress(data);
-    } else if (action === 'commanderCorrectResult') {
-      return handleCommanderCorrectResult(data);
-    } else if (action === 'correctExamineeMeta') {
-      return handleCorrectExamineeMeta(data);
-    } else if (action === 'submitManualResult') {
-      return handleSubmitManualResult(data);
-    } else {
-      return jsonResponse({ status: 'error', message: 'Unknown POST action: ' + action });
-    }
-
+    return dispatchApiAction('POST', action, data);
   } catch (err) {
     return theoryRetryableErrorResponse(err) || jsonResponse({ status: 'error', message: 'doPost error: ' + err.toString() });
   } finally {
@@ -1434,7 +3394,6 @@ function doPost(e) {
     logTheoryApiTiming('end', 'POST', action, apiStartedAt);
   }
 }
-
 // ========== handlers ==========
 
 function handleLogin(p) {
@@ -1496,10 +3455,22 @@ function handleLogin(p) {
   return jsonResponse({ status: 'error', message: 'בוחן לא נמצא' });
 }
 
+// A remembered login is verified on every page load and every reload — and on
+// 16/09 the reload storm made that a full read of 'בוחנים' per reload per
+// device. The POSITIVE verdict is cached exactly as verifyToken's is (review C
+// R13): same 60 s, same key shape, so a disabled account or a rotated token
+// costs at most one minute of grace.
+var LOGIN_VERDICT_CACHE_SEC = 60;
 function handleVerifyLogin(p) {
   if (!p.examinerId || !p.token) {
     return jsonResponse({ status: 'error', message: 'חסרים פרטי אימות', tokenExpired: true });
   }
+  var vKey = CACHE_KEY_PREFIX + 'vlog_' + normalizeId(p.examinerId) + '_' + String(p.token).slice(0, 80), vCache = null;
+  try {
+    vCache = CacheService.getScriptCache();
+    var vHit = vCache.get(vKey);
+    if (vHit) return jsonResponse({ status: 'ok', examiner: JSON.parse(vHit) });
+  } catch (eGet) { vCache = null; }
   var sheet = getSheet('בוחנים');
   var data = sheet.getDataRange().getValues();
   for (var i = 1; i < data.length; i++) {
@@ -1519,7 +3490,9 @@ function handleVerifyLogin(p) {
       if (!(data[i][3] === 'כן' || data[i][3] === true || data[i][3] === 'TRUE')) {
         return jsonResponse({ status: 'error', message: 'החשבון אינו פעיל' });
       }
-      return jsonResponse({ status: 'ok', examiner: { name: data[i][0], id: normalizeId(data[i][1]), examinerNumber: String(data[i][4] || ''), role: String(data[i][5] || 'בוחן'), token: p.token } });
+      var examiner = { name: data[i][0], id: normalizeId(data[i][1]), examinerNumber: String(data[i][4] || ''), role: String(data[i][5] || 'בוחן'), token: p.token };
+      try { if (!vCache) vCache = CacheService.getScriptCache(); vCache.put(vKey, JSON.stringify(examiner), LOGIN_VERDICT_CACHE_SEC); } catch (ePut) {}
+      return jsonResponse({ status: 'ok', examiner: examiner });
     }
   }
   return jsonResponse({ status: 'error', message: 'בוחן לא נמצא', tokenExpired: true });
@@ -1635,9 +3608,12 @@ function handleCenterManagerReport(p) {
   }
 
   // Walk תוצאות, filter by site IN managed + date range. Skip 'בוטל' (cancelled DQ).
+  // Date-bounded and archive-aware: the range defaults to today, and a range
+  // older than the 30-day retention window must still see the archive (B5).
   diagMark('sheet:results-center-report');
-  var sheet = getSheet('תוצאות');
-  var rows = sheet.getDataRange().getValues();
+  var centerRead = readResultsSince(dateFrom);
+  var rows = centerRead.rows;
+  diagMark('sheet:results-center-report-done:' + centerRead.mode);
   var overall = { total: 0, passed: 0, failed: 0, dq: 0 };
   var bySite = {};
   var byLicense = {};
@@ -1901,8 +3877,7 @@ function handleSiteCombinedReport(p) {
   }
 
   diagMark('sheet:sessions-report');
-  var sessSheet = getSheet('סשנים');
-  var sessData = sessSheet.getDataRange().getValues();
+  var sessData = sessionRows();
 
   // Locate the calling session to discover its site + date.
   var anchorSite = '';
@@ -1988,30 +3963,29 @@ function handleSiteCombinedReport(p) {
   var sessionCodesSet = {};
   for (var sc = 0; sc < sessions.length; sc++) sessionCodesSet[sessions[sc].code] = true;
 
-  // r11: 'תוצאות' grows forever and this handler read every row of it. The very
-  // first line the 'אבחון' sheet ever recorded was this report at 81.5s
-  // (2026-09-15) - and the 360s doGet kills cluster at end-of-exam report time,
-  // which makes this the prime suspect. Read only the tail, but ONLY when the
-  // tail provably reaches back past the reported day: this report is a
-  // historical record, so a report for an older day must still read everything.
+  // r11 read the tail and fell back to the WHOLE sheet whenever the reported
+  // day was older than the tail — the very first line the 'אבחון' sheet ever
+  // recorded was this report at 81.5 s (2026-09-15), and the 360 s doGet kills
+  // cluster at end-of-exam report time. r25: one date-bounded read that spans
+  // the live sheet and the archive, so an old day costs the rows of that day
+  // instead of every result ever recorded.
   diagMark('sheet:results-report');
-  var resRead = readResultsTail();
-  if (resRead.off > 0) {
-    var oldestInTail = parseSheetDateTime(resRead.rows[1] && resRead.rows[1][0]);
-    if (!oldestInTail || oldestInTail.getTime() > dayStart.getTime()) {
-      diagMark('sheet:results-report-full');
-      resRead = { rows: getSheet('תוצאות').getDataRange().getValues(), off: 0 };
-    }
-  }
+  var resRead = readResultsSince(dayStart);
   var resData = resRead.rows;
+  diagMark('sheet:results-report-done:' + resRead.mode);
   var results = [];
   for (var r = 1; r < resData.length; r++) {
     var sCode = String(resData[r][13] || '').trim();
     if (!sessionCodesSet[sCode]) continue;
     if (String(resData[r][7] || '').trim() === 'בוטל') continue; // skip overturned/superseded rows (consistent with the other report handlers)
-    var rDate = resData[r][0] instanceof Date ? resData[r][0] : new Date(resData[r][0]);
+    // parseSheetDateTime, not new Date(): column A is written as the STRING
+    // "DD/MM/YYYY HH:MM" and only becomes a real date when the spreadsheet's
+    // locale parses it. Where it does not (a text-formatted column, an imported
+    // row), new Date() returned Invalid Date and toISOString() threw — taking
+    // the whole report down with a 500 instead of one odd row.
+    var rDate = parseSheetDateTime(resData[r][0]);
     results.push({
-      date: rDate.toISOString(),
+      date: rDate ? rDate.toISOString() : String(resData[r][0] || ''),
       idNumber: String(resData[r][1] || ''),
       name: String(resData[r][2] || ''),
       phone: String(resData[r][3] || ''),
@@ -2168,6 +4142,40 @@ function decodeSessionQuotas(colL, colM, sessionLicense) {
   return [];
 }
 
+// Address of the polling Worker (DESIGN §3.4). Empty = examinees poll this
+// script directly; setting/clearing the ScriptProperty switches the whole fleet
+// within one getSessionInfo, without a Pages deploy.
+function gatewayUrl() {
+  try { return String(PropertiesService.getScriptProperties().getProperty('GATEWAY_URL') || '').trim(); }
+  catch (e) { return ''; }
+}
+
+// ---- One 'סשנים' read per execution ----------------------------------------
+// addExamTime and disqualify each read the whole sheet twice — once for the
+// ownership check, once for the session's examiner name (review C R12). The
+// memo lives for one request, which is far shorter than any state it caches.
+var _sessionRowsMemo = null;
+function sessionRows() {
+  if (!_sessionRowsMemo) _sessionRowsMemo = getSheet('סשנים').getDataRange().getValues();
+  return _sessionRowsMemo;
+}
+function sessionRowByCode(sessionCode) {
+  var rows = sessionRows(), want = String(sessionCode || '').trim();
+  for (var i = 1; i < rows.length; i++) {
+    if (String(rows[i][0]).trim() === want) return rows[i];
+  }
+  return null;
+}
+// Same rule as verifyExaminerForSession (20_auth.js): the session's own
+// examiner, and nothing when the session does not exist. Served from the memo
+// so the caller's later lookups are free. ⚠ The two must stay in step until the
+// auth module is rewritten to take a row.
+function examinerOwnsSession(sessionCode, examinerId) {
+  if (!examinerId) return false;
+  var row = sessionRowByCode(sessionCode);
+  return !!row && normalizeId(row[1]) === normalizeId(examinerId);
+}
+
 function handleUpdateSession(p) {
   var sheet = getSheet('סשנים');
   var data = sheet.getDataRange().getValues();
@@ -2220,8 +4228,9 @@ function cleanupStuckDisqualified(sessionCode) {
   }
   if (stuck.length === 0) return { cancelled: 0, completed: 0, skipped: 0 };
 
-  var resSheet = getSheet('תוצאות');
-  var resData = resSheet.getDataRange().getValues();
+  // A session closes at the end of its day; results older than the retention
+  // window cannot belong to it, so the tail is enough.
+  var resData = readResultsTail().rows;
   var latestByExaminee = {};
   for (var r = 1; r < resData.length; r++) {
     if (String(resData[r][13]) !== String(sessionCode)) continue;
@@ -2233,22 +4242,21 @@ function cleanupStuckDisqualified(sessionCode) {
   for (var k = 0; k < stuck.length; k++) {
     var latest = latestByExaminee[stuck[k].idKey];
     if (!latest) {
-      pendSheet.getRange(stuck[k].rowIdx + 1, 6).setValue('cancelled');
+      setPendingStatus(pendSheet, stuck[k].rowIdx + 1, sessionCode, 'cancelled');
       cancelled++;
     } else if (latest === 'בוטל') {
-      pendSheet.getRange(stuck[k].rowIdx + 1, 6).setValue('completed');
+      setPendingStatus(pendSheet, stuck[k].rowIdx + 1, sessionCode, 'completed');
       completed++;
     } else {
       skipped++;
     }
   }
-  if (cancelled || completed) SpreadsheetApp.flush();
   return { cancelled: cancelled, completed: completed, skipped: skipped };
 }
 
 function handleGetSessionInfo(p) {
   var sheet = getSheet('סשנים');
-  var data = sheet.getDataRange().getValues();
+  var data = sessionRows();
   var searchCode = String(p.sessionCode).trim();
   for (var i = 1; i < data.length; i++) {
     var rowCode = String(data[i][0]).trim();
@@ -2277,6 +4285,12 @@ function handleGetSessionInfo(p) {
       return jsonResponse({
         status: 'ok',
         session: {
+          // The client checks `build` to notice an old server behind a new page,
+          // and reads `gateway.url` to decide where the examinee polls. An empty
+          // url (ScriptProperty GATEWAY_URL unset) means "poll me directly" —
+          // that is the kill switch for the Worker, with no Pages push.
+          build: THEORY_API_BUILD,
+          gateway: { url: gatewayUrl() },
           site: data[i][3],
           sites: _sites,
           classroom: data[i][4],
@@ -2364,26 +4378,36 @@ function handleRegisterExaminee(p) {
   return jsonResponse({ status: 'ok', examineeToken: examineeToken });
 }
 
+// Write columns of a ממתינים row WITHOUT changing its status (audio, extension,
+// DQ counter, warnings, "finished on device"). Goes through the same flush and
+// the same snapshot invalidation as setPendingStatus: a poller that reads a
+// snapshot written before the change would otherwise show the old value for up
+// to PENDING_SNAPSHOT_SEC (review C R8).
+function writePendingCells(sheet, rowNumber, sessionCode, extras) {
+  var wrote = false;
+  for (var name in extras) {
+    if (!Object.prototype.hasOwnProperty.call(extras, name) || !PENDING_COLS[name]) continue;
+    sheet.getRange(rowNumber, PENDING_COLS[name]).setValue(extras[name]);
+    wrote = true;
+  }
+  if (!wrote) return;
+  SpreadsheetApp.flush();
+  invalidatePendingSnapshot(sessionCode);
+}
+
 function handleCancelRegistration(p) {
   var sheet = getSheet('ממתינים');
   var data = sheet.getDataRange().getValues();
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
-      var s = String(data[i][5]).trim();
-      if (s === 'waiting' || s === 'approved') {
-        // Verify phone matches to prevent unauthorized cancellation
-        var storedPhone = String(data[i][3] || '').replace(/[^0-9]/g, '');
-        var givenPhone = String(p.phone || '').replace(/[^0-9]/g, '');
-        if (storedPhone && givenPhone && storedPhone.slice(-7) !== givenPhone.slice(-7)) {
-          return jsonResponse({ status: 'error', message: 'פרטים לא תואמים' });
-        }
-        sheet.getRange(i + 1, 6).setValue('cancelled');
-        SpreadsheetApp.flush();
-        return jsonResponse({ status: 'ok' });
-      }
-    }
+  var hit = findLatestPendingRow(data, p.sessionCode, p.idNumber, ['waiting', 'approved']);
+  if (hit.idx === -1) return jsonResponse({ status: 'error', message: 'לא נמצא רישום פעיל לביטול' });
+  // Verify phone matches to prevent unauthorized cancellation
+  var storedPhone = String(hit.row[3] || '').replace(/[^0-9]/g, '');
+  var givenPhone = String(p.phone || '').replace(/[^0-9]/g, '');
+  if (storedPhone && givenPhone && storedPhone.slice(-7) !== givenPhone.slice(-7)) {
+    return jsonResponse({ status: 'error', message: 'פרטים לא תואמים' });
   }
-  return jsonResponse({ status: 'error', message: 'לא נמצא רישום פעיל לביטול' });
+  setPendingStatus(sheet, hit.idx + 1, p.sessionCode, 'cancelled');
+  return jsonResponse({ status: 'ok' });
 }
 
 function handleCheckApproval(p) {
@@ -2467,26 +4491,16 @@ function handleApproveExaminee(p) {
 
   var sheet = getSheet('ממתינים');
   var data = sheet.getDataRange().getValues();
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber) && String(data[i][5]).trim() === 'waiting') {
-      sheet.getRange(i + 1, 6).setValue('approved');
-      if (timeExt) sheet.getRange(i + 1, 11).setValue(timeExt);  // column K = הארכת זמן
-      if (audioMode) sheet.getRange(i + 1, 10).setValue(audioMode);  // column J = שמע
-      SpreadsheetApp.flush();
-      invalidatePendingSnapshot(p.sessionCode);   // r23
-      return jsonResponse({ status: 'ok' });
-    }
+  var hit = findLatestPendingRow(data, p.sessionCode, p.idNumber, ['waiting']);
+  if (hit.idx === -1) {
+    var current = data.length > 1 ? (findLatestPendingRow(data, p.sessionCode, p.idNumber).status || 'לא נמצא') : 'אין נתונים';
+    return jsonResponse({ status: 'error', message: 'נבחן ממתין לא נמצא (סטטוס נוכחי: ' + current + ')' });
   }
-  return jsonResponse({ status: 'error', message: 'נבחן ממתין לא נמצא (סטטוס נוכחי: ' + (data.length > 1 ? findStatus(data, p) : 'אין נתונים') + ')' });
-}
-
-function findStatus(data, p) {
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
-      return String(data[i][5]);
-    }
-  }
-  return 'לא נמצא';
+  var extras = {};
+  if (timeExt) extras.timeExtension = timeExt;   // column K
+  if (audioMode) extras.audio = audioMode;       // column J
+  setPendingStatus(sheet, hit.idx + 1, p.sessionCode, 'approved', extras);
+  return jsonResponse({ status: 'ok' });
 }
 
 function handleRejectExaminee(p) {
@@ -2495,42 +4509,16 @@ function handleRejectExaminee(p) {
   }
   var sheet = getSheet('ממתינים');
   var data = sheet.getDataRange().getValues();
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber) && String(data[i][5]).trim() === 'waiting') {
-      sheet.getRange(i + 1, 6).setValue('rejected');
-      SpreadsheetApp.flush();
-      invalidatePendingSnapshot(p.sessionCode);   // r23
-      return jsonResponse({ status: 'ok' });
-    }
-  }
-  return jsonResponse({ status: 'error', message: 'נבחן ממתין לא נמצא' });
+  var hit = findLatestPendingRow(data, p.sessionCode, p.idNumber, ['waiting']);
+  if (hit.idx === -1) return jsonResponse({ status: 'error', message: 'נבחן ממתין לא נמצא' });
+  setPendingStatus(sheet, hit.idx + 1, p.sessionCode, 'rejected');
+  return jsonResponse({ status: 'ok' });
 }
 
-function handleMarkExamStarted(p) {
-  var tokenErr = requireExamineeToken(p);
-  if (tokenErr) return tokenErr;
-  var sheet = getSheet('ממתינים');
-  var data = sheet.getDataRange().getValues();
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]) !== String(p.sessionCode) || normalizeId(data[i][1]) !== normalizeId(p.idNumber)) continue;
-    var st = String(data[i][5]).trim();
-    if (st === 'approved') {
-      sheet.getRange(i + 1, 6).setValue('in_exam');
-      sheet.getRange(i + 1, 12).setValue(nowISO()); // column L = exam actual start time
-      SpreadsheetApp.flush();
-      return jsonResponse({ status: 'ok' });
-    }
-    if (st === 'in_exam') {
-      // Idempotent: a retry whose earlier response was lost (common on iOS when
-      // the page backgrounds) should still report success so the client stops
-      // retrying — and not overwrite the original start time.
-      return jsonResponse({ status: 'ok', already: true });
-    }
-    // Other statuses (completed/cancelled/disqualified): keep scanning for an
-    // approved/in_exam row belonging to this examinee.
-  }
-  return jsonResponse({ status: 'error', message: 'נבחן מאושר לא נמצא' });
-}
+// handleMarkExamStarted is gone (review C R14): startExam performs the
+// approved → in_exam flip itself, through the single status writer, and the
+// action now answers handleMarkExamStartedNoop (60_exam.js) for the one release
+// in which an old client may still call it.
 
 function handleExaminerDashboard(p) {
   var code = String(p.sessionCode);
@@ -2548,7 +4536,8 @@ function handleExaminerDashboard(p) {
   var _pendT = readTail(pendSheet, 4);
   var pendData = _pendT.rows, pendOff = _pendT.off;
   diagMark('sheet:results-dash');
-  var resData = readTail(resSheet, 0).rows;
+  var _resT = readTail(resSheet, 0);
+  var resData = _resT.rows;
   diagMark('sheet:extensions-dash');
   var pending = [];
   var active = [];
@@ -2593,11 +4582,35 @@ function handleExaminerDashboard(p) {
   var resBySessId = buildResBySessId(resData);
   var pendTermBySessId = buildPendTermBySessId(pendData);
 
-  // Auto-cleanup: detect stale in_exam entries that already have a result or are way past exam time
+  // ---- Auto-cleanup of stale in_exam/approved rows ---------------------------
+  // Bounded on purpose (review C R1 / fix A1). This loop used to do, INSIDE
+  // itself and per stale row: a full 'סשנים' read, a full 'תוצאות' read for the
+  // attempt number, an append, another results tail read and an index rebuild —
+  // 6 round trips and ~169,000 cells each. It fires hardest right after an
+  // outage, when every examinee who could not submit is stale at once: 40 of
+  // them measured 247 round trips / 6.86 M cells in ONE 2-5 s poll, which is the
+  // best match at HEAD for the end-of-exam 360 s doGet kills.
+  // Now: at most DASH_MAX_RECONCILE_PER_POLL rows per request (the rest are
+  // reconciled by the next poll, 2-5 s later), the session row is read at most
+  // once, the attempt history at most once, and nothing is re-read after an
+  // append — the appended row is added to the in-memory table instead.
+  var DASH_MAX_RECONCILE_PER_POLL = 3;
+  var reconciled = 0;
+  var sessionRowForDash = null, sessionRowRead = false;
+  function dashSessionRow() {
+    if (!sessionRowRead) { sessionRowRead = true; diagMark('sheet:sessions-dash'); sessionRowForDash = sessionRowByCode(code); }
+    return sessionRowForDash;
+  }
+  var attemptHistory = null;
+  function dashAttemptCount(idNumber, license) {
+    if (!attemptHistory) { diagMark('sheet:attempts-dash'); attemptHistory = readAttemptHistory(); }
+    return countAttemptRows(attemptHistory, normalizeId(idNumber), String(license));
+  }
   var now = new Date();
   var BASE_EXAM_MS = 40 * 60 * 1000;
   var STALE_BUFFER_MS = 20 * 60 * 1000; // 20 minutes buffer (approval wait + instructions)
   for (var ci = 1; ci < pendData.length; ci++) {
+    if (reconciled >= DASH_MAX_RECONCILE_PER_POLL) break;
     if (String(pendData[ci][0]) !== code) continue;
     // Reconcile stuck 'in_exam' AND 'approved' entries. 'approved' that never
     // advanced to 'in_exam' happens when markExamStarted failed on the device
@@ -2633,8 +4646,10 @@ function handleExaminerDashboard(p) {
     var hasUnmatchedResult = effectiveResults > totalTerminals;
 
     if (hasUnmatchedResult || effectiveStale) {
-      // Fix dangling status — mark as completed
-      pendSheet.getRange(ci + 1 + pendOff, 6).setValue('completed');
+      reconciled++;
+      // Fix dangling status — mark as completed (single status writer: the
+      // snapshot the examinee's poller reads is dropped in the same call).
+      setPendingStatus(pendSheet, ci + 1 + pendOff, code, 'completed');
       pendData[ci][5] = 'completed'; // update local copy
       // Keep pendTermBySessId in sync: this row was in_exam/approved (loop guard
       // above) → now a 'completed' terminal, so a fresh rescan would count it here.
@@ -2643,30 +4658,29 @@ function handleExaminerDashboard(p) {
       pendTermBySessId[_mk].otherTerminals++;
       if (effectiveStale && !hasUnmatchedResult) {
         // Create a timeout fail result
-        var sesData2 = getSheet('סשנים').getDataRange().getValues();
+        var ses2 = dashSessionRow();
         var license2 = pendData[ci][8] || '', site2 = '', classroom2 = '', examinerName2 = '', language2 = pendData[ci][6] || 'he';
-        for (var si = 1; si < sesData2.length; si++) {
-          if (String(sesData2[si][0]).trim() === code) {
-            examinerName2 = sesData2[si][2] || '';
-            site2 = sesData2[si][3] || '';
-            classroom2 = sesData2[si][4] || '';
-            if (!license2) license2 = sesData2[si][5] || '';
-            break;
-          }
+        if (ses2) {
+          examinerName2 = ses2[2] || '';
+          site2 = ses2[3] || '';
+          classroom2 = ses2[4] || '';
+          if (!license2) license2 = ses2[5] || '';
         }
-        var attemptNum2 = countAttempts(String(ciId), license2) + 1;
-        resSheet.appendRow([
+        var failRow = [
           todayStr(), ciId, pendData[ci][2] || '', pendData[ci][3] || '', license2,
           '0/30', '0%', 'נכשל', '', examinerName2,
           site2, classroom2, language2, code,
-          attemptNum2, 'ניתוק/טיימאאוט — הנבחן לא סיים את המבחן', false, false, '',
+          dashAttemptCount(ciId, license2) + 1, 'ניתוק/טיימאאוט — הנבחן לא סיים את המבחן', false, false, '',
           pendData[ci][7] || '', false, pendData[ci][9] || 'off'
-        ]);
-        // Refresh resData after append, and rebuild the results index so later
-        // iterations' counts include the row just appended (behavior-identical to
-        // the old per-iteration rescan of the freshly re-read sheet).
-        resData = readTail(resSheet, 0).rows;
-        resBySessId = buildResBySessId(resData);
+        ];
+        resSheet.appendRow(failRow);
+        // The row we just wrote is the only thing a re-read would have added, so
+        // add it in memory: later iterations, the completed list and the
+        // attempts-today tally all see it without another read of 'תוצאות'.
+        resData.push(failRow);
+        if (attemptHistory) attemptHistory.push([failRow[0], failRow[1], '', '', failRow[4], '', '', failRow[7]]);
+        if (!resBySessId[_mk]) resBySessId[_mk] = { dqResults: 0, otherResults: 0 };
+        resBySessId[_mk].otherResults++;
       }
     }
   }
@@ -2736,14 +4750,11 @@ function handleExaminerDashboard(p) {
   for (var pkA in pendingById) pending.push(pendingById[pkA]);
   for (var akA in activeById) active.push(activeById[akA]);
 
-  // Re-read resData in case cleanup added new results.
-  // NOTE (r15): the only write to resSheet above is inside the rare timeout-fail
-  // branch, which re-reads by itself — so on a normal poll this second tail read
-  // re-fetches identical data. It is kept for now because it ALSO picks up a
-  // result another execution appended mid-request, which is exactly the latency
-  // the 2s fast-sync was built to remove. Measure it before trading that away.
-  diagMark('sheet:results-dash-2');
-  resData = readTail(resSheet, 0).rows;
+  // r25: the second tail read of 'תוצאות' is GONE. On a normal poll it
+  // re-fetched identical data (1,000 × 30 cells, 12 times a minute per
+  // examiner); its only other effect was picking up a result another execution
+  // appended during this request, and that arrives one poll later anyway — the
+  // dashboard polls every 2 s while a result is syncing.
   // DEDUP results per examinee: the תוצאות sheet can end up with several
   // non-בוטל rows for one (session, id) when recovery paths (timeout-fail,
   // manual force-complete, disqualify) appended rows that weren't superseded.
@@ -2796,7 +4807,6 @@ function handleExaminerDashboard(p) {
   }
 
   // Flag repeat examinees: check if any pending examinee already tested today (any session)
-  var now = new Date();
   var todayDD = ('0' + now.getDate()).slice(-2);
   var todayMM = ('0' + (now.getMonth() + 1)).slice(-2);
   var todayYYYY = now.getFullYear();
@@ -2857,16 +4867,12 @@ function handleReportWarning(p) {
   try {
     var sheet = getSheet('ממתינים');
     var data = sheet.getDataRange().getValues();
-    for (var i = data.length - 1; i >= 1; i--) {
-      if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
-        var st = String(data[i][5] || '').trim();
-        if (st === 'in_exam' || st === 'approved') {
-          var prev = (data[i].length > 15) ? (Number(data[i][15]) || 0) : 0;
-          sheet.getRange(i + 1, 16).setValue(prev + 1);                                   // col 16 (idx15) = warnings count
-          if (p.reason) sheet.getRange(i + 1, 17).setValue(String(p.reason).slice(0, 40)); // col 17 (idx16) = last reason
-        }
-        break;
-      }
+    var hit = findLatestPendingRow(data, p.sessionCode, p.idNumber);
+    if (hit.idx !== -1 && (hit.status === 'in_exam' || hit.status === 'approved')) {
+      var prev = (hit.row.length > 15) ? (Number(hit.row[15]) || 0) : 0;
+      var extras = { warnCount: prev + 1 };
+      if (p.reason) extras.lastWarning = String(p.reason).slice(0, 40);
+      writePendingCells(sheet, hit.idx + 1, p.sessionCode, extras);
     }
   } catch(e) {}
   return jsonResponse({ status: 'ok' });
@@ -2915,7 +4921,7 @@ function scanExamStatusRows(data, p) {
 // served to every getExamStatus poll and every dashboard poll from the cache;
 // handleAddExamTime drops the entry, so a new grant is visible at once.
 var EXTRA_MINUTES_CACHE_SEC = 30;
-function extraMinutesKey(sessionCode) { return QUESTION_CACHE_PREFIX + 'extmin_' + String(sessionCode || '').trim(); }
+function extraMinutesKey(sessionCode) { return CACHE_KEY_PREFIX + 'extmin_' + String(sessionCode || '').trim(); }
 // { normalizedId: minutes } for one session
 function extraMinutesBySession(sessionCode) {
   var key = extraMinutesKey(sessionCode), cache = null;
@@ -2940,10 +4946,13 @@ function sumExtraMinutes(sessionCode, idNumber) {
 function handleAddExamTime(p) {
   if (!p.sessionCode || !p.idNumber) return jsonResponse({ status: 'error', message: 'חסר מזהה' });
   // Examiner auth — must hold a valid token AND own the session (same as DQ).
+  // examinerOwnsSession serves the check from the per-execution 'סשנים' memo
+  // the examiner-name lookup below reuses: this handler read that sheet twice
+  // (review C R12).
   if (!verifyToken(p.examinerId, p.token)) {
     return jsonResponse({ status: 'error', message: 'טוקן בוחן לא תקין', tokenExpired: true });
   }
-  if (!verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+  if (!examinerOwnsSession(p.sessionCode, p.examinerId)) {
     return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
   }
   var minutes = Math.round(Number(p.minutes) || 0);
@@ -2955,24 +4964,13 @@ function handleAddExamTime(p) {
 
   // Confirm the examinee exists in this session and grab their name for the audit row.
   var pendData = getSheet('ממתינים').getDataRange().getValues();
-  var name = '', found = false;
-  for (var j = pendData.length - 1; j >= 1; j--) {
-    if (String(pendData[j][0]).trim() === String(p.sessionCode).trim() && normalizeId(pendData[j][1]) === normalizeId(p.idNumber)) {
-      name = pendData[j][2] || '';
-      found = true;
-      break;
-    }
-  }
-  if (!found) return jsonResponse({ status: 'error', message: 'נבחן לא נמצא בסשן' });
+  var hit = findLatestPendingRow(pendData, p.sessionCode, p.idNumber);
+  if (hit.idx === -1) return jsonResponse({ status: 'error', message: 'נבחן לא נמצא בסשן' });
+  var name = hit.row[2] || '';
 
-  // Examiner display name for the audit row.
-  var examinerName = '';
-  try {
-    var sData = getSheet('סשנים').getDataRange().getValues();
-    for (var s = 1; s < sData.length; s++) {
-      if (String(sData[s][0]).trim() === String(p.sessionCode).trim()) { examinerName = sData[s][2] || ''; break; }
-    }
-  } catch (e) {}
+  // Examiner display name for the audit row — from the same memo as the auth check.
+  var sessionRow = sessionRowByCode(p.sessionCode);
+  var examinerName = sessionRow ? (sessionRow[2] || '') : '';
 
   getSheet('הארכות זמן').appendRow([new Date(), p.sessionCode, p.idNumber, name, minutes, reason, examinerName]);
   invalidateExtraMinutes(p.sessionCode);   // r23: the next status poll must see the grant
@@ -2991,21 +4989,64 @@ function handleMarkFinished(p) {
   if (!p.sessionCode || !p.idNumber) return jsonResponse({ status: 'error', message: 'חסר מזהה' });
   var pendSheet = getSheet('ממתינים');
   var data = pendSheet.getDataRange().getValues();
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]).trim() === String(p.sessionCode).trim() && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
-      var storedToken = String((data[i].length > 12 ? data[i][12] : '') || '').trim();
-      if (storedToken && p.examineeToken && String(p.examineeToken).trim() !== storedToken) {
-        return jsonResponse({ status: 'error', examineeTokenError: 'mismatch' });
-      }
-      if (String(data[i][5]).trim() === 'in_exam') {
-        if (pendSheet.getMaxColumns() < 19) pendSheet.insertColumnsAfter(pendSheet.getMaxColumns(), 19 - pendSheet.getMaxColumns());
-        if (!String(pendSheet.getRange(1, 19).getValue() || '').trim()) pendSheet.getRange(1, 19).setValue('סיים במכשיר');
-        pendSheet.getRange(i + 1, 19).setValue(nowISO());
-      }
-      return jsonResponse({ status: 'ok' });
-    }
+  var hit = findLatestPendingRow(data, p.sessionCode, p.idNumber);
+  if (hit.idx === -1) return jsonResponse({ status: 'ok' });   // no matching row — harmless no-op
+  var storedToken = String((hit.row.length > 12 ? hit.row[12] : '') || '').trim();
+  if (storedToken && p.examineeToken && String(p.examineeToken).trim() !== storedToken) {
+    return jsonResponse({ status: 'error', examineeTokenError: 'mismatch' });
   }
-  return jsonResponse({ status: 'ok' });  // no matching row — harmless no-op
+  if (hit.status === 'in_exam') {
+    // Older sheets stop at 18 columns (SHEET_HEADERS now declares 19).
+    if (pendSheet.getMaxColumns() < 19) pendSheet.insertColumnsAfter(pendSheet.getMaxColumns(), 19 - pendSheet.getMaxColumns());
+    if (!String(pendSheet.getRange(1, 19).getValue() || '').trim()) pendSheet.getRange(1, 19).setValue('סיים במכשיר');
+    writePendingCells(pendSheet, hit.idx + 1, p.sessionCode, { finishedOnDevice: nowISO() });
+  }
+  return jsonResponse({ status: 'ok' });
+}
+
+// ---- One upstream read for the whole session (gateway, DESIGN §3.4) --------
+// The examinee pollers are 87% of an exam morning's requests: 40 phones × 12
+// polls/min = 480 Apps Script executions a minute, each one a container start
+// against ~30 slots. The Worker collapses them into ONE upstream call per
+// session every 3 s and answers the phones itself, so this is the only shape in
+// which examinee state leaves the script.
+// It carries NO names and NO phones, and never the examinee token itself: the
+// Worker compares SHA-256 hashes, so a leak of this response cannot be replayed
+// as an examinee. Rows come back in sheet order (oldest first).
+defineAction('sessionSnapshot', { methods: ['GET'], auth: 'gateway', handler: handleSessionSnapshot,
+  rateLimit: { max: 60, windowSec: 60, id: function(p) { return String(p.sessionCode || ''); } } });
+function handleSessionSnapshot(p) {
+  var code = String(p.sessionCode || '').trim();
+  if (!code) return jsonResponse({ status: 'error', message: 'חסר קוד סשן' });
+  var snap = pendingRowsForSession(code);         // the same 4-second snapshot the pollers use
+  var extraMin = {};
+  try { extraMin = extraMinutesBySession(code); } catch (eExt) { extraMin = {}; }
+  var rows = [];
+  for (var i = 1; i < snap.rows.length; i++) {
+    var r = snap.rows[i], id = normalizeId(r[1]);
+    rows.push({
+      id: id,
+      status: String(r[5] || '').trim(),
+      tokenHash: hashExamineeToken(r.length > 12 ? r[12] : ''),
+      audio: String(r[9] || '').trim() === 'on' ? 'on' : 'off',
+      examMinutes: examMinutesFor(r),   // one rule for the exam length (60_exam.js)
+      extraMinutes: extraMin[id] || 0
+    });
+  }
+  return jsonResponse({ status: 'ok', at: Date.now(), rows: rows });
+}
+
+function hashExamineeToken(token) {
+  var t = String(token || '').trim();
+  if (!t) return '';
+  try {
+    var bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, t, Utilities.Charset.UTF_8), hex = '';
+    for (var i = 0; i < bytes.length; i++) {
+      var b = (bytes[i] + 256) % 256;
+      hex += (b < 16 ? '0' : '') + b.toString(16);
+    }
+    return hex;
+  } catch (e) { return ''; }
 }
 
 function handleDisqualify(p) {
@@ -3016,27 +5057,25 @@ function handleDisqualify(p) {
   // from disqualifying other examinees.
   var pendSheet = getSheet('ממתינים');
   var pendData = pendSheet.getDataRange().getValues();
+  var hit = findLatestPendingRow(pendData, p.sessionCode, p.idNumber);
   var name = '', phone = '', population = '', examineeLicense = '', examineeAudio = 'off';
-  var pendRowIdx = -1, pendStatus = '';
-  for (var j = pendData.length - 1; j >= 1; j--) {
-    if (String(pendData[j][0]) === String(p.sessionCode) && normalizeId(pendData[j][1]) === normalizeId(p.idNumber)) {
-      name = pendData[j][2] || '';
-      phone = pendData[j][3] || '';
-      population = pendData[j][7] || '';
-      examineeLicense = pendData[j][8] || '';
-      examineeAudio = pendData[j][9] || 'off';
-      pendRowIdx = j;
-      pendStatus = String(pendData[j][5] || '').trim();
-      break;
-    }
+  var pendRowIdx = hit.idx, pendStatus = hit.status;
+  if (hit.idx !== -1) {
+    name = hit.row[2] || '';
+    phone = hit.row[3] || '';
+    population = hit.row[7] || '';
+    examineeLicense = hit.row[8] || '';
+    examineeAudio = hit.row[9] || 'off';
   }
 
   if (p.examinerId) {
-    // Path A: examiner-initiated — require valid token + ownership
+    // Path A: examiner-initiated — require valid token + ownership.
+    // examinerOwnsSession reads 'סשנים' through the per-execution memo the
+    // result row below reuses; this handler read the sheet twice (C R12).
     if (!verifyToken(p.examinerId, p.token)) {
       return jsonResponse({ status: 'error', message: 'טוקן בוחן לא תקין', tokenExpired: true });
     }
-    if (!verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+    if (!examinerOwnsSession(p.sessionCode, p.examinerId)) {
       return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
     }
   } else {
@@ -3065,10 +5104,8 @@ function handleDisqualify(p) {
   // examinee triggered an anti-cheat event — even if some were auto-reverted in
   // grace period via cancelDisqualify.
   if (pendRowIdx !== -1) {
-    pendSheet.getRange(pendRowIdx + 1, 6).setValue('disqualified');
-    var prevCount = 0;
-    if (pendData[pendRowIdx].length > 13) prevCount = Number(pendData[pendRowIdx][13]) || 0;
-    pendSheet.getRange(pendRowIdx + 1, 14).setValue(prevCount + 1);
+    var prevCount = (pendData[pendRowIdx].length > 13) ? (Number(pendData[pendRowIdx][13]) || 0) : 0;
+    setPendingStatus(pendSheet, pendRowIdx + 1, p.sessionCode, 'disqualified', { dqCount: prevCount + 1 });
     // Clear any OTHER active (in_exam/approved) rows for this examinee so a
     // duplicate row doesn't linger on the board beside the disqualified one.
     for (var dqd = 1; dqd < pendData.length; dqd++) {
@@ -3076,7 +5113,7 @@ function handleDisqualify(p) {
       if (String(pendData[dqd][0]) !== String(p.sessionCode) || normalizeId(pendData[dqd][1]) !== normalizeId(p.idNumber)) continue;
       var dqdStatus = String(pendData[dqd][5]).trim();
       if (dqdStatus === 'in_exam' || dqdStatus === 'approved') {
-        pendSheet.getRange(dqd + 1, 6).setValue('cancelled');
+        setPendingStatus(pendSheet, dqd + 1, p.sessionCode, 'cancelled');
       }
     }
   }
@@ -3090,7 +5127,9 @@ function handleDisqualify(p) {
   //   3. Otherwise (latest is not פסול, or it's old/cancelled) -> create new row.
   var dqEventId = String(p.dqEventId || '');
   var sheet = getSheet('תוצאות');
-  var data = sheet.getDataRange().getValues();
+  // The dedupe window is 2 minutes and a retry lands within seconds, so the tail
+  // is always enough — this used to read every result ever recorded.
+  var data = readResultsTail().rows;
   var nowMs = Date.now();
   for (var i = data.length - 1; i >= 1; i--) {
     if (String(data[i][13]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
@@ -3124,18 +5163,14 @@ function handleDisqualify(p) {
   }
 
   // Create new disqualified result row
-  var sesSheet = getSheet('סשנים');
-  var sesData = sesSheet.getDataRange().getValues();
+  var sesRow = sessionRowByCode(p.sessionCode);
   var license = '', language = 'he', site = '', classroom = '', examinerName = '';
-  for (var s = 1; s < sesData.length; s++) {
-    if (String(sesData[s][0]).trim() === String(p.sessionCode).trim()) {
-      examinerName = sesData[s][2] || '';
-      site = sesData[s][3] || '';
-      classroom = sesData[s][4] || '';
-      license = examineeLicense || sesData[s][5] || '';
-      language = sesData[s][6] || 'he';
-      break;
-    }
+  if (sesRow) {
+    examinerName = sesRow[2] || '';
+    site = sesRow[3] || '';
+    classroom = sesRow[4] || '';
+    license = examineeLicense || sesRow[5] || '';
+    language = sesRow[6] || 'he';
   }
   if (!license) license = examineeLicense;
   var attemptNum = countAttempts(String(p.idNumber), license) + 1;
@@ -3162,39 +5197,27 @@ function handleCancelDisqualify(p) {
   // 1. Revert pending status from 'disqualified' back to 'in_exam'
   var pendSheet = getSheet('ממתינים');
   var pendData = pendSheet.getDataRange().getValues();
-  for (var j = pendData.length - 1; j >= 1; j--) {
-    if (String(pendData[j][0]) === sc && normalizeId(pendData[j][1]) === id) {
-      if (String(pendData[j][5]).trim() === 'disqualified') {
-        pendSheet.getRange(j + 1, 6).setValue('in_exam');
-        break;
-      }
-    }
+  var pendHit = findLatestPendingRow(pendData, sc, id);
+  if (pendHit.idx !== -1 && pendHit.status === 'disqualified') {
+    setPendingStatus(pendSheet, pendHit.idx + 1, sc, 'in_exam');
   }
 
-  // 2. Delete the DQ result row matching this dqEventId (or latest פסול if no eventId)
+  // 2. Cancel the DQ result row matching this dqEventId (or the latest פסול).
+  // The row was written seconds ago, inside the grace period — tail is enough.
   var dqEventId = String(p.dqEventId || '');
   var resSheet = getSheet('תוצאות');
-  var resData = resSheet.getDataRange().getValues();
-  for (var i = resData.length - 1; i >= 1; i--) {
-    if (String(resData[i][13]) === sc && normalizeId(resData[i][1]) === id) {
-      if (String(resData[i][7]).trim() === 'פסול') {
-        // Only delete if dqEventId matches (or if no eventId provided for backwards compat)
-        if (!dqEventId || String(resData[i][24] || '') === dqEventId) {
-          resSheet.getRange(i + 1, 8).setValue('בוטל');
-          break;
-        }
-      }
-      // If latest result is NOT פסול or eventId doesn't match — stop
-      break;
-    }
+  var resRead = readResultsTail();
+  var resHit = findLatestResultRow(resRead.rows, sc, id, false);
+  if (resHit.idx !== -1 && resHit.status === 'פסול' &&
+      (!dqEventId || String(resHit.row[24] || '') === dqEventId)) {
+    resSheet.getRange(resHit.idx + 1 + resRead.off, 8).setValue('בוטל');
+    SpreadsheetApp.flush();
   }
-
-  SpreadsheetApp.flush();
   return jsonResponse({ status: 'ok' });
 }
 
 function handleResetExaminee(p) {
-  if (p.examinerId && !verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+  if (p.examinerId && !examinerOwnsSession(p.sessionCode, p.examinerId)) {
     return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
   }
   var sheet = getSheet('ממתינים');
@@ -3203,26 +5226,23 @@ function handleResetExaminee(p) {
   // ALL stuck states — including 'disqualified'/'dq_confirmed'. Previously reset
   // refused those, so a soldier stuck on a pending DQ could not be cleared at all.
   // "אפס" should fully remove a stuck soldier from the board so they can re-register.
+  var RESETTABLE = { waiting: 1, approved: 1, in_exam: 1, disqualified: 1, dq_confirmed: 1 };
   var resetCount = 0;
   for (var i = 1; i < data.length; i++) {
     if (String(data[i][0]) !== String(p.sessionCode) || normalizeId(data[i][1]) !== normalizeId(p.idNumber)) continue;
-    var s = String(data[i][5]).trim();
-    if (s === 'waiting' || s === 'approved' || s === 'in_exam' || s === 'disqualified' || s === 'dq_confirmed') {
-      sheet.getRange(i + 1, 6).setValue('cancelled');
-      resetCount++;
-    }
+    if (!RESETTABLE[String(data[i][5]).trim()]) continue;
+    setPendingStatus(sheet, i + 1, p.sessionCode, 'cancelled');
+    resetCount++;
   }
   if (resetCount === 0) {
     return jsonResponse({ status: 'error', message: 'לא נמצא נבחן פעיל לאיפוס' });
   }
-  SpreadsheetApp.flush();
-  invalidatePendingSnapshot(p.sessionCode);   // r23
   return jsonResponse({ status: 'ok', resetCount: resetCount });
 }
 
 // Force-complete a stuck in_exam examinee (examiner manual action)
 function handleForceComplete(p) {
-  if (p.examinerId && !verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+  if (p.examinerId && !examinerOwnsSession(p.sessionCode, p.examinerId)) {
     return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
   }
   var pendSheet = getSheet('ממתינים');
@@ -3244,35 +5264,29 @@ function handleForceComplete(p) {
       examineeLicense = pendData[j][8] || '';
       examineeAudio = pendData[j][9] || 'off';
     }
-    pendSheet.getRange(j + 1, 6).setValue('completed');
+    setPendingStatus(pendSheet, j + 1, p.sessionCode, 'completed');
     found = true;
   }
   if (!found) {
     return jsonResponse({ status: 'error', message: 'לא נמצא נבחן עם סטטוס in_exam/approved' });
   }
 
-  // Check if result already exists — if so, just mark pending as completed (done above)
+  // Check if result already exists — if so, just mark pending as completed (done
+  // above). The examinee is in THIS session, so their row is in the tail.
   var resSheet = getSheet('תוצאות');
-  var resData = resSheet.getDataRange().getValues();
-  for (var i = resData.length - 1; i >= 1; i--) {
-    if (String(resData[i][13]) === String(p.sessionCode) && normalizeId(resData[i][1]) === normalizeId(p.idNumber)) {
-      SpreadsheetApp.flush();
-      return jsonResponse({ status: 'ok', message: 'נמצאה תוצאה קיימת — הסטטוס עודכן' });
-    }
+  var resData = readResultsTail().rows;
+  if (findLatestResultRow(resData, p.sessionCode, p.idNumber, false).idx !== -1) {
+    return jsonResponse({ status: 'ok', message: 'נמצאה תוצאה קיימת — הסטטוס עודכן' });
   }
 
   // No result exists — create a fail result
-  var sesSheet = getSheet('סשנים');
-  var sesData = sesSheet.getDataRange().getValues();
+  var sesRow = sessionRowByCode(p.sessionCode);
   var license = examineeLicense, site = '', classroom = '', examinerName = '';
-  for (var s = 1; s < sesData.length; s++) {
-    if (String(sesData[s][0]).trim() === String(p.sessionCode).trim()) {
-      examinerName = sesData[s][2] || '';
-      site = sesData[s][3] || '';
-      classroom = sesData[s][4] || '';
-      if (!license) license = sesData[s][5] || '';
-      break;
-    }
+  if (sesRow) {
+    examinerName = sesRow[2] || '';
+    site = sesRow[3] || '';
+    classroom = sesRow[4] || '';
+    if (!license) license = sesRow[5] || '';
   }
   var attemptNum = countAttempts(String(p.idNumber), license) + 1;
   resSheet.appendRow([
@@ -3287,34 +5301,21 @@ function handleForceComplete(p) {
 }
 
 function handleOverturnDQ(p) {
-  if (p.examinerId && !verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+  if (p.examinerId && !examinerOwnsSession(p.sessionCode, p.examinerId)) {
     return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
   }
 
-  // Find the latest result row + the pending row for this examinee in one pass each.
+  // Find the latest result row + the pending row for this examinee in one pass
+  // each. An overturn always targets a result of the running session.
   var sheet = getSheet('תוצאות');
-  var data = sheet.getDataRange().getValues();
-  var resultRowIdx = -1;
-  var resultStatus = '';
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][13]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
-      resultRowIdx = i;
-      resultStatus = String(data[i][7]).trim();
-      break;
-    }
-  }
+  var resRead = readResultsTail();
+  var resHit = findLatestResultRow(resRead.rows, p.sessionCode, p.idNumber, false);
+  var resultRowIdx = resHit.idx, resultStatus = resHit.status;
 
   var pendSheet = getSheet('ממתינים');
   var pendData = pendSheet.getDataRange().getValues();
-  var pendRowIdx = -1;
-  var pendStatusNow = '';
-  for (var j = pendData.length - 1; j >= 1; j--) {
-    if (String(pendData[j][0]) === String(p.sessionCode) && normalizeId(pendData[j][1]) === normalizeId(p.idNumber)) {
-      pendRowIdx = j;
-      pendStatusNow = String(pendData[j][5] || '').trim();
-      break;
-    }
-  }
+  var pendHit = findLatestPendingRow(pendData, p.sessionCode, p.idNumber);
+  var pendRowIdx = pendHit.idx, pendStatusNow = pendHit.status;
 
   // Case 1: latest result is פסול → normal overturn flow.
   // Pending revert covers BOTH 'disqualified' (auto-DQ, not yet confirmed) and
@@ -3323,12 +5324,12 @@ function handleOverturnDQ(p) {
   // result row but the examinee stays locked out — they'd need a fresh
   // registration, which is what created duplicate rows at base 14.
   if (resultStatus === 'פסול') {
-    sheet.getRange(resultRowIdx + 1, 8).setValue('בוטל');
-    sheet.getRange(resultRowIdx + 1, 18).setValue(false);
-    if (pendRowIdx !== -1 && (pendStatusNow === 'disqualified' || pendStatusNow === 'dq_confirmed')) {
-      pendSheet.getRange(pendRowIdx + 1, 6).setValue('in_exam');
-    }
+    sheet.getRange(resultRowIdx + 1 + resRead.off, 8).setValue('בוטל');
+    sheet.getRange(resultRowIdx + 1 + resRead.off, 18).setValue(false);
     SpreadsheetApp.flush();
+    if (pendRowIdx !== -1 && (pendStatusNow === 'disqualified' || pendStatusNow === 'dq_confirmed')) {
+      setPendingStatus(pendSheet, pendRowIdx + 1, p.sessionCode, 'in_exam');
+    }
     return jsonResponse({ status: 'ok' });
   }
 
@@ -3338,16 +5339,14 @@ function handleOverturnDQ(p) {
   // the pending row stayed stuck. Just clean up the pending row.
   if (pendRowIdx !== -1 && pendStatusNow === 'disqualified' &&
       (resultStatus === 'עבר' || resultStatus === 'נכשל' || resultStatus === 'בוטל')) {
-    pendSheet.getRange(pendRowIdx + 1, 6).setValue('completed');
-    SpreadsheetApp.flush();
+    setPendingStatus(pendSheet, pendRowIdx + 1, p.sessionCode, 'completed');
     return jsonResponse({ status: 'ok', resolved: 'stale_dq_cleared' });
   }
 
   // Case 3: pending is disqualified but no result row yet → revert so the
   // examinee can resume the exam (in_exam state, just like case 1).
   if (pendRowIdx !== -1 && pendStatusNow === 'disqualified' && resultRowIdx === -1) {
-    pendSheet.getRange(pendRowIdx + 1, 6).setValue('in_exam');
-    SpreadsheetApp.flush();
+    setPendingStatus(pendSheet, pendRowIdx + 1, p.sessionCode, 'in_exam');
     return jsonResponse({ status: 'ok', resolved: 'no_result_reverted' });
   }
 
@@ -3360,61 +5359,50 @@ function handleConfirmDQ(p) {
   // already forced a valid examinerId. The old `if (p.examinerId && ...)` form could
   // be bypassed by simply OMITTING examinerId, letting anyone who knows session+id
   // finalize a victim's provisional DQ (robbing their grace-period recovery).
-  if (!verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+  if (!examinerOwnsSession(p.sessionCode, p.examinerId)) {
     return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
   }
   // Mark pending status as dq_confirmed so examinee polling gets a final answer
   var pendSheet = getSheet('ממתינים');
   var pendData = pendSheet.getDataRange().getValues();
-  for (var j = pendData.length - 1; j >= 1; j--) {
-    if (String(pendData[j][0]) === String(p.sessionCode) && normalizeId(pendData[j][1]) === normalizeId(p.idNumber)) {
-      if (String(pendData[j][5]).trim() === 'disqualified') {
-        pendSheet.getRange(j + 1, 6).setValue('dq_confirmed');
-        SpreadsheetApp.flush();
-        return jsonResponse({ status: 'ok' });
-      }
-      break;
-    }
+  var hit = findLatestPendingRow(pendData, p.sessionCode, p.idNumber);
+  if (hit.idx === -1 || hit.status !== 'disqualified') {
+    return jsonResponse({ status: 'error', message: 'לא נמצא רישום פסול לאישור' });
   }
-  return jsonResponse({ status: 'error', message: 'לא נמצא רישום פסול לאישור' });
+  setPendingStatus(pendSheet, hit.idx + 1, p.sessionCode, 'dq_confirmed');
+  return jsonResponse({ status: 'ok' });
 }
 
 function handleCorrectToPass(p) {
-  if (p.examinerId && !verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+  if (p.examinerId && !examinerOwnsSession(p.sessionCode, p.examinerId)) {
     return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
   }
   var sheet = getSheet('תוצאות');
-  var data = sheet.getDataRange().getValues();
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][13]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
-      // Verify score is eligible (>= 24/30)
-      var scoreParts = String(data[i][5]).split('/');
-      var scoreNum = parseInt(scoreParts[0]) || 0;
-      if (scoreNum < 24) {
-        return jsonResponse({ status: 'error', message: 'ציון נמוך מדי לתיקון (מתחת ל-24)' });
-      }
-      // Update pass/fail to עבר
-      sheet.getRange(i + 1, 8).setValue('עבר');     // column H = עבר/נכשל
-      // Clear disqualified flag (in case correcting a DQ result directly)
-      sheet.getRange(i + 1, 18).setValue(false);     // column R = disqualified
-      // Mark as corrected
-      sheet.getRange(i + 1, 21).setValue(true);      // column U = תוקן?
-      // Regenerate WhatsApp link — corrected result shows only "עבר" (no score/errors)
-      var phone = formatPhoneForWA(data[i][3]);
-      var waMsg = '*🚗 אישור תוצאת מבחן תאוריה חיצוני*\n\n' +
-        'שם: ' + data[i][2] + '\n' +
-        'ת.ז.: ' + data[i][1] + '\n' +
-        'דרגה: ' + data[i][4] + '\n' +
-        (data[i][19] ? 'אוכלוסיה: ' + data[i][19] + '\n' : '') +
-        'תאריך: ' + data[i][0] + '\n' +
-        'תוצאה: *עבר*\n';
-      var waLink = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(waMsg);
-      sheet.getRange(i + 1, 19).setValue(waLink);    // column S = קישור וואטסאפ
-      SpreadsheetApp.flush();
-      return jsonResponse({ status: 'ok' });
-    }
+  var read = readResultsTail();
+  // skipCancelled: a 'בוטל' row was already overturned/superseded — correcting
+  // it would resurrect a dead row and leave two live results (review E S7).
+  var hit = findLatestResultRow(read.rows, p.sessionCode, p.idNumber, true);
+  if (hit.idx === -1) return jsonResponse({ status: 'error', message: 'תוצאה לא נמצאה' });
+  var row = hit.row, rowNumber = hit.idx + 1 + read.off;
+  // Verify score is eligible (>= 24/30)
+  var scoreNum = parseInt(String(row[5]).split('/')[0]) || 0;
+  if (scoreNum < 24) {
+    return jsonResponse({ status: 'error', message: 'ציון נמוך מדי לתיקון (מתחת ל-24)' });
   }
-  return jsonResponse({ status: 'error', message: 'תוצאה לא נמצאה' });
+  sheet.getRange(rowNumber, 8).setValue('עבר');      // column H = עבר/נכשל
+  sheet.getRange(rowNumber, 18).setValue(false);     // column R = disqualified (may be a DQ row)
+  sheet.getRange(rowNumber, 21).setValue(true);      // column U = תוקן?
+  // Regenerate WhatsApp link — corrected result shows only "עבר" (no score/errors)
+  var waMsg = '*🚗 אישור תוצאת מבחן תאוריה חיצוני*\n\n' +
+    'שם: ' + row[2] + '\n' +
+    'ת.ז.: ' + row[1] + '\n' +
+    'דרגה: ' + row[4] + '\n' +
+    (row[19] ? 'אוכלוסיה: ' + row[19] + '\n' : '') +
+    'תאריך: ' + row[0] + '\n' +
+    'תוצאה: *עבר*\n';
+  sheet.getRange(rowNumber, 19).setValue('https://wa.me/' + formatPhoneForWA(row[3]) + '?text=' + encodeURIComponent(waMsg));
+  SpreadsheetApp.flush();
+  return jsonResponse({ status: 'ok' });
 }
 
 // Commander-only result correction. Allows changing score and pass/fail/DQ
@@ -3449,17 +5437,13 @@ function handleSubmitManualResult(p) {
   // Pull session context so manual rows match the rest of the session's rows
   // (same site/classroom/language) without the examiner re-typing them.
   var site = '', classroom = '', sessLicense = '', sessLanguage = 'he', examinerName = '';
-  var sesSheet = getSheet('סשנים');
-  var sesData = sesSheet.getDataRange().getValues();
-  for (var s = 1; s < sesData.length; s++) {
-    if (String(sesData[s][0]).trim() === String(p.sessionCode).trim()) {
-      examinerName = sesData[s][2] || '';
-      site = sesData[s][3] || '';
-      classroom = sesData[s][4] || '';
-      sessLicense = sesData[s][5] || '';
-      sessLanguage = sesData[s][6] || 'he';
-      break;
-    }
+  var sesRow = sessionRowByCode(p.sessionCode);
+  if (sesRow) {
+    examinerName = sesRow[2] || '';
+    site = sesRow[3] || '';
+    classroom = sesRow[4] || '';
+    sessLicense = sesRow[5] || '';
+    sessLanguage = sesRow[6] || 'he';
   }
   var license = String(p.license || sessLicense || 'B');
   var language = String(p.language || sessLanguage || 'he');
@@ -3489,8 +5473,9 @@ function handleSubmitManualResult(p) {
   var sheet = getSheet('תוצאות');
   // Idempotency: a lost-response retry (request landed, reply dropped, examiner
   // re-saves) must not create a second identical manual row. Skip if a non-בוטל
-  // row already exists for this session+id+license+score.
-  var manExisting = sheet.getDataRange().getValues();
+  // row already exists for this session+id+license+score. The retry follows
+  // within seconds, so the tail covers it.
+  var manExisting = readResultsTail().rows;
   for (var mx = manExisting.length - 1; mx >= 1; mx--) {
     if (String(manExisting[mx][13]) === String(p.sessionCode) &&
         normalizeId(manExisting[mx][1]) === normalizeId(idNumber) &&
@@ -3548,7 +5533,7 @@ function handleCorrectExamineeMeta(p) {
   if (!verifyToken(p.examinerId, p.token)) {
     return jsonResponse({ status: 'error', message: 'טוקן בוחן לא תקין', tokenExpired: true });
   }
-  if (!verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+  if (!examinerOwnsSession(p.sessionCode, p.examinerId)) {
     return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
   }
   var newSite = (typeof p.site !== 'undefined' && p.site !== null) ? String(p.site).trim() : '';
@@ -3561,10 +5546,11 @@ function handleCorrectExamineeMeta(p) {
     return jsonResponse({ status: 'error', message: 'לא הוזנו שדות לעדכון' });
   }
   var sheet = getSheet('תוצאות');
-  var rows = sheet.getDataRange().getValues();
+  var metaRead = readResultsTail();   // the examiner fixes a row of the session in front of them
+  var rows = metaRead.rows;
   for (var i = rows.length - 1; i >= 1; i--) {
     if (String(rows[i][13]) === String(p.sessionCode) && normalizeId(rows[i][1]) === normalizeId(p.idNumber)) {
-      var rowIdx = i + 1;
+      var rowIdx = i + 1 + metaRead.off;
       if (applyId) {
         var idCell = sheet.getRange(rowIdx, 2);   // B (idx 1) = ת.ז.
         idCell.setNumberFormat('@');              // store as text — preserve leading zeros / avoid number formatting
@@ -3610,1517 +5596,840 @@ function handleCommanderCorrectResult(data) {
     return jsonResponse({ status: 'error', message: 'סטטוס חדש לא תקין' });
   }
 
+  // A commander corrects results of ANY session, including one from weeks ago,
+  // so this is the one correction handler that keeps the full live read (it runs
+  // a handful of times a month and must not miss a row a tail would cut off).
   var sheet = getSheet('תוצאות');
-  var rows = sheet.getDataRange().getValues();
-  for (var i = rows.length - 1; i >= 1; i--) {
-    if (String(rows[i][13]) === String(data.sessionCode) && normalizeId(rows[i][1]) === normalizeId(data.idNumber)) {
-      var rowIdx = i + 1;
-      var pct = Math.round((newScore / newTotal) * 100);
-      // Apply updates
-      sheet.getRange(rowIdx, 6).setValue(newScore + '/' + newTotal);  // F: ציון
-      sheet.getRange(rowIdx, 7).setValue(pct + '%');                   // G: אחוז
-      sheet.getRange(rowIdx, 8).setValue(newStatus);                   // H: עבר/נכשל
-      sheet.getRange(rowIdx, 18).setValue(newStatus === 'פסול');       // R: פסול?
-      sheet.getRange(rowIdx, 21).setValue(true);                       // U: תוקן?
-      // Audit trail (columns Z=26, AA=27, AB=28)
-      // Look up commander's display name from בוחנים sheet
-      var commanderName = '';
-      try {
-        var examSheet = getSheet('בוחנים');
-        var examData = examSheet.getDataRange().getValues();
-        for (var x = 1; x < examData.length; x++) {
-          if (normalizeId(examData[x][1]) === normalizeId(data.examinerId)) {
-            commanderName = String(examData[x][0] || '');
-            break;
-          }
-        }
-      } catch(e) {}
-      sheet.getRange(rowIdx, 26).setValue(commanderName + ' (' + normalizeId(data.examinerId) + ')');
-      sheet.getRange(rowIdx, 27).setValue(reason);
-      sheet.getRange(rowIdx, 28).setValue(todayStr());
-      SpreadsheetApp.flush();
-      return jsonResponse({ status: 'ok' });
+  var hit = findLatestResultRow(sheet.getDataRange().getValues(), data.sessionCode, data.idNumber, true);   // skip 'בוטל' (E S7)
+  if (hit.idx === -1) return jsonResponse({ status: 'error', message: 'תוצאה לא נמצאה' });
+  var rowIdx = hit.idx + 1;
+  var pct = Math.round((newScore / newTotal) * 100);
+  sheet.getRange(rowIdx, 6).setValue(newScore + '/' + newTotal);  // F: ציון
+  sheet.getRange(rowIdx, 7).setValue(pct + '%');                   // G: אחוז
+  sheet.getRange(rowIdx, 8).setValue(newStatus);                   // H: עבר/נכשל
+  sheet.getRange(rowIdx, 18).setValue(newStatus === 'פסול');       // R: פסול?
+  sheet.getRange(rowIdx, 21).setValue(true);                       // U: תוקן?
+  // Audit trail (columns Z=26, AA=27, AB=28) — commander's display name from בוחנים
+  var commanderName = '';
+  try {
+    var examData = getSheet('בוחנים').getDataRange().getValues();
+    for (var x = 1; x < examData.length; x++) {
+      if (normalizeId(examData[x][1]) === normalizeId(data.examinerId)) { commanderName = String(examData[x][0] || ''); break; }
     }
-  }
-  return jsonResponse({ status: 'error', message: 'תוצאה לא נמצאה' });
+  } catch(e) {}
+  sheet.getRange(rowIdx, 26).setValue(commanderName + ' (' + normalizeId(data.examinerId) + ')');
+  sheet.getRange(rowIdx, 27).setValue(reason);
+  sheet.getRange(rowIdx, 28).setValue(todayStr());
+  SpreadsheetApp.flush();
+  return jsonResponse({ status: 'ok' });
 }
 
 function handleMarkSent(p) {
   // Ownership check — consistent with the other examiner mutations; prevents an
   // authenticated examiner from flipping the "נשלח?" flag on another session's rows.
-  if (!verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+  if (!examinerOwnsSession(p.sessionCode, p.examinerId)) {
     return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
   }
   var sheet = getSheet('תוצאות');
-  var data = sheet.getDataRange().getValues();
+  var read = readResultsTail();   // rows of the session the examiner is sending from
+  var data = read.rows;
+  var wanted = {};
   var ids = p.idNumbers ? p.idNumbers.split(',') : [p.idNumber];
+  for (var k = 0; k < ids.length; k++) wanted[normalizeId(ids[k])] = true;
   var count = 0;
   for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][13]) === String(p.sessionCode)) {
-      for (var k = 0; k < ids.length; k++) {
-        if (normalizeId(data[i][1]) === normalizeId(ids[k])) {
-          sheet.getRange(i + 1, 17).setValue(true);  // נשלח? — column Q (17)
-          count++;
-        }
-      }
-    }
+    if (String(data[i][13]) !== String(p.sessionCode)) continue;
+    if (!wanted[normalizeId(data[i][1])]) continue;
+    sheet.getRange(i + 1 + read.off, 17).setValue(true);  // נשלח? — column Q (17)
+    count++;
   }
   return jsonResponse({ status: 'ok', updated: count });
 }
 
-function handleRegisterExamQuestions(data) {
-  // Reject the call if the examinee token doesn't match the registered row
-  // (legacy rows without a stored token still pass).
-  var reqTokenErr = requireExamineeToken(data);
-  if (reqTokenErr) return reqTokenErr;
-  // Server-side score verification setup. The client tells us which questions
-  // came up and how each was shuffled — but NOT which answer is correct. The
-  // server looks up the canonical correct index in ANSWER_KEY_BY_LANG and
-  // computes the shuffled-correct index itself, so a tampered client cannot
-  // claim "answer 0 is always correct" and pass without taking the exam.
-  //
-  // Expected payload:
-  //   { sessionCode, idNumber, language?, questions: [{qIdx, qId, shuffleOrder}] }
-  // Where shuffleOrder is an array like [2,0,1,3] meaning:
-  //   "displayed answer A = original answer 2, B = original 0, C = original 1, D = original 3".
-  //
-  // Backward-compat: old clients send {qIdx, correctShuffledIdx} (legacy, trusted).
-  // If we detect the legacy shape, we accept it but mark the registration
-  // as unverified so submitResult flags the result row accordingly.
-  if (!data.sessionCode || !data.idNumber || !data.questions) {
-    return jsonResponse({ status: 'error', message: 'חסרים נתונים לרישום מבחן' });
-  }
+// ========== Exam start, practice draw, result submission ====================
+//
+// One call starts an exam (startExam) and one call ends it (submitResult). The
+// server draws the questions from QUESTION_INDEX, stores the map it drew, and
+// scores the submission against the answer key — the client is trusted for
+// nothing but WHAT IT DISPLAYED (question and answer texts, for the certificate).
+//
+// What the old flow did instead: getExamQuestions (Drive/pool read, ~10s) →
+// registerExamQuestions (full read of 'ממתינים', no idempotency, four client
+// retries) → markExamStarted (another full read) → submitResult (full read of
+// 'מבחנים', 8.2MB, plus three full reads of 'תוצאות' and a Drive read for the
+// wrong-answer texts). That is the 15MB submit and the 10-second start.
 
-  // If server-side question delivery (getExamQuestions) was used, an entry
-  // for `issued_qs_<session>_<id>` will exist in cache. Verify the IDs the
-  // client is registering all came from that set — otherwise reject.
-  // (No cache entry means legacy flow where the client picked questions
-  // locally from questions.js; that path stays open for now.)
+// ---- The question map of one exam ------------------------------------------
+// Stored in 'מבחנים' exactly as before — six columns, one JSON map per row —
+// so nothing downstream changes; the map entries gained `topic` (the blueprint
+// bucket, for the certificate) since the server can no longer look a category up
+// in a bank it does not have.
+var EXAM_BASE_MINUTES = 40;
+var EXAM_MIN_QUESTIONS = 25;               // review E S1: never register or score a short map
+var EXAM_MAP_CACHE_SEC = 10800;            // 3h — longer than any exam plus its extensions
+var EXAM_MAP_MAX_AGE_MS = 8 * 3600 * 1000; // a session code lives 8h; an older row is a previous attempt
+var EXAM_SUSPICIOUS_SEC = 180;             // a "finished" exam faster than this is flagged, not blocked
+
+// The cache key carries the ATTEMPT, not just the person: an examinee who was
+// reset and registered again gets a new 'ממתינים' row with a new registration
+// time and must be drawn a fresh exam, not handed the cached one.
+function examAttemptKey(row) {
+  var stamp = (row && row[4] instanceof Date) ? row[4].toISOString() : String((row && row[4]) || '');
+  return stamp.replace(/[^0-9A-Za-z]/g, '').slice(-14) || 'na';
+}
+function examMapCacheKey(sessionCode, idNumber, attemptKey) {
+  return CACHE_KEY_PREFIX + 'qmap_' + String(sessionCode || '').trim() + '_' + normalizeId(idNumber) + '_' + attemptKey;
+}
+function readExamMapCache(sessionCode, idNumber, attemptKey) {
   try {
-    var issuedKey = 'issued_qs_' + String(data.sessionCode) + '_' + normalizeId(data.idNumber);
-    var issuedJson = CacheService.getScriptCache().get(issuedKey);
-    if (issuedJson) {
-      var issuedSet = {};
-      var issuedArr = JSON.parse(issuedJson) || [];
-      for (var iz = 0; iz < issuedArr.length; iz++) issuedSet[String(issuedArr[iz])] = true;
-      for (var iq = 0; iq < data.questions.length; iq++) {
-        var qq = data.questions[iq];
-        if (!qq || !qq.qId) continue;
-        if (!issuedSet[String(qq.qId)]) {
-          return jsonResponse({
-            status: 'error',
-            message: 'Question ID not in issued set — rejecting registration',
-            unexpectedId: qq.qId
-          });
-        }
-      }
-    }
-  } catch (e) { /* cache failure — fall through to existing flow */ }
-
-  // Verify examinee is in_exam / approved status
-  diagMark('sheet:pending-register');
-  var pendSheet = getSheet('ממתינים');
-  var pendData = pendSheet.getDataRange().getValues();
-  var found = false;
-  for (var i = pendData.length - 1; i >= 1; i--) {
-    if (String(pendData[i][0]) === String(data.sessionCode) && normalizeId(pendData[i][1]) === normalizeId(data.idNumber)) {
-      var status = String(pendData[i][5]).trim();
-      if (status === 'in_exam' || status === 'approved') {
-        found = true;
-        break;
-      }
-    }
-  }
-  if (!found) {
-    return jsonResponse({ status: 'error', message: 'נבחן לא מאושר למבחן' });
-  }
-
-  // Build the canonical question map. Each entry stores {qIdx, correctShuffledIdx}
-  // — same shape submitResult already consumes — but the correctShuffledIdx is
-  // computed server-side whenever possible.
-  var lang = String(data.language || 'he').toLowerCase();
-  var canonicalMap = [];
-  var unverifiedCount = 0;
-  var hasAnswerKey = (typeof ANSWER_KEY_BY_LANG !== 'undefined') && (typeof lookupCorrectIndex === 'function');
-
-  for (var qi = 0; qi < data.questions.length; qi++) {
-    var q = data.questions[qi];
-    if (!q) { canonicalMap.push(null); unverifiedCount++; continue; }
-
-    // Modern shape: client sent qId + shuffleOrder → server computes
-    if (hasAnswerKey && q.qId && Array.isArray(q.shuffleOrder)) {
-      var origCorrect = lookupCorrectIndex(Number(q.qId), lang);
-      if (origCorrect === null || origCorrect === undefined) {
-        // Question id missing from answer key → fall back to client's claim if present
-        canonicalMap.push({ qIdx: q.qIdx, qId: Number(q.qId), shuffleOrder: q.shuffleOrder, correctShuffledIdx: Number(q.correctShuffledIdx || 0) });
-        unverifiedCount++;
-        continue;
-      }
-      var idxInShuffle = q.shuffleOrder.indexOf(Number(origCorrect));
-      if (idxInShuffle < 0) {
-        // shuffleOrder doesn't contain the correct original index → malformed
-        canonicalMap.push({ qIdx: q.qIdx, qId: Number(q.qId), shuffleOrder: q.shuffleOrder, correctShuffledIdx: Number(q.correctShuffledIdx || 0) });
-        unverifiedCount++;
-        continue;
-      }
-      // Store qId + shuffleOrder so submitResult can build wrongDetails server-side
-      // (needed because we no longer send `ci` to examinees — see handleGetExamQuestions).
-      canonicalMap.push({ qIdx: q.qIdx, qId: Number(q.qId), shuffleOrder: q.shuffleOrder, correctShuffledIdx: idxInShuffle });
-      continue;
-    }
-
-    // Legacy / fallback: client sent correctShuffledIdx directly → trust but flag
-    canonicalMap.push({ qIdx: q.qIdx, qId: q.qId ? Number(q.qId) : null, shuffleOrder: Array.isArray(q.shuffleOrder) ? q.shuffleOrder : null, correctShuffledIdx: Number(q.correctShuffledIdx || 0) });
-    unverifiedCount++;
-  }
-
-  // Guard: if the server answer key is entirely unavailable (answer_key.gs not
-  // deployed, or every selected qId missing from it), do NOT register a map full
-  // of unverifiable garbage — that is what produced silent 0/30 fails (פינטו/דיין
-  // 03/06). Return an error so the confirmed-register client blocks the exam and
-  // retries, surfacing the problem instead of mis-scoring a real examinee.
-  if (!hasAnswerKey || (data.questions.length > 0 && unverifiedCount >= data.questions.length)) {
-    return jsonResponse({ status: 'error', message: 'מפתח התשובות אינו זמין בשרת — פנה למנהל המערכת', keyUnavailable: true });
-  }
-
-  // Store in מבחנים sheet (create if needed). Add a fifth column for unverified
-  // count so submitResult can flag results scored from unverified data.
-  var examSheet;
-  try { examSheet = getSheet('מבחנים'); } catch(e) {
-    var ss = getSpreadsheet();
-    examSheet = ss.insertSheet('מבחנים');
-    examSheet.appendRow(['קוד סשן', 'ת.ז.', 'שאלות JSON', 'זמן רישום', 'שפה', 'שגויות לא מאומתות']);
-  }
-  diagMark('sheet:append-register');
-  examSheet.appendRow([
-    String(data.sessionCode),
-    normalizeId(data.idNumber),
-    JSON.stringify(canonicalMap),
-    nowISO(),
-    lang,
-    unverifiedCount
-  ]);
-
-  // Layer-1 consolidation: also mark the examinee in_exam here — the same write
-  // markExamStarted did — so the start no longer needs a separate markExamStarted
-  // round-trip. Only flips 'approved' → 'in_exam' (same guard). Because this is
-  // the CONFIRMED/blocking call, it also strengthens the iPhone "stuck in
-  // ממתינים" fix. `marked` is returned so the client knows whether to keep the
-  // visibilitychange fallback armed.
-  var marked = false;
+    var hit = CacheService.getScriptCache().get(examMapCacheKey(sessionCode, idNumber, attemptKey));
+    if (!hit) return null;
+    var record = JSON.parse(hit);
+    return (record && record.map && record.map.length) ? record : null;
+  } catch (e) { return null; }
+}
+function writeExamMapCache(sessionCode, idNumber, attemptKey, record) {
   try {
-    var penSheet = pendSheet;
-    var penData = refreshExamineePendingRows(penSheet, pendData, data.sessionCode, data.idNumber);
-    for (var mi = penData.length - 1; mi >= 1; mi--) {
-      if (String(penData[mi][0]) !== String(data.sessionCode) || normalizeId(penData[mi][1]) !== normalizeId(data.idNumber)) continue;
-      var mst = String(penData[mi][5]).trim();
-      if (mst === 'approved') { penSheet.getRange(mi + 1, 6).setValue('in_exam'); penSheet.getRange(mi + 1, 12).setValue(nowISO()); marked = true; break; }
-      if (mst === 'in_exam') { marked = true; break; }
-      // other status (cancelled/completed): keep scanning for an approved/in_exam row
-    }
-  } catch (msErr) { /* non-fatal — client fallback + dashboard cleanup cover it */ }
-
-  return jsonResponse({ status: 'ok', verified: unverifiedCount === 0, unverifiedCount: unverifiedCount, examStarted: marked });
+    CacheService.getScriptCache().put(examMapCacheKey(sessionCode, idNumber, attemptKey), JSON.stringify(record), EXAM_MAP_CACHE_SEC);
+  } catch (e) { /* the sheet is the source of truth; the cache only saves a read */ }
 }
 
-function handleSubmitResult(data) {
-  // Rate limit: max 5 submissions per minute per (sessionCode, idNumber).
-  // One legitimate submission + retries on flaky network; floods are blocked.
-  var srRlErr = requireRateLimit('submitResult', String(data.sessionCode || '') + '_' + normalizeId(data.idNumber), 5, 60);
-  if (srRlErr) return srRlErr;
-  // Require the examinee token before accepting any result. Legacy rows
-  // (no stored token) pass through requireExamineeToken with legacy=true.
-  diagMark('sheet:token-submit');
-  var srTokenErr = requireExamineeToken(data);
-  if (srTokenErr) return srTokenErr;
-  var sheet = getSheet('תוצאות');
-
-  // Verify examinee is approved (in_exam status) before accepting results
-  if (data.sessionCode && data.idNumber) {
-    diagMark('sheet:pending-submit');
-    var pendSheet = getSheet('ממתינים');
-    var pendData = pendSheet.getDataRange().getValues();
-    var isApproved = false;
-    for (var pi = pendData.length - 1; pi >= 1; pi--) {
-      if (String(pendData[pi][0]) === String(data.sessionCode) && normalizeId(pendData[pi][1]) === normalizeId(data.idNumber)) {
-        var pStatus = String(pendData[pi][5]).trim();
-        // 'cancelled' accepted too: if an examiner reset an examinee who was
-        // actually still mid-exam, a genuine finished submit must be RECORDED,
-        // not rejected and lost. The fabricated-fail supersede + dup-check below
-        // prevent a double-row; close-fails for 'cancelled' are suppressed.
-        if (pStatus === 'in_exam' || pStatus === 'approved' || pStatus === 'completed' || pStatus === 'cancelled') {
-          isApproved = true;
-        }
-        break;
-      }
-    }
-    if (!isApproved) {
-      return jsonResponse({ status: 'error', message: 'נבחן לא מאושר — לא ניתן לשלוח תוצאות' });
-    }
+// 'מבחנים' carries one JSON map per row and grows forever — reading it whole to
+// use a single row was 8.2MB of the 15MB submit. Columns A-B (session, id) are
+// scanned bottom-up and only the matching row's C-F is read.
+// maxAgeMs bounds the search to the current session; 0 accepts any age (a submit
+// must find its own registration however long the exam ran).
+// Returns null when there is no row, or { map: null } when the row cannot be
+// parsed — "a registration exists but is unreadable" is not "no registration".
+function readExamRegistration(sessionCode, idNumber, maxAgeMs) {
+  var sheet = getSheet('מבחנים'), lastRow = sheet.getLastRow();
+  if (lastRow < 2) return null;
+  diagMark('sheet:exam-keys');
+  var keys = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
+  for (var i = keys.length - 1; i >= 0; i--) {
+    if (String(keys[i][0]) !== String(sessionCode)) continue;
+    if (normalizeId(keys[i][1]) !== normalizeId(idNumber)) continue;
+    diagMark('sheet:exam-row');
+    var record = parseExamRegistrationRow(sheet.getRange(i + 2, 3, 1, 4).getValues()[0]);
+    if (maxAgeMs && examRegistrationAgeMs(record) > maxAgeMs) return null;
+    return record;
   }
-
-  // SECURITY (anti score-forge): if a registered exam (מבחנים row) exists for this
-  // session+id, the answers array is MANDATORY so the server re-scores from the
-  // answer key. Without this, an examinee could POST a forged score with NO answers
-  // and skip BOTH the re-score and the unverified-guard below (both answers-gated).
-  // Keep the full history for old-result recovery and retakes; do not tail-read
-  // it. Reuse only within this call, and retry a failed read in the later guards.
-  var registeredExamRows = null;
-  function readRegisteredExams() {
-    var registeredSheet = getSheet('מבחנים');
-    if (!registeredExamRows || registeredSheet.getLastRow() !== registeredExamRows.length) {
-      // r20 (marks only): prime suspect for the 32s this handler spends after
-      // meta:wrong-answers — 'מבחנים' carries the question-map JSON of EVERY
-      // exam ever registered, one blob per row, and this pulls all of it to use
-      // a single row. Do NOT narrow it blindly: column C IS the answer key the
-      // re-score depends on (line ~3461). Measure first.
-      diagMark('sheet:registered-submit');
-      registeredExamRows = registeredSheet.getDataRange().getValues();
-    }
-    return registeredExamRows;
-  }
-  var hasRegisteredExam = false;
+  return null;
+}
+function parseExamRegistrationRow(cells) {
+  var record = {
+    map: null,
+    at: (cells[1] instanceof Date) ? cells[1].toISOString() : String(cells[1] || ''),
+    lang: String(cells[2] || ''),
+    unverified: Number(cells[3] || 0)
+  };
   try {
-    var regChk = readRegisteredExams();
-    for (var rc = regChk.length - 1; rc >= 1; rc--) {
-      if (String(regChk[rc][0]) === String(data.sessionCode) && normalizeId(regChk[rc][1]) === normalizeId(data.idNumber)) { hasRegisteredExam = true; break; }
+    var map = JSON.parse(cells[0]);
+    // An empty array IS a readable map — and a refusable one (review E S1).
+    // Only unparseable JSON leaves map null, i.e. "registered but unreadable".
+    if (Array.isArray(map)) record.map = map;
+  } catch (e) { /* record.map stays null → the result is stored unverified */ }
+  return record;
+}
+function examRegistrationAgeMs(record) {
+  var at = record && record.at ? new Date(record.at) : null;
+  if (!at || isNaN(at.getTime())) return 0;   // unparseable stamp: do not discard the map over it
+  return Date.now() - at.getTime();
+}
+
+function appendExamRegistration(sessionCode, idNumber, map, at, lang) {
+  diagMark('sheet:append-exam');
+  var sheet = getSheet('מבחנים');
+  // Every reader here skips row 1 as a header, so a sheet that somehow has none
+  // would swallow its first exam.
+  if (sheet.getLastRow() === 0 && SHEET_HEADERS['מבחנים']) sheet.appendRow(SHEET_HEADERS['מבחנים']);
+  sheet.appendRow([String(sessionCode), normalizeId(idNumber), JSON.stringify(map), at, lang, 0]);
+}
+
+// ---- startExam --------------------------------------------------------------
+// POST, examinee token. Replaces getExamQuestions + registerExamQuestions +
+// markExamStarted with one idempotent call: the same (session, attempt) always
+// gets the same 30 questions back, so a retry after a lost response resumes the
+// exam instead of drawing a second one.
+function handleStartExam(data) {
+  var sessionCode = String(data.sessionCode || '').trim();
+  if (!sessionCode || !data.idNumber) return jsonResponse({ status: 'error', message: 'חסרים פרטי נבחן' });
+  var ctx = examineeRowContext(sessionCode, data.idNumber);
+  if (!ctx.active) return jsonResponse({ status: 'error', code: 'not_approved', message: 'נבחן לא מאושר למבחן' });
+
+  var row = ctx.active.row;
+  var lang = String(data.language || row[6] || 'he').toLowerCase();
+  var license = String(data.license || row[8] || 'B').trim();
+  if (!EXAM_STRUCTURE_SERVER[license]) {
+    return jsonResponse({ status: 'error', code: 'unknown_license', message: 'דרגה לא מוכרת: ' + license });
+  }
+
+  var attempt = examAttemptKey(row);
+  var record = readExamMapCache(sessionCode, data.idNumber, attempt);
+  // Only an exam already in progress may reuse a stored map. An 'approved' row
+  // is a NEW attempt (a reset examinee re-registered), and it must be drawn
+  // fresh even though a map of the previous attempt is still in the sheet.
+  if (!record && ctx.active.status === 'in_exam') {
+    record = readExamRegistration(sessionCode, data.idNumber, EXAM_MAP_MAX_AGE_MS);
+    if (record && (!record.map || record.map.length < EXAM_MIN_QUESTIONS)) record = null;
+  }
+  if (!record) {
+    try { record = drawExamRegistration(sessionCode, data.idNumber, license, lang); }
+    catch (err) {
+      if (!err || err.code !== 'bank_unavailable') throw err;
+      return jsonResponse({ status: 'error', code: 'bank_unavailable', detail: err.detail,
+        message: 'מאגר השאלות אינו זמין כעת — פנה לבוחן' });
     }
-  } catch (regChkErr) {}
-  if (hasRegisteredExam && (!data.answers || !Array.isArray(data.answers) || data.answers.length === 0)) {
+  }
+  writeExamMapCache(sessionCode, data.idNumber, attempt, record);
+
+  // approved → in_exam, through the single status writer (it flushes and drops
+  // the poller snapshot). An in_exam row keeps its original start time.
+  if (ctx.active.status === 'approved') {
+    setPendingStatus(getSheet('ממתינים'), ctx.active.rowNumber, sessionCode, 'in_exam', { examStart: nowISO() });
+    ctx.active.status = 'in_exam';
+  }
+
+  return jsonResponse({
+    status: 'ok', build: THEORY_API_BUILD,
+    examMinutes: examMinutesFor(row), extraMinutes: sumExtraMinutes(sessionCode, data.idNumber),
+    audioMode: String(row[9] || '').trim() === 'on' ? 'on' : 'off',
+    language: record.lang || lang, license: license, registeredAt: record.at,
+    questions: examQuestionsForClient(record.map)
+  });
+}
+
+function drawExamRegistration(sessionCode, idNumber, license, lang) {
+  var drawn = drawExamIds(license, lang);
+  if (drawn.length < EXAM_MIN_QUESTIONS) {
+    throw questionBankUnavailable('נדרשות לפחות ' + EXAM_MIN_QUESTIONS + ' שאלות', String(drawn.length));
+  }
+  var map = [];
+  for (var i = 0; i < drawn.length; i++) {
+    var order = drawShuffleOrder();
+    // Non-null by construction: drawExamIds skips every id the key cannot answer.
+    var correct = answerKeyIndex(drawn[i].id, lang);
+    map.push({ qIdx: i, qId: drawn[i].id, shuffleOrder: order, correctShuffledIdx: order.indexOf(correct), topic: drawn[i].topic });
+  }
+  var at = nowISO();
+  appendExamRegistration(sessionCode, idNumber, map, at, lang);
+  return { map: map, at: at, lang: lang, unverified: 0 };
+}
+
+// The client holds the texts (bank/<lang>.json) and needs only what the server
+// decided: which questions, in which answer order, under which topic.
+function examQuestionsForClient(map) {
+  var out = [];
+  for (var i = 0; i < map.length; i++) {
+    out.push({ id: map[i].qId, order: map[i].shuffleOrder, topic: map[i].topic || '' });
+  }
+  return out;
+}
+
+// Column K of 'ממתינים' holds the examiner's time extension — same whitelist the
+// approval poll applies, so both sides compute the same deadline.
+function examMinutesFor(row) {
+  var ext = parseFloat(row[10]) || 1;
+  if (ext !== 1.25 && ext !== 1.5) ext = 1;
+  return Math.round(EXAM_BASE_MINUTES * ext);
+}
+
+// ---- startPractice ----------------------------------------------------------
+// GET, no token. Practice scores on the client, so it gets the correct index of
+// every language the question exists in (XOR-encoded) and never needs another
+// round trip — a language switch mid-practice is local.
+var PRACTICE_MAX_COUNT = 50;
+var PRACTICE_DEFAULT_COUNT = 15;
+function handleStartPractice(p) {
+  var rlErr = practiceRateLimit(p);
+  if (rlErr) return rlErr;
+  var lang = String(p.language || 'he').toLowerCase();
+  var license = String(p.license || p.licenseType || 'B').trim();
+  if (!EXAM_STRUCTURE_SERVER[license]) {
+    return jsonResponse({ status: 'error', code: 'unknown_license', message: 'דרגה לא מוכרת: ' + license });
+  }
+  var mode = String(p.mode || 'exam');
+  var picked;
+  try { picked = practiceSelection(mode, license, lang, p); }
+  catch (err) {
+    if (!err || err.code !== 'bank_unavailable') throw err;
+    return jsonResponse({ status: 'error', code: 'bank_unavailable', detail: err.detail, message: 'אין מספיק שאלות לתרגול' });
+  }
+  if (!picked.length) return jsonResponse({ status: 'error', code: 'no_questions', message: 'לא נמצאו שאלות לתרגול' });
+  var questions = [];
+  for (var i = 0; i < picked.length; i++) {
+    questions.push({ id: picked[i].id, topic: picked[i].topic, ci: practiceCiByLang(picked[i].id) || {} });
+  }
+  return jsonResponse({ status: 'ok', mode: mode, count: questions.length, questions: questions });
+}
+
+function practiceSelection(mode, license, lang, p) {
+  if (mode === 'ids') return practiceByIds(p.ids, license, lang);
+  if (mode === 'category' && p.categoryFilter) return practiceByCategory(String(p.categoryFilter), license, lang, practiceCount(p));
+  return drawExamIds(license, lang);   // full 30-question blueprint
+}
+
+function practiceCount(p) {
+  var n = Number(p.maxCount) || PRACTICE_DEFAULT_COUNT;
+  return Math.max(1, Math.min(PRACTICE_MAX_COUNT, n));
+}
+
+function practiceByCategory(topic, license, lang, maxCount) {
+  var byTopic = indexIdsByTopic(license, lang), pool = shuffleArrayServer(byTopic[topic] || []), out = [];
+  for (var i = 0; i < pool.length && out.length < maxCount; i++) out.push({ id: pool[i], topic: topic });
+  return out;
+}
+
+// Spaced repetition: the client names the ids it wants back. Unknown ids and ids
+// missing from this language are dropped rather than failing the whole request.
+function practiceByIds(raw, license, lang) {
+  var bit = questionLangBit(lang), out = [], seen = {};
+  var parts = String(raw || '').split(',');
+  for (var i = 0; i < parts.length && out.length < PRACTICE_MAX_COUNT; i++) {
+    var id = parseInt(String(parts[i]).trim(), 10);
+    if (isNaN(id) || seen[id]) continue;
+    seen[id] = true;
+    var entry = questionIndexEntry(id);
+    if (!entry || !(entry.l & bit)) continue;
+    out.push({ id: id, topic: entry.c[license] || '' });
+  }
+  return out;
+}
+
+// Class practice is identified by class+student, standalone by the ID typed into
+// exam.html, and everything else is a guest. The guest allowance is also capped
+// globally: `ci` makes the draw an answer oracle, so a scraper must not be able
+// to walk the bank quickly by inventing identifiers.
+var PRACTICE_GUEST_GLOBAL_MAX = 120;
+function practiceRateLimit(p) {
+  if (p.classCode && p.studentId) {
+    return requireRateLimit('startPractice_student', String(p.classCode) + '_' + String(p.studentId), 20, 60);
+  }
+  if (p.standaloneIdNumber) {
+    return requireRateLimit('startPractice_standalone', normalizeId(p.standaloneIdNumber), 5, 60);
+  }
+  return requireRateLimit('startPractice_guest', 'anon', 5, 60)
+    || requireRateLimit('startPractice_guest', 'guest_global', PRACTICE_GUEST_GLOBAL_MAX, 60);
+}
+
+// ---- Retired actions --------------------------------------------------------
+// One release of grace for a client that was loaded before the deploy: it asks
+// for questions, gets a clear "refresh the page" instead of a broken exam.
+function handleClientOutdated() {
+  return jsonResponse({ status: 'error', code: 'client_outdated',
+    message: 'גרסה חדשה של המערכת — יש לרענן את הדף (F5)' });
+}
+
+// startExam already flipped the row to in_exam; the old client's separate ping
+// has nothing left to do. Kept (as a no-op) only so that client does not treat
+// an unknown action as a failure. Remove in the next release.
+function handleMarkExamStartedNoop() {
+  return jsonResponse({ status: 'ok', already: true });
+}
+
+// ---- submitResult -----------------------------------------------------------
+// Columns of 'תוצאות' by name — the handler used to index 30 positions by hand.
+var RESULT_COL = { date: 0, id: 1, name: 2, phone: 3, license: 4, score: 5, percent: 6, verdict: 7,
+  time: 8, examiner: 9, site: 10, classroom: 11, language: 12, session: 13, attempt: 14, wrongDetails: 15,
+  sent: 16, dq: 17, waLink: 18, population: 19, corrected: 20, audio: 21, verified: 22, suspicious: 23,
+  dqEventId: 24, correctedBy: 25, correctionReason: 26, correctionDate: 27, langPath: 28, device: 29 };
+var RESULT_PASS_RATIO = 0.86;             // 26/30
+var FABRICATED_FAIL_MARKERS = ['סגירת דפדפן', 'טיימאאוט', 'סיום ידני'];
+var UNVERIFIED_PREFIX = '⚠️ ציון לא אומת';
+
+function handleSubmitResult(data) {
+  var gate = submitGate(data);
+  if (gate.error) return gate.error;
+  recordSubmitClientLog(data);
+
+  var registration = readExamRegistration(data.sessionCode, data.idNumber, 0);
+  var guard = submitRegistrationGuard(registration, data);
+  if (guard) return guard;
+
+  var scored = registration && registration.map && registration.map.length
+    ? scoreRegisteredExam(registration.map, data.answers, registration.lang)
+    : null;
+  applyScore(data, scored, registration, !!(data.answers && data.answers.length));
+  var wrongAnswers = scored ? wrongAnswerItems(scored, data.license) : [];
+
+  // 'תוצאות' is read ONCE, as late as possible: supersede, duplicate, פסול and
+  // idempotency all decide from the same snapshot. Three full reads of a sheet
+  // that grows forever were most of what was left of the submit's cost.
+  diagMark('sheet:results-submit');
+  var sheet = getSheet('תוצאות');
+  var tail = readTail(sheet, RESULT_COL.date);
+  supersedeFabricatedFails(sheet, tail, data);
+
+  var duplicate = findDuplicateResult(tail, data, gate);
+  if (duplicate) {
+    markPendingCompleted(data.sessionCode, data.idNumber, gate.pending);
+    return jsonResponse({ status: 'ok', waLink: duplicate[RESULT_COL.waLink] || '', duplicate: true });
+  }
+  // Counted BEFORE the פסול rows are voided below: a disqualified exam was
+  // still an attempt, and voiding it is only about not leaving two live rows.
+  var attemptNum = countAttempts(data.idNumber, data.license, attemptRows(tail)) + 1;
+  supersedeDisqualifications(sheet, tail, data);
+
+  var waLink = buildResultWaLink(data, wrongAnswers, attemptNum);
+  if (findIdenticalResult(tail, data)) {
+    markPendingCompleted(data.sessionCode, data.idNumber, gate.pending);
+    return jsonResponse({ status: 'ok', duplicate: true, waLink: waLink });
+  }
+
+  sheet.appendRow(buildResultRow(data, wrongAnswers, attemptNum, waLink));
+  markPendingCompleted(data.sessionCode, data.idNumber, gate.pending);
+  diagMark('compute:submit-done');
+  return jsonResponse({ status: 'ok', waLink: waLink });
+}
+
+// Rate limit, examinee token and "is this person actually in this exam".
+// Returns { error } or { pending, status } — the pending snapshot is handed on
+// so the completion write does not read 'ממתינים' a second time.
+function submitGate(data) {
+  var rlErr = requireRateLimit('submitResult', String(data.sessionCode || '') + '_' + normalizeId(data.idNumber), 5, 60);
+  if (rlErr) return { error: rlErr };
+  var ctx = examineeRowContext(data.sessionCode, data.idNumber);
+  var status = ctx.latest ? ctx.latest.status : '';
+  // 'cancelled' is accepted: if an examiner reset an examinee who was in fact
+  // still mid-exam, a genuine finished submit must be RECORDED, not lost. The
+  // fabricated-fail supersede and the duplicate check keep the sheet clean.
+  if (data.sessionCode && data.idNumber && ['in_exam', 'approved', 'completed', 'cancelled'].indexOf(status) === -1) {
+    return { error: jsonResponse({ status: 'error', message: 'נבחן לא מאושר — לא ניתן לשלוח תוצאות' }) };
+  }
+  return { pending: pendingSnapshotFromTail(ctx), status: status, ctx: ctx };
+}
+
+// markPendingCompleted writes by absolute row index, so a tail read's rows are
+// padded back to their sheet positions instead of paying for a second full read.
+function pendingSnapshotFromTail(ctx) {
+  var sheet = getSheet('ממתינים'), tail = ctx.tail;
+  if (!tail || !tail.rows.length) return { sheet: sheet, rows: null };
+  if (!tail.off) return { sheet: sheet, rows: tail.rows };
+  var padded = [tail.rows[0]];
+  for (var i = 0; i < tail.off; i++) padded.push([]);
+  return { sheet: sheet, rows: padded.concat(tail.rows.slice(1)) };
+}
+
+// The client's last events (≤2KB) ride along with the submit; S2's recorder
+// parks them next to the server-side diagnostics. Never fatal to a result.
+function recordSubmitClientLog(data) {
+  if (!data.clientLog) return;
+  try {
+    if (typeof diagRecordClientLog === 'function') diagRecordClientLog(data.sessionCode, data.idNumber, data.clientLog);
+  } catch (e) { /* a diagnostic must never cost a result */ }
+}
+
+// A registered exam MUST come with answers (otherwise a forged score would skip
+// the re-score entirely), and a map that is empty or shorter than a real exam is
+// a data fault — refuse it loudly instead of scoring 3 questions out of 30 and
+// possibly declaring a pass (review E S1).
+function submitRegistrationGuard(registration, data) {
+  if (!registration) return null;
+  if (!data.answers || !Array.isArray(data.answers) || data.answers.length === 0) {
     return jsonResponse({ status: 'error', message: 'הגשה לא תקינה — חסרות תשובות למבחן רשום' });
   }
-
-  // Server-side score verification: if answers array is present, recalculate
-  // score using the question map registered at exam start. The map's
-  // correctShuffledIdx values are server-computed (from ANSWER_KEY_BY_LANG)
-  // when possible — only fall back to client-claimed values for questions
-  // missing from the answer key, in which case we mark the result unverified.
-  if (data.answers && Array.isArray(data.answers)) {
-    try {
-      var examData = readRegisteredExams();
-      var questionMap = null;
-      var unverifiedCount = 0;
-      var registeredLang = '';
-      // Find the latest registered exam for this session+ID
-      for (var ei = examData.length - 1; ei >= 1; ei--) {
-        if (String(examData[ei][0]) === String(data.sessionCode) && normalizeId(examData[ei][1]) === normalizeId(data.idNumber)) {
-          questionMap = JSON.parse(examData[ei][2]);
-          // Column F (index 5) = unverified-count (added when registerExamQuestions stored this row).
-          // Older rows may not have this column → treat as fully unverified to be safe.
-          unverifiedCount = (examData[ei].length > 5) ? Number(examData[ei][5] || 0) : questionMap.length;
-          // Column E (index 4) = language (added in registerExamQuestions)
-          registeredLang = (examData[ei].length > 4) ? String(examData[ei][4] || '') : '';
-          break;
-        }
-      }
-      if (questionMap) {
-        // Shuffle indexes refer to original answer positions in whatever
-        // language the questions were registered in. Translators reorder
-        // answers, so the original "correct index" can differ between
-        // languages (e.g. he Q128 → idx 1, ar Q128 → idx 2). When the
-        // examinee switched language mid-exam, score each answer against
-        // the correct index for THE LANGUAGE THEY SAW IT IN, not the one
-        // captured at registration.
-        function correctIdxForLang(mapEntry, lang) {
-          if (!mapEntry || !lang) return null;
-          if (typeof lookupCorrectIndex !== 'function') return null;
-          if (!mapEntry.qId || !Array.isArray(mapEntry.shuffleOrder)) return null;
-          var orig = lookupCorrectIndex(Number(mapEntry.qId), String(lang).toLowerCase());
-          if (orig === null || orig === undefined) return null;
-          var pos = mapEntry.shuffleOrder.indexOf(Number(orig));
-          return pos >= 0 ? pos : null;
-        }
-        function effectiveCorrectIdx(mapEntry, langAtAnswer) {
-          var lang = langAtAnswer ? String(langAtAnswer).toLowerCase() : '';
-          if (lang && lang !== registeredLang) {
-            var alt = correctIdxForLang(mapEntry, lang);
-            if (alt !== null) return alt;
-          }
-          return Number(mapEntry.correctShuffledIdx);
-        }
-        var correctCount = 0;
-        var totalQ = questionMap.length;
-        for (var ai = 0; ai < data.answers.length && ai < totalQ; ai++) {
-          if (data.answers[ai] !== null && data.answers[ai] !== undefined && questionMap[ai]) {
-            var selected = Number(data.answers[ai].selected);
-            var correctIdx = effectiveCorrectIdx(questionMap[ai], data.answers[ai].langAtAnswer);
-            if (selected === correctIdx) correctCount++;
-          }
-        }
-        var pct = Math.round((correctCount / totalQ) * 100);
-        var passThreshold = Math.ceil(totalQ * 0.86); // ~26/30
-        data.score = correctCount;
-        data.total = totalQ;
-        data.percent = pct;
-        data.passed = correctCount >= passThreshold;
-        // verified=true ONLY when every question in the map was scored against
-        // a server-trusted answer key. Any fallback entry → unverified.
-        data.verified = (unverifiedCount === 0);
-
-        // ===== Server-side wrong-answers reconstruction =====
-        // Each wrong answer is rendered in the language the examinee was viewing
-        // WHEN they answered that specific question (data.answers[i].langAtAnswer).
-        // Without this, an examinee who switched mid-exam sees mixed-language
-        // feedback that doesn't match what they actually saw.
-        try {
-          // Lazy per-language cache: questions DB + byId map per language code.
-          // Avoids loading every language up-front when most exams use one.
-          //
-          // r15: this used to call loadQuestionsForLanguageServer — a DRIVE read,
-          // on the result-submission hot path. The 'אבחון' sheet caught it live on
-          // 2026-09-15: `SLOW POST submitResult 20066 ... drive:he@4000`, i.e. 16
-          // of those 20 seconds were Drive, while the examinee's device sat on a
-          // 60s deadline and the examiner waited for a result that never arrived.
-          // The cached per-license pools hold the same objects, and they are the
-          // very pools this exam was served from, so every question the examinee
-          // saw is provably in the union — questionMetaForLanguage still falls
-          // back to Drive if a pool is missing, so nothing is reconstructed from
-          // a partial bank.
-          var langDbCache = {}, qMetaMemo = {};
-          function getLangDb(lang) {
-            var safeLang = String(lang || 'he').toLowerCase();
-            if (langDbCache[safeLang]) return langDbCache[safeLang];
-            try {
-              diagMark('meta:wrong-answers');
-              var qs = questionMetaForLanguage(safeLang, qMetaMemo);
-              if (!qs || !qs.length) return null;
-              var idx = {};
-              for (var q = 0; q < qs.length; q++) {
-                if (qs[q] && qs[q].id !== undefined) idx[String(qs[q].id)] = qs[q];
-              }
-              langDbCache[safeLang] = { byId: idx, labels: (safeLang === 'he') ? ['א','ב','ג','ד','ה','ו'] : ['A','B','C','D','E','F'] };
-              return langDbCache[safeLang];
-            } catch (loadErr) {
-              langDbCache[safeLang] = null;
-              return null;
-            }
-          }
-          var defaultLang = String(data.language || registeredLang || 'he').toLowerCase();
-          // No feedback needs a bank when the authoritative score is perfect.
-          // For wrong answers keep the existing default-language fallback intact.
-          var allCorrect = totalQ > 0 && correctCount === totalQ;
-          var defaultDb = allCorrect ? null : getLangDb(defaultLang);
-
-          var serverWrong = [];
-          for (var wi = 0; wi < data.answers.length && wi < questionMap.length; wi++) {
-            var mapEntry = questionMap[wi];
-            var ans2 = data.answers[wi];
-            if (!mapEntry) continue;
-            var selected2 = ans2 ? Number(ans2.selected) : -1;
-            // Use the per-answer language's correctIdx — same logic as the
-            // scoring loop above, so wrong-answer reconstruction matches the
-            // pass/fail tally instead of contradicting it after a mid-exam
-            // language switch.
-            var correctIdx2 = effectiveCorrectIdx(mapEntry, ans2 && ans2.langAtAnswer);
-            if (selected2 === correctIdx2) continue; // got it right
-            // Pick the language the examinee was viewing when they answered this Q.
-            // Falls back to the exam's primary language when missing (old clients).
-            var perAnsLang = (ans2 && ans2.langAtAnswer) ? String(ans2.langAtAnswer).toLowerCase() : defaultLang;
-            var db = getLangDb(perAnsLang) || defaultDb;
-            if (!db || !db.byId) continue;
-            var qInfo = (mapEntry.qId !== undefined && mapEntry.qId !== null) ? db.byId[String(mapEntry.qId)] : null;
-            if (!qInfo || !Array.isArray(mapEntry.shuffleOrder) || !Array.isArray(qInfo.answers)) continue;
-            var shuffled = mapEntry.shuffleOrder.map(function(origIdx) { return qInfo.answers[origIdx]; });
-            var yourLabel = '', yourText = '';
-            if (selected2 === -1 || selected2 < 0 || selected2 >= shuffled.length) {
-              yourText = (perAnsLang === 'he') ? 'לא נענתה' : 'Not answered';
-            } else {
-              yourLabel = db.labels[selected2] || '';
-              yourText = shuffled[selected2] || '';
-            }
-            var correctLabel = (correctIdx2 >= 0 && correctIdx2 < shuffled.length) ? (db.labels[correctIdx2] || '') : '';
-            var correctText = (correctIdx2 >= 0 && correctIdx2 < shuffled.length) ? (shuffled[correctIdx2] || '') : '';
-            // Classify the raw question category to the bucket name used by
-            // EXAM_STRUCTURE (בטיחות / הכרת הרכב / חוק / תמרורים / ספציפי).
-            // Without classification the certificate shows all-100%.
-            var classifiedCat = (typeof classifyCategoryServer === 'function')
-              ? classifyCategoryServer(qInfo.category)
-              : '';
-            serverWrong.push({
-              question: qInfo.text || ('שאלה ' + (wi + 1)),
-              yourAnswer: yourLabel ? (yourLabel + ' - ' + yourText) : yourText,
-              correctAnswer: correctLabel ? (correctLabel + ' - ' + correctText) : correctText,
-              category: classifiedCat || qInfo.category || ''
-            });
-          }
-          // Always replace client-provided wrongAnswers — server is authoritative.
-          if (allCorrect || defaultDb) data.wrongAnswers = serverWrong;
-        } catch (rwe) {
-          // Reconstruction failed (Drive load, etc.) — keep whatever client sent
-          // rather than wiping it. Log for diagnosis.
-          try { Logger.log('wrong-answer rebuild failed: ' + (rwe && rwe.message)); } catch(_) {}
-        }
-      }
-    } catch(ve) {
-      // If verification fails, fall through to client-provided score with flag
-      data.verified = false;
-    }
+  if (registration.map && registration.map.length < EXAM_MIN_QUESTIONS) {
+    return jsonResponse({ status: 'error', code: 'invalid_registration',
+      message: 'רישום המבחן פגום — לא ניתן לנקד. פנה לבוחן.' });
   }
+  return null;
+}
 
-  // Server-side timing check: if exam took less than 3 minutes, flag as suspicious
-  if (data.sessionCode && data.idNumber) {
-    try {
-      var examData2 = readRegisteredExams();
-      for (var ti = examData2.length - 1; ti >= 1; ti--) {
-        if (String(examData2[ti][0]) === String(data.sessionCode) && normalizeId(examData2[ti][1]) === normalizeId(data.idNumber)) {
-          var regTime = new Date(examData2[ti][3]);
-          var elapsed = (new Date() - regTime) / 1000; // seconds
-          if (elapsed < 180 && elapsed > 0) { // less than 3 minutes
-            data.suspicious = true;
-          }
-          break;
-        }
-      }
-    } catch(te) {}
+// ---- scoring ---------------------------------------------------------------
+// review E S2: only a real selection counts. null / '' / undefined / a
+// non-number / a negative or fractional index all mean "not answered".
+function submitAnswerIndex(answer) {
+  if (!answer) return -1;
+  var raw = answer.selected;
+  if (raw === null || raw === undefined || raw === '') return -1;
+  var n = Number(raw);
+  if (!isFinite(n) || n < 0 || Math.floor(n) !== n) return -1;
+  return n;
+}
+
+function answerLanguage(answer, registeredLang) {
+  var lang = (answer && answer.langAtAnswer) ? String(answer.langAtAnswer) : String(registeredLang || 'he');
+  return lang.toLowerCase() || 'he';
+}
+
+// review E S4: the correctShuffledIdx stored at registration is NOT read back.
+// It is recomputed from the answer key every time, which is also what scores a
+// mid-exam language switch against the key of the language the question was
+// ANSWERED in (translators reorder answers — en/fr/es/ar have their own order).
+// null = this entry cannot be verified at all, and then it can never be correct.
+function correctIndexForEntry(entry, lang) {
+  if (!entry || !entry.qId || !Array.isArray(entry.shuffleOrder)) return null;
+  var orig = answerKeyIndex(entry.qId, lang);
+  if (orig === null) return null;
+  var pos = entry.shuffleOrder.indexOf(Number(orig));
+  return pos >= 0 ? pos : null;
+}
+
+function scoreRegisteredExam(map, answers, registeredLang) {
+  var scored = { correct: 0, total: map.length, verifiable: 0, items: [] };
+  for (var i = 0; i < map.length; i++) {
+    var entry = map[i] || null, answer = (answers && answers[i]) || null;
+    var lang = answerLanguage(answer, registeredLang);
+    var key = correctIndexForEntry(entry, lang);
+    var selected = submitAnswerIndex(answer);
+    var item = { qIdx: i, qId: entry ? entry.qId : null, topic: (entry && entry.topic) || '',
+      lang: lang, key: key, selected: selected, answer: answer };
+    item.right = (key !== null && selected === key);
+    if (key !== null) scored.verifiable++;
+    if (item.right) scored.correct++;
+    scored.items.push(item);
   }
+  scored.verified = scored.total > 0 && scored.verifiable === scored.total;
+  return scored;
+}
 
-  // Guard: answers were present but the server never re-scored (no מבחנים row /
-  // questionMap missing → data.verified left undefined above). Do NOT silently
-  // trust the client's score — it is computed from a deliberately-stripped `ci`
-  // and can be garbage (the historical false-0/30). Flag the row unverified so
-  // the examiner reviews it instead of recording a bogus pass/fail.
-  if (data.answers && Array.isArray(data.answers) && typeof data.verified === 'undefined') {
+// The server's tally replaces whatever the client claimed. Without a readable
+// registration nothing can be verified, so the row is stored with the unverified
+// marker and the examiner reviews it — never silently trusted.
+function applyScore(data, scored, registration, hasAnswers) {
+  if (!scored) {
     data.verified = false;
+    // Without answers there was nothing to verify in the first place (an
+    // examiner-entered or legacy row) — only a real submission is flagged.
+    if (hasAnswers) {
+      data.scoreUnverified = true;
+      data.unverifiedReason = registration ? 'רישום מבחן פגום' : 'רישום מבחן חסר';
+    }
+    // The new client sends no score at all (it never holds the key); an old one
+    // sent its own tally. Either way an unverifiable result is stored as what it
+    // is — a number the examiner must review — and never as a pass by default.
+    data.total = Number(data.total) || (Array.isArray(data.answers) ? data.answers.length : 0) || 30;
+    data.score = Math.max(0, Math.min(data.total, Number(data.score) || 0));
+    data.percent = Number(data.percent) || Math.round((data.score / data.total) * 100);
+    data.passed = data.passed === true || data.passed === 'true';
+    return;
+  }
+  data.score = scored.correct;
+  data.total = scored.total;
+  data.percent = Math.round((scored.correct / scored.total) * 100);
+  data.passed = scored.correct >= Math.ceil(scored.total * RESULT_PASS_RATIO);
+  data.verified = scored.verified;
+  if (!scored.verified) {
     data.scoreUnverified = true;
+    data.unverifiedReason = 'שאלות ללא מפתח תשובות';
   }
+  data.suspicious = registration && examRegistrationAgeMs(registration) > 0 &&
+    examRegistrationAgeMs(registration) < EXAM_SUSPICIOUS_SEC * 1000;
+}
 
-  // ===== Supersede any SYSTEM-FABRICATED fail for this session+id =====
-  // A real finished submit must WIN over a system-written fail — the browser-
-  // close beacon (handleSubmitFailOnClose) or the dashboard timeout/disconnect
-  // row — created while the examinee was offline/backgrounded. Those are 'נכשל'
-  // rows whose note carries a machine marker. Match on session+id ONLY (NOT
-  // language/license): the fabricated row is stamped with the REGISTRATION
-  // language, but the real submit may carry a DIFFERENT final language after a
-  // mid-exam switch (Russian/Arabic/Amharic examinees), so a language-scoped
-  // match would miss it and the dup-check below would swallow the real result →
-  // a false 0/30 "vanished" exam, especially on iOS. Mark them בוטל (audit kept).
-  // Mirrors the פסול-supersede pass below; genuine real נכשל rows lack the marker.
-  diagMark('sheet:results-submit');
-  var fabRows = sheet.getDataRange().getValues();
-  var fabSuperseded = false;
-  for (var fb = 1; fb < fabRows.length; fb++) {
-    if (String(fabRows[fb][13]) !== String(data.sessionCode)) continue;
-    if (normalizeId(fabRows[fb][1]) !== normalizeId(data.idNumber)) continue;
-    if (String(fabRows[fb][7]).trim() !== 'נכשל') continue;
-    var fbNote = String(fabRows[fb][15] || '');
-    // markers: close-beacon ('סגירת דפדפן'), dashboard timeout ('טיימאאוט'), and
-    // examiner manual-disconnect ('סיום ידני ... ניתוק/תקלה'). All three mean "did
-    // not finish properly" — a real finished submit must override them.
-    if (fbNote.indexOf('סגירת דפדפן') === -1 && fbNote.indexOf('טיימאאוט') === -1 && fbNote.indexOf('סיום ידני') === -1) continue;
-    sheet.getRange(fb + 1, 8).setValue('בוטל');                                    // H = pass/fail
-    sheet.getRange(fb + 1, 27).setValue('בוטל אוטומטית — הנבחן השלים והגיש מבחן');  // AA = reason
-    sheet.getRange(fb + 1, 28).setValue(todayStr());                               // AB = correction date
-    // The duplicate and attempt checks below reuse this complete snapshot.
-    fabRows[fb][7] = 'בוטל';
-    fabSuperseded = true;
+// ---- feedback (certificate + WhatsApp) -------------------------------------
+// Built from what the client DISPLAYED: q = the question text, a = the four
+// answers in displayed order. The server owns which of them is correct. An old
+// client that sends no texts still gets a scored result.
+var ANSWER_LABELS_HE = ['א', 'ב', 'ג', 'ד', 'ה', 'ו'];
+var ANSWER_LABELS_LATIN = ['A', 'B', 'C', 'D', 'E', 'F'];
+var TEXT_UNAVAILABLE = '(טקסט לא זמין)';
+function answerLabel(lang, idx) {
+  var labels = (String(lang) === 'he') ? ANSWER_LABELS_HE : ANSWER_LABELS_LATIN;
+  return labels[idx] || '';
+}
+function displayedAnswer(shown, idx, lang) {
+  if (idx === null) return '(לא זמין כעת)';                 // no key for this language
+  var count = (shown && shown.length) ? shown.length : QUESTION_ANSWER_COUNT;
+  if (idx < 0 || idx >= count) return (String(lang) === 'he') ? 'לא נענתה' : 'Not answered';
+  var text = shown ? String(shown[idx] || '') : '';
+  return answerLabel(lang, idx) + ' - ' + (text || TEXT_UNAVAILABLE);
+}
+
+function wrongAnswerItems(scored, license) {
+  var out = [];
+  for (var i = 0; i < scored.items.length; i++) {
+    var item = scored.items[i];
+    if (item.right) continue;
+    var shown = (item.answer && item.answer.a && item.answer.a.length) ? item.answer.a : null;
+    out.push({
+      questionId: item.qId || '',
+      question: (item.answer && item.answer.q) ? String(item.answer.q) : TEXT_UNAVAILABLE,
+      yourAnswer: displayedAnswer(shown, item.selected, item.lang),
+      correctAnswer: displayedAnswer(shown, item.key, item.lang),
+      category: item.topic || questionTopic(item.qId, license)
+    });
   }
-  if (fabSuperseded) SpreadsheetApp.flush();
+  return out;
+}
 
-  // Duplicate protection: check if result already exists for this session+ID+license+language
-  // Skip disqualified (פסול) and cancelled (בוטל) rows — those are not real results and should not block retakes
-  // Also skip duplicate check entirely if examinee has an active in_exam pending row (retake after DQ)
-  var hasPendingInExam = false;
-  // Re-check current status after potentially slow scoring/bank work. New rows
-  // or changed row positions require a full read; otherwise only this person's
-  // rows need refreshing. Never overwrite a newer examiner decision.
-  pendData = refreshExamineePendingRows(pendSheet, pendData, data.sessionCode, data.idNumber);
-  var pendCheck = pendData;
-  for (var pc = pendCheck.length - 1; pc >= 1; pc--) {
-    if (String(pendCheck[pc][0]) === String(data.sessionCode) && normalizeId(pendCheck[pc][1]) === normalizeId(data.idNumber) && String(pendCheck[pc][5]).trim() === 'in_exam') {
-      hasPendingInExam = true;
-      break;
-    }
+// 'פירוט שגויות' (column P) — the commander dashboard aggregates by the מזהה
+// שאלה line, and readers tolerate any line being missing.
+function formatWrongDetails(items, data) {
+  var text = '';
+  for (var i = 0; i < items.length; i++) {
+    var w = items[i];
+    if (w.questionId) text += 'מזהה שאלה: ' + w.questionId + '\n';
+    text += 'שאלה: ' + w.question + '\n';
+    text += 'תשובת הנבחן: ' + w.yourAnswer + '\n';
+    text += 'תשובה נכונה: ' + w.correctAnswer + '\n';
+    if (w.category) text += 'קטגוריה: ' + w.category + '\n';
+    text += '\n';
   }
-  if (!hasPendingInExam) {
-    diagMark('sheet:results-submit-2');
-    var existingData = sheet.getDataRange().getValues();
-    for (var d = 1; d < existingData.length; d++) {
-      var existingStatus = String(existingData[d][7] || '').trim();
-      if (existingStatus === 'פסול' || existingStatus === 'בוטל') continue;
-      if (String(existingData[d][13]) === String(data.sessionCode) && normalizeId(existingData[d][1]) === normalizeId(data.idNumber) && String(existingData[d][4]) === String(data.license) && String(existingData[d][12]) === String(data.language || 'he')) {
-        // Genuine prior real result for this exact exam — a true duplicate.
-        // (Fabricated close/timeout fails were already superseded to בוטל above
-        // and are skipped by the status filter, so they can't masquerade here.)
-        markPendingCompleted(data.sessionCode, data.idNumber, { sheet: pendSheet, rows: pendData });
-        return jsonResponse({ status: 'ok', waLink: existingData[d][18] || '', duplicate: true });
-      }
-    }
-  }
-
-  // Belt-and-suspenders: never let the literal "undefined" reach the certificate.
-  // The client never receives `ci`, so its locally-built wrongAnswers carry
-  // "undefined - undefined" as the correct answer; the server normally rebuilds
-  // them, but if that failed (Drive/cache down) the client text is kept. Replace
-  // any "undefined" with a neutral placeholder so feedback is never garbled.
-  if (Array.isArray(data.wrongAnswers)) {
-    for (var sw = 0; sw < data.wrongAnswers.length; sw++) {
-      var swItem = data.wrongAnswers[sw];
-      if (swItem && typeof swItem.correctAnswer === 'string' && swItem.correctAnswer.indexOf('undefined') !== -1) swItem.correctAnswer = '(לא זמין כעת)';
-      if (swItem && typeof swItem.yourAnswer === 'string' && swItem.yourAnswer.indexOf('undefined') !== -1) swItem.yourAnswer = '(לא זמין)';
-    }
-  }
-
-  var wrongDetails = '';
-  var wrongForWA = '';
-  if (data.wrongAnswers && data.wrongAnswers.length > 0) {
-    for (var i = 0; i < data.wrongAnswers.length; i++) {
-      var w = data.wrongAnswers[i];
-      // Question ID prefix lets the commander dashboard aggregate by the exact
-      // question (not just generic text "מה פירוש התמרור?" that collapses 50+
-      // distinct sign questions into one row). Backward-compatible — readers
-      // tolerate the line being missing for legacy rows.
-      if (w.questionId) wrongDetails += 'מזהה שאלה: ' + w.questionId + '\n';
-      wrongDetails += 'שאלה: ' + w.question + '\n';
-      wrongDetails += 'תשובת הנבחן: ' + w.yourAnswer + '\n';
-      wrongDetails += 'תשובה נכונה: ' + w.correctAnswer + '\n';
-      if (w.category) wrongDetails += 'קטגוריה: ' + w.category + '\n';
-      wrongDetails += '\n';
-
-      wrongForWA += '❌ ' + w.question + '\n';
-      wrongForWA += 'ענית: ' + w.yourAnswer + '\n';
-      wrongForWA += '✅ נכון: ' + w.correctAnswer + '\n\n';
-    }
-  }
-
-  // Surface the unverified-score guard (set above) loudly in the stored detail.
   if (data.scoreUnverified) {
-    wrongDetails = '⚠️ ציון לא אומת בשרת (רישום מבחן חסר) — נדרש אימות ידני\n\n' + wrongDetails;
+    text = UNVERIFIED_PREFIX + ' בשרת (' + (data.unverifiedReason || '') + ') — נדרש אימות ידני\n\n' + text;
   }
+  return text;
+}
 
-  var passText = data.passed ? 'עבר' : 'נכשל';
-  var waMessage = '*🚗 אישור תוצאת מבחן תאוריה חיצוני*\n\n' +
+function buildResultWaLink(data, items, attemptNum) {
+  var message = '*🚗 אישור תוצאת מבחן תאוריה חיצוני*\n\n' +
     'שם: ' + data.fullName + '\n' +
     'ת.ז.: ' + data.idNumber + '\n' +
     'דרגה: ' + data.license + '\n' +
     (data.population ? 'אוכלוסיה: ' + data.population + '\n' : '') +
     'תאריך: ' + todayStr() + '\n' +
-    'תוצאה: *' + passText + '* (' + data.score + '/' + data.total + ')\n' +
+    'תוצאה: *' + resultVerdict(data) + '* (' + data.score + '/' + data.total + ')\n' +
     'זמן: ' + data.time + '\n';
-
-  var wrongCount = Number(data.total) - Number(data.score);
-  if (data.wrongAnswers && data.wrongAnswers.length > 0) {
-    waMessage += '\n*שאלות שגויות (' + data.wrongAnswers.length + '):*\n\n' + wrongForWA;
-  } else if (wrongCount === 0) {
-    waMessage += '\nכל התשובות נכונות! 🎉';
+  if (items.length > 0) {
+    var wrongForWA = '';
+    for (var i = 0; i < items.length; i++) {
+      wrongForWA += '❌ ' + items[i].question + '\n' + 'ענית: ' + items[i].yourAnswer + '\n' + '✅ נכון: ' + items[i].correctAnswer + '\n\n';
+    }
+    message += '\n*שאלות שגויות (' + items.length + '):*\n\n' + wrongForWA;
+  } else if (Number(data.total) - Number(data.score) === 0) {
+    message += '\nכל התשובות נכונות! 🎉';
   }
+  if (attemptNum > 1) message += 'ניסיון: ' + attemptNum + '\n';
+  return 'https://wa.me/' + formatPhoneForWA(data.phone) + '?text=' + encodeURIComponent(message);
+}
 
-  var phone = formatPhoneForWA(data.phone);
+function resultVerdict(data) { return data.passed ? 'עבר' : 'נכשל'; }
 
-  // Count attempt number for this examinee + license combination
-  var attemptNum = countAttempts(data.idNumber, data.license, fabRows, sheet) + 1;
-
-  var waMessage2 = waMessage; // preserve for link
-  if (attemptNum > 1) {
-    waMessage2 = waMessage + 'ניסיון: ' + attemptNum + '\n';
-  }
-  var waLink = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(waMessage2);
-
-  // Format language history into a readable path. Single language = just the
-  // code (e.g. "he"). Multiple = arrow-joined (e.g. "he → ru → he") so the
-  // examiner can see at a glance that the examinee switched languages.
-  var langPath = '';
+// "he → ru → he" tells the examiner at a glance that the examinee switched.
+function languagePath(data) {
   if (Array.isArray(data.languageHistory) && data.languageHistory.length > 0) {
-    langPath = data.languageHistory.length === 1
-      ? String(data.languageHistory[0])
-      : data.languageHistory.join(' → ');
-  } else {
-    langPath = data.language || 'he';
+    return data.languageHistory.length === 1 ? String(data.languageHistory[0]) : data.languageHistory.join(' → ');
   }
-
-  // Supersede any prior פסול row for THIS session+id. Scenario: examinee was
-  // auto-DQ'd, the overturn flow didn't finish (examiner clicked אשר, or hit
-  // a stale "תוצאה לא נמצאה" path), then the examinee was re-allowed in and
-  // finished the exam. Without this cleanup the sheet ends up with both a
-  // פסול row AND a עבר/נכשל row — which is what happened at base 14 today.
-  // We mark the old row as בוטל (audit trail preserved) and log the reason.
-  // Preserve the late complete read: another submission may have completed
-  // since scoring. In particular, do not move final retry detection earlier.
-  diagMark('sheet:results-submit-3');
-  var existingRows = sheet.getDataRange().getValues();
-  for (var ex = existingRows.length - 1; ex >= 1; ex--) {
-    if (String(existingRows[ex][13]) === String(data.sessionCode) &&
-        normalizeId(existingRows[ex][1]) === normalizeId(data.idNumber) &&
-        String(existingRows[ex][7]).trim() === 'פסול') {
-      sheet.getRange(ex + 1, 8).setValue('בוטל');           // H = pass/fail
-      sheet.getRange(ex + 1, 18).setValue(false);            // R = disqualified flag
-      sheet.getRange(ex + 1, 27).setValue('בוטל אוטומטית — נבחן ניגש למבחן מחדש'); // AA = reason
-      sheet.getRange(ex + 1, 28).setValue(todayStr());       // AB = correction date
-      existingRows[ex][7] = 'בוטל';
-      existingRows[ex][17] = false;
-    }
-  }
-
-  // Idempotency: skip if an identical result row already exists. A retry/resend
-  // whose original response was lost (flaky network) would otherwise create a
-  // duplicate. Matches session+id+license+score+time+result, so a re-take or a
-  // post-overturn submit (different score/time/result) is still appended.
-  for (var dc = existingRows.length - 1; dc >= 1; dc--) {
-    if (String(existingRows[dc][13]) === String(data.sessionCode) &&
-        normalizeId(existingRows[dc][1]) === normalizeId(data.idNumber) &&
-        String(existingRows[dc][4]) === String(data.license) &&
-        String(existingRows[dc][5]) === (data.score + '/' + data.total) &&
-        String(existingRows[dc][7]).trim() === String(passText).trim() &&
-        String(existingRows[dc][8]) === String(data.time)) {
-      markPendingCompleted(data.sessionCode, data.idNumber, { sheet: pendSheet, rows: pendData });
-      return jsonResponse({ status: 'ok', duplicate: true, waLink: waLink });
-    }
-  }
-
-  sheet.appendRow([
-    todayStr(),
-    data.idNumber,
-    data.fullName,
-    data.phone,
-    data.license,
-    data.score + '/' + data.total,
-    data.percent + '%',
-    passText,
-    data.time,
-    data.examinerName || '',
-    data.site || '',
-    data.classroom || '',
-    data.language || 'he',
-    data.sessionCode || '',
-    attemptNum,
-    wrongDetails,
-    false,
-    false,
-    waLink,
-    data.population || '',
-    false,
-    data.audioMode || 'off',
-    data.verified ? 'מאומת' : '',
-    data.suspicious ? 'חשוד' : '',
-    '',                                 // Y (24) dqEventId — not a DQ row
-    '',                                 // Z (25) תוקן ע"י — empty (no correction yet)
-    '',                                 // AA (26) סיבת תיקון — empty
-    '',                                 // AB (27) תאריך תיקון — empty
-    langPath,                           // AC (28) מסלול שפות — full path he → ru → he
-    String(data.device || '')           // AD (29) מכשיר — phone / tablet / desktop
-  ]);
-
-  // Update pending status to completed
-  markPendingCompleted(data.sessionCode, data.idNumber, { sheet: pendSheet, rows: pendData });
-
-  diagMark('compute:submit-done');
-  return jsonResponse({ status: 'ok', waLink: waLink });
+  return data.language || 'he';
 }
 
-function handleSubmitWrongAnswers(p) {
-  var swaTokenErr = requireExamineeToken(p);
-  if (swaTokenErr) return swaTokenErr;
-  // Append a single wrong answer item to existing result row
-  var sheet = getSheet('תוצאות');
-  var data = sheet.getDataRange().getValues();
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][13]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
-      var existing = String(data[i][15] || '');
-
-      // New format: individual item with question/yourAnswer/correctAnswer params
-      if (p.question) {
-        var line = 'שאלה: ' + p.question + '\n' +
-                   'תשובת הנבחן: ' + p.yourAnswer + '\n' +
-                   'תשובה נכונה: ' + p.correctAnswer + '\n\n';
-        sheet.getRange(i + 1, 16).setValue(existing + line);
-        SpreadsheetApp.flush();
-        return jsonResponse({ status: 'ok' });
-      }
-
-      // Legacy format: chunk with JSON array
-      var chunk = p.chunk || '';
-      var totalChunks = Number(p.totalChunks) || 1;
-      if (totalChunks === 1) {
-        try {
-          var wrongArr = JSON.parse(chunk);
-          var formatted = '';
-          for (var w = 0; w < wrongArr.length; w++) {
-            formatted += 'שאלה: ' + wrongArr[w].question + '\n';
-            formatted += 'תשובת הנבחן: ' + wrongArr[w].yourAnswer + '\n';
-            formatted += 'תשובה נכונה: ' + wrongArr[w].correctAnswer + '\n\n';
-          }
-          sheet.getRange(i + 1, 16).setValue(formatted);
-        } catch(ex) {
-          sheet.getRange(i + 1, 16).setValue(existing + chunk);
-        }
-      } else {
-        sheet.getRange(i + 1, 16).setValue(existing + chunk);
-      }
-      return jsonResponse({ status: 'ok' });
-    }
-  }
-  return jsonResponse({ status: 'error', message: 'Result row not found for wrong answers' });
+function buildResultRow(data, wrongAnswers, attemptNum, waLink) {
+  var row = [];
+  row[RESULT_COL.date] = todayStr();
+  row[RESULT_COL.id] = data.idNumber;
+  row[RESULT_COL.name] = data.fullName;
+  row[RESULT_COL.phone] = data.phone;
+  row[RESULT_COL.license] = data.license;
+  row[RESULT_COL.score] = data.score + '/' + data.total;
+  row[RESULT_COL.percent] = data.percent + '%';
+  row[RESULT_COL.verdict] = resultVerdict(data);
+  row[RESULT_COL.time] = data.time;
+  row[RESULT_COL.examiner] = data.examinerName || '';
+  row[RESULT_COL.site] = data.site || '';
+  row[RESULT_COL.classroom] = data.classroom || '';
+  row[RESULT_COL.language] = data.language || 'he';
+  row[RESULT_COL.session] = data.sessionCode || '';
+  row[RESULT_COL.attempt] = attemptNum;
+  row[RESULT_COL.wrongDetails] = formatWrongDetails(wrongAnswers, data);
+  row[RESULT_COL.sent] = false;
+  row[RESULT_COL.dq] = false;
+  row[RESULT_COL.waLink] = waLink;
+  row[RESULT_COL.population] = data.population || '';
+  row[RESULT_COL.corrected] = false;
+  row[RESULT_COL.audio] = data.audioMode || 'off';
+  row[RESULT_COL.verified] = data.verified ? 'מאומת' : '';
+  row[RESULT_COL.suspicious] = data.suspicious ? 'חשוד' : '';
+  row[RESULT_COL.dqEventId] = '';
+  row[RESULT_COL.correctedBy] = '';
+  row[RESULT_COL.correctionReason] = '';
+  row[RESULT_COL.correctionDate] = '';
+  row[RESULT_COL.langPath] = languagePath(data);
+  row[RESULT_COL.device] = String(data.device || '');
+  return row;
 }
 
-function handleSubmitWrongAnswersBulk(data) {
-  var swabTokenErr = requireExamineeToken(data);
-  if (swabTokenErr) return swabTokenErr;
-  // Receive ALL wrong answers in a single POST and write to result row
-  var sheet = getSheet('תוצאות');
-  var rows = sheet.getDataRange().getValues();
+// The attempt number counts a lifetime of results, so it may not be decided
+// from a tail: an earlier attempt this month can sit above the last 1,000 rows.
+// When the snapshot IS the whole sheet it is reused as it is; otherwise
+// countAttempts reads the three columns it needs from live + archive itself.
+function attemptRows(tail) { return tail.off ? null : tail.rows; }
+
+// ---- the four passes over the one 'תוצאות' snapshot ------------------------
+function resultRowMatchesExaminee(row, data) {
+  return String(row[RESULT_COL.session]) === String(data.sessionCode) &&
+    normalizeId(row[RESULT_COL.id]) === normalizeId(data.idNumber);
+}
+
+// A real finished submit must WIN over a system-written fail (the close beacon,
+// the dashboard timeout row, an examiner's manual disconnect). Matched on
+// session+id ONLY: the fabricated row carries the REGISTRATION language while a
+// real submit may carry a different final one after a mid-exam switch.
+function supersedeFabricatedFails(sheet, tail, data) {
+  var rows = tail.rows, changed = false;
+  for (var i = 1; i < rows.length; i++) {
+    if (!resultRowMatchesExaminee(rows[i], data)) continue;
+    if (String(rows[i][RESULT_COL.verdict]).trim() !== 'נכשל') continue;
+    if (!isFabricatedFailNote(String(rows[i][RESULT_COL.wrongDetails] || ''))) continue;
+    var sheetRow = i + tail.off + 1;
+    sheet.getRange(sheetRow, RESULT_COL.verdict + 1).setValue('בוטל');
+    sheet.getRange(sheetRow, RESULT_COL.correctionReason + 1).setValue('בוטל אוטומטית — הנבחן השלים והגיש מבחן');
+    sheet.getRange(sheetRow, RESULT_COL.correctionDate + 1).setValue(todayStr());
+    rows[i][RESULT_COL.verdict] = 'בוטל';
+    changed = true;
+  }
+  if (changed) SpreadsheetApp.flush();
+}
+function isFabricatedFailNote(note) {
+  for (var i = 0; i < FABRICATED_FAIL_MARKERS.length; i++) {
+    if (note.indexOf(FABRICATED_FAIL_MARKERS[i]) !== -1) return true;
+  }
+  return false;
+}
+
+// A genuine prior result for this exact exam. Skipped while the examinee still
+// has an in_exam row (a retake after a disqualification is not a duplicate).
+function findDuplicateResult(tail, data, gate) {
+  if (hasPendingInExam(gate)) return null;
+  var rows = tail.rows;
+  for (var i = 1; i < rows.length; i++) {
+    var verdict = String(rows[i][RESULT_COL.verdict] || '').trim();
+    if (verdict === 'פסול' || verdict === 'בוטל') continue;
+    if (!resultRowMatchesExaminee(rows[i], data)) continue;
+    if (String(rows[i][RESULT_COL.license]) !== String(data.license)) continue;
+    if (String(rows[i][RESULT_COL.language]) !== String(data.language || 'he')) continue;
+    return rows[i];
+  }
+  return null;
+}
+
+// Re-read this examinee's pending rows: an examiner may have decided something
+// while the submit was in flight. Never overwrite a newer examiner decision.
+function hasPendingInExam(gate) {
+  var snapshot = gate.pending;
+  snapshot.rows = refreshExamineePendingRows(snapshot.sheet, snapshot.rows, gate.ctx.sessionCode, gate.ctx.idNumber);
+  var rows = snapshot.rows;
   for (var i = rows.length - 1; i >= 1; i--) {
-    if (String(rows[i][13]) === String(data.sessionCode) && normalizeId(rows[i][1]) === normalizeId(data.idNumber)) {
-      // Detect the bug pattern where client sent "undefined" because it doesn't
-      // know correct answers (handleGetExamQuestions strips `ci` from examinee
-      // responses). If client data is bogus AND the sheet already has good data
-      // (written by handleSubmitResult's server-side rebuild), keep the sheet's version.
-      var clientHasBogus = false;
-      if (data.wrongAnswers && data.wrongAnswers.length > 0) {
-        for (var bi = 0; bi < data.wrongAnswers.length; bi++) {
-          var ca = String((data.wrongAnswers[bi] && data.wrongAnswers[bi].correctAnswer) || '');
-          if (ca.indexOf('undefined') !== -1) { clientHasBogus = true; break; }
-        }
-      }
-      var existingWrong = String(rows[i][15] || '');
-      if (clientHasBogus && existingWrong && existingWrong.indexOf('undefined') === -1) {
-        // Sheet already has authoritative data → keep it, skip overwrite.
-        SpreadsheetApp.flush();
-        return jsonResponse({ status: 'ok', skipped: true, reason: 'client_bogus_server_good' });
-      }
-
-      var wrongDetails = '';
-      var wrongForWA = '';
-      if (data.wrongAnswers && data.wrongAnswers.length > 0) {
-        for (var w = 0; w < data.wrongAnswers.length; w++) {
-          var item = data.wrongAnswers[w];
-          // Question ID prefix — see comment in handleSubmitWrongAnswers above.
-          if (item.questionId) wrongDetails += 'מזהה שאלה: ' + item.questionId + '\n';
-          wrongDetails += 'שאלה: ' + item.question + '\n';
-          wrongDetails += 'תשובת הנבחן: ' + item.yourAnswer + '\n';
-          wrongDetails += 'תשובה נכונה: ' + item.correctAnswer + '\n';
-          if (item.category) wrongDetails += 'קטגוריה: ' + item.category + '\n';
-          wrongDetails += '\n';
-          wrongForWA += '❌ ' + item.question + '\n';
-          wrongForWA += 'ענית: ' + item.yourAnswer + '\n';
-          wrongForWA += '✅ נכון: ' + item.correctAnswer + '\n\n';
-        }
-      }
-      // Update wrong details column
-      sheet.getRange(i + 1, 16).setValue(wrongDetails);
-
-      // Regenerate WA link with wrong answers included
-      var isCorrected = rows[i][20] === true || String(rows[i][20]) === 'TRUE';
-      if (!isCorrected && data.wrongAnswers && data.wrongAnswers.length > 0) {
-        var passText = String(rows[i][7] || 'נכשל');
-        var phone = formatPhoneForWA(rows[i][3]);
-        var waMsg = '*🚗 אישור תוצאת מבחן תאוריה חיצוני*\n\n' +
-          'שם: ' + rows[i][2] + '\n' +
-          'ת.ז.: ' + rows[i][1] + '\n' +
-          'דרגה: ' + rows[i][4] + '\n' +
-          (rows[i][19] ? 'אוכלוסיה: ' + rows[i][19] + '\n' : '') +
-          'תאריך: ' + rows[i][0] + '\n' +
-          'תוצאה: *' + passText + '* (' + rows[i][5] + ')\n' +
-          'זמן: ' + rows[i][8] + '\n' +
-          '\n*שאלות שגויות (' + data.wrongAnswers.length + '):*\n\n' + wrongForWA;
-        var attemptNum = rows[i][14] || 1;
-        if (attemptNum > 1) waMsg += 'ניסיון: ' + attemptNum + '\n';
-        var waLink = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(waMsg);
-        sheet.getRange(i + 1, 19).setValue(waLink);
-      }
-
-      SpreadsheetApp.flush();
-      return jsonResponse({ status: 'ok', count: data.wrongAnswers ? data.wrongAnswers.length : 0 });
-    }
+    if (!rows[i] || String(rows[i][0]) !== String(gate.ctx.sessionCode)) continue;
+    if (normalizeId(rows[i][1]) !== normalizeId(gate.ctx.idNumber)) continue;
+    if (String(rows[i][5]).trim() === 'in_exam') return true;
   }
-  return jsonResponse({ status: 'error', message: 'Result row not found for wrong answers' });
+  return false;
 }
 
+// An examinee who was auto-disqualified, let back in and then finished must not
+// keep both a פסול row and a real one (base 14, 2026). The audit trail stays.
+function supersedeDisqualifications(sheet, tail, data) {
+  var rows = tail.rows;
+  for (var i = rows.length - 1; i >= 1; i--) {
+    if (!resultRowMatchesExaminee(rows[i], data)) continue;
+    if (String(rows[i][RESULT_COL.verdict]).trim() !== 'פסול') continue;
+    var sheetRow = i + tail.off + 1;
+    sheet.getRange(sheetRow, RESULT_COL.verdict + 1).setValue('בוטל');
+    sheet.getRange(sheetRow, RESULT_COL.dq + 1).setValue(false);
+    sheet.getRange(sheetRow, RESULT_COL.correctionReason + 1).setValue('בוטל אוטומטית — נבחן ניגש למבחן מחדש');
+    sheet.getRange(sheetRow, RESULT_COL.correctionDate + 1).setValue(todayStr());
+    rows[i][RESULT_COL.verdict] = 'בוטל';
+    rows[i][RESULT_COL.dq] = false;
+  }
+}
+
+// Idempotency: the same result sent twice (a retry whose response was lost)
+// must not append a second row. A retake differs in score or time, so it does.
+function findIdenticalResult(tail, data) {
+  var rows = tail.rows, verdict = resultVerdict(data);
+  for (var i = rows.length - 1; i >= 1; i--) {
+    if (!resultRowMatchesExaminee(rows[i], data)) continue;
+    if (String(rows[i][RESULT_COL.license]) !== String(data.license)) continue;
+    if (String(rows[i][RESULT_COL.score]) !== (data.score + '/' + data.total)) continue;
+    if (String(rows[i][RESULT_COL.verdict]).trim() !== verdict) continue;
+    if (String(rows[i][RESULT_COL.time]) !== String(data.time)) continue;
+    return rows[i];
+  }
+  return null;
+}
+
+// ---- submitFailOnClose / cancelFailOnClose ---------------------------------
+// The browser-close beacon. It writes a 0/30 fail, which a genuine submit later
+// supersedes; it must never write one for an examinee the examiner reset.
 function handleSubmitFailOnClose(data) {
-  var focTokenErr = requireExamineeToken(data);
-  if (focTokenErr) return focTokenErr;
+  var ctx = examineeRowContext(data.sessionCode, data.idNumber);
+  var status = ctx.latest ? ctx.latest.status : '';
+  if (status === 'cancelled' || status === 'rejected') return jsonResponse({ status: 'ok', skipped: 'cancelled' });
+
   var sheet = getSheet('תוצאות');
-
-  // Do NOT record a close-fail for an examinee an examiner reset/removed
-  // (status 'cancelled') or 'rejected' — reset semantics are "won't count as a
-  // fail". A clean finish of such an examinee IS still recorded (submitResult
-  // accepts 'cancelled'); only the auto-0/30-on-close is suppressed here.
-  try {
-    var focPend = getSheet('ממתינים').getDataRange().getValues();
-    for (var fp = focPend.length - 1; fp >= 1; fp--) {
-      if (String(focPend[fp][0]) === String(data.sessionCode) && normalizeId(focPend[fp][1]) === normalizeId(data.idNumber)) {
-        var fpStatus = String(focPend[fp][5]).trim();
-        if (fpStatus === 'cancelled' || fpStatus === 'rejected') return jsonResponse({ status: 'ok', skipped: 'cancelled' });
-        break;
-      }
-    }
-  } catch (focErr) {}
-
-  // Duplicate protection: if ANY non-בוטל result already exists for this session+id,
-  // do NOT add a close-fail. Match on session+id ONLY (not language/license): the
-  // close-beacon carries the REGISTRATION language, but a real submit may carry a
-  // different FINAL language after a mid-exam switch — a language-scoped check would
-  // miss it and append a spurious 0/30 next to the real result.
-  var existingData = sheet.getDataRange().getValues();
-  for (var d = 1; d < existingData.length; d++) {
-    if (String(existingData[d][13]) === String(data.sessionCode) && normalizeId(existingData[d][1]) === normalizeId(data.idNumber)) {
-      if (String(existingData[d][7] || '').trim() === 'בוטל') continue; // a voided row is not a real result
-      markPendingCompleted(data.sessionCode, data.idNumber);
-      return jsonResponse({ status: 'ok', duplicate: true });
-    }
+  var tail = readTail(sheet, RESULT_COL.date);
+  // Any non-בוטל result for this session+id means the examinee already has a
+  // real outcome. Matched on session+id only — see supersedeFabricatedFails.
+  for (var i = 1; i < tail.rows.length; i++) {
+    if (!resultRowMatchesExaminee(tail.rows[i], data)) continue;
+    if (String(tail.rows[i][RESULT_COL.verdict] || '').trim() === 'בוטל') continue;
+    markPendingCompleted(data.sessionCode, data.idNumber, pendingSnapshotFromTail(ctx));
+    return jsonResponse({ status: 'ok', duplicate: true });
   }
 
-  var attemptNum = countAttempts(data.idNumber, data.license || '') + 1;
+  var attemptNum = countAttempts(data.idNumber, data.license || '', attemptRows(tail)) + 1;
+  var row = buildResultRow({
+    idNumber: data.idNumber, fullName: data.fullName, phone: data.phone, license: data.license || '',
+    score: 0, total: data.totalQuestions || 30, percent: 0, passed: false, time: data.time || '00:00',
+    examinerName: data.examinerName, site: data.site, classroom: data.classroom,
+    language: data.language || 'he', sessionCode: data.sessionCode, population: data.population,
+    audioMode: data.audioMode, device: data.device, languageHistory: null, verified: false
+  }, [], attemptNum, '');
+  row[RESULT_COL.wrongDetails] = 'סגירת דפדפן באמצע מבחן (נענו ' + (data.answeredCount || 0) + ' שאלות)';
+  row[RESULT_COL.audio] = data.audioMode || 'off';
+  row[RESULT_COL.verified] = '';
+  row[RESULT_COL.langPath] = '';      // a close-fail has no language path to report
+  sheet.appendRow(row);
 
-  sheet.appendRow([
-    todayStr(),
-    data.idNumber,
-    data.fullName,
-    data.phone,
-    data.license || '',
-    '0/' + (data.totalQuestions || 30),
-    '0%',
-    'נכשל',
-    data.time || '00:00',
-    data.examinerName || '',
-    data.site || '',
-    data.classroom || '',
-    data.language || 'he',
-    data.sessionCode || '',
-    attemptNum,
-    'סגירת דפדפן באמצע מבחן (נענו ' + (data.answeredCount || 0) + ' שאלות)',
-    false,
-    false,
-    '',
-    data.population || '',
-    false,
-    data.audioMode || 'off',
-    '', '', '', '', '', '', '',         // idx 22-28 (מאומת..מסלול שפות) — N/A for a close-fail row
-    String(data.device || '')           // AD (29) מכשיר — phone / tablet / desktop
-  ]);
-
-  markPendingCompleted(data.sessionCode, data.idNumber);
-
+  markPendingCompleted(data.sessionCode, data.idNumber, pendingSnapshotFromTail(ctx));
   return jsonResponse({ status: 'ok' });
 }
 
+// The page reloaded rather than closed: undo the premature close-fail. The row
+// is marked בוטל, never deleted — deleteRow was the only path that could destroy
+// a result — and the examinee goes back to in_exam so they can finish.
 function handleCancelFailOnClose(data) {
-  // Called when page reloads (refresh, not actual close) — undo the fail
-  var cfocTokenErr = requireExamineeToken(data);
-  if (cfocTokenErr) return cfocTokenErr;
-  var sc = String(data.sessionCode || '');
-  var id = normalizeId(data.idNumber || '');
-  if (!sc || !id) return jsonResponse({ status: 'ok' });
-
+  var sessionCode = String(data.sessionCode || ''), id = normalizeId(data.idNumber || '');
+  if (!sessionCode || !id) return jsonResponse({ status: 'ok' });
   var sheet = getSheet('תוצאות');
-  var rows = sheet.getDataRange().getValues();
-  // Find the most recent row for this session+ID that is a "close" fail
-  for (var r = rows.length - 1; r >= 1; r--) {
-    if (String(rows[r][13]) === sc && normalizeId(rows[r][1]) === id) {
-      var notes = String(rows[r][15] || '');
-      if (notes.indexOf('\u05E1\u05D2\u05D9\u05E8\u05EA \u05D3\u05E4\u05D3\u05E4\u05DF') !== -1) {
-        // Examinee resumed — the fail-on-close was premature. Mark בוטל instead
-        // of DELETING: sheet.deleteRow was the ONLY path that could ever destroy a
-        // result row (latent "vanished result" vector). At most one בוטל row
-        // results, since submitFailOnClose's dup-guard blocks further close-fails.
-        sheet.getRange(r + 1, 8).setValue('בוטל');
-        sheet.getRange(r + 1, 27).setValue('בוטל אוטומטי - רענון/חזרה למבחן');
-        sheet.getRange(r + 1, 28).setValue(todayStr());
-        // Also un-mark pending as completed so exam can continue
-        unmarkPendingCompleted(sc, id);
-      }
-      break; // only check the most recent match
+  var tail = readTail(sheet, RESULT_COL.date);
+  for (var i = tail.rows.length - 1; i >= 1; i--) {
+    if (!resultRowMatchesExaminee(tail.rows[i], data)) continue;
+    if (String(tail.rows[i][RESULT_COL.wrongDetails] || '').indexOf('סגירת דפדפן') !== -1) {
+      var sheetRow = i + tail.off + 1;
+      sheet.getRange(sheetRow, RESULT_COL.verdict + 1).setValue('בוטל');
+      sheet.getRange(sheetRow, RESULT_COL.correctionReason + 1).setValue('בוטל אוטומטי - רענון/חזרה למבחן');
+      sheet.getRange(sheetRow, RESULT_COL.correctionDate + 1).setValue(todayStr());
+      restorePendingToInExam(sessionCode, data.idNumber);
     }
+    break;   // only the most recent row of this examinee
   }
   return jsonResponse({ status: 'ok' });
 }
 
-// ========== Question-cache warmup (for scheduled trigger) ==========
-// Cache entries can expire early. Warmup prepares bounded, compressed banks,
-// pools and translation shards; its final verification reports whether they
-// all survived in the shared cache. Timings depend on Drive/service health.
-//
-// The run is time-boxed well under Google's 360-second kill and resumes:
-// it rebuilds the translation index only when the published one is missing
-// or older than four hours, refreshes pool languages from a stored cursor,
-// and stops early rather than being killed mid-build. A summary line ending
-// in PARTIAL is normal and means the next scheduled run continues from the
-// cursor it reports; only ERROR lines need attention.
-//
-// Setup (one-time): do NOT add a trigger for this function by hand any more.
-// Run installWarmupTriggers() once from the editor instead — it replaces any
-// hand-made warmupQuestionCaches trigger with an hourly ensureQuestionCachesWarm,
-// which verifies the cache and calls this function only when it is needed.
-//
-// Check the returned cache verification, not only the trigger's completion.
-function warmupQuestionCaches(options) {
-  var opts = options || {};
-  var started = Date.now();
-  var budget = opts.budgetMs > 0 ? Math.min(opts.budgetMs, WARMUP_MAX_BUDGET_MS) : WARMUP_BUDGET_MS;
-  var deadline = started + budget;
-  var memo = { banks: {}, cacheStatus: {} }, summary = [], transientFailures = 0;
-  try { diagSweep(summary); } catch (eSweep) { summary.push('diagnostics sweep: skipped (' + (eSweep && eSweep.message ? eSweep.message : eSweep) + ')'); }
-  var cache = CacheService.getScriptCache();
-  var state = opts.resetCursor === true ? { langIdx: 0 } : readWarmupState();
-  var partial = false;
-  // Reserves grow from this run's own measurements: a unit is started only
-  // while the time left still covers the slowest unit of its kind so far.
-  var bankMaxMs = WARMUP_BANK_RESERVE_MS, poolMaxMs = WARMUP_POOL_RESERVE_MS;
-
-  // ---- Language banks + translation index ----------------------------------
-  // The index is rebuilt on every run, as it always was. Measured in production
-  // 2026-09-12: the build itself is 5.8s, and the run has to read all seven
-  // banks for the pools anyway, so refreshing it costs almost nothing and its
-  // six-hour TTL is renewed every time. Skipping it while it is "fresh enough"
-  // was a false economy that also made the refresh depend on the trigger
-  // interval: an index exactly at the threshold was never renewed and expired.
-  var txMissing = translationIndexAgeMs(cache) === null;
-  var txDue = true;
-  // No published index at all is the worst state to be in: every exam start
-  // falls back to parsing whole banks. Such a run gets the larger budget, and
-  // if even that cannot load all seven banks it still spends what it loaded on
-  // pools rather than wasting the reads.
-  if (txMissing && !(opts.budgetMs > 0)) {
-    deadline = started + WARMUP_MAX_BUDGET_MS;
-    summary.push('translation-index: MISSING - this run takes the larger ' + WARMUP_MAX_BUDGET_MS + 'ms budget');
-  }
-  // A rebuild needs every bank inside one execution, so it is attempted only
-  // when the whole phase can be expected to fit. Under a Drive slow enough to
-  // make that impossible, a published index that keeps serving beats a run that
-  // spends its budget on banks it cannot use.
-  var txEstimateMs = TX_LANGS.length * bankMaxMs + WARMUP_TX_RESERVE_MS;
-  if (!txMissing && deadline - Date.now() < txEstimateMs) {
-    txDue = false;
-    partial = true;
-    summary.push('translation-index: SKIPPED - a rebuild needs about ' + txEstimateMs +
-      'ms and this run has ' + (deadline - Date.now()) + 'ms; the published index keeps serving');
-  }
-  if (txDue) {
-    var loadedAll = true;
-    for (var i = 0; i < TX_LANGS.length; i++) {
-      if (deadline - Date.now() < bankMaxMs + WARMUP_TX_RESERVE_MS) {
-        loadedAll = false; partial = true;
-        summary.push('bank loads: PARTIAL - budget too short to reach ' + TX_LANGS[i] +
-          '; the published index is left untouched');
-        break;
-      }
-      var lang = TX_LANGS[i], t0 = Date.now();
-      try {
-        var data = loadQuestionsForLanguageServer(lang, memo);
-        var bankMs = Date.now() - t0;
-        if (bankMs > bankMaxMs) bankMaxMs = bankMs;
-        summary.push(lang + ': loaded ' + data.length + ' questions in ' + bankMs + 'ms');
-      } catch (e) {
-        if (!(e && e.code === 'question_language_unavailable')) transientFailures++;
-        summary.push(lang + ': ERROR - ' + (e && e.message ? e.message : e));
-      }
-    }
-    // A language whose JSON is genuinely absent from Drive is left out of the
-    // index (clients fetch it on demand). A transient failure (Drive error,
-    // malformed file) must not replace a fuller index that is already
-    // published - and neither may a run that ran out of budget mid-load.
-    var loadedLangs = Object.keys(memo.banks).length;
-    if (loadedAll && loadedLangs > 0 &&
-        (transientFailures === 0 || loadedLangs >= publishedTranslationLanguageCount(cache))) {
-      // A shard that vanishes immediately after a successful write means the
-      // shared cache is full of records nothing reads any more: r1-r3 keys left
-      // behind by an upgrade or by a rollback. Reclaiming them costs ~72
-      // CacheService round-trips (~300s in production), so it runs only when
-      // the index actually failed, and only once - never on a healthy run.
-      var tx = null, txError = null;
-      try { tx = buildTranslationIndexCache(memo, true); }
-      catch (eTx) { txError = eTx; }
-      if (txError && deadline - Date.now() > WARMUP_TAIL_RESERVE_MS &&
-          sweepLegacyQuestionCachesOnce(cache, memo.banks, summary)) {
-        try { tx = buildTranslationIndexCache(memo, true); txError = null; }
-        catch (eRetry) { txError = eRetry; }
-      }
-      if (tx) {
-        summary.push('translation-index: ' + tx.count + ' questions; languages=' + tx.langs.join(',') + '; cached=' + tx.cached);
-      } else {
-        summary.push('translation-index: ERROR - ' + (txError && txError.message ? txError.message : txError));
-      }
-    } else if (loadedAll) {
-      summary.push('translation-index: ERROR - skipped; a language failed transiently and the published index is fuller');
-    }
-  }
-
-  // ---- Per-license pools, resumed from the stored cursor -------------------
-  // Each language costs one Drive read (banks are not cached) plus five pool
-  // builds. Whatever does not fit in this run is picked up by the next run from
-  // the same cursor, so every language is refreshed well inside the six-hour
-  // pool TTL while no single run approaches the kill limit.
-  var licenses = Object.keys(EXAM_STRUCTURE_SERVER), langsBuilt = 0;
-  // The rotation is computed from where this run started: reading the cursor
-  // inside the loop, while the loop itself advances it, walks the languages in
-  // a stride that repeats some and never reaches others.
-  var startIdx = state.langIdx;
-  for (var step = 0; step < TX_LANGS.length; step++) {
-    var idx = (startIdx + step) % TX_LANGS.length, code = TX_LANGS[idx];
-    var need = (memo.banks[code] ? 0 : bankMaxMs) + poolMaxMs + WARMUP_TAIL_RESERVE_MS;
-    if (deadline - Date.now() < need) { partial = true; break; }
-    if (!memo.banks[code]) {
-      var tBank = Date.now();
-      try {
-        loadQuestionsForLanguageServer(code, memo);
-        var lazyMs = Date.now() - tBank;
-        if (lazyMs > bankMaxMs) bankMaxMs = lazyMs;
-      } catch (eBank) {
-        // An optional language with no JSON in Drive is expected, not a fault:
-        // keep ERROR lines meaningful for the post-deploy check.
-        var absent = eBank && eBank.code === 'question_language_unavailable';
-        summary.push('pools ' + code + (absent ? ': SKIPPED - no bank in Drive' :
-          ': ERROR - bank unavailable (' + (eBank && eBank.message ? eBank.message : eBank) + ')'));
-        state.langIdx = (idx + 1) % TX_LANGS.length;
-        continue;
-      }
-    }
-    var parts = [], langPartial = false;
-    for (var c = 0; c < licenses.length; c++) {
-      if (deadline - Date.now() < poolMaxMs + WARMUP_TAIL_RESERVE_MS) { langPartial = true; partial = true; break; }
-      var tPool = Date.now();
-      try {
-        var pool = loadLicensePoolServer(code, licenses[c], true, memo);
-        var poolMs = Date.now() - tPool;
-        if (poolMs > poolMaxMs) poolMaxMs = poolMs;
-        parts.push(licenses[c] + '=' + pool.length + '; cached=' + memo.cacheStatus[code + '/' + licenses[c]]);
-      } catch (ePool) { parts.push(licenses[c] + '=ERROR(' + (ePool && ePool.message) + ')'); }
-    }
-    summary.push('pools ' + code + (langPartial ? ' PARTIAL' : '') + ': ' + parts.join(' '));
-    // A language cut in half is rebuilt from its first license next run: the
-    // cursor advances only past a language whose five pools were all written.
-    if (langPartial) break;
-    state.langIdx = (idx + 1) % TX_LANGS.length;
-    langsBuilt++;
-  }
-  // Only a run that rebuilt every language counts as a refresh: the hourly
-  // ensureQuestionCachesWarm measures the cache's age from this stamp, and a
-  // PARTIAL run left some pools at their old age.
-  if (!partial && langsBuilt === TX_LANGS.length) state.lastCompleteAt = Date.now();
-  writeWarmupState(state);
-
-  summary.push('persistent cache budget: <=' + QUESTION_CACHE_RESERVED_KEYS + ' keys (pools + translation shards; banks are not cached); individual values <81KB');
-  if (deadline - Date.now() > WARMUP_VERIFY_RESERVE_MS) {
-    try { summary.push('cache verification: ' + JSON.stringify(questionCacheStatus())); }
-    catch (eCheck) { summary.push('cache verification: ERROR - ' + (eCheck && eCheck.message)); }
-  } else {
-    summary.push('cache verification: SKIPPED - out of budget; run questionCacheStatus() from the editor');
-  }
-  summary.push('warmup ' + (partial ? 'PARTIAL' : 'COMPLETE') + ': ' + langsBuilt + '/' + TX_LANGS.length +
-    ' pool languages in ' + (Date.now() - started) + 'ms of a ' + (deadline - started) + 'ms budget; next cursor=' + TX_LANGS[state.langIdx] +
-    (partial ? ' (the next scheduled run continues from there)' : ''));
-  Logger.log('warmupQuestionCaches complete:\n' + summary.join('\n'));
-  return summary;
+// The mirror of markPendingCompleted for a resumed exam: the newest completed
+// row of this examinee goes back to in_exam, through the single status writer.
+function restorePendingToInExam(sessionCode, idNumber) {
+  var ctx = examineeRowContext(sessionCode, idNumber, true);
+  if (!ctx.latest || ctx.latest.status !== 'completed') return;
+  setPendingStatus(getSheet('ממתינים'), ctx.latest.rowNumber, sessionCode, 'in_exam', null);
 }
 
-// ========== Keep the question cache warm with nobody touching it ==========
-// 2026-09-17, from the operator: "I don't want to run the warmup by hand every
-// day, and not several times a day." He had been, because the automatic path
-// could not be trusted:
-//  - the only warmup trigger was added by hand in the editor ("every 4 hours"),
-//    so nothing in the code knew whether it existed or when it ran;
-//  - it rebuilt blindly and never LOOKED at the cache, so pools evicted early
-//    (CacheService does not promise the full 6h) stayed missing until the next
-//    blind run — and on 15/09 a test examinee met "נסה שוב" at exam start.
-// This runs every hour. It asks questionCacheStatus() (every pool and shard
-// present, one real pool and shard decoded — about a second) and rebuilds only
-// when the cache is not ready, or when a refresh is due. Early eviction is
-// repaired within the hour, and the one-shot rebuild that a live cache miss
-// already requests still covers the minutes in between.
-//
-// It must not collide with the other scheduled work (operator, same day: "check
-// it doesn't overlap in run time with other functions"). Measured in the code:
-//  - archiveOldPendingRows, daily in the 01:00 hour, holds the SCRIPT LOCK for
-//    its whole run — up to 4.5 minutes. Every pool build claims a lease under
-//    that lock with tryLock(200), so a warmup inside that window fails all 35.
-//  - rebuildAtRiskCache, daily in the 03:00 hour, is a heavy practice-sheet job.
-//  - rebuildMissingQuestionCaches, a one-shot a live cache miss schedules, would
-//    fight a warmup for the same pool leases.
-// Overlap is avoided by looking at what is RUNNING, not at the clock: skip the
-// tick while another job holds the script lock (the archive does, for its whole
-// run), while a nightly job's running flag is fresh (rebuildAtRiskCache takes no
-// lock, so it raises one), and while a one-shot rebuild is pending. A first
-// version instead declared the 01:00 and 03:00 HOURS off-limits. Sweeping the
-// timer's minute in the simulation showed why that is wrong: a timer at :58 with
-// ±15 min drift lands two consecutive ticks inside one hour, so an hour-wide
-// window swallowed two ticks and the cache went cold (margin −182 min at :58).
-// The jobs themselves are minutes long; only the minutes are skipped now.
-//
-// WHEN to refresh is decided by looking ahead, not by a fixed list of hours.
-// (Fixed hours with a 5h safety net were tried first; that simulation went cold
-// at 05:00 after one dropped run next to a protected hour.) Every tick asks: what
-// is the LONGEST I may have to wait before a tick can rebuild again — skipping
-// hours that may not start a refresh, assuming Apps Script drops
-// WARMUP_ASSUME_MISSED_TICKS of the ticks, and assuming the tick that finally
-// does the work lands as late in its hour as the drift allows? If the cache
-// could expire within that wait, rebuild now.
-//
-// The ONLY hour that may not START a scheduled refresh is 08 (operator: "and if
-// exams start at 8?"). A rebuild rewrites pools one by one and an examinee whose
-// exam starts on the pool being written gets a short wait-and-retry; a 07:50 tick
-// drifting +15 min runs at 08:05, where a 07:00-only pre-exam rule no longer
-// applies. So the pre-exam refresh may run in the 06:00 or 07:00 hour, the
-// look-ahead treats 08 as unable to refresh, and a cache that is actually broken
-// is still repaired in 08 (that is worse than a rebuild).
-// The nightly jobs get NO hour of their own here: a :58 timer landed three ticks
-// in a row inside "their" hours (01:58, 03:12, 03:55) and the cache went cold at
-// 05:09 — the third hour-wide rule to fail this simulation. Their running flag
-// and the script lock keep the check away for the minutes they actually run.
-// 2026-09-19 (review action 5): 09 and 10 joined 08. With 08 alone the age rule
-// started a full rebuild at ~10:50 on exam days (07:50 pre-exam refresh + 3 h of
-// look-ahead) — inside the results wave, leases and all. 11 stays free on
-// purpose: the timer-minute sweep showed that protecting up to 12 goes cold at
-// 12:43–13:13 when a :58 timer's 07 tick drifts into 08 and the 06:43 refresh
-// has to last until the 12 tick; with 11 free the day's refresh lands at
-// ~11:45–12:15 instead, after the morning's exam starts are over.
-var WARMUP_NO_SCHEDULED_REFRESH_HOURS = [8, 9, 10];
-var WARMUP_EXAM_START_HOURS = [8, 9, 10];
-var WARMUP_PREEXAM_HOURS = [6, 7];
-var WARMUP_PREEXAM_MIN_AGE_MS = 90 * 60 * 1000;
-var WARMUP_JOB_FLAG = 'job_running';
-var WARMUP_JOB_FLAG_MS = 6 * 60 * 1000;          // no job outlives the 6-minute kill
-
-// Nightly jobs raise this while they run, so the hourly check stays out of their
-// way for exactly as long as they take. A stale flag (a killed job) expires.
-function markJobRunning(name, running) {
-  try {
-    var props = PropertiesService.getScriptProperties(), key = QUESTION_CACHE_PREFIX + WARMUP_JOB_FLAG;
-    if (running) props.setProperty(key, JSON.stringify({ name: name, at: Date.now() }));
-    else props.deleteProperty(key);
-  } catch (e) {}
-}
-function runningJobName() {
-  try {
-    var flag = JSON.parse(PropertiesService.getScriptProperties().getProperty(QUESTION_CACHE_PREFIX + WARMUP_JOB_FLAG) || 'null');
-    return (flag && flag.at && Date.now() - flag.at < WARMUP_JOB_FLAG_MS) ? String(flag.name || 'job') : '';
-  } catch (e) { return ''; }
-}
-var WARMUP_CACHE_TTL_MS = 6 * 60 * 60 * 1000;    // pools and index are written with 21600s
-var WARMUP_EXPIRY_BUFFER_MS = 15 * 60 * 1000;
-// An hour timer lands within ~15 min of its minute, but two ticks can drift in
-// opposite directions — one 15 min early, the next 15 min late — so the spacing
-// can exceed whole hours by 30 min. (15 here left a 9-minute margin in the
-// three-day simulation.)
-var WARMUP_TICK_DRIFT_MS = 30 * 60 * 1000;
-var WARMUP_ASSUME_MISSED_TICKS = 1;              // survive Apps Script skipping a run
-var WARMUP_REBUILD_RUNNING_MS = 6 * 60 * 1000;   // a one-shot rebuild cannot outlive the 6-min kill
-var WARMUP_ENSURE_FUNCTION = 'ensureQuestionCachesWarm';
-
-// Can a tick in this hour START a scheduled or age-based rebuild?
-function warmupCanRefreshInHour(h) {
-  return WARMUP_NO_SCHEDULED_REFRESH_HOURS.indexOf(h) < 0;
-}
-// A tick that lands in the first minutes of the first protected hour is the
-// previous hour's tick, drifted late (a 07:50 timer runs at 08:05). It may still
-// refresh: the rebuild ends well before the 08:30 wave, and refusing it left the
-// cache 9 minutes from expiry at 12:xx in the timer-minute sweep (06 tick
-// dropped, 07 tick drifted into 08, nothing allowed until 11). The look-ahead
-// keeps counting the whole hour as unable to refresh — that stays conservative.
-var WARMUP_DRIFTED_TICK_MINUTES = 15;
-function warmupCanRefreshNow(h, m) {
-  if (warmupCanRefreshInHour(h)) return true;
-  return h === WARMUP_NO_SCHEDULED_REFRESH_HOURS[0] && m < WARMUP_DRIFTED_TICK_MINUTES;
-}
-
-// Worst-case wait from a tick in `hour` until a later tick can rebuild: walk
-// forward hour by hour, counting only hours that may refresh, until 1 + the
-// assumed missed ticks of them have passed. The tick that does the work may land
-// anywhere in its hour, so count that whole hour too, plus the timer's drift.
-function warmupWorstWaitMs(hour) {
-  var needed = 1 + WARMUP_ASSUME_MISSED_TICKS, h = hour, steps = 0;
-  while (needed > 0 && steps < 48) {
-    h = (h + 1) % 24; steps++;
-    if (warmupCanRefreshInHour(h)) needed--;
+// ---- Result-upload token (examiner → results Worker) ------------------------
+// A short-lived HMAC the browser sends as X-Auth-Token when it POSTs the result
+// HTML to the Cloudflare Worker; the Worker verifies it with the same secret.
+// Set ScriptProperty RESULT_UPLOAD_SECRET and the Worker secret UPLOAD_SECRET to
+// the same long random string. The secret never reaches the browser.
+function handleGetResultUploadToken() {
+  var secret = PropertiesService.getScriptProperties().getProperty('RESULT_UPLOAD_SECRET');
+  if (!secret) {
+    return jsonResponse({ status: 'error', code: 'not_configured',
+      message: 'RESULT_UPLOAD_SECRET not configured in Apps Script properties' });
   }
-  return (steps + 1) * 60 * 60 * 1000 + WARMUP_TICK_DRIFT_MS;
+  var payloadB64 = Utilities.base64EncodeWebSafe(JSON.stringify({ exp: Date.now() + 5 * 60 * 1000 })).replace(/=+$/, '');
+  var sigB64 = Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature(payloadB64, secret)).replace(/=+$/, '');
+  return jsonResponse({ status: 'ok', token: payloadB64 + '.' + sigB64 });
 }
-
-function ensureQuestionCachesWarm() {
-  var t0 = Date.now();
-  var hour = Number(Utilities.formatDate(new Date(), 'Asia/Jerusalem', 'H'));
-  var minute = new Date().getUTCMinutes();   // Israel is a whole number of hours from UTC
-  var job = runningJobName();
-  if (job) {
-    Logger.log('[ENSURE] skipped: ' + job + ' is running');
-    return 'skipped: ' + job + ' is running';
-  }
-  var probe = LockService.getScriptLock();
-  if (!probe.tryLock(100)) {
-    Logger.log('[ENSURE] skipped: another job holds the script lock');
-    return 'skipped: another job holds the script lock';
-  }
-  probe.releaseLock();
-  try {
-    var pending = JSON.parse(PropertiesService.getScriptProperties().getProperty(QUESTION_CACHE_PREFIX + QUESTION_REBUILD_FLAG) || 'null');
-    if (pending && pending.at && Date.now() - pending.at < WARMUP_REBUILD_RUNNING_MS) {
-      Logger.log('[ENSURE] skipped: a one-shot rebuild is already repairing (' + pending.resource + ')');
-      return 'skipped: a one-shot rebuild is already repairing';
-    }
-  } catch (ePending) {}
-
-  var status = null, statusError = '';
-  try { status = questionCacheStatus(); } catch (eStatus) { statusError = (eStatus && eStatus.message) || String(eStatus); }
-  var state = readWarmupState();
-  var ageMs = typeof state.lastCompleteAt === 'number' ? Date.now() - state.lastCompleteAt : null;
-  var reason = '';
-  if (!status) reason = 'status check failed' + (statusError ? ' (' + statusError + ')' : '');
-  else if (!status.ready) reason = 'cache not ready: ' + status.missingOrMixedKeys + ' missing/mixed keys, ' + status.decodeFailures + ' decode failures';
-  else if (ageMs === null) reason = 'no complete warmup on record';   // e.g. the first run after deploy: establish the stamp
-  else if (WARMUP_PREEXAM_HOURS.indexOf(hour) >= 0 && ageMs >= WARMUP_PREEXAM_MIN_AGE_MS) reason = 'pre-exam refresh (' + hour + ':00 hour)';
-  else if (warmupCanRefreshNow(hour, minute) && ageMs + warmupWorstWaitMs(hour) >= WARMUP_CACHE_TTL_MS - WARMUP_EXPIRY_BUFFER_MS) {
-    reason = 'age ' + Math.round(ageMs / 60000) + ' min could outlive the cache before the next safe tick (worst wait ' +
-      Math.round(warmupWorstWaitMs(hour) / 60000) + ' min)';
-  }
-  if (!reason) {
-    // Nothing to rebuild — still record killed executions promptly instead of
-    // waiting hours for the next full warmup to sweep them.
-    try { diagSweep(null); } catch (eSweep) {}
-    var quiet = 'warm: ' + status.presentKeys + ' keys ready, last complete warmup ' + Math.round(ageMs / 60000) +
-      ' min ago' + (WARMUP_EXAM_START_HOURS.indexOf(hour) >= 0 ? ', exam start hour — no scheduled rebuild' : '') +
-      ' (' + (Date.now() - t0) + 'ms)';
-    Logger.log('[ENSURE] ' + quiet);
-    return quiet;
-  }
-  Logger.log('[ENSURE] rebuilding — ' + reason);
-  var summary = warmupQuestionCaches();
-  return 'rebuilt (' + reason + '): ' + summary[summary.length - 1];
-}
-
-// Run ONCE from the Apps Script editor. Safe to run again: it always leaves
-// exactly one hourly ensureQuestionCachesWarm trigger. It removes hand-made
-// warmupQuestionCaches triggers (they would double the work), leaves every
-// other trigger alone — including the one-shot rebuildMissingQuestionCaches
-// triggers a live cache miss creates — and warms the cache right away.
-function installWarmupTriggers() {
-  var removed = [], triggers = ScriptApp.getProjectTriggers();
-  for (var i = 0; i < triggers.length; i++) {
-    var fn = triggers[i].getHandlerFunction();
-    if (fn === 'warmupQuestionCaches' || fn === WARMUP_ENSURE_FUNCTION) {
-      ScriptApp.deleteTrigger(triggers[i]);
-      removed.push(fn);
-    }
-  }
-  ScriptApp.newTrigger(WARMUP_ENSURE_FUNCTION).timeBased().everyHours(1).create();
-  var first = ensureQuestionCachesWarm();
-  var msg = 'installWarmupTriggers: removed ' + removed.length + ' old trigger(s) [' + removed.join(', ') +
-    ']; created one hourly ' + WARMUP_ENSURE_FUNCTION + '; first check → ' + first;
-  Logger.log(msg);
-  return msg;
-}
-
-// ---- Warmup budget, resume cursor and one-time legacy sweep ---------------
-// Apps Script kills an execution at 360 seconds, and a killed run never reaches
-// a finally block: every cache lease it held stays locked for its full
-// lease TTL, on exactly the resource it failed to publish. That resource
-// is then both missing from the cache and unbuildable, so live requests for it
-// answer question_cache_busy until the lease expires. Two production runs died
-// that way (2026-09-09 and 2026-09-11, both starting 08:29, killed at 361s),
-// inside the exam-morning start wave. Hence the budget: the run stops on its
-// own terms, releases its leases, records how far it got, and the next
-// scheduled run continues from there.
-var WARMUP_BUDGET_MS = 240000;       // four minutes of the six-minute ceiling
-var WARMUP_MAX_BUDGET_MS = 300000;   // cap on a caller-supplied budget
-var WARMUP_BANK_RESERVE_MS = 8000;   // measured Drive read + parse: 5-6s/bank
-var WARMUP_POOL_RESERVE_MS = 8000;   // filter + dedupe + gzip + write per pool
-var WARMUP_TX_RESERVE_MS = 30000;    // index build: 5.8s measured, 5x margin
-var WARMUP_TAIL_RESERVE_MS = 5000;
-var WARMUP_VERIFY_RESERVE_MS = 25000;
-var WARMUP_STATE_KEY = 'warmup_state';
-var WARMUP_LEGACY_KEY = 'warmup_legacy_swept';
-
-function readWarmupState() {
-  try {
-    var raw = PropertiesService.getScriptProperties().getProperty(QUESTION_CACHE_PREFIX + WARMUP_STATE_KEY);
-    var state = raw ? JSON.parse(raw) : null;
-    if (state && typeof state.langIdx === 'number' && state.langIdx >= 0 && state.langIdx < TX_LANGS.length) return state;
-  } catch (e) {}
-  return { langIdx: 0 };
-}
-
-function writeWarmupState(state) {
-  try {
-    PropertiesService.getScriptProperties().setProperty(QUESTION_CACHE_PREFIX + WARMUP_STATE_KEY, JSON.stringify(state));
-  } catch (e) { Logger.log('[WARMUP] cursor write failed: ' + (e && e.message)); }
-}
-
-// Age of the published translation index, or null when none is published.
-function translationIndexAgeMs(cache) {
-  try {
-    var meta = JSON.parse(cache.get(QUESTION_CACHE_PREFIX + 'tx_meta') || 'null');
-    if (!meta || !meta.builtAt) return null;
-    var age = Date.now() - meta.builtAt;
-    return age > 0 ? age : 0;
-  } catch (e) { return null; }
-}
-
-// The r1-r3 key sweep is no longer part of a normal run. It deleted ~7,160
-// keys in ~72 CacheService round-trips every single time, and measurement in
-// production on 2026-09-12 showed it was ~300 of the 361 seconds Google killed
-// on 09-09 and 09-11 (banks + all 35 pools + verification are only ~58s).
-// Nothing has written those key names since r4 and a CacheService entry lives
-// at most six hours, so on a running system there is nothing left to find.
-// It is kept as recovery for the one case where it still matters: the shared
-// cache is so full of them that the translation index cannot be written. Then
-// it runs once, and the persisted flag stops it from ever running again.
-// Delete the ScriptProperty qv2_warmup_legacy_swept to re-arm it by hand.
-function sweepLegacyQuestionCachesOnce(cache, banks, summary) {
-  var props = PropertiesService.getScriptProperties();
-  var flag = QUESTION_CACHE_PREFIX + WARMUP_LEGACY_KEY;
-  if (props.getProperty(flag) === '1') return false;
-  // The per-question legacy key list is derived from the banks, so a partial
-  // load would leave most of them behind and waste the single attempt.
-  if (Object.keys(banks).length < TX_LANGS.length) return false;
-  clearLegacyQuestionCaches(cache, banks);
-  // Only a completed sweep sets the flag: a run killed mid-sweep holds no
-  // lease and the next one simply tries again.
-  props.setProperty(flag, '1');
-  summary.push('legacy cleanup: one-time sweep of r1-r3 keys, to make room for the index');
-  return true;
-}
-
-
-// Editor helper: rebuild ONLY the translation index and report how long its
-// phases really take. Run it from the editor in a quiet window to measure the
-// heaviest unit in the system, and to leave a fresh index before an exam
-// morning. It never touches the per-license pools.
-function warmupTranslationIndexOnly() {
-  var t0 = Date.now(), memo = { banks: {}, cacheStatus: {} }, summary = [];
-  for (var i = 0; i < TX_LANGS.length; i++) {
-    var lang = TX_LANGS[i], tb = Date.now();
-    try {
-      var rows = loadQuestionsForLanguageServer(lang, memo);
-      summary.push(lang + ': loaded ' + rows.length + ' questions in ' + (Date.now() - tb) + 'ms');
-    } catch (e) {
-      summary.push(lang + ': ERROR - ' + (e && e.message ? e.message : e));
-    }
-  }
-  var loaded = Object.keys(memo.banks).length, banksMs = Date.now() - t0, indexMs = 0;
-  if (loaded < TX_LANGS.length) {
-    summary.push('translation-index: ABORTED - only ' + loaded + '/' + TX_LANGS.length +
-      ' banks loaded; the published index is left untouched');
-  } else {
-    var tIndex = Date.now();
-    try {
-      var tx = buildTranslationIndexCache(memo, true);
-      indexMs = Date.now() - tIndex;
-      summary.push('translation-index: ' + tx.count + ' questions; languages=' + tx.langs.join(',') +
-        '; cached=' + tx.cached);
-    } catch (eTx) {
-      indexMs = Date.now() - tIndex;
-      summary.push('translation-index: ERROR - ' + (eTx && eTx.message));
-    }
-  }
-  summary.push('phase timings: banks ' + banksMs + 'ms, index build ' + indexMs + 'ms, total ' +
-    (Date.now() - t0) + 'ms (Google kills an execution at 360000ms)');
-  Logger.log('warmupTranslationIndexOnly:' + '\n' + summary.join('\n'));
-  return summary;
-}
-
-// ========== r10: hot-path hardening (2026-09-15) ==========
-// Evidence from the Executions log of 08/09, 10/09 and 14/09: on every exam
-// day a handful of doGet executions ran the full 360 seconds until Google
-// killed them, each pinned to a Google service call (Drive/Sheets/Cache have
-// no per-call timeout) while holding an execution slot; a killed pool builder
-// also left its lease locked for 370s, freezing that license for six more
-// minutes. Google's slowness is the trigger; the exposure below is ours.
-
-// A live builder that genuinely needs more than this is slower than the
-// slowest Drive read seen under degradation (100s); after it a second builder
-// may start, which costs one duplicate read instead of a six-minute freeze.
-var QUESTION_CACHE_LEASE_MS = 150000;
-
-// Never read Drive inside an examinee request. On a live pool miss every
-// caller answers question_cache_busy (the client retries in 3s) and ONE
-// one-shot trigger rebuilds whatever is missing out of band. The flag dedupes
-// a start wave; Apps Script allows 20 triggers per script, so creation is
-// gated and the rebuild deletes its own triggers when it runs.
-var QUESTION_REBUILD_FLAG = 'rebuild_pending';
-var QUESTION_REBUILD_FLAG_MS = 180000;
-var QUESTION_REBUILD_FUNCTION = 'rebuildMissingQuestionCaches';
-
-function requestQuestionCacheRebuild(resource) {
-  try {
-    var props = PropertiesService.getScriptProperties();
-    var flagKey = QUESTION_CACHE_PREFIX + QUESTION_REBUILD_FLAG;
-    var raw = props.getProperty(flagKey), pending = null;
-    try { pending = raw ? JSON.parse(raw) : null; } catch (e) {}
-    if (pending && pending.at && Date.now() - pending.at < QUESTION_REBUILD_FLAG_MS) return true;
-    var lock = LockService.getScriptLock();
-    if (!lock.tryLock(200)) return true; // someone else is scheduling it right now
-    try {
-      raw = props.getProperty(flagKey);
-      try { pending = raw ? JSON.parse(raw) : null; } catch (e2) { pending = null; }
-      if (pending && pending.at && Date.now() - pending.at < QUESTION_REBUILD_FLAG_MS) return true;
-      ScriptApp.newTrigger(QUESTION_REBUILD_FUNCTION).timeBased().after(1000).create();
-      props.setProperty(flagKey, JSON.stringify({ at: Date.now(), resource: String(resource || '') }));
-      Logger.log('[POOL] live MISS on ' + resource + ': rebuild scheduled out of band');
-      return true;
-    } finally {
-      lock.releaseLock();
-    }
-  } catch (e) {
-    // No trigger (quota, permission) means the caller must build inline as before.
-    Logger.log('[POOL] rebuild scheduling failed, falling back to inline build: ' + (e && e.message ? e.message : e));
-    return false;
-  }
-}
-
-// Trigger target: rebuild only what is missing, inside the warmup's budget,
-// then remove every one-shot trigger pointing here and clear the flag.
-function rebuildMissingQuestionCaches() {
-  var started = Date.now(), summary = [], memo = { banks: {}, cacheStatus: {} };
-  try {
-    var triggers = ScriptApp.getProjectTriggers();
-    for (var t = 0; t < triggers.length; t++) {
-      if (triggers[t].getHandlerFunction() === QUESTION_REBUILD_FUNCTION) ScriptApp.deleteTrigger(triggers[t]);
-    }
-  } catch (eTrig) { summary.push('trigger cleanup: ERROR - ' + (eTrig && eTrig.message)); }
-  var cache = CacheService.getScriptCache(), licenses = Object.keys(EXAM_STRUCTURE_SERVER), rebuilt = 0;
-  try {
-    if (translationIndexAgeMs(cache) === null) {
-      for (var i = 0; i < TX_LANGS.length; i++) {
-        if (Date.now() - started > WARMUP_BUDGET_MS - WARMUP_TX_RESERVE_MS) break;
-        try { loadQuestionsForLanguageServer(TX_LANGS[i], memo); } catch (eLang) {}
-      }
-      if (Object.keys(memo.banks).length === TX_LANGS.length) {
-        try { var tx = buildTranslationIndexCache(memo, true); summary.push('translation-index rebuilt: ' + tx.count); rebuilt++; }
-        catch (eTx) { summary.push('translation-index: ERROR - ' + (eTx && eTx.message)); }
-      } else {
-        summary.push('translation-index: left missing, banks incomplete within budget');
-      }
-    }
-    for (var l = 0; l < TX_LANGS.length; l++) {
-      for (var c = 0; c < licenses.length; c++) {
-        if (Date.now() - started > WARMUP_BUDGET_MS - WARMUP_POOL_RESERVE_MS) { summary.push('budget reached'); l = TX_LANGS.length; break; }
-        var key = QUESTION_CACHE_PREFIX + 'pool_' + TX_LANGS[l] + '_' + licenses[c];
-        var hit = readQuestionCacheRecord(cache, key, QUESTION_POOL_MAX_PARTS);
-        if (Array.isArray(hit) && hit.length) continue;
-        try { loadLicensePoolServer(TX_LANGS[l], licenses[c], true, memo); rebuilt++; }
-        catch (ePool) { summary.push('pool ' + TX_LANGS[l] + '/' + licenses[c] + ': ERROR - ' + (ePool && ePool.message)); }
-      }
-    }
-  } finally {
-    try { PropertiesService.getScriptProperties().deleteProperty(QUESTION_CACHE_PREFIX + QUESTION_REBUILD_FLAG); } catch (eFlag) {}
-  }
-  summary.push('rebuilt ' + rebuilt + ' missing cache records in ' + (Date.now() - started) + 'ms');
-  Logger.log('rebuildMissingQuestionCaches:\n' + summary.join('\n'));
-  return summary;
-}
-
-// Mid-exam language switches (getQuestionsByIds) used to read the whole bank
-// from Drive on every call. The per-license pools already hold every question
-// of that language in full; answer from them when they cover the request.
-function questionsFromCachedPools(lang, ids) {
-  var cache = CacheService.getScriptCache(), licenses = Object.keys(EXAM_STRUCTURE_SERVER), byId = {}, missing = ids.length;
-  for (var c = 0; c < licenses.length && missing > 0; c++) {
-    var pool = readQuestionCacheRecord(cache, QUESTION_CACHE_PREFIX + 'pool_' + lang + '_' + licenses[c], QUESTION_POOL_MAX_PARTS);
-    if (!Array.isArray(pool)) continue;
-    for (var i = 0; i < pool.length; i++) {
-      var q = pool[i];
-      if (q && q.id && !byId[q.id] && ids.indexOf(Number(q.id)) !== -1) { byId[q.id] = q; missing--; }
-    }
-  }
-  return missing === 0 ? byId : null;
-}
-
 // ---- Diagnostics that survive a killed execution ---------------------------
 // Per-execution logs are unreachable in this project's Executions page (no
 // Cloud project is linked), so a 360-second row says nothing about WHERE it
-// hung. A phase marker is written to ScriptProperties before each risky
-// Google call and deleted when the request finishes; a killed execution never
-// reaches the delete, so its last phase is still there for the warmup to
-// sweep into the 'אבחון' sheet. Requests that finish but take longer than
-// DIAG_SLOW_MS write their own row. Marks may now be placed anywhere, polling
-// handlers included: the property is written only after DIAG_MARK_MIN_MS, so a
-// healthy request costs nothing at all (see diagMark).
+// hung. A phase marker is written to ScriptProperties once a request is already
+// in trouble and deleted when it finishes; a killed execution never reaches the
+// delete, so its marker is still there for the nightly sweep to record in the
+// 'אבחון' sheet. Requests that finish but take longer than DIAG_SLOW_MS write
+// their own row. Marks may be placed anywhere, polling handlers included: a
+// healthy request writes nothing at all (see diagMark).
 var DIAG_SHEET = 'אבחון';
 var DIAG_SLOW_MS = 15000;
 var DIAG_STALE_MS = 420000;
@@ -5132,18 +6441,21 @@ function diagBegin(method) {
   catch (e) { DIAG_EXEC = null; }
 }
 
-// r15: a mark is now FREE until the request is already in trouble.
+// r15: a mark is FREE until the request is already in trouble; r25: and then it
+// costs exactly ONE service call, not one per mark.
 //
 // Every mark used to cost a ScriptProperties round-trip, which was affordable
-// only because marks were kept off the polling handlers. That restriction made
-// the one handler we most needed to understand - examinerDashboard, polled every
-// 2s by every examiner for the whole exam - the one handler with no trail at
-// all: it recorded 27.9s on 2026-09-15 with not a single phase to show for it.
-// So the phase trail is kept in memory (free, and diagFinish's SLOW row reads it
-// from there), and the property - whose only job is to survive a 360s kill so
-// the sweep can report where the execution died - is written only once the
-// request has already passed DIAG_MARK_MIN_MS. A healthy 2s poll now pays
-// nothing; anything slow enough to be killed crossed the threshold long before.
+// only because marks were kept off the polling handlers — leaving
+// examinerDashboard, the handler we most needed to understand, with no trail at
+// all (27.9 s on 2026-09-15, not a single phase). So the phase trail is kept in
+// memory (free; diagFinish's SLOW row reads it from there) and the property —
+// whose only job is to survive a 360 s kill — is written when the request first
+// crosses DIAG_MARK_MIN_MS and NOT again (review C R9: a stalled dashboard paid
+// six extra Properties round trips, a stalled submit about ten, on exactly the
+// executions that were already failing).
+// Trade-off, deliberate: a KILLED row names the action and the phase the
+// request was in when it crossed 8 s, not the phase it died in. A request that
+// finishes still reports its full phase list in its SLOW row.
 var DIAG_MARK_MIN_MS = 8000;
 
 function diagMark(phase) {
@@ -5152,10 +6464,10 @@ function diagMark(phase) {
     var elapsed = Date.now() - (DIAG_EXEC.t0 || Date.now());
     DIAG_EXEC.phase = phase;
     DIAG_EXEC.notes.push(phase + '@' + elapsed);
-    if (elapsed < DIAG_MARK_MIN_MS) return;   // still healthy: no service call
-    PropertiesService.getScriptProperties().setProperty(QUESTION_CACHE_PREFIX + 'diag_' + DIAG_EXEC.id,
-      JSON.stringify({ a: DIAG_EXEC.action, m: DIAG_EXEC.method, ph: phase, t: Date.now() }));
+    if (elapsed < DIAG_MARK_MIN_MS || DIAG_EXEC.marked) return;   // healthy, or already marked: no service call
     DIAG_EXEC.marked = true;
+    PropertiesService.getScriptProperties().setProperty(CACHE_KEY_PREFIX + 'diag_' + DIAG_EXEC.id,
+      JSON.stringify({ a: DIAG_EXEC.action, m: DIAG_EXEC.method, ph: phase, t: Date.now() }));
   } catch (e) { /* diagnostics must never break a request */ }
 }
 
@@ -5164,7 +6476,7 @@ function diagFinish(action, startedAt) {
     if (!DIAG_EXEC) return;
     var elapsed = Date.now() - startedAt;
     if (DIAG_EXEC.marked) {
-      try { PropertiesService.getScriptProperties().deleteProperty(QUESTION_CACHE_PREFIX + 'diag_' + DIAG_EXEC.id); } catch (eDel) {}
+      try { PropertiesService.getScriptProperties().deleteProperty(CACHE_KEY_PREFIX + 'diag_' + DIAG_EXEC.id); } catch (eDel) {}
     }
     if (elapsed >= DIAG_SLOW_MS) {
       diagRecordRow(DIAG_EXEC.id, [nowISO(), 'SLOW', DIAG_EXEC.method, action || DIAG_EXEC.action || '', elapsed,
@@ -5179,50 +6491,102 @@ function diagFinish(action, startedAt) {
 // had just stalled. 17/09 10:43: the append itself hung ~93 s (187 s execution,
 // 92.9 s row); 16/09 morning: at least seven rows of 45-279 s executions never
 // arrived, so the sheet read "healthy" at the worst moment. Now the row is
-// parked in ScriptProperties first (a different service), and appended in
-// place only while appends are healthy: one append that fails or takes longer
-// than DIAG_APPEND_SLOW_MS opens a breaker for DIAG_APPEND_BREAKER_SEC, and the
-// rows wait for the hourly sweep (or flushDiagnostics() from the editor).
+// parked in ScriptProperties first (a different service) and appended in place
+// only while appends are healthy: one append that fails or takes longer than
+// DIAG_APPEND_SLOW_MS opens a breaker for DIAG_APPEND_BREAKER_SEC, and the rows
+// wait for the nightly sweep (or flushDiagnostics() from the editor).
+// Parked rows are capped (review C R10): 200 rows were ~60 KB of the 500 KB
+// ScriptProperties quota, cleared only by a sweep that reads the whole store.
 var DIAG_ROW_PREFIX = 'diagrow_';
+var DIAG_ROW_INDEX_KEY = 'diagrows';
+var DIAG_MAX_PARKED_ROWS = 50;
 var DIAG_APPEND_BREAKER_KEY = 'diagbreaker';
 var DIAG_APPEND_BREAKER_SEC = 300;
 var DIAG_APPEND_SLOW_MS = 2000;
 function diagRecordRow(id, row) {
-  var key = QUESTION_CACHE_PREFIX + DIAG_ROW_PREFIX + id, parked = false;
-  try { PropertiesService.getScriptProperties().setProperty(key, JSON.stringify(row)); parked = true; } catch (eProp) {}
+  var key = CACHE_KEY_PREFIX + DIAG_ROW_PREFIX + id;
+  var parked = parkDiagRow(key, row);
   var cache = null, breakerOpen = false;
-  try { cache = CacheService.getScriptCache(); breakerOpen = !!cache.get(QUESTION_CACHE_PREFIX + DIAG_APPEND_BREAKER_KEY); } catch (eGet) {}
+  try { cache = CacheService.getScriptCache(); breakerOpen = !!cache.get(CACHE_KEY_PREFIX + DIAG_APPEND_BREAKER_KEY); } catch (eGet) {}
   if (breakerOpen) return 'parked';
   var t0 = Date.now(), appended = false;
   try { getDiagnosticsSheet().appendRow(row); appended = true; } catch (eAppend) {}
   if (!appended || Date.now() - t0 > DIAG_APPEND_SLOW_MS) {
-    try { if (cache) cache.put(QUESTION_CACHE_PREFIX + DIAG_APPEND_BREAKER_KEY, String(Date.now()), DIAG_APPEND_BREAKER_SEC); } catch (ePut) {}
+    try { if (cache) cache.put(CACHE_KEY_PREFIX + DIAG_APPEND_BREAKER_KEY, String(Date.now()), DIAG_APPEND_BREAKER_SEC); } catch (ePut) {}
   }
-  if (appended && parked) { try { PropertiesService.getScriptProperties().deleteProperty(key); } catch (eDel) {} }
+  if (appended && parked) unparkDiagRow(key);
   return appended ? 'appended' : 'parked';
+}
+
+// The index is a bounded FIFO of parked keys, so capping costs two Properties
+// calls instead of reading the entire store on every park.
+function parkDiagRow(key, row) {
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var index = [];
+    try { index = JSON.parse(props.getProperty(CACHE_KEY_PREFIX + DIAG_ROW_INDEX_KEY) || '[]') || []; } catch (eIdx) { index = []; }
+    props.setProperty(key, JSON.stringify(row));
+    index.push(key);
+    while (index.length > DIAG_MAX_PARKED_ROWS) {
+      var oldest = index.shift();
+      try { props.deleteProperty(oldest); } catch (eOld) {}
+    }
+    props.setProperty(CACHE_KEY_PREFIX + DIAG_ROW_INDEX_KEY, JSON.stringify(index));
+    return true;
+  } catch (eProp) { return false; }
+}
+
+function unparkDiagRow(key) {
+  try {
+    var props = PropertiesService.getScriptProperties();
+    props.deleteProperty(key);
+    var index = JSON.parse(props.getProperty(CACHE_KEY_PREFIX + DIAG_ROW_INDEX_KEY) || '[]') || [];
+    var out = [];
+    for (var i = 0; i < index.length; i++) if (index[i] !== key) out.push(index[i]);
+    props.setProperty(CACHE_KEY_PREFIX + DIAG_ROW_INDEX_KEY, JSON.stringify(out));
+  } catch (e) {}
+}
+
+// The client's own last-50-events ring, attached to a submit or to a failure
+// report (DESIGN §3.6). Without it the only evidence of a client-side stall is
+// the soldier's word: the 16/09 reload storm and the 17/09 "שגיאת תקשורת" both
+// had to be reconstructed from screenshots. Goes through the same breaker as
+// SLOW rows, is capped at 2 KB, and never throws into the response path.
+var DIAG_CLIENT_LOG_MAX_CHARS = 2048;
+function diagRecordClientLog(sessionCode, idNumber, entries) {
+  try {
+    if (!entries) return 'empty';
+    var text = (typeof entries === 'string') ? entries : JSON.stringify(entries);
+    if (!text || text === '[]' || text === '{}') return 'empty';
+    if (text.length > DIAG_CLIENT_LOG_MAX_CHARS) text = text.slice(0, DIAG_CLIENT_LOG_MAX_CHARS - 1) + '…';
+    var id = '';
+    try { id = Utilities.getUuid(); } catch (eId) { id = 'client_' + Date.now(); }
+    return diagRecordRow(id, [nowISO(), 'CLIENT', String(sessionCode || ''), normalizeId(idNumber), '', '', text]);
+  } catch (e) { return 'error'; }
 }
 
 // Run from the editor during an exam morning if 'אבחון' looks empty while the
 // dashboards are slow: writes the parked SLOW rows and records killed executions.
 function flushDiagnostics() {
   var r = diagSweep(null);
-  var msg = 'flushDiagnostics: ' + r.flushed + ' parked SLOW row(s) written, ' + r.swept + ' killed-execution marker(s) recorded';
+  var msg = 'flushDiagnostics: ' + r.flushed + ' parked row(s) written, ' + r.swept + ' killed-execution marker(s) recorded';
   Logger.log(msg);
   return msg;
 }
 
-// Called by the warmup: markers older than DIAG_STALE_MS belong to executions
-// that never finished (killed at 360s, or crashed) - record where they were.
+// Called by the nightly archive job (and by hand): markers older than
+// DIAG_STALE_MS belong to executions that never finished (killed at 360 s, or
+// crashed) — record where they were.
 function diagSweep(summary) {
   var swept = 0, flushed = 0;
   try {
-    var props = PropertiesService.getScriptProperties(), all = props.getProperties(), prefix = QUESTION_CACHE_PREFIX + 'diag_';
-    var rowPrefix = QUESTION_CACHE_PREFIX + DIAG_ROW_PREFIX;
+    var props = PropertiesService.getScriptProperties(), all = props.getProperties(), prefix = CACHE_KEY_PREFIX + 'diag_';
+    var rowPrefix = CACHE_KEY_PREFIX + DIAG_ROW_PREFIX;
     var sheet = null;
     for (var key in all) {
       if (!Object.prototype.hasOwnProperty.call(all, key)) continue;
       if (key.indexOf(rowPrefix) === 0) {
-        // a SLOW row parked while the append breaker was open (diagRecordRow)
+        // a row parked while the append breaker was open (diagRecordRow)
         var row = null;
         try { row = JSON.parse(all[key]); } catch (eRow) {}
         if (row && row.length) {
@@ -5245,13 +6609,17 @@ function diagSweep(summary) {
       props.deleteProperty(key);
       swept++;
     }
+    try { props.deleteProperty(CACHE_KEY_PREFIX + DIAG_ROW_INDEX_KEY); } catch (eIdx) {}
   } catch (e) { if (summary) summary.push('diagnostics sweep: skipped (' + (e && e.message ? e.message : e) + ')'); }
   if (summary) summary.push('diagnostics sweep: ' + swept + ' stale marker(s) recorded, ' + flushed + ' parked row(s) flushed');
   return { swept: swept, flushed: flushed };
 }
 
+// Through getSpreadsheet(), not SpreadsheetApp.getActiveSpreadsheet(): the memo
+// is opened once per execution and its open is what the 'ss:open' mark times
+// (review C R9 — the diagnostics were the one caller still bypassing it).
 function getDiagnosticsSheet() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet(), sheet = ss.getSheetByName(DIAG_SHEET);
+  var ss = getSpreadsheet(), sheet = ss.getSheetByName(DIAG_SHEET);
   if (!sheet) {
     sheet = ss.insertSheet(DIAG_SHEET);
     sheet.getRange(1, 1, 1, 7).setValues([['זמן', 'סוג', 'שיטה', 'פעולה', 'משך (ms)', 'שלב אחרון', 'הערות']]);
@@ -5259,1102 +6627,6 @@ function getDiagnosticsSheet() {
   }
   return sheet;
 }
-
-// Question metadata (topic / image) for the reports, WITHOUT touching Drive.
-//
-// Measured in the 'אבחון' sheet on 2026-09-15, the day the diagnostics shipped:
-// commanderDashboard ran 33-70s, and the trail showed the Sheets read finishing
-// in 0.6s while the remaining 30-60s were Drive reads of the question banks —
-// every language, twice, because the two resolver loops each called
-// loadQuestionsForLanguageServer with no shared memo (up to 14 reads in one
-// request). That is what times the client out at 30s, and on a slow Google
-// afternoon it is exactly the shape of the 360s kills.
-//
-// The per-license pools already hold the same question objects (id, text,
-// category, imageUrl) and live in CacheService, so the union of the five pools
-// answers both loops. Two guards keep it honest:
-//   - all five pools must be present and non-empty; a missing or unreadable one
-//     falls back to Drive, so a partial union is never returned.
-// MEASURED 2026-09-15 against the real banks (local copies verified identical
-// to production by comparing pool sizes with the warmup log): EVERY question of
-// a language belongs to at least one license, so five present pools ARE the
-// whole bank - he/ar/fr/es/am union 1694 of 1694, ru 1693 of 1693, en 1700 of
-// 1700. An earlier version of this guard compared the union against the
-// translation index count (1700 = the union ACROSS languages) and so rejected
-// every language except English, sending them all back to Drive. Do not
-// reintroduce a cross-language total as a per-language expectation.
-// The memo makes a language cost at most one resolution per request.
-function questionMetaForLanguage(lang, memo) {
-  var safeLang;
-  try { safeLang = normalizeQuestionCacheLanguage(lang); } catch (eLang) { return []; }
-  if (memo && memo[safeLang]) return memo[safeLang];
-  var rows = null;
-  try {
-    var cache = CacheService.getScriptCache();
-    var licenses = Object.keys(EXAM_STRUCTURE_SERVER), seen = {}, out = [];
-    for (var c = 0; c < licenses.length; c++) {
-      var pool = readQuestionCacheRecord(cache, QUESTION_CACHE_PREFIX + 'pool_' + safeLang + '_' + licenses[c], QUESTION_POOL_MAX_PARTS);
-      if (!Array.isArray(pool) || !pool.length) { out = null; break; }
-      for (var i = 0; i < pool.length; i++) {
-        var q = pool[i];
-        if (q && q.id && !seen[q.id]) { seen[q.id] = true; out.push(q); }
-      }
-    }
-    if (out && out.length) rows = out;
-  } catch (eCache) { rows = null; }
-  if (!rows) rows = loadQuestionsForLanguageServer(safeLang);   // marks drive:<lang> itself
-  if (memo) memo[safeLang] = rows;
-  return rows;
-}
-
-// ========== Emergency cache reset ==========
-// Run this manually from the Apps Script editor when you see "0 questions"
-// (or similar nonsense from a poisoned cache). Clears every cached language
-// chunk, then re-warms straight from Drive. Returns a human-readable report.
-//
-// Real-world trigger: during one exam day, the Hebrew chunks were cached as
-// empty after a race condition between two parallel loads. Every subsequent
-// examinee got "0 questions" in Hebrew until the cache TTL expired. This
-// reset invalidates all derived data; completion time depends on Drive.
-//
-// Apps Script editor → select function: emergencyClearAndRefreshCache → Run.
-// Then check Logger output (View → Logs or "Execution log" panel).
-function emergencyClearAndRefreshCache() {
-  var cache = CacheService.getScriptCache(), report = [];
-  clearQuestionBankCacheKeys(cache);
-  clearAllLicensePools(cache, TX_LANGS);
-  var keys = [QUESTION_CACHE_PREFIX + 'tx_meta'];
-  for (var s = 0; s < QUESTION_TX_SHARDS; s++) keys.push(QUESTION_CACHE_PREFIX + 'tx_' + s);
-  cache.removeAll(keys);
-  report.push('Cleared pools AND translations (and any legacy bank records); rebuilding from Drive.');
-  report = report.concat(warmupQuestionCaches({ resetCursor: true }));
-  var out = report.join('\n');
-  Logger.log(out);
-  return out;
-}
-
-// ========== Server-side question delivery ==========
-// Loads question data from a private Google Drive folder (one JSON file per
-// language) and returns a curated 30-question exam to authenticated clients.
-// The full question bank never reaches the browser — only the questions for
-// the current exam, without the correct-answer index.
-//
-// Setup:
-//   1) Run deployment/generate_questions_data.js locally to produce
-//      deployment/generated/questions_<lang>.json files.
-//   2) Upload all 7 files to a private Drive folder (only this account
-//      should have access; do NOT share publicly).
-//   3) Copy the folder ID (the long string in the Drive URL) and set it
-//      as ScriptProperty: QUESTIONS_DRIVE_FOLDER_ID = <folder-id>
-//   4) Deploy this Apps Script.
-//   5) Push updated HTMLs (examinee, exam, student, find_image) so they call
-//      getExamQuestions instead of loading questions.js.
-
-var EXAM_STRUCTURE_SERVER = {
-  'B':  { 'בטיחות': 7, 'הכרת הרכב': 7, 'חוק': 7, 'תמרורים': 9 },
-  '1':  { 'בטיחות': 5, 'הכרת הרכב': 5, 'חוק': 6, 'תמרורים': 6, 'ספציפי': 8 },
-  'C1': { 'בטיחות': 5, 'הכרת הרכב': 5, 'חוק': 5, 'תמרורים': 5, 'ספציפי': 10 },
-  'C':  { 'בטיחות': 5, 'הכרת הרכב': 4, 'חוק': 3, 'תמרורים': 4, 'ספציפי': 14 },
-  'D':  { 'בטיחות': 4, 'הכרת הרכב': 2, 'חוק': 5, 'תמרורים': 4, 'ספציפי': 15 }
-};
-
-function classifyCategoryServer(cat) {
-  var c = String(cat || '').trim();
-  if (/ספציפי/.test(c)) return 'ספציפי'; // ספציפי
-  if (/בטיחות/.test(c)) return 'בטיחות'; // בטיחות
-  if (/הכרת הרכב/.test(c)) return 'הכרת הרכב'; // הכרת הרכב
-  if (/חוק/.test(c)) return 'חוק'; // חוק
-  if (/תמרורים/.test(c)) return 'תמרורים'; // תמרורים
-  if (/זכות קדימה/.test(c)) return 'חוק'; // זכות קדימה → חוק
-  return '';
-}
-
-function filterByLicenseServer(pool, license) {
-  return pool.filter(function(q) {
-    var cat = String(q.category || '');
-    // "מתן זכות קדימה" applies to all license types
-    if (/זכות קדימה/.test(cat)) return true;
-    if (license === '1') {
-      var lt = String(q.licenseType || '').trim();
-      if (lt !== '' && lt !== 'N/A') return false;
-      if (cat.indexOf('1') === -1) return false;
-      return true;
-    }
-    if (license === 'C') {
-      var lic = String(q.licenseType || '').trim();
-      return lic === 'C' || lic === 'C/E' || lic === 'C+E' || lic === 'CE';
-    }
-    var lic2 = String(q.licenseType || '').trim();
-    return lic2 === license;
-  });
-}
-
-function shuffleArrayServer(arr) {
-  var a = arr.slice();
-  for (var i = a.length - 1; i > 0; i--) {
-    var j = Math.floor(Math.random() * (i + 1));
-    var t = a[i]; a[i] = a[j]; a[j] = t;
-  }
-  return a;
-}
-
-// Read a compressed cached bank, or let one execution rebuild it from Drive.
-// A request-local memo can reuse the loaded bank within a warmup operation.
-// CacheService limits: 100 KB/value, 1,000 items shared by the whole script.
-// gzip + base64 makes chunk length equal to its byte count (ASCII). Fixed slots
-// bound persistent storage: 7*(16+1) banks + 35*(4+1) pools + 128 shards + 1
-// manifest = 423 keys, leaving >500 for rate limits and active examinees.
-// Cache is evictable; generation tags prevent mixing old/new chunks on refresh.
-var QUESTION_CACHE_PREFIX = 'qv2_';
-var QUESTION_CACHE_PART_BYTES = 80000;
-var QUESTION_BANK_MAX_PARTS = 16;
-var QUESTION_POOL_MAX_PARTS = 4;
-var QUESTION_TX_SHARDS = 128;
-// 35 pools x (manifest + 4 parts) + 128 translation shards + 1 manifest.
-var QUESTION_CACHE_RESERVED_KEYS = 304;
-
-function questionCacheBusy() {
-  var err = new Error('מאגר השאלות מתעדכן כעת. יש לנסות שוב בעוד מספר שניות.');
-  err.code = 'question_cache_busy';
-  err.retryable = true;
-  err.waitSec = 3;
-  return err;
-}
-
-function encodeQuestionCache(value) {
-  return Utilities.base64Encode(Utilities.gzip(Utilities.newBlob(JSON.stringify(value), 'application/json')).getBytes());
-}
-
-function decodeQuestionCache(encoded) {
-  // Utilities.ungzip refuses a Blob without a content type ("Blob object must
-  // have non-null content type for this operation"). Without the explicit type
-  // every cache read failed in production (r1-r4) and every request rebuilt
-  // its pool from Drive while the shared cache looked healthy.
-  var gz = Utilities.newBlob(Utilities.base64Decode(encoded), 'application/x-gzip', 'cache.gz');
-  return JSON.parse(Utilities.ungzip(gz).getDataAsString('UTF-8'));
-}
-
-function readQuestionCacheRecord(cache, key, maxParts) {
-  try {
-    var raw = cache.get(key + '_meta');
-    if (!raw) return null;
-    var meta = JSON.parse(raw);
-    if (!meta || !meta.g || !Number.isInteger(meta.n) || meta.n < 1 || meta.n > maxParts) return null;
-    var keys = [];
-    for (var i = 0; i < meta.n; i++) keys.push(key + '_' + i);
-    var values = cache.getAll(keys), joined = '', prefix = meta.g + ':';
-    for (var j = 0; j < keys.length; j++) {
-      var part = values[keys[j]];
-      if (typeof part !== 'string' || part.indexOf(prefix) !== 0) return null;
-      joined += part.substring(prefix.length);
-    }
-    return decodeQuestionCache(joined);
-  } catch (e) {
-    Logger.log('[CACHE] invalid/read failed ' + key + ': ' + (e && e.message ? e.message : e));
-    return null;
-  }
-}
-
-function writeQuestionCacheRecord(cache, key, value, maxParts) {
-  try {
-    var encoded = encodeQuestionCache(value);
-    var n = Math.ceil(encoded.length / QUESTION_CACHE_PART_BYTES);
-    if (n < 1 || n > maxParts) throw new Error('compressed record exceeds reserved cache budget (' + n + '/' + maxParts + ' parts)');
-    var generation = Utilities.getUuid(), values = {}, keys = [];
-    for (var i = 0; i < n; i++) {
-      var partKey = key + '_' + i;
-      keys.push(partKey);
-      values[partKey] = generation + ':' + encoded.substring(i * QUESTION_CACHE_PART_BYTES, (i + 1) * QUESTION_CACHE_PART_BYTES);
-    }
-    cache.putAll(values, 21600);
-    var check = cache.getAll(keys), joined = '';
-    for (var j = 0; j < keys.length; j++) {
-      if (check[keys[j]] !== values[keys[j]]) throw new Error('chunk missing immediately after write');
-      joined += check[keys[j]].substring(generation.length + 1);
-    }
-    // Round-trip the read-back bytes through the real decoder. A string-only
-    // comparison passed for four releases while every decode was failing.
-    var decoded = decodeQuestionCache(joined);
-    var expectedLength = Array.isArray(value) ? value.length : Object.keys(value).length;
-    var decodedLength = Array.isArray(decoded) ? decoded.length : Object.keys(decoded).length;
-    if (decodedLength !== expectedLength) throw new Error('read-back decode mismatch (' + decodedLength + '/' + expectedLength + ')');
-    // Publish only after all chunks were verified. Readers reject mixed generations.
-    var meta = JSON.stringify({ g: generation, n: n });
-    cache.put(key + '_meta', meta, 21600);
-    if (cache.get(key + '_meta') !== meta) throw new Error('manifest missing immediately after write');
-    var obsolete = [];
-    for (var k = n; k < maxParts; k++) obsolete.push(key + '_' + k);
-    if (obsolete.length) cache.removeAll(obsolete);
-    return true;
-  } catch (e) {
-    Logger.log('[CACHE] WRITE FAILED ' + key + ': ' + (e && e.message ? e.message : e));
-    return false;
-  }
-}
-
-function clearQuestionCacheRecord(cache, key, maxParts) {
-  var keys = [key + '_meta'];
-  for (var i = 0; i < maxParts; i++) keys.push(key + '_' + i);
-  cache.removeAll(keys);
-  return keys.length;
-}
-
-// Durable lease ownership is claimed under a short true mutex. The mutex is
-// released BEFORE Drive access, gzip or filtering. Waiters return a retryable
-// response, instead of occupying execution slots with 10-20 second sleeps.
-// The lease outlives the six-minute Apps Script execution limit after a crash.
-function claimQuestionCacheLease(resource) {
-  var lock = LockService.getScriptLock();
-  if (!lock.tryLock(200)) throw questionCacheBusy();
-  try {
-    var props = PropertiesService.getScriptProperties();
-    var key = QUESTION_CACHE_PREFIX + 'lease_' + resource;
-    var prior = props.getProperty(key), lease = null;
-    try { lease = prior ? JSON.parse(prior) : null; } catch (e) {}
-    if (lease && lease.until > Date.now()) throw questionCacheBusy();
-    var owner = Utilities.getUuid();
-    props.setProperty(key, JSON.stringify({ owner: owner, until: Date.now() + QUESTION_CACHE_LEASE_MS }));
-    return { key: key, owner: owner };
-  } finally {
-    lock.releaseLock();
-  }
-}
-
-function releaseQuestionCacheLease(lease) {
-  if (!lease) return;
-  var lock = LockService.getScriptLock();
-  var locked = lock.tryLock(200);
-  // A busy mutex must NOT leave the lease in place: a start wave keeps the
-  // mutex hot exactly when the builder finishes, and an unreleased lease
-  // makes every later miss on this resource "busy" for the whole lease TTL.
-  // Owner comparison is sufficient without the mutex: while this lease is
-  // unexpired nobody else can claim the key, and after expiry a replacement
-  // carries a different owner, so the delete below cannot remove it.
-  try {
-    var props = PropertiesService.getScriptProperties();
-    var raw = props.getProperty(lease.key);
-    var current = raw ? JSON.parse(raw) : null;
-    if (current && current.owner === lease.owner) props.deleteProperty(lease.key);
-    if (!locked) Logger.log('[CACHE] lease released without mutex: ' + lease.key);
-  } catch (e) {
-    Logger.log('[CACHE] lease release failed: ' + (e && e.message ? e.message : e));
-  } finally {
-    if (locked) lock.releaseLock();
-  }
-}
-
-function normalizeQuestionCacheLanguage(lang) {
-  var safeLang = String(lang || 'he').toLowerCase();
-  if (TX_LANGS.indexOf(safeLang) === -1) throw new Error('Invalid language code');
-  return safeLang;
-}
-
-// Read-only post-warmup verification. It returns counts only, never question
-// text, IDs, tokens, folder IDs or student data. All required chunks must still
-// exist AFTER banks, pools and translations have shared the cache capacity.
-function questionCacheStatus() {
-  var cache = CacheService.getScriptCache(), records = [], licenses = Object.keys(EXAM_STRUCTURE_SERVER);
-  for (var l = 0; l < TX_LANGS.length; l++) {
-    for (var c = 0; c < licenses.length; c++) records.push({ key: QUESTION_CACHE_PREFIX + 'pool_' + TX_LANGS[l] + '_' + licenses[c], max: QUESTION_POOL_MAX_PARTS });
-  }
-  var metaKeys = records.map(function(r) { return r.key + '_meta'; });
-  var txKey = QUESTION_CACHE_PREFIX + 'tx_meta';
-  metaKeys.push(txKey);
-  var metas = cache.getAll(metaKeys), required = {}, missing = 0, present = 0;
-  for (var i = 0; i < records.length; i++) {
-    var record = records[i], meta = null;
-    try { meta = JSON.parse(metas[record.key + '_meta'] || 'null'); } catch (e) {}
-    if (!meta || !meta.g || !Number.isInteger(meta.n) || meta.n < 1 || meta.n > record.max) { missing++; continue; }
-    present++;
-    for (var p = 0; p < meta.n; p++) required[record.key + '_' + p] = meta.g + ':';
-  }
-  var tx = null;
-  try { tx = JSON.parse(metas[txKey] || 'null'); } catch (eTx) {}
-  if (!tx || !tx.g || !Array.isArray(tx.langs) || !tx.langs.length) missing++;
-  else {
-    present++;
-    for (var s = 0; s < QUESTION_TX_SHARDS; s++) required[QUESTION_CACHE_PREFIX + 'tx_' + s] = tx.g + ':';
-  }
-  var keys = Object.keys(required), maxBytes = 0, decodeChecks = 0, decodeFailures = 0;
-  // Decode a real pool record and a real shard, not only their prefixes.
-  try {
-    var probePool = readQuestionCacheRecord(cache, QUESTION_CACHE_PREFIX + 'pool_he_B', QUESTION_POOL_MAX_PARTS);
-    decodeChecks++; if (!Array.isArray(probePool) || !probePool.length) decodeFailures++;
-    var probeTx = tryTranslationsFromIndex(probePool && probePool.length ? [probePool[0].id] : [1], false);
-    decodeChecks++; if (!probeTx) decodeFailures++;
-  } catch (eProbe) { decodeFailures++; }
-  for (var start = 0; start < keys.length; start += 50) {
-    var batch = keys.slice(start, start + 50), values = cache.getAll(batch);
-    for (var k = 0; k < batch.length; k++) {
-      var value = values[batch[k]];
-      if (typeof value !== 'string' || value.indexOf(required[batch[k]]) !== 0) missing++;
-      else { present++; maxBytes = Math.max(maxBytes, value.length); }
-    }
-  }
-  return { ready: missing === 0 && decodeFailures === 0, presentKeys: present, missingOrMixedKeys: missing, maxValueBytes: maxBytes,
-    decodeChecks: decodeChecks, decodeFailures: decodeFailures,
-    translationLanguages: tx && Array.isArray(tx.langs) ? tx.langs.length : 0, reservedKeyLimit: QUESTION_CACHE_RESERVED_KEYS };
-}
-
-// Removal does not depend on old metadata surviving eviction. Old code used up
-// to ~35 chunks/bank and ~12/pool; removing 128 fixed legacy slots also covers
-// larger past banks. Legacy per-question keys are removed from all loaded IDs.
-function clearLegacyQuestionCaches(cache, banks) {
-  var keys = ['tx_meta'];
-  for (var l = 0; l < TX_LANGS.length; l++) {
-    var lang = TX_LANGS[l];
-    keys.push('qdata_' + lang + '_meta', 'qload_lock_' + lang);
-    for (var p = 0; p < 128; p++) keys.push('qdata_' + lang + '_part_' + p);
-    var licenses = Object.keys(EXAM_STRUCTURE_SERVER);
-    for (var c = 0; c < licenses.length; c++) {
-      var base = 'qpool_' + lang + '_' + licenses[c];
-      keys.push(base + '_meta', 'qpool_lock_' + lang + '_' + licenses[c]);
-      for (var k = 0; k < 128; k++) keys.push(base + '_part_' + k);
-    }
-  }
-  var seen = {};
-  for (var code in banks) {
-    var rows = banks[code] || [];
-    for (var q = 0; q < rows.length; q++) if (rows[q] && rows[q].id !== undefined) seen[String(rows[q].id)] = true;
-  }
-  Object.keys(seen).forEach(function(id) { keys.push('tx_' + id); });
-  for (var i = 0; i < keys.length; i += 100) cache.removeAll(keys.slice(i, i + 100));
-  var bankKeys = clearQuestionBankCacheKeys(cache);
-  Logger.log('[CACHE] removed legacy bank/pool keys, ' + bankKeys + ' r1-r3 bank record keys and ' + Object.keys(seen).length + ' legacy translation keys');
-}
-// Full language banks are NOT cached in CacheService any more (r4). Measured in
-// production: reading a bank back from the cache (16 x 80KB base64 chunks,
-// base64-decode, gunzip, JSON.parse of ~2MB) took 5-6s, the same as reading the
-// JSON from Drive, while the seven banks occupied ~40% of the shared cache and
-// pushed the pools/translation shards that live requests actually need out of
-// it. Banks are read from Drive and memoised per request; only the derived
-// per-license pools and the packed translation index are cached.
-function loadQuestionsForLanguageServer(lang, memo) {
-  var safeLang = normalizeQuestionCacheLanguage(lang);
-  if (memo && memo.banks && memo.banks[safeLang]) return memo.banks[safeLang];
-  var t0 = Date.now();
-  diagMark('drive:' + safeLang);
-  var folderId = PropertiesService.getScriptProperties().getProperty('QUESTIONS_DRIVE_FOLDER_ID');
-  if (!folderId) throw new Error('QUESTIONS_DRIVE_FOLDER_ID not configured in ScriptProperties');
-  var folder = DriveApp.getFolderById(folderId);
-  var fileName = 'questions_' + safeLang + '.json';
-  var files = folder.getFilesByName(fileName);
-  if (!files.hasNext()) {
-    var missing = new Error(fileName + ' not found in Drive folder');
-    missing.code = 'question_language_unavailable';
-    throw missing;
-  }
-  var parsed = JSON.parse(files.next().getBlob().getDataAsString('UTF-8'));
-  if (!Array.isArray(parsed) || !parsed.length) throw new Error(fileName + ' is empty or invalid');
-  Logger.log('[BANK] Drive read ' + safeLang + ': ' + parsed.length + ' rows; ' + (Date.now() - t0) + 'ms');
-  if (memo) {
-    if (!memo.banks) memo.banks = {};
-    memo.banks[safeLang] = parsed;
-  }
-  return parsed;
-}
-
-// Legacy (r1-r3) bank records: remove them so the space goes to pools/shards.
-function clearQuestionBankCacheKeys(cache) {
-  var removed = 0;
-  for (var l = 0; l < TX_LANGS.length; l++) {
-    removed += clearQuestionCacheRecord(cache, QUESTION_CACHE_PREFIX + 'bank_' + TX_LANGS[l], QUESTION_BANK_MAX_PARTS);
-  }
-  return removed;
-}
-
-// ========== Per-license question pools ==========
-// A pool contains license-filtered, deduplicated valid questions. Warmup shares
-// its local language-bank memo across pools. A live miss elects one builder;
-// contending requests receive an explicit retryable response.
-// Filter BEFORE dedupe because source rows repeat IDs across license types.
-function loadLicensePoolServer(lang, license, forceRebuild, memo) {
-  var safeLang = normalizeQuestionCacheLanguage(lang);
-  var lic = String(license || '').trim();
-  if (!Object.prototype.hasOwnProperty.call(EXAM_STRUCTURE_SERVER, lic)) throw new Error('Invalid license for pool: ' + lic);
-  var cache = CacheService.getScriptCache(), key = QUESTION_CACHE_PREFIX + 'pool_' + safeLang + '_' + lic;
-  var hit;
-  if (!forceRebuild) {
-    hit = readQuestionCacheRecord(cache, key, QUESTION_POOL_MAX_PARTS);
-    if (Array.isArray(hit) && hit.length) return hit;
-    // r10: a live miss never reads Drive inside the request. Every caller gets
-    // question_cache_busy (client retries in 3s) and one out-of-band rebuild
-    // fills the gap; the inline build below remains only as the fallback when
-    // no trigger could be scheduled.
-    if (requestQuestionCacheRebuild('pool_' + safeLang + '_' + lic)) throw questionCacheBusy();
-    diagMark('pool-build-inline:' + safeLang + '/' + lic);
-  }
-  var lease = claimQuestionCacheLease('pool_' + safeLang + '_' + lic);
-  try {
-    if (!forceRebuild) {
-      hit = readQuestionCacheRecord(cache, key, QUESTION_POOL_MAX_PARTS);
-      if (Array.isArray(hit) && hit.length) return hit;
-    }
-    var t0 = Date.now();
-    var filtered = filterByLicenseServer(loadQuestionsForLanguageServer(safeLang, memo), lic);
-    var seen = {}, pool = [];
-    // Filter BEFORE dedupe: repeated IDs have distinct license rows.
-    for (var f = 0; f < filtered.length; f++) {
-      var q = filtered[f];
-      if (!q || !q.id || seen[q.id] || !Array.isArray(q.answers) || q.answers.length < 2) continue;
-      seen[q.id] = true;
-      pool.push(q);
-    }
-    if (!pool.length) throw new Error('Empty pool ' + safeLang + '/' + lic + '; check question bank');
-    var cached = writeQuestionCacheRecord(cache, key, pool, QUESTION_POOL_MAX_PARTS);
-    if (memo) {
-      if (!memo.cacheStatus) memo.cacheStatus = {};
-      memo.cacheStatus[safeLang + '/' + lic] = cached;
-    }
-    Logger.log('[POOL] built ' + safeLang + '/' + lic + ': ' + pool.length + ' questions; cached=' + cached + '; ' + (Date.now() - t0) + 'ms; ' + (forceRebuild ? 'warmup' : 'MISS'));
-    return pool;
-  } finally {
-    releaseQuestionCacheLease(lease);
-  }
-}
-
-// Remove every cached pool chunk (all langs × all licenses). Used by the
-// emergency reset so a bank refresh can never serve stale pools.
-function clearAllLicensePools(cache, langs) {
-  var removed = 0, licenses = Object.keys(EXAM_STRUCTURE_SERVER);
-  for (var l = 0; l < langs.length; l++) {
-    for (var c = 0; c < licenses.length; c++) {
-      removed += clearQuestionCacheRecord(cache, QUESTION_CACHE_PREFIX + 'pool_' + langs[l] + '_' + licenses[c], QUESTION_POOL_MAX_PARTS);
-    }
-  }
-  return removed;
-}
-
-// ========== Packed translation index ==========
-// 128 fixed gzip/base64 shards replace the oversized one-key-per-question
-// index. Exam starts batch-read only shards containing their selected IDs.
-// The response retains all available language texts/answers and the original
-// ci encoding for non-examinee callers. Correct-answer indices are never cached
-// in translation shards; they are attached from the server answer key on read.
-var TX_LANGS = ['he', 'ru', 'en', 'ar', 'fr', 'es', 'am'];
-
-function questionTranslationShard(id) {
-  var text = String(id), hash = 0;
-  for (var i = 0; i < text.length; i++) hash = ((hash * 31) + text.charCodeAt(i)) >>> 0;
-  return hash % QUESTION_TX_SHARDS;
-}
-
-// skipFailedLanguages: the caller (warmup) has already decided that a partial
-// index is acceptable; any language that fails to load is left out. Without it
-// only a language whose JSON is genuinely absent from Drive is skipped.
-function buildTranslationIndexCache(memo, skipFailedLanguages) {
-  var lease = claimQuestionCacheLease('translations');
-  try {
-    var cache = CacheService.getScriptCache(), banks = {}, byId = {};
-    memo = memo || { banks: {}, cacheStatus: {} };
-    var langs = [];
-    for (var l = 0; l < TX_LANGS.length; l++) {
-      var lang = TX_LANGS[l];
-      var rows;
-      try { rows = loadQuestionsForLanguageServer(lang, memo); }
-      catch (eLang) {
-        // Only a genuinely absent optional language is skipped; anything else
-        // aborts before touching the published index.
-        if (skipFailedLanguages || (eLang && eLang.code === 'question_language_unavailable')) {
-          Logger.log('[TX] language omitted from index: ' + lang + ' (' + (eLang && eLang.message ? eLang.message : eLang) + ')');
-          continue;
-        }
-        throw eLang;
-      }
-      langs.push(lang);
-      banks[lang] = rows;
-      for (var q = 0; q < rows.length; q++) {
-        var row = rows[q];
-        if (!row || row.id === undefined || row.id === null) continue;
-        var per = byId[row.id] || (byId[row.id] = {});
-        per[lang] = { t: row.text, a: row.answers };
-      }
-    }
-    var shards = [], ids = Object.keys(byId);
-    for (var s = 0; s < QUESTION_TX_SHARDS; s++) shards.push({});
-    for (var i = 0; i < ids.length; i++) shards[questionTranslationShard(ids[i])][ids[i]] = byId[ids[i]];
-    var generation = Utilities.getUuid(), values = {}, keys = [];
-    for (var b = 0; b < shards.length; b++) {
-      var encoded = encodeQuestionCache(shards[b]);
-      if (encoded.length > QUESTION_CACHE_PART_BYTES) throw new Error('Translation shard ' + b + ' exceeds reserved cache budget');
-      var key = QUESTION_CACHE_PREFIX + 'tx_' + b;
-      keys.push(key);
-      values[key] = generation + ':' + encoded;
-    }
-    cache.putAll(values, 21600);
-    var verified = cache.getAll(keys);
-    for (var k = 0; k < keys.length; k++) {
-      if (verified[keys[k]] !== values[keys[k]]) throw new Error('Translation shard missing immediately after write');
-    }
-    // Decode one read-back shard with the real decoder (see writeQuestionCacheRecord).
-    var probe = decodeQuestionCache(verified[keys[0]].substring(generation.length + 1));
-    if (Object.keys(probe).length !== Object.keys(shards[0]).length) throw new Error('Translation shard read-back decode mismatch');
-    if (!langs.length) throw new Error('No language bank could be loaded');
-    var meta = JSON.stringify({ g: generation, langs: langs, count: ids.length, builtAt: Date.now() });
-    cache.put(QUESTION_CACHE_PREFIX + 'tx_meta', meta, 21600);
-    if (cache.get(QUESTION_CACHE_PREFIX + 'tx_meta') !== meta) throw new Error('Translation manifest missing after write');
-    Logger.log('[TX] index cached: ' + ids.length + ' questions, ' + langs.length + ' languages, in ' + QUESTION_TX_SHARDS + ' shards');
-    return { count: ids.length, langs: langs, cached: true };
-  } catch (e) {
-    Logger.log('[TX] WRITE FAILED: ' + (e && e.message ? e.message : e));
-    throw e;
-  } finally {
-    releaseQuestionCacheLease(lease);
-  }
-}
-
-function publishedTranslationLanguageCount(cache) {
-  try {
-    var meta = JSON.parse(cache.get(QUESTION_CACHE_PREFIX + 'tx_meta') || 'null');
-    return meta && Array.isArray(meta.langs) ? meta.langs.length : 0;
-  } catch (e) { return 0; }
-}
-
-// Assemble translations for the selected questions from the per-id index. Returns
-// the SAME { lang: { id: {t,a[,ci]} } } shape as the bank path, or null to signal
-// "index not ready / incomplete → caller should fall back to the banks".
-function tryTranslationsFromIndex(idList, includeCi) {
-  try {
-    var cache = CacheService.getScriptCache();
-    var raw = cache.get(QUESTION_CACHE_PREFIX + 'tx_meta');
-    if (!raw) return null;
-    var meta = JSON.parse(raw);
-    if (!meta || !meta.g || !Array.isArray(meta.langs) || !meta.langs.length) return null;
-    var keys = [], needed = {};
-    for (var i = 0; i < idList.length; i++) {
-      var shard = questionTranslationShard(idList[i]);
-      if (!needed[shard]) { needed[shard] = true; keys.push(QUESTION_CACHE_PREFIX + 'tx_' + shard); }
-    }
-    // Two cache reads total: manifest + only the needed packed shards.
-    var got = cache.getAll(keys), byId = {}, prefix = meta.g + ':';
-    for (var k = 0; k < keys.length; k++) {
-      var packed = got[keys[k]];
-      if (typeof packed !== 'string' || packed.indexOf(prefix) !== 0) return null;
-      var entries = decodeQuestionCache(packed.substring(prefix.length));
-      Object.keys(entries).forEach(function(id) { byId[id] = entries[id]; });
-    }
-    for (var j = 0; j < idList.length; j++) if (!byId[idList[j]]) return null;
-    var translations = {};
-    for (var l = 0; l < meta.langs.length; l++) {
-      var lang = meta.langs[l], altMap = {};
-      for (var q = 0; q < idList.length; q++) {
-        var id = idList[q], per = byId[id];
-        if (!per || !per[lang]) continue;
-        var entry = { t: per[lang].t, a: per[lang].a };
-        if (includeCi && typeof lookupCorrectIndex === 'function') {
-          var ci = lookupCorrectIndex(Number(id), lang);
-          if (ci !== null && ci !== undefined) entry.ci = ci ^ (id % 256);
-        }
-        altMap[id] = entry;
-      }
-      translations[lang] = altMap;
-    }
-    return translations;
-  } catch (e) {
-    Logger.log('[TX] invalid/read failed: ' + (e && e.message ? e.message : e));
-    return null;
-  }
-}
-
-// Live exam start never loads full language banks (r4). When the packed index
-// is not ready or a shard is missing, the exam starts WITHOUT prefetched
-// translations; the client already falls back to getQuestionsByIds on a
-// mid-exam language switch. The previous fallback loaded all seven banks in the
-// request (~5s each, ~35s total) and was the measured cause of 30-50s exam
-// starts whenever a single shard had been evicted.
-function buildExamTranslations(selected, includeCi) {
-  var idList = [];
-  for (var i = 0; i < selected.length; i++) idList.push(selected[i].id);
-  var fast = tryTranslationsFromIndex(idList, includeCi);
-  if (fast !== null) return fast;
-  Logger.log('[TX] shard MISS: exam starts without prefetched translations for ' + idList.length + ' questions (client fetches on demand)');
-  return null;
-}
-
-// Pick 30 questions per the license blueprint, return them WITHOUT the
-// correct-answer index. Authenticated clients only — falls back to a
-// rate-limited guest path for the standalone exam.html flow.
-// ========== Practice block while an exam is running ==========
-// Class practice (student.html) and exams share ONE Apps Script account — the
-// same ~30 concurrent execution slots and the same question cache/pools. A
-// practice wave (the daily peak) can therefore saturate the server and freeze
-// the exam side: the documented ~13:00 outage was a practice peak, and single-
-// site exam mornings still stalled because a class was practicing in parallel.
-// This guard turns class practice OFF whenever at least one exam session is
-// open. Exam draws (auth 'examinee') and standalone exam.html are NEVER
-// affected. The answer is cached ~60s so practice calls don't re-scan the
-// sessions sheet (which would add the very load we're removing). It self-clears
-// within ~60s after the last session closes or expires.
-// r6: OFF by default. The block was introduced while every practice request
-// rebuilt a full question pool (the cache was unreadable, see r5). A practice
-// request is now a ~2s cache hit, so class practice no longer competes with
-// exams. Re-enable without a deployment by setting the Script Property
-// PRACTICE_BLOCK_DURING_EXAMS to "on" (takes effect within ~60s); remove it or
-// set anything else to disable again.
-var PRACTICE_BLOCK_PROPERTY = 'PRACTICE_BLOCK_DURING_EXAMS';
-function isExamSessionActiveForPracticeBlock() {
-  try {
-    var cache = CacheService.getScriptCache();
-    var flag = cache.get('exam_active_block');
-    if (flag === 'Y') return true;
-    if (flag === 'N') return false;
-    var enabled = String(PropertiesService.getScriptProperties().getProperty(PRACTICE_BLOCK_PROPERTY) || '').trim().toLowerCase() === 'on';
-    if (!enabled) {
-      try { cache.put('exam_active_block', 'N', 60); } catch (eOff) {}
-      return false;
-    }
-    // Cache miss (at most once per 60s) → scan the sessions sheet once. Same
-    // active-session rule the examiner dashboard uses: פעיל(10) true AND not
-    // past תקף עד(9).
-    var active = false;
-    var sess = getSheet('סשנים').getDataRange().getValues();
-    var nowT = new Date().getTime();
-    for (var s = 1; s < sess.length; s++) {
-      var isActive = sess[s][10] === true || String(sess[s][10]).toUpperCase() === 'TRUE';
-      if (!isActive) continue;
-      var validUntil = sess[s][9] ? new Date(sess[s][9]).getTime() : 0;
-      if (!validUntil || validUntil > nowT) { active = true; break; }
-    }
-    try { cache.put('exam_active_block', active ? 'Y' : 'N', 60); } catch (ePut) {}
-    return active;
-  } catch (e) {
-    // Fail OPEN: a transient sheet/cache error must never block ALL practice.
-    Logger.log('[PRACTICE-BLOCK] check failed, allowing practice: ' + (e && e.message ? e.message : e));
-    return false;
-  }
-}
-
-function handleGetExamQuestions(p) {
-  // Determine auth context
-  var auth = 'guest';
-  var examineeAudioMode = null;
-  if (p.sessionCode && p.idNumber && p.examineeToken) {
-    diagMark('sheet:token-examstart');
-    var ev = verifyExamineeToken(p.sessionCode, p.idNumber, p.examineeToken);
-    if (!ev.valid) {
-      return jsonResponse({ status: 'error', message: 'Examinee token invalid', reason: ev.reason });
-    }
-    auth = 'examinee';
-    // Second capture point for per-examinee audio: covers an examiner who set
-    // it AFTER approving, when the client's approval polling has already
-    // stopped but the examinee hasn't pressed "start" yet. Free — the token
-    // check above already read the row.
-    examineeAudioMode = ev.audioMode || 'off';
-  } else if (p.token && p.examinerId) {
-    if (!verifyToken(p.examinerId, p.token)) {
-      return jsonResponse({ status: 'error', message: 'Examiner token invalid', tokenExpired: true });
-    }
-    auth = 'examiner';
-  } else if (p.classCode && p.studentId) {
-    // Student practice mode — looser auth, just rate-limit
-    auth = 'student';
-  } else if (p.standaloneIdNumber) {
-    // Standalone exam.html — examinee enters their ID, no token; rate-limit hard
-    auth = 'standalone';
-  }
-
-  // Physical practice block: class practice (student.html) is turned OFF while
-  // any exam session is open, so it can't share the ~30 slots with the exam
-  // wave. Only auth 'student' (classCode+studentId) is affected — exam draws
-  // and standalone are not. Cheap: a cached flag, no per-call sheet scan.
-  if (auth === 'student' && isExamSessionActiveForPracticeBlock()) {
-    return jsonResponse({ status: 'error', code: 'practice_blocked_exam_active',
-      message: 'התרגול סגור כעת מפני שמתקיים מבחן במערכת. נסו שוב מאוחר יותר.' });
-  }
-
-  // Rate limit (per auth + identifier)
-  var rlId = questionRequestRateId(p, auth);
-  var rlMax = (auth === 'guest' || auth === 'standalone') ? 5 : 20;
-  var rlErr = requireRateLimit('getExamQuestions_' + auth, rlId, rlMax, 60);
-  if (rlErr) return rlErr;
-
-  var lang = String(p.language || 'he').toLowerCase();
-  var license = String(p.license || p.licenseType || 'B');
-  if (!EXAM_STRUCTURE_SERVER[license]) {
-    return jsonResponse({ status: 'error', message: 'Unknown license: ' + license });
-  }
-
-  // Per-license pool: license-filtered + deduped, prebuilt by the warmup
-  // trigger and self-healing on miss (see loadLicensePoolServer — that is the
-  // only copy of the filter/dedupe logic now). Loads ~1/3 of the bytes the
-  // full bank did, which is what took exam-start from ~10s to ~2-3s.
-  var pool;
-  try { pool = loadLicensePoolServer(lang, license); }
-  catch (e) {
-    var busyResponse = theoryRetryableErrorResponse(e);
-    if (busyResponse) return busyResponse;
-    Logger.log('loadLicensePoolServer(' + lang + ',' + license + ') failed: ' + (e && e.message));
-    return jsonResponse({ status: 'error', message: 'שגיאה בטעינת שאלות. נסה שוב.' });
-  }
-
-  // Category-quiz mode (student.html practice by topic): return up to N
-  // questions matching one category, skipping the 30-question blueprint.
-  var mode = String(p.mode || 'exam');
-  var selected;
-  if (mode === 'category' && p.categoryFilter) {
-    var wantTopic = String(p.categoryFilter);
-    var catPool = pool.filter(function(q) { return classifyCategoryServer(q.category) === wantTopic; });
-    catPool = shuffleArrayServer(catPool);
-    var max = Number(p.maxCount) || 15;
-    selected = catPool.slice(0, Math.min(catPool.length, max));
-    if (selected.length === 0) {
-      return jsonResponse({ status: 'error', message: 'No questions in category', topic: wantTopic });
-    }
-  } else {
-    // Default exam mode: pick per EXAM_STRUCTURE blueprint.
-    var byTopic = {};
-    for (var j = 0; j < pool.length; j++) {
-      var t = classifyCategoryServer(pool[j].category);
-      if (!t) continue;
-      if (!byTopic[t]) byTopic[t] = [];
-      byTopic[t].push(pool[j]);
-    }
-    var blueprint = EXAM_STRUCTURE_SERVER[license];
-    selected = [];
-    var usedIds = {};
-    for (var topic in blueprint) {
-      var needed = blueprint[topic];
-      var avail = shuffleArrayServer(byTopic[topic] || []);
-      var count = 0;
-      for (var ai = 0; ai < avail.length && count < needed; ai++) {
-        if (usedIds[avail[ai].id]) continue;
-        usedIds[avail[ai].id] = true;
-        selected.push(avail[ai]);
-        count++;
-      }
-      if (count < needed) {
-        return jsonResponse({
-          status: 'error',
-          message: 'Not enough questions for topic',
-          topic: topic,
-          have: (byTopic[topic] || []).length,
-          need: needed
-        });
-      }
-    }
-    selected = shuffleArrayServer(selected);
-  }
-
-  // Remember which IDs we issued so handleRegisterExamQuestions can refuse
-  // submissions that name questions we didn't actually give the examinee.
-  // Only meaningful for the examinee-token path (we have a stable identifier).
-  if (auth === 'examinee' && p.sessionCode && p.idNumber) {
-    var issuedKey = 'issued_qs_' + p.sessionCode + '_' + normalizeId(p.idNumber);
-    var ids = selected.map(function(q) { return q.id; });
-    try { CacheService.getScriptCache().put(issuedKey, JSON.stringify(ids), 21600); } catch (e) { /* skip */ }
-  }
-
-  // For real exams (auth === 'examinee') we deliberately omit the correct
-  // index — scoring happens server-side via handleRegisterExamQuestions /
-  // handleSubmitResult using ANSWER_KEY_BY_LANG. For practice/standalone
-  // flows (exam.html, student.html) the client needs to score locally, so
-  // we include the encoded `ci` field that matches the legacy questions.js
-  // format: ci = correctIndex XOR (id mod 256).
-  if (auth !== 'examinee' && typeof lookupCorrectIndex === 'function') {
-    for (var ci_i = 0; ci_i < selected.length; ci_i++) {
-      var origCorrect = lookupCorrectIndex(Number(selected[ci_i].id), lang);
-      if (origCorrect !== null && origCorrect !== undefined) {
-        selected[ci_i].ci = origCorrect ^ (selected[ci_i].id % 256);
-      }
-    }
-  }
-
-  // Pre-fetch all 7 languages so mid-exam language switches are instant
-  // (no extra round trip). Adds ~120-150 KB to the response. Cold-start
-  // server cost is real (7 Drive reads) but cached for 6h after that.
-  //
-  // For any non-examinee caller we include each translation's `ci` (correct
-  // index, XOR-encoded) so the client can score correctly per language when
-  // the translator put answers in a different order. This includes `guest`
-  // (student practicing without a classCode) — the previous student-only gate
-  // left guest practice silently wrong after a mid-practice language switch.
-  // For examinee auth we keep `ci` stripped — server is sole source of truth.
-  var includeCiInTranslations = (auth !== 'examinee');
-  var translations = null;
-  if (p.includeTranslations === 'true' || p.includeTranslations === '1') {
-    // Fast path: assemble from the pre-built per-id translation index (built by
-    // the warmup trigger) so we DON'T parse 6 extra full language banks on every
-    // exam-start — the main per-request cost that saturated execution slots in
-    // the morning start-wave. Falls back to loading the banks when the index
-    // isn't ready (e.g. first request after a cache clear), so behavior is never
-    // worse than before. Response shape is identical → offline mid-exam language
-    // switching unchanged. See buildExamTranslations / buildTranslationIndexCache.
-    // `ci` (non-examinee only) is still layered per-language from the answer key.
-    translations = buildExamTranslations(selected, includeCiInTranslations);
-  }
-
-  var responseBody = { status: 'ok', auth: auth, count: selected.length, questions: selected };
-  if (examineeAudioMode !== null) responseBody.audioMode = examineeAudioMode;
-  if (translations) responseBody.translations = translations;
-  return jsonResponse(responseBody);
-}
-
-// ========== Re-fetch questions in a different language ==========
-// When an examinee/student/practice user changes language mid-exam, the
-// client calls this with the set of question IDs already shown and the new
-// language. Server returns those same IDs with text/answers in the new
-// language so the exam can continue without losing progress.
-function handleGetQuestionsByIds(p) {
-  // Match auth model of handleGetExamQuestions
-  var auth = 'guest';
-  if (p.sessionCode && p.idNumber && p.examineeToken) {
-    var ev = verifyExamineeToken(p.sessionCode, p.idNumber, p.examineeToken);
-    if (!ev.valid) {
-      return jsonResponse({ status: 'error', message: 'Examinee token invalid', reason: ev.reason });
-    }
-    auth = 'examinee';
-  } else if (p.token && p.examinerId) {
-    if (!verifyToken(p.examinerId, p.token)) {
-      return jsonResponse({ status: 'error', message: 'Examiner token invalid', tokenExpired: true });
-    }
-    auth = 'examiner';
-  } else if (p.classCode && p.studentId) {
-    auth = 'student';
-  } else if (p.standaloneIdNumber) {
-    auth = 'standalone';
-  }
-
-  // Practice block (see isExamSessionActiveForPracticeBlock): flashcards /
-  // language-switch in class practice are off while an exam session is open.
-  if (auth === 'student' && isExamSessionActiveForPracticeBlock()) {
-    return jsonResponse({ status: 'error', code: 'practice_blocked_exam_active',
-      message: 'התרגול סגור כעת מפני שמתקיים מבחן במערכת. נסו שוב מאוחר יותר.' });
-  }
-
-  var rlErr = requireRateLimit('getQuestionsByIds_' + auth,
-    questionRequestRateId(p, auth),
-    30, 60);
-  if (rlErr) return rlErr;
-
-  var lang = String(p.language || 'he').toLowerCase();
-  var idsRaw = String(p.ids || '');
-  var ids = idsRaw.split(',').map(function(s) {
-    var n = parseInt(String(s).trim(), 10);
-    return isNaN(n) ? null : n;
-  }).filter(function(n) { return n !== null; });
-
-  if (ids.length === 0) return jsonResponse({ status: 'error', message: 'No IDs provided' });
-  if (ids.length > 50) return jsonResponse({ status: 'error', message: 'Too many IDs (max 50)' });
-
-  // r10: the per-license pools already hold every question of this language;
-  // a full Drive read happens only when they do not cover the request.
-  var allQuestions, cachedById = null;
-  try { cachedById = questionsFromCachedPools(lang, ids); } catch (eCached) { cachedById = null; }
-  if (cachedById) {
-    allQuestions = [];
-    for (var ck in cachedById) if (Object.prototype.hasOwnProperty.call(cachedById, ck)) allQuestions.push(cachedById[ck]);
-  } else {
-    try { allQuestions = loadQuestionsForLanguageServer(lang); }
-    catch (e) {
-      var busyResponse = theoryRetryableErrorResponse(e);
-      if (busyResponse) return busyResponse;
-      Logger.log('loadQuestionsForLanguageServer(' + lang + ') failed: ' + (e && e.message));
-      return jsonResponse({ status: 'error', message: 'שגיאה בטעינת שאלות. נסה שוב.' });
-    }
-  }
-
-  // Build id → question lookup
-  var byId = {};
-  for (var i = 0; i < allQuestions.length; i++) {
-    var q = allQuestions[i];
-    if (q && q.id) byId[q.id] = q;
-  }
-
-  var results = [];
-  for (var j = 0; j < ids.length; j++) {
-    var found = byId[ids[j]];
-    if (!found) {
-      results.push(null);
-      continue;
-    }
-    var entry = {
-      id: found.id,
-      text: found.text,
-      answers: found.answers,
-      category: found.category,
-      licenseType: found.licenseType,
-      imageUrl: found.imageUrl,
-      language: found.language || lang
-    };
-    // Include ci for non-examinee callers (practice/standalone) so they can score locally.
-    if (auth !== 'examinee' && typeof lookupCorrectIndex === 'function') {
-      var origCorrect = lookupCorrectIndex(Number(found.id), lang);
-      if (origCorrect !== null && origCorrect !== undefined) {
-        entry.ci = origCorrect ^ (found.id % 256);
-      }
-    }
-    results.push(entry);
-  }
-
-  return jsonResponse({ status: 'ok', count: results.length, questions: results });
-}
-
-// ========== Question search (for find_image.html examiner utility) ==========
-// Returns up to 20 questions whose text/answers/category match the query
-// substring. Requires examiner token — this is an internal staff utility,
-// not for examinees. Cross-language search: caller passes the language and
-// we search that language's pre-translated dataset.
-function handleSearchQuestions(p) {
-  var authErr = requireToken(p);
-  if (authErr) return authErr;
-  var rlErr = requireRateLimit('searchQuestions', String(p.examinerId || ''), 30, 60);
-  if (rlErr) return rlErr;
-
-  var query = String(p.q || '').trim().toLowerCase();
-  if (query.length < 2) return jsonResponse({ status: 'ok', matches: [], note: 'Query too short' });
-
-  var lang = String(p.language || 'he').toLowerCase();
-  var allQuestions;
-  try { allQuestions = loadQuestionsForLanguageServer(lang); }
-  catch (e) {
-    Logger.log('loadQuestionsForLanguageServer(' + lang + ') failed: ' + (e && e.message));
-    return jsonResponse({ status: 'error', message: 'שגיאה בטעינת שאלות. נסה שוב.' });
-  }
-
-  var matches = [];
-  var MAX_MATCHES = 20;
-  for (var i = 0; i < allQuestions.length && matches.length < MAX_MATCHES; i++) {
-    var q = allQuestions[i];
-    if (!q || !q.text) continue;
-    var hay = (q.text + ' ' + (q.answers || []).join(' ') + ' ' + (q.category || '')).toLowerCase();
-    if (hay.indexOf(query) === -1) continue;
-    var match = {
-      id: q.id,
-      text: q.text,
-      answers: q.answers,
-      category: q.category,
-      licenseType: q.licenseType,
-      imageUrl: q.imageUrl
-    };
-    // Include encoded ci for the search utility (examiner trusted view)
-    if (typeof lookupCorrectIndex === 'function') {
-      var orig = lookupCorrectIndex(Number(q.id), lang);
-      if (orig !== null && orig !== undefined) {
-        match.ci = orig ^ (q.id % 256);
-      }
-    }
-    matches.push(match);
-  }
-
-  return jsonResponse({ status: 'ok', matches: matches, language: lang, query: query });
-}
-
-// ========== Bohan-site portal — MOVED OUT (2026-07-31) ==========
-// The examiners-portal auth + data (action=bohanSiteAuth: shared password,
-// HMAC tokens, examiner + Waze-location lists) moved to its OWN standalone
-// Apps Script project ("bohan-site-server"), fully separate from this exam
-// system. This deployment no longer serves the portal.
-
-// ========== Result-upload HMAC token (for Cloudflare Worker auth) ==========
-// Issues a short-lived signed token that the browser sends in X-Auth-Token
-// when POSTing exam-result HTML to the exam-results Cloudflare Worker.
-// The Worker verifies the same HMAC with its own copy of the secret.
-//
-// Setup: in Apps Script, set ScriptProperty 'RESULT_UPLOAD_SECRET' to a long
-// random string. Set the IDENTICAL value as a Worker secret binding named
-// UPLOAD_SECRET. The secret never reaches the browser.
-function handleGetResultUploadToken(p) {
-  // Examiner auth (token+id) is already enforced by the doGet dispatcher
-  // before this handler runs — see examinerActions list.
-  var props = PropertiesService.getScriptProperties();
-  var secret = props.getProperty('RESULT_UPLOAD_SECRET');
-  if (!secret) {
-    return jsonResponse({
-      status: 'error',
-      message: 'RESULT_UPLOAD_SECRET not configured in Apps Script properties',
-      code: 'not_configured'
-    });
-  }
-  var payload = JSON.stringify({ exp: Date.now() + 5 * 60 * 1000 });
-  var payloadB64 = Utilities.base64EncodeWebSafe(payload).replace(/=+$/, '');
-  var sigBytes = Utilities.computeHmacSha256Signature(payloadB64, secret);
-  var sigB64 = Utilities.base64EncodeWebSafe(sigBytes).replace(/=+$/, '');
-  return jsonResponse({ status: 'ok', token: payloadB64 + '.' + sigB64 });
-}
-
-function unmarkPendingCompleted(sessionCode, idNumber) {
-  // Restore the latest pending row from 'completed' back to 'in_exam' so a resumed
-  // exam (after a premature close-fail was reverted) can be re-submitted. BUG FIX:
-  // this previously read col index 6 (=language) and tested 'done' (a status that
-  // is NEVER written — markPendingCompleted writes 'completed'), then wrote to
-  // column 7 (=language) and scanned oldest-first — so it silently no-op'd and
-  // could corrupt the language cell. Now mirrors markPendingCompleted exactly:
-  // status = col index 5 / column 6, newest row first.
-  var pendingSheet = getSheet('ממתינים');
-  if (!pendingSheet) return;
-  var data = pendingSheet.getDataRange().getValues();
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]) === String(sessionCode) && normalizeId(data[i][1]) === normalizeId(idNumber)) {
-      if (String(data[i][5] || '').trim() === 'completed') {
-        pendingSheet.getRange(i + 1, 6).setValue('in_exam');
-      }
-      break;
-    }
-  }
-}
-
-// ========== שיתוף תוצאה דרך CacheService ==========
-
-function handleUploadResultHtml(data) {
-  // DISABLED: result-HTML hosting moved to the authenticated Cloudflare Worker
-  // (RESULTS_URL). This Apps Script endpoint had NO auth and served attacker HTML
-  // from the trusted Google origin (stored-XSS/phishing). The live client never
-  // calls it (it posts to the Worker), so returning early is safe and closes the hole.
-  return jsonResponse({ status: 'error', message: 'disabled — use the results worker' });
-  // eslint-disable-next-line
-  if (!data.html || !data.requestId) {
-    return jsonResponse({ status: 'error', message: 'Missing html or requestId' });
-  }
-
-  try {
-    var cache = CacheService.getScriptCache();
-    var html = data.html;
-    var CHUNK_SIZE = 90000; // 90KB per chunk (limit is 100KB)
-    var numChunks = Math.ceil(html.length / CHUNK_SIZE);
-
-    // שומר HTML בחלקים ב-CacheService (עד 6 שעות)
-    var chunks = {};
-    for (var i = 0; i < numChunks; i++) {
-      chunks['result_' + data.requestId + '_' + i] = html.substring(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-    }
-    chunks['result_' + data.requestId + '_meta'] = String(numChunks);
-    cache.putAll(chunks, 21600);
-
-    // בונה קישור לצפייה דרך doGet
-    var viewLink = ScriptApp.getService().getUrl() + '?action=viewResult&id=' + data.requestId;
-
-    // שומר תוצאה ב-ScriptProperties כדי שה-client יוכל לקרוא דרך GET polling
-    var props = PropertiesService.getScriptProperties();
-    props.setProperty('upload_' + data.requestId, JSON.stringify({ link: viewLink }));
-
-    return jsonResponse({ status: 'ok', link: viewLink });
-  } catch (err) {
-    if (data.requestId) {
-      var props2 = PropertiesService.getScriptProperties();
-      props2.setProperty('upload_' + data.requestId, JSON.stringify({ error: err.toString() }));
-    }
-    return jsonResponse({ status: 'error', message: err.toString() });
-  }
-}
-
-function handleGetUploadResult(p) {
-  var requestId = p.requestId;
-  if (!requestId) return jsonResponse({ status: 'error', message: 'Missing requestId' });
-
-  var props = PropertiesService.getScriptProperties();
-  var stored = props.getProperty('upload_' + requestId);
-  if (!stored) return jsonResponse({ status: 'pending' });
-
-  // ניקוי
-  props.deleteProperty('upload_' + requestId);
-
-  var result = JSON.parse(stored);
-  if (result.error) {
-    return jsonResponse({ status: 'error', message: result.error });
-  }
-  return jsonResponse({ status: 'ok', link: result.link });
-}
-
 // ========== Commander Dashboard ==========
 
 function parseDateParam(str) {
@@ -6414,8 +6686,10 @@ function handleCommanderDashboard(p) {
   var prevFrom = (dateFrom && dateTo && dateFrom.getTime && dateTo.getTime)
     ? new Date(dateFrom.getTime() - (dateTo.getTime() - dateFrom.getTime()) - 1) : null;
   diagMark('sheet:results-commander');
-  var resSheet = getSheet('תוצאות');
-  var resRead = readRowsSince(resSheet, 0, prevFrom ? new Date(prevFrom.getTime() - DAY_MS) : null);
+  // readResultsSince, not readRowsSince: a range that reaches past the 30-day
+  // retention window must include 'תוצאות_ארכיון' or the dashboard would report
+  // a shorter history every night (B5).
+  var resRead = readResultsSince(prevFrom ? new Date(prevFrom.getTime() - DAY_MS) : null);
   var resData = resRead.rows;
   diagMark('sheet:results-commander-done:' + resRead.mode);
 
@@ -6783,11 +7057,15 @@ function handleCommanderDashboard(p) {
       var blocks = wrongDetails.split(/\n\s*\n/);
       for (var wb = 0; wb < blocks.length; wb++) {
         var lines = blocks[wb].split('\n');
-        var qText = '', qCorrect = '', qId = '';
+        var qText = '', qCorrect = '', qId = '', qCategory = '';
         for (var wl = 0; wl < lines.length; wl++) {
           var line = lines[wl];
           if (line.indexOf('מזהה שאלה:') === 0) {
             qId = line.replace(/^מזהה שאלה:\s*/, '').trim();
+          } else if (line.indexOf('קטגוריה:') === 0) {
+            // submitResult writes the question's own category into the wrong
+            // block, so the topic needs no question bank at all (§3.6).
+            qCategory = line.replace(/^קטגוריה:\s*/, '').trim();
           } else if (line.indexOf('שאלה:') === 0) {
             qText = line.replace(/^שאלה:\s*/, '').trim();
             if (qText.length > 200) qText = qText.substring(0, 200);
@@ -6818,16 +7096,18 @@ function handleCommanderDashboard(p) {
           continue;
         }
         if (!wrongQuestionCounts[key]) {
-          wrongQuestionCounts[key] = { count: 0, text: qText, correctAnswer: qCorrect, questionId: qId, langCounts: {} };
+          wrongQuestionCounts[key] = { count: 0, text: qText, category: classifyCategoryServer(qCategory) || '', questionId: qId, langCounts: {} };
         }
         wrongQuestionCounts[key].count++;
+        if (!wrongQuestionCounts[key].category && qCategory) wrongQuestionCounts[key].category = classifyCategoryServer(qCategory) || '';
         // Per-language split — a question failing mostly in one non-Hebrew
         // language is a translation-bug signal for the content team.
         wrongQuestionCounts[key].langCounts[langName] = (wrongQuestionCounts[key].langCounts[langName] || 0) + 1;
-        // Weak-topic pending item: resolved to a topic after the loop via the
-        // question DB (id preferred; text fallback for legacy rows).
+        // Weak topic, straight from the row: no language bank, no Drive, no
+        // resolver loop (§3.6). A row written before the 'קטגוריה:' line
+        // existed simply carries no topic and is not counted.
         topicBlocksParsed++;
-        weakTopicPending.push({ id: qId || '', text: qText || '', license: license, topic: '' });
+        weakTopicPending.push({ license: license, topic: classifyCategoryServer(qCategory) || '' });
       }
     }
 
@@ -7009,47 +7289,17 @@ function handleCommanderDashboard(p) {
   prevOverall.dqRate = prevOverall.total > 0 ? Math.round((prevOverall.disqualified / prevOverall.total) * 100) : 0;
   prevOverall.reattemptRate = prevOverall.total > 0 ? Math.round((prevOverall.reattempts / prevOverall.total) * 100) : 0;
 
-  // ===== Weak topics: resolve pending wrong-blocks to topics =====
-  // id is language-independent (all language files carry the Hebrew category),
-  // so most items resolve on the first (Hebrew) pass; text-fallback items from
-  // legacy rows resolve when their exam language comes up. Cache makes the
-  // repeated loads cheap (~300ms warm per language).
+  // ===== Weak topics =====
+  // Each pending item already carries its topic, parsed from the row's own
+  // 'קטגוריה:' line. Until r25 this section loaded the question bank of up to
+  // seven languages to map id → category: 14 Drive reads per request before
+  // r12/r13, and even from the cache it was the reason the server had to keep
+  // whole language banks in memory. What the commander loses: rows written
+  // before 02/06/2026, which have no category line, no longer resolve — the
+  // "asked" denominators are unchanged, so those rows lower the wrong-rate of
+  // an old date range instead of raising it.
   var topicWrong = {};
-  diagMark('compute:commander-resolvers');
   var topicWrongByLic = {};
-  // Shared across BOTH resolver loops below: without it each language was
-  // resolved twice per request (see questionMetaForLanguage).
-  var qMetaMemo = {};
-  try {
-    var WT_LANGS = ['he', 'ru', 'en', 'ar', 'fr', 'es', 'am'];
-    for (var wtl = 0; wtl < WT_LANGS.length; wtl++) {
-      var wtUnresolved = false;
-      for (var wtc = 0; wtc < weakTopicPending.length; wtc++) {
-        if (!weakTopicPending[wtc].topic) { wtUnresolved = true; break; }
-      }
-      if (!wtUnresolved) break;
-      var wtQs;
-      try { wtQs = questionMetaForLanguage(WT_LANGS[wtl], qMetaMemo); } catch (eWtLoad) { continue; }
-      if (!Array.isArray(wtQs) || wtQs.length === 0) continue;
-      var wtById = {}, wtByText = {};
-      for (var wtq = 0; wtq < wtQs.length; wtq++) {
-        var wtRec = wtQs[wtq];
-        if (!wtRec) continue;
-        if (wtRec.id) wtById[String(wtRec.id)] = wtRec;
-        if (wtRec.text) wtByText[String(wtRec.text).substring(0, 200)] = wtRec;
-      }
-      for (var wtp = 0; wtp < weakTopicPending.length; wtp++) {
-        var wtItem = weakTopicPending[wtp];
-        if (wtItem.topic) continue;
-        var wtFound = wtItem.id ? wtById[wtItem.id] : null;
-        if (!wtFound && wtItem.text) wtFound = wtByText[wtItem.text];
-        if (wtFound) {
-          var wtTopic = classifyCategoryServer(wtFound.category);
-          if (wtTopic) wtItem.topic = wtTopic;
-        }
-      }
-    }
-  } catch (eWtAll) { /* weak-topic section degrades to empty, dashboard still works */ }
   for (var wtf = 0; wtf < weakTopicPending.length; wtf++) {
     var wtFin = weakTopicPending[wtf];
     if (!wtFin.topic) continue;
@@ -7079,13 +7329,15 @@ function handleCommanderDashboard(p) {
   // own site (new rows) or the session's host site (fallback).
   var waitTimesOut = { overall: { avg: 0, median: 0, p90: 0, count: 0 }, bySite: {} };
   try {
-    var pendDataW = getSheet('ממתינים').getDataRange().getValues();
-    // Include rows archiveOldPendingRows moved out of the live sheet, so a
-    // date-range wait-time report stays complete beyond the retention window.
-    var archW = getSheetIfExists(PENDING_ARCHIVE_SHEET);
-    if (archW && archW.getLastRow() > 1) pendDataW = pendDataW.concat(archW.getDataRange().getValues().slice(1));
-    var sessSheetW = getSheet('סשנים');
-    var sessDataW = sessSheetW.getDataRange().getValues();
+    // Live + archive, both bounded by the requested range (review C R11: the
+    // archive is never pruned and this block read all of it, whole, on every
+    // commander dashboard). Columns: reg time (E), exam start (L), session code
+    // (A), site (R) — see the loop below.
+    diagMark('sheet:pending-commander');
+    var pendReadW = readPendingSince(dateFrom, [[1, 1], [5, 1], [12, 1], [18, 1]]);
+    var pendDataW = pendReadW.rows;
+    diagMark('sheet:pending-commander-done:' + pendReadW.mode);
+    var sessDataW = sessionRows();
     var sessSiteMapW = {};
     for (var swi = 1; swi < sessDataW.length; swi++) {
       sessSiteMapW[String(sessDataW[swi][0]).trim()] = String(sessDataW[swi][3] || '');
@@ -7126,9 +7378,11 @@ function handleCommanderDashboard(p) {
 
   // Top-N most-missed questions, sorted by count descending. Capped at 10 —
   // beyond that the list gets noisy and stops driving decisions.
-  // Values are objects {count, text, correctAnswer, questionId}; questionId
-  // takes precedence (post-2026-06-02 data), text+correctAnswer is the
-  // fallback for legacy rows.
+  // §3.6: the server sends the ID, the count, the topic and the text AS IT WAS
+  // SHOWN (the first occurrence in 'פירוט שגויות'); the client resolves the
+  // canonical text and the image from the static bank by questionId. The old
+  // shape carried `correctAnswer`/`imageUrl`, which cost up to seven language
+  // banks per request to fill in.
   var topWrong = [];
   var wrongKeys = Object.keys(wrongQuestionCounts);
   wrongKeys.sort(function(a, b) {
@@ -7137,84 +7391,13 @@ function handleCommanderDashboard(p) {
   for (var wk = 0; wk < Math.min(wrongKeys.length, 10); wk++) {
     var entry = wrongQuestionCounts[wrongKeys[wk]];
     topWrong.push({
-      question: entry.text || '',
-      correctAnswer: entry.correctAnswer || '',
       questionId: entry.questionId || '',
       count: entry.count,
+      category: entry.category || '',
+      text: entry.text || '',
       langCounts: entry.langCounts || {}
     });
   }
-
-  // Image lookup: many top-N questions are traffic-sign prompts ("מה פירוש
-  // התמרור?") that don't make sense without seeing the sign. Try to resolve
-  // each top-wrong entry to its real question record so we can include the
-  // imageUrl + id. Hebrew first (most exams); other languages as fallback
-  // for entries that didn't resolve.
-  //
-  // The match key is (text, correctAnswer-in-answers, correctIndex points to
-  // that answer). This is strict enough that even if two real questions share
-  // the same text, we only attach the image when the correct-answer text also
-  // matches the answer-key index — so we either get the right sign or no
-  // image. Better silent miss than a wrong picture.
-  try {
-    if (typeof loadQuestionsForLanguageServer === 'function') {
-      var SUPPORTED_LANGS_FOR_IMG = ['he', 'ru', 'en', 'ar', 'fr', 'es', 'am'];
-      for (var lgi = 0; lgi < SUPPORTED_LANGS_FOR_IMG.length; lgi++) {
-        var stillMissing = false;
-        for (var tw0 = 0; tw0 < topWrong.length; tw0++) {
-          if (!topWrong[tw0].imageUrl) { stillMissing = true; break; }
-        }
-        if (!stillMissing) break;
-        var langQs;
-        try { langQs = questionMetaForLanguage(SUPPORTED_LANGS_FOR_IMG[lgi], qMetaMemo); }
-        catch (eLoad) { continue; }
-        if (!Array.isArray(langQs) || langQs.length === 0) continue;
-        // Index by ID (fast path) and by text (fallback path)
-        var qById = {}, qByText = {};
-        for (var qIdx = 0; qIdx < langQs.length; qIdx++) {
-          var qRec = langQs[qIdx];
-          if (!qRec) continue;
-          if (qRec.id) qById[String(qRec.id)] = qRec;
-          if (qRec.text) {
-            if (!qByText[qRec.text]) qByText[qRec.text] = [];
-            qByText[qRec.text].push(qRec);
-          }
-        }
-        for (var twi = 0; twi < topWrong.length; twi++) {
-          if (topWrong[twi].imageUrl) continue;
-          // Path 0: question ID known (new data) — direct lookup, no
-          // ambiguity. Best of all paths.
-          if (topWrong[twi].questionId) {
-            var idMatch = qById[String(topWrong[twi].questionId)];
-            if (idMatch && idMatch.imageUrl) {
-              topWrong[twi].imageUrl = idMatch.imageUrl;
-              continue;
-            }
-          }
-          var candidates = qByText[topWrong[twi].question] || [];
-          if (candidates.length === 0) continue;
-          // Path A: correct answer known — match it precisely against the
-          // candidate's answers array.
-          if (topWrong[twi].correctAnswer) {
-            for (var ci = 0; ci < candidates.length; ci++) {
-              var cand = candidates[ci];
-              if (!Array.isArray(cand.answers)) continue;
-              if (cand.answers.indexOf(topWrong[twi].correctAnswer) !== -1) {
-                if (cand.imageUrl) topWrong[twi].imageUrl = cand.imageUrl;
-                if (cand.id && !topWrong[twi].questionId) topWrong[twi].questionId = cand.id;
-                break;
-              }
-            }
-          }
-          // Path B: only one candidate for this exact text — unambiguous.
-          if (!topWrong[twi].imageUrl && candidates.length === 1) {
-            if (candidates[0].imageUrl) topWrong[twi].imageUrl = candidates[0].imageUrl;
-            if (candidates[0].id && !topWrong[twi].questionId) topWrong[twi].questionId = candidates[0].id;
-          }
-        }
-      }
-    }
-  } catch (eImg) { /* image resolution best-effort; ignore failures */ }
 
   // Practice impact — finalize pass rates for each bucket. Pass rate is
   // computed only on the non-DQ sample (DQs were excluded above).
@@ -7374,8 +7557,17 @@ function buildPassProbabilityModel(opts) {
   var lookbackDays = opts.lookbackDays || 30;
   var sinceDate = opts.sinceDate || null;
 
-  var resData = getSheet('תוצאות').getDataRange().getValues();
-  var practiceData = getSheet('תוצאות תרגול').getDataRange().getValues();
+  // Both reads are column-pruned, and the results read spans live + archive
+  // (B5). Exam columns used below: A date, B id, C name, D phone, E licence,
+  // H pass, K site, O attempt, R פסול. Practice columns: A date, C name,
+  // D class, F licence, I percent, P phone — never N/O, the two JSON blobs
+  // that made the practice read 28.5 s (r17).
+  // ⚠ Index another column here and it MUST be added to the colSpec; a column
+  // outside the list reads as '' instead of failing.
+  var resData = readResultsSince(sinceDate, [[1, 5], [8, 1], [11, 1], [15, 1], [18, 1]]).rows;
+  var practiceData = readRowsSince(getSheet('תוצאות תרגול'), 0,
+    sinceDate ? new Date(sinceDate.getTime() - lookbackDays * 86400000) : null,
+    [[1, 1], [3, 2], [6, 1], [9, 1], [16, 1]]).rows;
 
   // Class → site map (practice rows store the class code, not the site).
   var classSiteMap = {};
@@ -7603,85 +7795,10 @@ function predictPassProbability(model, features) {
   var confidence = n >= 40 ? 'high' : (n >= 12 ? 'medium' : 'low');
   return { prob: Math.round(prob * 100), n: n, basis: basis, confidence: confidence, licenseBaseRate: Math.round(licRate * 100), licenseAttemptRate: Math.round(laRate * 100) };
 }
-
-// Diagnostic endpoint — builds the model and returns a human-readable summary so
-// we can eyeball whether the signal is real BEFORE wiring it into dashboards.
-// Role: מפקד only. Not yet used by any client screen.
-function handlePredictiveModelPreview(p) {
-  var exData = getSheet('בוחנים').getDataRange().getValues();
-  var role = '';
-  for (var i = 1; i < exData.length; i++) {
-    if (normalizeId(exData[i][1]) === normalizeId(p.examinerId)) { role = String(exData[i][5] || 'בוחן'); break; }
-  }
-  if (role !== 'מפקד') return jsonResponse({ status: 'error', message: 'אין הרשאת מפקד' });
-
-  var lookbackDays = Number(p.lookbackDays) || 30;
-  var model = buildPassProbabilityModel({ lookbackDays: lookbackDays });
-  var BIN_MID = { '0-49': 40, '50-59': 55, '60-69': 65, '70-79': 75, '80-85': 83, '86-92': 89, '93-100': 97 };
-
-  // Practice-curve table: for FIRST-time takers (attempt 1 — the cleanest curve,
-  // no repeat-failer confound), show observed vs smoothed predicted pass per
-  // score bin, per license. This is the plot that tells us if practice score
-  // predicts pass at all.
-  var licenses = Object.keys(model.byLicense).sort();
-  var table = [];
-  for (var li = 0; li < licenses.length; li++) {
-    var lic = licenses[li];
-    var licRow = { license: lic, n: model.byLicense[lic].n, baseRate: Math.round(model.byLicense[lic].rate * 100), bins: [] };
-    var lastProb = -1, monotone = true;
-    for (var bi = 0; bi < model.bins.length; bi++) {
-      var bin = model.bins[bi];
-      var cell = model.cells[lic + '|1|' + bin];   // attempt-1 cell
-      var pred = predictPassProbability(model, { license: lic, attempt: 1, lastPct: BIN_MID[bin] });
-      var observed = cell && cell.n > 0 ? Math.round(cell.rate * 100) : null;
-      licRow.bins.push({ bin: bin, n: cell ? cell.n : 0, observed: observed, predicted: pred.prob });
-      if (pred.prob < lastProb - 1) monotone = false;   // allow 1pt jitter
-      lastProb = pred.prob;
-    }
-    licRow.monotone = monotone;   // does higher practice score → higher predicted pass? sanity check
-    var npLic1 = model.noPractice[lic + '|1'];
-    licRow.noPracticeRate = npLic1 && npLic1.n > 0 ? Math.round(npLic1.rate * 100) : null;
-    licRow.noPracticeN = npLic1 ? npLic1.n : 0;
-    table.push(licRow);
-  }
-
-  // License × attempt observed pass rates — shows how much attempt number moves
-  // the base rate within each license (the second big axis).
-  var licAttTable = [];
-  for (var li2 = 0; li2 < licenses.length; li2++) {
-    var lic2 = licenses[li2];
-    var row = { license: lic2, attempts: {} };
-    ['1', '2', '3+'].forEach(function(a) {
-      var node = model.byLicAtt[lic2 + '|' + a];
-      row.attempts[a] = node && node.n > 0 ? { n: node.n, rate: Math.round(node.rate * 100) } : { n: 0, rate: null };
-    });
-    licAttTable.push(row);
-  }
-
-  // Marginal diagnostics (attempt / sessions / trend).
-  function marginal(obj) {
-    var out = {};
-    for (var kk in obj) out[kk] = { n: obj[kk].n, rate: Math.round(obj[kk].rate * 100) };
-    return out;
-  }
-
-  var cov = model.coverage;
-  return jsonResponse({ status: 'ok', data: {
-    builtAt: Utilities.formatDate(new Date(), 'Asia/Jerusalem', 'yyyy-MM-dd HH:mm'),
-    modelVersion: model.version,
-    lookbackDays: model.lookbackDays,
-    shrinkageK: model.k,
-    note: 'byLicenseBin is for attempt 1 only (cleanest practice curve). Model keys on license × attempt × score-bin.',
-    overall: { exams: model.base.n, baseRate: Math.round(model.base.rate * 100) },
-    coverage: { eligible: cov.eligible, matched: cov.matched, matchPct: cov.eligible > 0 ? Math.round(cov.matched / cov.eligible * 100) : 0, byPhone: cov.byPhone, byNameSite: cov.byNameSite, byName: cov.byName },
-    byLicenseBin: table,
-    byLicenseAttempt: licAttTable,
-    marginalByAttempt: marginal(model.byAttempt),
-    marginalBySessions: marginal(model.bySessions),
-    marginalByTrend: marginal(model.byTrend)
-  } });
-}
-
+// handlePredictiveModelPreview removed (review C R14): a diagnostic endpoint no
+// client ever called, whose only job was to eyeball the model before it was
+// wired into the dashboards — which it now is (at-risk list, examinerForecast).
+// It also built the whole model synchronously on a doGet.
 // ========== מערכת מורים — Teacher System ==========
 
 function verifyTeacherToken(teacherId, token) {
@@ -7907,9 +8024,13 @@ function handleTeacherCommanderDashboard(p) {
   }
   var deletedClassMap = getDeletedClassMap();
 
-  // Read practice results
-  var resSheet = getSheet('תוצאות תרגול');
-  var resData = resSheet.getDataRange().getValues();
+  // Read practice results — bounded by the requested range (the loop drops
+  // anything outside it anyway). All columns: unlike the commander view this
+  // one aggregates the wrong-question JSON in column N.
+  diagMark('sheet:practice-teacher-commander');
+  var resRead = readRowsSince(getSheet('תוצאות תרגול'), 0, dateFrom);
+  var resData = resRead.rows;
+  diagMark('sheet:practice-teacher-commander-done:' + resRead.mode);
 
   var overall = { total: 0, passed: 0, failed: 0, scores: [], stayTimes: [], students: {}, teachers: {}, classes: {}, sites: {} };
   var byTeacher = {};
@@ -8193,8 +8314,9 @@ function handleTeacherCommanderDashboard(p) {
   // Site scoping mirrors the practice rows (local/multi-site commanders see
   // only their sites; exam rows carry the site in col 11).
   try {
-    var examResSheet = getSheet('תוצאות');
-    var examResData = examResSheet.getDataRange().getValues();
+    // Live + archive (B5), bounded by the range, columns A-H + K (site).
+    diagMark('sheet:results-teacher-commander');
+    var examResData = readResultsSince(dateFrom, [[1, 8], [11, 1]]).rows;
     var failsById = {};
     for (var er = 1; er < examResData.length; er++) {
       var erDate = parseSheetDate(examResData[er][0]);
@@ -8264,7 +8386,9 @@ function computeAtRiskAll(opts) {
 
   // Exam-history index → upcoming attempt number + everPassed. Keyed by phone AND
   // name|license, mirroring the model join.
-  var examData = getSheet('תוצאות').getDataRange().getValues();
+  // Live + archive (B5), columns C name, D phone, E licence, H pass, O attempt.
+  // ⚠ Index another column and add it to the colSpec — a missing column reads ''.
+  var examData = readResultsSince(null, [[3, 3], [8, 1], [15, 1]]).rows;
   var histByPhone = {}, histByName = {};
   function histBump(idx, key, attempt, passed) {
     if (!key) return;
@@ -8286,9 +8410,13 @@ function computeAtRiskAll(opts) {
 
   // Group practice rows by student within the window — no scope filter here (the
   // cache holds everyone; the read handler filters by caller scope).
-  var practiceData = getSheet('תוצאות תרגול').getDataRange().getValues();
   var windowStart = new Date();
   windowStart.setDate(windowStart.getDate() - lookbackDays);
+  // Rows: only the window this loop keeps (it drops anything older itself).
+  // Columns: A date, B studentId, C name, D class, F licence, I percent,
+  // P phone — never the two JSON blobs in N/O.
+  var practiceData = readRowsSince(getSheet('תוצאות תרגול'), 0, windowStart,
+    [[1, 6], [9, 1], [16, 1]]).rows;
   var students = {};
   for (var r = 1; r < practiceData.length; r++) {
     var pDate = parseSheetDate(practiceData[r][0]);
@@ -8394,10 +8522,19 @@ function computeAtRiskAll(opts) {
 // by a time-based trigger (see installAtRiskTrigger) at ~03:00 so the heavy
 // model build never lands during exam/practice hours. Dashboards then READ this
 // cache instead of rebuilding — no per-request model build, no midday load.
+// The job-running FLAG is gone with the warmup that read it (r25). What the two
+// nightly jobs need from each other is stronger than a flag anyway: this one
+// reads 'תוצאות' live + archive, and the 01:00 archive MOVES rows between those
+// two sheets, so a run that overlapped it could count a row twice or not at all.
+// The script lock the archive already holds is the real interlock; 03:00 is two
+// hours later, so waiting for it is a formality that costs nothing.
 function rebuildAtRiskCache() {
-  markJobRunning('rebuildAtRiskCache', true);   // keeps the hourly cache check out of the way (see ensureQuestionCachesWarm)
+  var lock = LockService.getScriptLock();
+  var held = false;
+  try { held = lock.tryLock(60000); } catch (e) { held = false; }
+  if (!held) Logger.log('rebuildAtRiskCache: the archive still holds the lock — computing anyway');
   try { return rebuildAtRiskCacheInner(); }
-  finally { markJobRunning('rebuildAtRiskCache', false); }
+  finally { if (held) lock.releaseLock(); }
 }
 function rebuildAtRiskCacheInner() {
   var res = computeAtRiskAll({ lookbackDays: 30 });
@@ -8579,7 +8716,7 @@ function handleExaminerForecast(p) {
   var activeSessions = {}, sessionSite = {};
   try {
     diagMark('sheet:sessions-forecast');
-    var sess = getSheet('סשנים').getDataRange().getValues();
+    var sess = sessionRows();
     var nowT = new Date().getTime();
     for (var s = 1; s < sess.length; s++) {
       var active = sess[s][10] === true || String(sess[s][10]).toUpperCase() === 'TRUE';
@@ -8604,7 +8741,12 @@ function handleExaminerForecast(p) {
     return edSiteLicAcc[kk];
   }
   try {
-    var wait = getSheet('ממתינים').getDataRange().getValues();
+    // Only registrations of sessions that are still open matter, and a session
+    // lives 8 hours — so two days of rows cover every one of them. Columns:
+    // A code, C name, D phone, F status, I licence.
+    diagMark('sheet:pending-forecast');
+    var waitCutoff = new Date(Date.now() - 2 * 86400000);
+    var wait = readRowsSince(getSheet('ממתינים'), 4, waitCutoff, [[1, 1], [3, 2], [6, 1], [9, 1]]).rows;
     for (var w = 1; w < wait.length; w++) {
       var code = String(wait[w][0] || '').trim();
       if (!activeSessions[code]) continue;
@@ -8685,9 +8827,14 @@ function handleAdminDashboard(p) {
   }
   var deletedClassMap = getDeletedClassMap();
 
-  // Read practice results - INCLUDING rows without classCode
-  var resSheet = getSheet('תוצאות תרגול');
-  var resData = resSheet.getDataRange().getValues();
+  // Read practice results - INCLUDING rows without classCode.
+  // Bounded by the requested range; columns A-F (date, student, name, class,
+  // mode, licence) + I (percent) + J (pass) — never the two JSON blobs.
+  // ⚠ Index another column here and add it to the colSpec.
+  diagMark('sheet:practice-admin');
+  var adminRead = readRowsSince(getSheet('תוצאות תרגול'), 0, dateFrom, [[1, 6], [9, 2]]);
+  var resData = adminRead.rows;
+  diagMark('sheet:practice-admin-done:' + adminRead.mode);
 
   var overall = { total: 0, passed: 0, failed: 0, scores: [], students: {}, classes: {}, independentStudents: {} };
   var byLicense = {};
@@ -8987,10 +9134,11 @@ function handleTeacherClassDetails(p) {
   // Verify teacher owns this class
   var classSheet = getSheet('כיתות');
   var classData = classSheet.getDataRange().getValues();
-  var classInfo = null;
+  var classInfo = null, classCreated = null;
   for (var c = 1; c < classData.length; c++) {
     if (String(classData[c][0]).trim() === classCode && normalizeId(classData[c][2]) === normalizeId(p.teacherId)) {
       classInfo = { code: classCode, name: classData[c][1], license: classData[c][4], active: classData[c][6] === 'כן' };
+      classCreated = parseSheetDateTime(classData[c][5]);   // col F = תאריך יצירה
       break;
     }
   }
@@ -9009,36 +9157,40 @@ function handleTeacherClassDetails(p) {
     }
   }
 
-  // Get practice results for these students
-  // 17/09/2026: this ran 13 times in the exam window (19-32s each) — every call
-  // is a full read of the 107k-row practice sheet, and it uses the JSON columns
-  // so neither a date bound nor column pruning applies. Marked so its share of
-  // the contention on the shared spreadsheet is measured, not assumed.
+  // Get practice results for these students.
+  // 17/09/2026: this ran 13 times in one exam window at 19-32 s each, every call
+  // a FULL read of the 107k-row practice sheet including its two JSON blob
+  // columns. Two bounds, both exact:
+  //   rows    — nothing before the class existed can belong to the class;
+  //   columns — everything except N ('פירוט שגויות', ~2 KB of wrong-question
+  //             text per row) which nothing on this screen shows. Column O
+  //             ('פירוט לפי נושא') STAYS: it is the per-topic breakdown the
+  //             student card draws, and it is two orders of magnitude smaller.
+  // ⚠ Index another column here and add it to the colSpec.
   diagMark('sheet:practice-class');
-  var resSheet = getSheet('תוצאות תרגול');
-  var resData = resSheet.getDataRange().getValues();
-  diagMark('sheet:practice-class-done');
+  var classRead = readRowsSince(getSheet('תוצאות תרגול'), 0, classCreated, [[1, 13], [15, 1]]);
+  var resData = classRead.rows;
+  diagMark('sheet:practice-class-done:' + classRead.mode);
+  var inClass = {};
+  for (var sj = 0; sj < studentIds.length; sj++) inClass[studentIds[sj]] = true;
   var studentResults = {};
   for (var r = 1; r < resData.length; r++) {
     var rSid = String(resData[r][1]).trim();
-    var rClass = String(resData[r][3]).trim();
-    if (rClass === classCode && studentIds.indexOf(rSid) !== -1) {
-      if (!studentResults[rSid]) studentResults[rSid] = [];
-      studentResults[rSid].push({
-        date: resData[r][0],
-        mode: resData[r][4],
-        license: resData[r][5],
-        score: resData[r][6],
-        total: resData[r][7],
-        percent: resData[r][8],
-        passed: resData[r][9],
-        time: resData[r][10],
-        category: resData[r][11] || '',
-        language: resData[r][12] || 'he',
-        wrongDetails: resData[r][13] || '',
-        categoryBreakdown: resData[r][14] || ''
-      });
-    }
+    if (String(resData[r][3]).trim() !== classCode || !inClass[rSid]) continue;
+    if (!studentResults[rSid]) studentResults[rSid] = [];
+    studentResults[rSid].push({
+      date: resData[r][0],
+      mode: resData[r][4],
+      license: resData[r][5],
+      score: resData[r][6],
+      total: resData[r][7],
+      percent: resData[r][8],
+      passed: resData[r][9],
+      time: resData[r][10],
+      category: resData[r][11] || '',
+      language: resData[r][12] || 'he',
+      categoryBreakdown: resData[r][14] || ''
+    });
   }
 
   // Build student summaries
@@ -9105,17 +9257,20 @@ function handleTeacherExportData(p) {
   // Verify ownership
   var classSheet = getSheet('כיתות');
   var classData = classSheet.getDataRange().getValues();
-  var owns = false;
+  var owns = false, exportCreated = null;
   for (var c = 1; c < classData.length; c++) {
     if (String(classData[c][0]).trim() === classCode && normalizeId(classData[c][2]) === normalizeId(p.teacherId)) {
-      owns = true; break;
+      owns = true;
+      exportCreated = parseSheetDateTime(classData[c][5]);
+      break;
     }
   }
   if (!owns) return jsonResponse({ status: 'error', message: 'אין הרשאה' });
 
-  // Get all results for this class
-  var resSheet = getSheet('תוצאות תרגול');
-  var resData = resSheet.getDataRange().getValues();
+  // Get all results for this class. Rows are bounded by the class's creation
+  // date (nothing older can belong to it); every COLUMN stays — this is the
+  // export, and the JSON blobs are the point of it.
+  var resData = readRowsSince(getSheet('תוצאות תרגול'), 0, exportCreated).rows;
   var headers = resData[0];
   var rows = [];
   for (var r = 1; r < resData.length; r++) {

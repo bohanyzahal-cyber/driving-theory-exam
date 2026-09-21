@@ -34,9 +34,14 @@ function handleAdminDashboard(p) {
   }
   var deletedClassMap = getDeletedClassMap();
 
-  // Read practice results - INCLUDING rows without classCode
-  var resSheet = getSheet('תוצאות תרגול');
-  var resData = resSheet.getDataRange().getValues();
+  // Read practice results - INCLUDING rows without classCode.
+  // Bounded by the requested range; columns A-F (date, student, name, class,
+  // mode, licence) + I (percent) + J (pass) — never the two JSON blobs.
+  // ⚠ Index another column here and add it to the colSpec.
+  diagMark('sheet:practice-admin');
+  var adminRead = readRowsSince(getSheet('תוצאות תרגול'), 0, dateFrom, [[1, 6], [9, 2]]);
+  var resData = adminRead.rows;
+  diagMark('sheet:practice-admin-done:' + adminRead.mode);
 
   var overall = { total: 0, passed: 0, failed: 0, scores: [], students: {}, classes: {}, independentStudents: {} };
   var byLicense = {};

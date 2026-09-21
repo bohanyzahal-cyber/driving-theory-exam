@@ -87,8 +87,17 @@ function buildPassProbabilityModel(opts) {
   var lookbackDays = opts.lookbackDays || 30;
   var sinceDate = opts.sinceDate || null;
 
-  var resData = getSheet('תוצאות').getDataRange().getValues();
-  var practiceData = getSheet('תוצאות תרגול').getDataRange().getValues();
+  // Both reads are column-pruned, and the results read spans live + archive
+  // (B5). Exam columns used below: A date, B id, C name, D phone, E licence,
+  // H pass, K site, O attempt, R פסול. Practice columns: A date, C name,
+  // D class, F licence, I percent, P phone — never N/O, the two JSON blobs
+  // that made the practice read 28.5 s (r17).
+  // ⚠ Index another column here and it MUST be added to the colSpec; a column
+  // outside the list reads as '' instead of failing.
+  var resData = readResultsSince(sinceDate, [[1, 5], [8, 1], [11, 1], [15, 1], [18, 1]]).rows;
+  var practiceData = readRowsSince(getSheet('תוצאות תרגול'), 0,
+    sinceDate ? new Date(sinceDate.getTime() - lookbackDays * 86400000) : null,
+    [[1, 1], [3, 2], [6, 1], [9, 1], [16, 1]]).rows;
 
   // Class → site map (practice rows store the class code, not the site).
   var classSiteMap = {};
@@ -316,82 +325,7 @@ function predictPassProbability(model, features) {
   var confidence = n >= 40 ? 'high' : (n >= 12 ? 'medium' : 'low');
   return { prob: Math.round(prob * 100), n: n, basis: basis, confidence: confidence, licenseBaseRate: Math.round(licRate * 100), licenseAttemptRate: Math.round(laRate * 100) };
 }
-
-// Diagnostic endpoint — builds the model and returns a human-readable summary so
-// we can eyeball whether the signal is real BEFORE wiring it into dashboards.
-// Role: מפקד only. Not yet used by any client screen.
-function handlePredictiveModelPreview(p) {
-  var exData = getSheet('בוחנים').getDataRange().getValues();
-  var role = '';
-  for (var i = 1; i < exData.length; i++) {
-    if (normalizeId(exData[i][1]) === normalizeId(p.examinerId)) { role = String(exData[i][5] || 'בוחן'); break; }
-  }
-  if (role !== 'מפקד') return jsonResponse({ status: 'error', message: 'אין הרשאת מפקד' });
-
-  var lookbackDays = Number(p.lookbackDays) || 30;
-  var model = buildPassProbabilityModel({ lookbackDays: lookbackDays });
-  var BIN_MID = { '0-49': 40, '50-59': 55, '60-69': 65, '70-79': 75, '80-85': 83, '86-92': 89, '93-100': 97 };
-
-  // Practice-curve table: for FIRST-time takers (attempt 1 — the cleanest curve,
-  // no repeat-failer confound), show observed vs smoothed predicted pass per
-  // score bin, per license. This is the plot that tells us if practice score
-  // predicts pass at all.
-  var licenses = Object.keys(model.byLicense).sort();
-  var table = [];
-  for (var li = 0; li < licenses.length; li++) {
-    var lic = licenses[li];
-    var licRow = { license: lic, n: model.byLicense[lic].n, baseRate: Math.round(model.byLicense[lic].rate * 100), bins: [] };
-    var lastProb = -1, monotone = true;
-    for (var bi = 0; bi < model.bins.length; bi++) {
-      var bin = model.bins[bi];
-      var cell = model.cells[lic + '|1|' + bin];   // attempt-1 cell
-      var pred = predictPassProbability(model, { license: lic, attempt: 1, lastPct: BIN_MID[bin] });
-      var observed = cell && cell.n > 0 ? Math.round(cell.rate * 100) : null;
-      licRow.bins.push({ bin: bin, n: cell ? cell.n : 0, observed: observed, predicted: pred.prob });
-      if (pred.prob < lastProb - 1) monotone = false;   // allow 1pt jitter
-      lastProb = pred.prob;
-    }
-    licRow.monotone = monotone;   // does higher practice score → higher predicted pass? sanity check
-    var npLic1 = model.noPractice[lic + '|1'];
-    licRow.noPracticeRate = npLic1 && npLic1.n > 0 ? Math.round(npLic1.rate * 100) : null;
-    licRow.noPracticeN = npLic1 ? npLic1.n : 0;
-    table.push(licRow);
-  }
-
-  // License × attempt observed pass rates — shows how much attempt number moves
-  // the base rate within each license (the second big axis).
-  var licAttTable = [];
-  for (var li2 = 0; li2 < licenses.length; li2++) {
-    var lic2 = licenses[li2];
-    var row = { license: lic2, attempts: {} };
-    ['1', '2', '3+'].forEach(function(a) {
-      var node = model.byLicAtt[lic2 + '|' + a];
-      row.attempts[a] = node && node.n > 0 ? { n: node.n, rate: Math.round(node.rate * 100) } : { n: 0, rate: null };
-    });
-    licAttTable.push(row);
-  }
-
-  // Marginal diagnostics (attempt / sessions / trend).
-  function marginal(obj) {
-    var out = {};
-    for (var kk in obj) out[kk] = { n: obj[kk].n, rate: Math.round(obj[kk].rate * 100) };
-    return out;
-  }
-
-  var cov = model.coverage;
-  return jsonResponse({ status: 'ok', data: {
-    builtAt: Utilities.formatDate(new Date(), 'Asia/Jerusalem', 'yyyy-MM-dd HH:mm'),
-    modelVersion: model.version,
-    lookbackDays: model.lookbackDays,
-    shrinkageK: model.k,
-    note: 'byLicenseBin is for attempt 1 only (cleanest practice curve). Model keys on license × attempt × score-bin.',
-    overall: { exams: model.base.n, baseRate: Math.round(model.base.rate * 100) },
-    coverage: { eligible: cov.eligible, matched: cov.matched, matchPct: cov.eligible > 0 ? Math.round(cov.matched / cov.eligible * 100) : 0, byPhone: cov.byPhone, byNameSite: cov.byNameSite, byName: cov.byName },
-    byLicenseBin: table,
-    byLicenseAttempt: licAttTable,
-    marginalByAttempt: marginal(model.byAttempt),
-    marginalBySessions: marginal(model.bySessions),
-    marginalByTrend: marginal(model.byTrend)
-  } });
-}
-
+// handlePredictiveModelPreview removed (review C R14): a diagnostic endpoint no
+// client ever called, whose only job was to eyeball the model before it was
+// wired into the dashboards — which it now is (at-risk list, examinerForecast).
+// It also built the whole model synchronously on a doGet.

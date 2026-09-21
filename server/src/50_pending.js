@@ -62,26 +62,36 @@ function handleRegisterExaminee(p) {
   return jsonResponse({ status: 'ok', examineeToken: examineeToken });
 }
 
+// Write columns of a ממתינים row WITHOUT changing its status (audio, extension,
+// DQ counter, warnings, "finished on device"). Goes through the same flush and
+// the same snapshot invalidation as setPendingStatus: a poller that reads a
+// snapshot written before the change would otherwise show the old value for up
+// to PENDING_SNAPSHOT_SEC (review C R8).
+function writePendingCells(sheet, rowNumber, sessionCode, extras) {
+  var wrote = false;
+  for (var name in extras) {
+    if (!Object.prototype.hasOwnProperty.call(extras, name) || !PENDING_COLS[name]) continue;
+    sheet.getRange(rowNumber, PENDING_COLS[name]).setValue(extras[name]);
+    wrote = true;
+  }
+  if (!wrote) return;
+  SpreadsheetApp.flush();
+  invalidatePendingSnapshot(sessionCode);
+}
+
 function handleCancelRegistration(p) {
   var sheet = getSheet('ממתינים');
   var data = sheet.getDataRange().getValues();
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
-      var s = String(data[i][5]).trim();
-      if (s === 'waiting' || s === 'approved') {
-        // Verify phone matches to prevent unauthorized cancellation
-        var storedPhone = String(data[i][3] || '').replace(/[^0-9]/g, '');
-        var givenPhone = String(p.phone || '').replace(/[^0-9]/g, '');
-        if (storedPhone && givenPhone && storedPhone.slice(-7) !== givenPhone.slice(-7)) {
-          return jsonResponse({ status: 'error', message: 'פרטים לא תואמים' });
-        }
-        sheet.getRange(i + 1, 6).setValue('cancelled');
-        SpreadsheetApp.flush();
-        return jsonResponse({ status: 'ok' });
-      }
-    }
+  var hit = findLatestPendingRow(data, p.sessionCode, p.idNumber, ['waiting', 'approved']);
+  if (hit.idx === -1) return jsonResponse({ status: 'error', message: 'לא נמצא רישום פעיל לביטול' });
+  // Verify phone matches to prevent unauthorized cancellation
+  var storedPhone = String(hit.row[3] || '').replace(/[^0-9]/g, '');
+  var givenPhone = String(p.phone || '').replace(/[^0-9]/g, '');
+  if (storedPhone && givenPhone && storedPhone.slice(-7) !== givenPhone.slice(-7)) {
+    return jsonResponse({ status: 'error', message: 'פרטים לא תואמים' });
   }
-  return jsonResponse({ status: 'error', message: 'לא נמצא רישום פעיל לביטול' });
+  setPendingStatus(sheet, hit.idx + 1, p.sessionCode, 'cancelled');
+  return jsonResponse({ status: 'ok' });
 }
 
 function handleCheckApproval(p) {
@@ -165,26 +175,16 @@ function handleApproveExaminee(p) {
 
   var sheet = getSheet('ממתינים');
   var data = sheet.getDataRange().getValues();
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber) && String(data[i][5]).trim() === 'waiting') {
-      sheet.getRange(i + 1, 6).setValue('approved');
-      if (timeExt) sheet.getRange(i + 1, 11).setValue(timeExt);  // column K = הארכת זמן
-      if (audioMode) sheet.getRange(i + 1, 10).setValue(audioMode);  // column J = שמע
-      SpreadsheetApp.flush();
-      invalidatePendingSnapshot(p.sessionCode);   // r23
-      return jsonResponse({ status: 'ok' });
-    }
+  var hit = findLatestPendingRow(data, p.sessionCode, p.idNumber, ['waiting']);
+  if (hit.idx === -1) {
+    var current = data.length > 1 ? (findLatestPendingRow(data, p.sessionCode, p.idNumber).status || 'לא נמצא') : 'אין נתונים';
+    return jsonResponse({ status: 'error', message: 'נבחן ממתין לא נמצא (סטטוס נוכחי: ' + current + ')' });
   }
-  return jsonResponse({ status: 'error', message: 'נבחן ממתין לא נמצא (סטטוס נוכחי: ' + (data.length > 1 ? findStatus(data, p) : 'אין נתונים') + ')' });
-}
-
-function findStatus(data, p) {
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
-      return String(data[i][5]);
-    }
-  }
-  return 'לא נמצא';
+  var extras = {};
+  if (timeExt) extras.timeExtension = timeExt;   // column K
+  if (audioMode) extras.audio = audioMode;       // column J
+  setPendingStatus(sheet, hit.idx + 1, p.sessionCode, 'approved', extras);
+  return jsonResponse({ status: 'ok' });
 }
 
 function handleRejectExaminee(p) {
@@ -193,40 +193,14 @@ function handleRejectExaminee(p) {
   }
   var sheet = getSheet('ממתינים');
   var data = sheet.getDataRange().getValues();
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber) && String(data[i][5]).trim() === 'waiting') {
-      sheet.getRange(i + 1, 6).setValue('rejected');
-      SpreadsheetApp.flush();
-      invalidatePendingSnapshot(p.sessionCode);   // r23
-      return jsonResponse({ status: 'ok' });
-    }
-  }
-  return jsonResponse({ status: 'error', message: 'נבחן ממתין לא נמצא' });
+  var hit = findLatestPendingRow(data, p.sessionCode, p.idNumber, ['waiting']);
+  if (hit.idx === -1) return jsonResponse({ status: 'error', message: 'נבחן ממתין לא נמצא' });
+  setPendingStatus(sheet, hit.idx + 1, p.sessionCode, 'rejected');
+  return jsonResponse({ status: 'ok' });
 }
 
-function handleMarkExamStarted(p) {
-  var tokenErr = requireExamineeToken(p);
-  if (tokenErr) return tokenErr;
-  var sheet = getSheet('ממתינים');
-  var data = sheet.getDataRange().getValues();
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]) !== String(p.sessionCode) || normalizeId(data[i][1]) !== normalizeId(p.idNumber)) continue;
-    var st = String(data[i][5]).trim();
-    if (st === 'approved') {
-      sheet.getRange(i + 1, 6).setValue('in_exam');
-      sheet.getRange(i + 1, 12).setValue(nowISO()); // column L = exam actual start time
-      SpreadsheetApp.flush();
-      return jsonResponse({ status: 'ok' });
-    }
-    if (st === 'in_exam') {
-      // Idempotent: a retry whose earlier response was lost (common on iOS when
-      // the page backgrounds) should still report success so the client stops
-      // retrying — and not overwrite the original start time.
-      return jsonResponse({ status: 'ok', already: true });
-    }
-    // Other statuses (completed/cancelled/disqualified): keep scanning for an
-    // approved/in_exam row belonging to this examinee.
-  }
-  return jsonResponse({ status: 'error', message: 'נבחן מאושר לא נמצא' });
-}
+// handleMarkExamStarted is gone (review C R14): startExam performs the
+// approved → in_exam flip itself, through the single status writer, and the
+// action now answers handleMarkExamStartedNoop (60_exam.js) for the one release
+// in which an old client may still call it.
 

@@ -14,7 +14,8 @@ function handleExaminerDashboard(p) {
   var _pendT = readTail(pendSheet, 4);
   var pendData = _pendT.rows, pendOff = _pendT.off;
   diagMark('sheet:results-dash');
-  var resData = readTail(resSheet, 0).rows;
+  var _resT = readTail(resSheet, 0);
+  var resData = _resT.rows;
   diagMark('sheet:extensions-dash');
   var pending = [];
   var active = [];
@@ -59,11 +60,35 @@ function handleExaminerDashboard(p) {
   var resBySessId = buildResBySessId(resData);
   var pendTermBySessId = buildPendTermBySessId(pendData);
 
-  // Auto-cleanup: detect stale in_exam entries that already have a result or are way past exam time
+  // ---- Auto-cleanup of stale in_exam/approved rows ---------------------------
+  // Bounded on purpose (review C R1 / fix A1). This loop used to do, INSIDE
+  // itself and per stale row: a full 'סשנים' read, a full 'תוצאות' read for the
+  // attempt number, an append, another results tail read and an index rebuild —
+  // 6 round trips and ~169,000 cells each. It fires hardest right after an
+  // outage, when every examinee who could not submit is stale at once: 40 of
+  // them measured 247 round trips / 6.86 M cells in ONE 2-5 s poll, which is the
+  // best match at HEAD for the end-of-exam 360 s doGet kills.
+  // Now: at most DASH_MAX_RECONCILE_PER_POLL rows per request (the rest are
+  // reconciled by the next poll, 2-5 s later), the session row is read at most
+  // once, the attempt history at most once, and nothing is re-read after an
+  // append — the appended row is added to the in-memory table instead.
+  var DASH_MAX_RECONCILE_PER_POLL = 3;
+  var reconciled = 0;
+  var sessionRowForDash = null, sessionRowRead = false;
+  function dashSessionRow() {
+    if (!sessionRowRead) { sessionRowRead = true; diagMark('sheet:sessions-dash'); sessionRowForDash = sessionRowByCode(code); }
+    return sessionRowForDash;
+  }
+  var attemptHistory = null;
+  function dashAttemptCount(idNumber, license) {
+    if (!attemptHistory) { diagMark('sheet:attempts-dash'); attemptHistory = readAttemptHistory(); }
+    return countAttemptRows(attemptHistory, normalizeId(idNumber), String(license));
+  }
   var now = new Date();
   var BASE_EXAM_MS = 40 * 60 * 1000;
   var STALE_BUFFER_MS = 20 * 60 * 1000; // 20 minutes buffer (approval wait + instructions)
   for (var ci = 1; ci < pendData.length; ci++) {
+    if (reconciled >= DASH_MAX_RECONCILE_PER_POLL) break;
     if (String(pendData[ci][0]) !== code) continue;
     // Reconcile stuck 'in_exam' AND 'approved' entries. 'approved' that never
     // advanced to 'in_exam' happens when markExamStarted failed on the device
@@ -99,8 +124,10 @@ function handleExaminerDashboard(p) {
     var hasUnmatchedResult = effectiveResults > totalTerminals;
 
     if (hasUnmatchedResult || effectiveStale) {
-      // Fix dangling status — mark as completed
-      pendSheet.getRange(ci + 1 + pendOff, 6).setValue('completed');
+      reconciled++;
+      // Fix dangling status — mark as completed (single status writer: the
+      // snapshot the examinee's poller reads is dropped in the same call).
+      setPendingStatus(pendSheet, ci + 1 + pendOff, code, 'completed');
       pendData[ci][5] = 'completed'; // update local copy
       // Keep pendTermBySessId in sync: this row was in_exam/approved (loop guard
       // above) → now a 'completed' terminal, so a fresh rescan would count it here.
@@ -109,30 +136,29 @@ function handleExaminerDashboard(p) {
       pendTermBySessId[_mk].otherTerminals++;
       if (effectiveStale && !hasUnmatchedResult) {
         // Create a timeout fail result
-        var sesData2 = getSheet('סשנים').getDataRange().getValues();
+        var ses2 = dashSessionRow();
         var license2 = pendData[ci][8] || '', site2 = '', classroom2 = '', examinerName2 = '', language2 = pendData[ci][6] || 'he';
-        for (var si = 1; si < sesData2.length; si++) {
-          if (String(sesData2[si][0]).trim() === code) {
-            examinerName2 = sesData2[si][2] || '';
-            site2 = sesData2[si][3] || '';
-            classroom2 = sesData2[si][4] || '';
-            if (!license2) license2 = sesData2[si][5] || '';
-            break;
-          }
+        if (ses2) {
+          examinerName2 = ses2[2] || '';
+          site2 = ses2[3] || '';
+          classroom2 = ses2[4] || '';
+          if (!license2) license2 = ses2[5] || '';
         }
-        var attemptNum2 = countAttempts(String(ciId), license2) + 1;
-        resSheet.appendRow([
+        var failRow = [
           todayStr(), ciId, pendData[ci][2] || '', pendData[ci][3] || '', license2,
           '0/30', '0%', 'נכשל', '', examinerName2,
           site2, classroom2, language2, code,
-          attemptNum2, 'ניתוק/טיימאאוט — הנבחן לא סיים את המבחן', false, false, '',
+          dashAttemptCount(ciId, license2) + 1, 'ניתוק/טיימאאוט — הנבחן לא סיים את המבחן', false, false, '',
           pendData[ci][7] || '', false, pendData[ci][9] || 'off'
-        ]);
-        // Refresh resData after append, and rebuild the results index so later
-        // iterations' counts include the row just appended (behavior-identical to
-        // the old per-iteration rescan of the freshly re-read sheet).
-        resData = readTail(resSheet, 0).rows;
-        resBySessId = buildResBySessId(resData);
+        ];
+        resSheet.appendRow(failRow);
+        // The row we just wrote is the only thing a re-read would have added, so
+        // add it in memory: later iterations, the completed list and the
+        // attempts-today tally all see it without another read of 'תוצאות'.
+        resData.push(failRow);
+        if (attemptHistory) attemptHistory.push([failRow[0], failRow[1], '', '', failRow[4], '', '', failRow[7]]);
+        if (!resBySessId[_mk]) resBySessId[_mk] = { dqResults: 0, otherResults: 0 };
+        resBySessId[_mk].otherResults++;
       }
     }
   }
@@ -202,14 +228,11 @@ function handleExaminerDashboard(p) {
   for (var pkA in pendingById) pending.push(pendingById[pkA]);
   for (var akA in activeById) active.push(activeById[akA]);
 
-  // Re-read resData in case cleanup added new results.
-  // NOTE (r15): the only write to resSheet above is inside the rare timeout-fail
-  // branch, which re-reads by itself — so on a normal poll this second tail read
-  // re-fetches identical data. It is kept for now because it ALSO picks up a
-  // result another execution appended mid-request, which is exactly the latency
-  // the 2s fast-sync was built to remove. Measure it before trading that away.
-  diagMark('sheet:results-dash-2');
-  resData = readTail(resSheet, 0).rows;
+  // r25: the second tail read of 'תוצאות' is GONE. On a normal poll it
+  // re-fetched identical data (1,000 × 30 cells, 12 times a minute per
+  // examiner); its only other effect was picking up a result another execution
+  // appended during this request, and that arrives one poll later anyway — the
+  // dashboard polls every 2 s while a result is syncing.
   // DEDUP results per examinee: the תוצאות sheet can end up with several
   // non-בוטל rows for one (session, id) when recovery paths (timeout-fail,
   // manual force-complete, disqualify) appended rows that weren't superseded.
@@ -262,7 +285,6 @@ function handleExaminerDashboard(p) {
   }
 
   // Flag repeat examinees: check if any pending examinee already tested today (any session)
-  var now = new Date();
   var todayDD = ('0' + now.getDate()).slice(-2);
   var todayMM = ('0' + (now.getMonth() + 1)).slice(-2);
   var todayYYYY = now.getFullYear();

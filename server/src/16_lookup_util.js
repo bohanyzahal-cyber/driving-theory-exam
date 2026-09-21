@@ -1,3 +1,36 @@
+// ---- One scan for "this examinee's current row" ----------------------------
+// Ten handlers wrote this reverse loop by hand, which is how their status and
+// 'בוטל' filters drifted apart (review E S7, C R12). rows[0] is a header.
+//
+// findLatestPendingRow: newest ממתינים row of (session, id). `statuses`, when
+// given, keeps scanning past rows in other states instead of stopping at the
+// first match — that is what "reset every stuck row" and "approve the waiting
+// one" need. Returns { idx, row, status }; idx is an index into `rows` (the
+// sheet row is idx + 1 + off) and is -1 when nothing matched.
+function findLatestPendingRow(rows, sessionCode, idNumber, statuses) {
+  var code = String(sessionCode || '').trim(), id = normalizeId(idNumber);
+  for (var i = rows.length - 1; i >= 1; i--) {
+    if (String(rows[i][0]).trim() !== code || normalizeId(rows[i][1]) !== id) continue;
+    var st = String(rows[i][5] || '').trim();
+    if (statuses && statuses.indexOf(st) === -1) continue;
+    return { idx: i, row: rows[i], status: st };
+  }
+  return { idx: -1, row: null, status: '' };
+}
+
+// Newest 'תוצאות' row of (session, id). skipCancelled leaves 'בוטל' rows out:
+// a correction must never land on a row that was already overturned (E S7).
+function findLatestResultRow(rows, sessionCode, idNumber, skipCancelled) {
+  var code = String(sessionCode || '').trim(), id = normalizeId(idNumber);
+  for (var i = rows.length - 1; i >= 1; i--) {
+    if (String(rows[i][13]).trim() !== code || normalizeId(rows[i][1]) !== id) continue;
+    var st = String(rows[i][7] || '').trim();
+    if (skipCancelled && st === 'בוטל') continue;
+    return { idx: i, row: rows[i], status: st };
+  }
+  return { idx: -1, row: null, status: '' };
+}
+
 function findRow(sheet, colIndex, value) {
   var data = sheet.getDataRange().getValues();
   for (var i = 1; i < data.length; i++) {

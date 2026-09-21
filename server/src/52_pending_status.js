@@ -13,16 +13,12 @@ function handleReportWarning(p) {
   try {
     var sheet = getSheet('ממתינים');
     var data = sheet.getDataRange().getValues();
-    for (var i = data.length - 1; i >= 1; i--) {
-      if (String(data[i][0]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
-        var st = String(data[i][5] || '').trim();
-        if (st === 'in_exam' || st === 'approved') {
-          var prev = (data[i].length > 15) ? (Number(data[i][15]) || 0) : 0;
-          sheet.getRange(i + 1, 16).setValue(prev + 1);                                   // col 16 (idx15) = warnings count
-          if (p.reason) sheet.getRange(i + 1, 17).setValue(String(p.reason).slice(0, 40)); // col 17 (idx16) = last reason
-        }
-        break;
-      }
+    var hit = findLatestPendingRow(data, p.sessionCode, p.idNumber);
+    if (hit.idx !== -1 && (hit.status === 'in_exam' || hit.status === 'approved')) {
+      var prev = (hit.row.length > 15) ? (Number(hit.row[15]) || 0) : 0;
+      var extras = { warnCount: prev + 1 };
+      if (p.reason) extras.lastWarning = String(p.reason).slice(0, 40);
+      writePendingCells(sheet, hit.idx + 1, p.sessionCode, extras);
     }
   } catch(e) {}
   return jsonResponse({ status: 'ok' });
@@ -71,7 +67,7 @@ function scanExamStatusRows(data, p) {
 // served to every getExamStatus poll and every dashboard poll from the cache;
 // handleAddExamTime drops the entry, so a new grant is visible at once.
 var EXTRA_MINUTES_CACHE_SEC = 30;
-function extraMinutesKey(sessionCode) { return QUESTION_CACHE_PREFIX + 'extmin_' + String(sessionCode || '').trim(); }
+function extraMinutesKey(sessionCode) { return CACHE_KEY_PREFIX + 'extmin_' + String(sessionCode || '').trim(); }
 // { normalizedId: minutes } for one session
 function extraMinutesBySession(sessionCode) {
   var key = extraMinutesKey(sessionCode), cache = null;
@@ -96,10 +92,13 @@ function sumExtraMinutes(sessionCode, idNumber) {
 function handleAddExamTime(p) {
   if (!p.sessionCode || !p.idNumber) return jsonResponse({ status: 'error', message: 'חסר מזהה' });
   // Examiner auth — must hold a valid token AND own the session (same as DQ).
+  // examinerOwnsSession serves the check from the per-execution 'סשנים' memo
+  // the examiner-name lookup below reuses: this handler read that sheet twice
+  // (review C R12).
   if (!verifyToken(p.examinerId, p.token)) {
     return jsonResponse({ status: 'error', message: 'טוקן בוחן לא תקין', tokenExpired: true });
   }
-  if (!verifyExaminerForSession(p.sessionCode, p.examinerId)) {
+  if (!examinerOwnsSession(p.sessionCode, p.examinerId)) {
     return jsonResponse({ status: 'error', message: 'אין הרשאה — בוחן לא תואם לסשן' });
   }
   var minutes = Math.round(Number(p.minutes) || 0);
@@ -111,24 +110,13 @@ function handleAddExamTime(p) {
 
   // Confirm the examinee exists in this session and grab their name for the audit row.
   var pendData = getSheet('ממתינים').getDataRange().getValues();
-  var name = '', found = false;
-  for (var j = pendData.length - 1; j >= 1; j--) {
-    if (String(pendData[j][0]).trim() === String(p.sessionCode).trim() && normalizeId(pendData[j][1]) === normalizeId(p.idNumber)) {
-      name = pendData[j][2] || '';
-      found = true;
-      break;
-    }
-  }
-  if (!found) return jsonResponse({ status: 'error', message: 'נבחן לא נמצא בסשן' });
+  var hit = findLatestPendingRow(pendData, p.sessionCode, p.idNumber);
+  if (hit.idx === -1) return jsonResponse({ status: 'error', message: 'נבחן לא נמצא בסשן' });
+  var name = hit.row[2] || '';
 
-  // Examiner display name for the audit row.
-  var examinerName = '';
-  try {
-    var sData = getSheet('סשנים').getDataRange().getValues();
-    for (var s = 1; s < sData.length; s++) {
-      if (String(sData[s][0]).trim() === String(p.sessionCode).trim()) { examinerName = sData[s][2] || ''; break; }
-    }
-  } catch (e) {}
+  // Examiner display name for the audit row — from the same memo as the auth check.
+  var sessionRow = sessionRowByCode(p.sessionCode);
+  var examinerName = sessionRow ? (sessionRow[2] || '') : '';
 
   getSheet('הארכות זמן').appendRow([new Date(), p.sessionCode, p.idNumber, name, minutes, reason, examinerName]);
   invalidateExtraMinutes(p.sessionCode);   // r23: the next status poll must see the grant
@@ -147,20 +135,63 @@ function handleMarkFinished(p) {
   if (!p.sessionCode || !p.idNumber) return jsonResponse({ status: 'error', message: 'חסר מזהה' });
   var pendSheet = getSheet('ממתינים');
   var data = pendSheet.getDataRange().getValues();
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]).trim() === String(p.sessionCode).trim() && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
-      var storedToken = String((data[i].length > 12 ? data[i][12] : '') || '').trim();
-      if (storedToken && p.examineeToken && String(p.examineeToken).trim() !== storedToken) {
-        return jsonResponse({ status: 'error', examineeTokenError: 'mismatch' });
-      }
-      if (String(data[i][5]).trim() === 'in_exam') {
-        if (pendSheet.getMaxColumns() < 19) pendSheet.insertColumnsAfter(pendSheet.getMaxColumns(), 19 - pendSheet.getMaxColumns());
-        if (!String(pendSheet.getRange(1, 19).getValue() || '').trim()) pendSheet.getRange(1, 19).setValue('סיים במכשיר');
-        pendSheet.getRange(i + 1, 19).setValue(nowISO());
-      }
-      return jsonResponse({ status: 'ok' });
-    }
+  var hit = findLatestPendingRow(data, p.sessionCode, p.idNumber);
+  if (hit.idx === -1) return jsonResponse({ status: 'ok' });   // no matching row — harmless no-op
+  var storedToken = String((hit.row.length > 12 ? hit.row[12] : '') || '').trim();
+  if (storedToken && p.examineeToken && String(p.examineeToken).trim() !== storedToken) {
+    return jsonResponse({ status: 'error', examineeTokenError: 'mismatch' });
   }
-  return jsonResponse({ status: 'ok' });  // no matching row — harmless no-op
+  if (hit.status === 'in_exam') {
+    // Older sheets stop at 18 columns (SHEET_HEADERS now declares 19).
+    if (pendSheet.getMaxColumns() < 19) pendSheet.insertColumnsAfter(pendSheet.getMaxColumns(), 19 - pendSheet.getMaxColumns());
+    if (!String(pendSheet.getRange(1, 19).getValue() || '').trim()) pendSheet.getRange(1, 19).setValue('סיים במכשיר');
+    writePendingCells(pendSheet, hit.idx + 1, p.sessionCode, { finishedOnDevice: nowISO() });
+  }
+  return jsonResponse({ status: 'ok' });
+}
+
+// ---- One upstream read for the whole session (gateway, DESIGN §3.4) --------
+// The examinee pollers are 87% of an exam morning's requests: 40 phones × 12
+// polls/min = 480 Apps Script executions a minute, each one a container start
+// against ~30 slots. The Worker collapses them into ONE upstream call per
+// session every 3 s and answers the phones itself, so this is the only shape in
+// which examinee state leaves the script.
+// It carries NO names and NO phones, and never the examinee token itself: the
+// Worker compares SHA-256 hashes, so a leak of this response cannot be replayed
+// as an examinee. Rows come back in sheet order (oldest first).
+defineAction('sessionSnapshot', { methods: ['GET'], auth: 'gateway', handler: handleSessionSnapshot,
+  rateLimit: { max: 60, windowSec: 60, id: function(p) { return String(p.sessionCode || ''); } } });
+function handleSessionSnapshot(p) {
+  var code = String(p.sessionCode || '').trim();
+  if (!code) return jsonResponse({ status: 'error', message: 'חסר קוד סשן' });
+  var snap = pendingRowsForSession(code);         // the same 4-second snapshot the pollers use
+  var extraMin = {};
+  try { extraMin = extraMinutesBySession(code); } catch (eExt) { extraMin = {}; }
+  var rows = [];
+  for (var i = 1; i < snap.rows.length; i++) {
+    var r = snap.rows[i], id = normalizeId(r[1]);
+    rows.push({
+      id: id,
+      status: String(r[5] || '').trim(),
+      tokenHash: hashExamineeToken(r.length > 12 ? r[12] : ''),
+      audio: String(r[9] || '').trim() === 'on' ? 'on' : 'off',
+      examMinutes: examMinutesFor(r),   // one rule for the exam length (60_exam.js)
+      extraMinutes: extraMin[id] || 0
+    });
+  }
+  return jsonResponse({ status: 'ok', at: Date.now(), rows: rows });
+}
+
+function hashExamineeToken(token) {
+  var t = String(token || '').trim();
+  if (!t) return '';
+  try {
+    var bytes = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, t, Utilities.Charset.UTF_8), hex = '';
+    for (var i = 0; i < bytes.length; i++) {
+      var b = (bytes[i] + 256) % 256;
+      hex += (b < 16 ? '0' : '') + b.toString(16);
+    }
+    return hex;
+  } catch (e) { return ''; }
 }
 

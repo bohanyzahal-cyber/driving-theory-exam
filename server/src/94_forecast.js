@@ -69,7 +69,7 @@ function handleExaminerForecast(p) {
   var activeSessions = {}, sessionSite = {};
   try {
     diagMark('sheet:sessions-forecast');
-    var sess = getSheet('סשנים').getDataRange().getValues();
+    var sess = sessionRows();
     var nowT = new Date().getTime();
     for (var s = 1; s < sess.length; s++) {
       var active = sess[s][10] === true || String(sess[s][10]).toUpperCase() === 'TRUE';
@@ -94,7 +94,12 @@ function handleExaminerForecast(p) {
     return edSiteLicAcc[kk];
   }
   try {
-    var wait = getSheet('ממתינים').getDataRange().getValues();
+    // Only registrations of sessions that are still open matter, and a session
+    // lives 8 hours — so two days of rows cover every one of them. Columns:
+    // A code, C name, D phone, F status, I licence.
+    diagMark('sheet:pending-forecast');
+    var waitCutoff = new Date(Date.now() - 2 * 86400000);
+    var wait = readRowsSince(getSheet('ממתינים'), 4, waitCutoff, [[1, 1], [3, 2], [6, 1], [9, 1]]).rows;
     for (var w = 1; w < wait.length; w++) {
       var code = String(wait[w][0] || '').trim();
       if (!activeSessions[code]) continue;

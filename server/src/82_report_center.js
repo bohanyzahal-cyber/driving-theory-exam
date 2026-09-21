@@ -55,9 +55,12 @@ function handleCenterManagerReport(p) {
   }
 
   // Walk תוצאות, filter by site IN managed + date range. Skip 'בוטל' (cancelled DQ).
+  // Date-bounded and archive-aware: the range defaults to today, and a range
+  // older than the 30-day retention window must still see the archive (B5).
   diagMark('sheet:results-center-report');
-  var sheet = getSheet('תוצאות');
-  var rows = sheet.getDataRange().getValues();
+  var centerRead = readResultsSince(dateFrom);
+  var rows = centerRead.rows;
+  diagMark('sheet:results-center-report-done:' + centerRead.mode);
   var overall = { total: 0, passed: 0, failed: 0, dq: 0 };
   var bySite = {};
   var byLicense = {};

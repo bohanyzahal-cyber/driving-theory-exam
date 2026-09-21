@@ -57,8 +57,10 @@ function handleCommanderDashboard(p) {
   var prevFrom = (dateFrom && dateTo && dateFrom.getTime && dateTo.getTime)
     ? new Date(dateFrom.getTime() - (dateTo.getTime() - dateFrom.getTime()) - 1) : null;
   diagMark('sheet:results-commander');
-  var resSheet = getSheet('תוצאות');
-  var resRead = readRowsSince(resSheet, 0, prevFrom ? new Date(prevFrom.getTime() - DAY_MS) : null);
+  // readResultsSince, not readRowsSince: a range that reaches past the 30-day
+  // retention window must include 'תוצאות_ארכיון' or the dashboard would report
+  // a shorter history every night (B5).
+  var resRead = readResultsSince(prevFrom ? new Date(prevFrom.getTime() - DAY_MS) : null);
   var resData = resRead.rows;
   diagMark('sheet:results-commander-done:' + resRead.mode);
 
@@ -426,11 +428,15 @@ function handleCommanderDashboard(p) {
       var blocks = wrongDetails.split(/\n\s*\n/);
       for (var wb = 0; wb < blocks.length; wb++) {
         var lines = blocks[wb].split('\n');
-        var qText = '', qCorrect = '', qId = '';
+        var qText = '', qCorrect = '', qId = '', qCategory = '';
         for (var wl = 0; wl < lines.length; wl++) {
           var line = lines[wl];
           if (line.indexOf('מזהה שאלה:') === 0) {
             qId = line.replace(/^מזהה שאלה:\s*/, '').trim();
+          } else if (line.indexOf('קטגוריה:') === 0) {
+            // submitResult writes the question's own category into the wrong
+            // block, so the topic needs no question bank at all (§3.6).
+            qCategory = line.replace(/^קטגוריה:\s*/, '').trim();
           } else if (line.indexOf('שאלה:') === 0) {
             qText = line.replace(/^שאלה:\s*/, '').trim();
             if (qText.length > 200) qText = qText.substring(0, 200);
@@ -461,16 +467,18 @@ function handleCommanderDashboard(p) {
           continue;
         }
         if (!wrongQuestionCounts[key]) {
-          wrongQuestionCounts[key] = { count: 0, text: qText, correctAnswer: qCorrect, questionId: qId, langCounts: {} };
+          wrongQuestionCounts[key] = { count: 0, text: qText, category: classifyCategoryServer(qCategory) || '', questionId: qId, langCounts: {} };
         }
         wrongQuestionCounts[key].count++;
+        if (!wrongQuestionCounts[key].category && qCategory) wrongQuestionCounts[key].category = classifyCategoryServer(qCategory) || '';
         // Per-language split — a question failing mostly in one non-Hebrew
         // language is a translation-bug signal for the content team.
         wrongQuestionCounts[key].langCounts[langName] = (wrongQuestionCounts[key].langCounts[langName] || 0) + 1;
-        // Weak-topic pending item: resolved to a topic after the loop via the
-        // question DB (id preferred; text fallback for legacy rows).
+        // Weak topic, straight from the row: no language bank, no Drive, no
+        // resolver loop (§3.6). A row written before the 'קטגוריה:' line
+        // existed simply carries no topic and is not counted.
         topicBlocksParsed++;
-        weakTopicPending.push({ id: qId || '', text: qText || '', license: license, topic: '' });
+        weakTopicPending.push({ license: license, topic: classifyCategoryServer(qCategory) || '' });
       }
     }
 
@@ -652,47 +660,17 @@ function handleCommanderDashboard(p) {
   prevOverall.dqRate = prevOverall.total > 0 ? Math.round((prevOverall.disqualified / prevOverall.total) * 100) : 0;
   prevOverall.reattemptRate = prevOverall.total > 0 ? Math.round((prevOverall.reattempts / prevOverall.total) * 100) : 0;
 
-  // ===== Weak topics: resolve pending wrong-blocks to topics =====
-  // id is language-independent (all language files carry the Hebrew category),
-  // so most items resolve on the first (Hebrew) pass; text-fallback items from
-  // legacy rows resolve when their exam language comes up. Cache makes the
-  // repeated loads cheap (~300ms warm per language).
+  // ===== Weak topics =====
+  // Each pending item already carries its topic, parsed from the row's own
+  // 'קטגוריה:' line. Until r25 this section loaded the question bank of up to
+  // seven languages to map id → category: 14 Drive reads per request before
+  // r12/r13, and even from the cache it was the reason the server had to keep
+  // whole language banks in memory. What the commander loses: rows written
+  // before 02/06/2026, which have no category line, no longer resolve — the
+  // "asked" denominators are unchanged, so those rows lower the wrong-rate of
+  // an old date range instead of raising it.
   var topicWrong = {};
-  diagMark('compute:commander-resolvers');
   var topicWrongByLic = {};
-  // Shared across BOTH resolver loops below: without it each language was
-  // resolved twice per request (see questionMetaForLanguage).
-  var qMetaMemo = {};
-  try {
-    var WT_LANGS = ['he', 'ru', 'en', 'ar', 'fr', 'es', 'am'];
-    for (var wtl = 0; wtl < WT_LANGS.length; wtl++) {
-      var wtUnresolved = false;
-      for (var wtc = 0; wtc < weakTopicPending.length; wtc++) {
-        if (!weakTopicPending[wtc].topic) { wtUnresolved = true; break; }
-      }
-      if (!wtUnresolved) break;
-      var wtQs;
-      try { wtQs = questionMetaForLanguage(WT_LANGS[wtl], qMetaMemo); } catch (eWtLoad) { continue; }
-      if (!Array.isArray(wtQs) || wtQs.length === 0) continue;
-      var wtById = {}, wtByText = {};
-      for (var wtq = 0; wtq < wtQs.length; wtq++) {
-        var wtRec = wtQs[wtq];
-        if (!wtRec) continue;
-        if (wtRec.id) wtById[String(wtRec.id)] = wtRec;
-        if (wtRec.text) wtByText[String(wtRec.text).substring(0, 200)] = wtRec;
-      }
-      for (var wtp = 0; wtp < weakTopicPending.length; wtp++) {
-        var wtItem = weakTopicPending[wtp];
-        if (wtItem.topic) continue;
-        var wtFound = wtItem.id ? wtById[wtItem.id] : null;
-        if (!wtFound && wtItem.text) wtFound = wtByText[wtItem.text];
-        if (wtFound) {
-          var wtTopic = classifyCategoryServer(wtFound.category);
-          if (wtTopic) wtItem.topic = wtTopic;
-        }
-      }
-    }
-  } catch (eWtAll) { /* weak-topic section degrades to empty, dashboard still works */ }
   for (var wtf = 0; wtf < weakTopicPending.length; wtf++) {
     var wtFin = weakTopicPending[wtf];
     if (!wtFin.topic) continue;
@@ -722,13 +700,15 @@ function handleCommanderDashboard(p) {
   // own site (new rows) or the session's host site (fallback).
   var waitTimesOut = { overall: { avg: 0, median: 0, p90: 0, count: 0 }, bySite: {} };
   try {
-    var pendDataW = getSheet('ממתינים').getDataRange().getValues();
-    // Include rows archiveOldPendingRows moved out of the live sheet, so a
-    // date-range wait-time report stays complete beyond the retention window.
-    var archW = getSheetIfExists(PENDING_ARCHIVE_SHEET);
-    if (archW && archW.getLastRow() > 1) pendDataW = pendDataW.concat(archW.getDataRange().getValues().slice(1));
-    var sessSheetW = getSheet('סשנים');
-    var sessDataW = sessSheetW.getDataRange().getValues();
+    // Live + archive, both bounded by the requested range (review C R11: the
+    // archive is never pruned and this block read all of it, whole, on every
+    // commander dashboard). Columns: reg time (E), exam start (L), session code
+    // (A), site (R) — see the loop below.
+    diagMark('sheet:pending-commander');
+    var pendReadW = readPendingSince(dateFrom, [[1, 1], [5, 1], [12, 1], [18, 1]]);
+    var pendDataW = pendReadW.rows;
+    diagMark('sheet:pending-commander-done:' + pendReadW.mode);
+    var sessDataW = sessionRows();
     var sessSiteMapW = {};
     for (var swi = 1; swi < sessDataW.length; swi++) {
       sessSiteMapW[String(sessDataW[swi][0]).trim()] = String(sessDataW[swi][3] || '');
@@ -769,9 +749,11 @@ function handleCommanderDashboard(p) {
 
   // Top-N most-missed questions, sorted by count descending. Capped at 10 —
   // beyond that the list gets noisy and stops driving decisions.
-  // Values are objects {count, text, correctAnswer, questionId}; questionId
-  // takes precedence (post-2026-06-02 data), text+correctAnswer is the
-  // fallback for legacy rows.
+  // §3.6: the server sends the ID, the count, the topic and the text AS IT WAS
+  // SHOWN (the first occurrence in 'פירוט שגויות'); the client resolves the
+  // canonical text and the image from the static bank by questionId. The old
+  // shape carried `correctAnswer`/`imageUrl`, which cost up to seven language
+  // banks per request to fill in.
   var topWrong = [];
   var wrongKeys = Object.keys(wrongQuestionCounts);
   wrongKeys.sort(function(a, b) {
@@ -780,84 +762,13 @@ function handleCommanderDashboard(p) {
   for (var wk = 0; wk < Math.min(wrongKeys.length, 10); wk++) {
     var entry = wrongQuestionCounts[wrongKeys[wk]];
     topWrong.push({
-      question: entry.text || '',
-      correctAnswer: entry.correctAnswer || '',
       questionId: entry.questionId || '',
       count: entry.count,
+      category: entry.category || '',
+      text: entry.text || '',
       langCounts: entry.langCounts || {}
     });
   }
-
-  // Image lookup: many top-N questions are traffic-sign prompts ("מה פירוש
-  // התמרור?") that don't make sense without seeing the sign. Try to resolve
-  // each top-wrong entry to its real question record so we can include the
-  // imageUrl + id. Hebrew first (most exams); other languages as fallback
-  // for entries that didn't resolve.
-  //
-  // The match key is (text, correctAnswer-in-answers, correctIndex points to
-  // that answer). This is strict enough that even if two real questions share
-  // the same text, we only attach the image when the correct-answer text also
-  // matches the answer-key index — so we either get the right sign or no
-  // image. Better silent miss than a wrong picture.
-  try {
-    if (typeof loadQuestionsForLanguageServer === 'function') {
-      var SUPPORTED_LANGS_FOR_IMG = ['he', 'ru', 'en', 'ar', 'fr', 'es', 'am'];
-      for (var lgi = 0; lgi < SUPPORTED_LANGS_FOR_IMG.length; lgi++) {
-        var stillMissing = false;
-        for (var tw0 = 0; tw0 < topWrong.length; tw0++) {
-          if (!topWrong[tw0].imageUrl) { stillMissing = true; break; }
-        }
-        if (!stillMissing) break;
-        var langQs;
-        try { langQs = questionMetaForLanguage(SUPPORTED_LANGS_FOR_IMG[lgi], qMetaMemo); }
-        catch (eLoad) { continue; }
-        if (!Array.isArray(langQs) || langQs.length === 0) continue;
-        // Index by ID (fast path) and by text (fallback path)
-        var qById = {}, qByText = {};
-        for (var qIdx = 0; qIdx < langQs.length; qIdx++) {
-          var qRec = langQs[qIdx];
-          if (!qRec) continue;
-          if (qRec.id) qById[String(qRec.id)] = qRec;
-          if (qRec.text) {
-            if (!qByText[qRec.text]) qByText[qRec.text] = [];
-            qByText[qRec.text].push(qRec);
-          }
-        }
-        for (var twi = 0; twi < topWrong.length; twi++) {
-          if (topWrong[twi].imageUrl) continue;
-          // Path 0: question ID known (new data) — direct lookup, no
-          // ambiguity. Best of all paths.
-          if (topWrong[twi].questionId) {
-            var idMatch = qById[String(topWrong[twi].questionId)];
-            if (idMatch && idMatch.imageUrl) {
-              topWrong[twi].imageUrl = idMatch.imageUrl;
-              continue;
-            }
-          }
-          var candidates = qByText[topWrong[twi].question] || [];
-          if (candidates.length === 0) continue;
-          // Path A: correct answer known — match it precisely against the
-          // candidate's answers array.
-          if (topWrong[twi].correctAnswer) {
-            for (var ci = 0; ci < candidates.length; ci++) {
-              var cand = candidates[ci];
-              if (!Array.isArray(cand.answers)) continue;
-              if (cand.answers.indexOf(topWrong[twi].correctAnswer) !== -1) {
-                if (cand.imageUrl) topWrong[twi].imageUrl = cand.imageUrl;
-                if (cand.id && !topWrong[twi].questionId) topWrong[twi].questionId = cand.id;
-                break;
-              }
-            }
-          }
-          // Path B: only one candidate for this exact text — unambiguous.
-          if (!topWrong[twi].imageUrl && candidates.length === 1) {
-            if (candidates[0].imageUrl) topWrong[twi].imageUrl = candidates[0].imageUrl;
-            if (candidates[0].id && !topWrong[twi].questionId) topWrong[twi].questionId = candidates[0].id;
-          }
-        }
-      }
-    }
-  } catch (eImg) { /* image resolution best-effort; ignore failures */ }
 
   // Practice impact — finalize pass rates for each bucket. Pass rate is
   // computed only on the non-DQ sample (DQs were excluded above).

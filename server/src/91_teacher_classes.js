@@ -157,10 +157,11 @@ function handleTeacherClassDetails(p) {
   // Verify teacher owns this class
   var classSheet = getSheet('כיתות');
   var classData = classSheet.getDataRange().getValues();
-  var classInfo = null;
+  var classInfo = null, classCreated = null;
   for (var c = 1; c < classData.length; c++) {
     if (String(classData[c][0]).trim() === classCode && normalizeId(classData[c][2]) === normalizeId(p.teacherId)) {
       classInfo = { code: classCode, name: classData[c][1], license: classData[c][4], active: classData[c][6] === 'כן' };
+      classCreated = parseSheetDateTime(classData[c][5]);   // col F = תאריך יצירה
       break;
     }
   }
@@ -179,36 +180,40 @@ function handleTeacherClassDetails(p) {
     }
   }
 
-  // Get practice results for these students
-  // 17/09/2026: this ran 13 times in the exam window (19-32s each) — every call
-  // is a full read of the 107k-row practice sheet, and it uses the JSON columns
-  // so neither a date bound nor column pruning applies. Marked so its share of
-  // the contention on the shared spreadsheet is measured, not assumed.
+  // Get practice results for these students.
+  // 17/09/2026: this ran 13 times in one exam window at 19-32 s each, every call
+  // a FULL read of the 107k-row practice sheet including its two JSON blob
+  // columns. Two bounds, both exact:
+  //   rows    — nothing before the class existed can belong to the class;
+  //   columns — everything except N ('פירוט שגויות', ~2 KB of wrong-question
+  //             text per row) which nothing on this screen shows. Column O
+  //             ('פירוט לפי נושא') STAYS: it is the per-topic breakdown the
+  //             student card draws, and it is two orders of magnitude smaller.
+  // ⚠ Index another column here and add it to the colSpec.
   diagMark('sheet:practice-class');
-  var resSheet = getSheet('תוצאות תרגול');
-  var resData = resSheet.getDataRange().getValues();
-  diagMark('sheet:practice-class-done');
+  var classRead = readRowsSince(getSheet('תוצאות תרגול'), 0, classCreated, [[1, 13], [15, 1]]);
+  var resData = classRead.rows;
+  diagMark('sheet:practice-class-done:' + classRead.mode);
+  var inClass = {};
+  for (var sj = 0; sj < studentIds.length; sj++) inClass[studentIds[sj]] = true;
   var studentResults = {};
   for (var r = 1; r < resData.length; r++) {
     var rSid = String(resData[r][1]).trim();
-    var rClass = String(resData[r][3]).trim();
-    if (rClass === classCode && studentIds.indexOf(rSid) !== -1) {
-      if (!studentResults[rSid]) studentResults[rSid] = [];
-      studentResults[rSid].push({
-        date: resData[r][0],
-        mode: resData[r][4],
-        license: resData[r][5],
-        score: resData[r][6],
-        total: resData[r][7],
-        percent: resData[r][8],
-        passed: resData[r][9],
-        time: resData[r][10],
-        category: resData[r][11] || '',
-        language: resData[r][12] || 'he',
-        wrongDetails: resData[r][13] || '',
-        categoryBreakdown: resData[r][14] || ''
-      });
-    }
+    if (String(resData[r][3]).trim() !== classCode || !inClass[rSid]) continue;
+    if (!studentResults[rSid]) studentResults[rSid] = [];
+    studentResults[rSid].push({
+      date: resData[r][0],
+      mode: resData[r][4],
+      license: resData[r][5],
+      score: resData[r][6],
+      total: resData[r][7],
+      percent: resData[r][8],
+      passed: resData[r][9],
+      time: resData[r][10],
+      category: resData[r][11] || '',
+      language: resData[r][12] || 'he',
+      categoryBreakdown: resData[r][14] || ''
+    });
   }
 
   // Build student summaries
@@ -275,17 +280,20 @@ function handleTeacherExportData(p) {
   // Verify ownership
   var classSheet = getSheet('כיתות');
   var classData = classSheet.getDataRange().getValues();
-  var owns = false;
+  var owns = false, exportCreated = null;
   for (var c = 1; c < classData.length; c++) {
     if (String(classData[c][0]).trim() === classCode && normalizeId(classData[c][2]) === normalizeId(p.teacherId)) {
-      owns = true; break;
+      owns = true;
+      exportCreated = parseSheetDateTime(classData[c][5]);
+      break;
     }
   }
   if (!owns) return jsonResponse({ status: 'error', message: 'אין הרשאה' });
 
-  // Get all results for this class
-  var resSheet = getSheet('תוצאות תרגול');
-  var resData = resSheet.getDataRange().getValues();
+  // Get all results for this class. Rows are bounded by the class's creation
+  // date (nothing older can belong to it); every COLUMN stays — this is the
+  // export, and the JSON blobs are the point of it.
+  var resData = readRowsSince(getSheet('תוצאות תרגול'), 0, exportCreated).rows;
   var headers = resData[0];
   var rows = [];
   for (var r = 1; r < resData.length; r++) {

@@ -1,34 +1,50 @@
-function countAttempts(idNumber, license, resultRows, resultSheet) {
-  // A submit already has the complete history. Other callers keep the full read.
-  var data = resultRows || getSheet('תוצאות').getDataRange().getValues();
-  if (resultRows && resultSheet && resultSheet.getLastRow() !== data.length) {
-    return countAttempts(idNumber, license);
-  }
-  if (resultRows && resultSheet) {
-    var matchingHistory = 0;
-    for (var h = 1; h < data.length; h++) {
-      if (normalizeId(data[h][1]) === normalizeId(idNumber) && String(data[h][4]) === String(license)) matchingHistory++;
-    }
-    // Many retakes are cheaper to refresh in one request than many tiny reads.
-    if (matchingHistory > 4) return countAttempts(idNumber, license);
-  }
+// Key prefix shared by every CacheService / ScriptProperties entry this script
+// owns (pending snapshots, extra-minutes maps, token verdicts, diagnostics).
+// Declared here — a module that nothing in the roadmap deletes — so the live
+// keys keep their names no matter which subsystem is retired; the question
+// cache declares the same literal value for as long as it exists.
+var CACHE_KEY_PREFIX = 'qv2_';
+
+// Attempt number = how many non-'בוטל' result rows this examinee already has
+// for this licence — in the LIVE sheet and in the archive (B5: 'תוצאות' is
+// archived after 30 days, and without the archive a retake three months later
+// would be recorded as attempt 1).
+// `liveRows` is an optional rows array the caller already holds (rows[0] =
+// header); without it we read the live sheet ourselves in the three columns
+// this needs: B (ת.ז.), E (דרגה), H (עבר/נכשל). The old version re-read the
+// whole sheet up to three times per call to re-validate its own input.
+var RESULTS_ATTEMPT_COLSPEC = [[2, 1], [5, 1], [8, 1]];
+function countAttempts(idNumber, license, liveRows) {
+  var wantId = normalizeId(idNumber), wantLic = String(license);
+  var count = countAttemptRows(liveRows || readAttemptColumns(getSheet('תוצאות')), wantId, wantLic);
+  var arch = getSheetIfExists(RESULTS_ARCHIVE_SHEET);
+  if (arch) count += countAttemptRows(readAttemptColumns(arch), wantId, wantLic);
+  return count;
+}
+// Live + archive attempt columns as ONE table (oldest first), for a caller that
+// counts attempts for SEVERAL examinees in one request — the dashboard's
+// reconciliation used to re-read the whole 'תוצאות' sheet once per stale row
+// (review C R1: 40 stale rows = 6.8 M cells in one poll).
+function readAttemptHistory() {
+  var live = readAttemptColumns(getSheet('תוצאות'));
+  var arch = getSheetIfExists(RESULTS_ARCHIVE_SHEET);
+  if (!arch) return live;
+  var archRows = readAttemptColumns(arch);
+  var header = live.length ? live.slice(0, 1) : archRows.slice(0, 1);
+  return header.concat(archRows.slice(1), live.slice(1));
+}
+
+function readAttemptColumns(sheet) {
+  var lastRow = sheet.getLastRow(), lastCol = sheet.getLastColumn();
+  if (lastRow < 2 || lastCol < 1) return [];
+  return readSheetSlice(sheet, 1, lastRow, lastCol, RESULTS_ATTEMPT_COLSPEC);
+}
+function countAttemptRows(rows, wantId, wantLic) {
   var count = 0;
-  for (var i = 1; i < data.length; i++) {
-    if (normalizeId(data[i][1]) === normalizeId(idNumber) && String(data[i][4]) === String(license)) {
-      var row = data[i];
-      if (resultRows && resultSheet) {
-        // An examiner may have overturned an old result without appending a
-        // row. Refresh this examinee's history before assigning the attempt.
-        var live = resultSheet.getRange(i + 1, 1, 1, 14).getValues()[0];
-        if (!live || normalizeId(live[1]) !== normalizeId(idNumber) || String(live[4]) !== String(license) || String(live[13]) !== String(row[13])) {
-          return countAttempts(idNumber, license);
-        }
-        row = live;
-      }
-      var status = String(row[7] || '').trim();
-      if (status === 'בוטל') continue; // overturned DQ is not a real attempt
-      count++;
-    }
+  for (var i = 1; i < rows.length; i++) {
+    if (normalizeId(rows[i][1]) !== wantId || String(rows[i][4]) !== wantLic) continue;
+    if (String(rows[i][7] || '').trim() === 'בוטל') continue;   // overturned DQ is not a real attempt
+    count++;
   }
   return count;
 }

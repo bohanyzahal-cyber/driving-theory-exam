@@ -16,9 +16,14 @@
 // התקנה (פעם אחת, ~3 דקות):
 //   1. גיליון Google חדש בשם "ווטשדוג בחינות" → תוספים → Apps Script (סקריפט צמוד לגיליון).
 //   2. להדביק את הקובץ הזה, לשמור, להריץ installWatchdog פעם אחת מהעורך (יבקש הרשאות:
-//      גיליונות + UrlFetch). זה יוצר טריגר של כל דקה ומריץ מדידה ראשונה.
-//   3. לוודא שבגיליון "log" מופיעה שורה. מחוץ ל-07:00–13:00 שעון ישראל הטיק חוזר מיד
-//      (כמה מאיות שנייה), כדי לשמור על תקציב הטריגרים (90 דק'/יום בחשבון gmail).
+//      גיליונות + UrlFetch).
+//   3. לוודא שבגיליון "log" מופיעה שורה, ושמחר בבוקר מופיעות שורות כל 2 דקות בין 07:00 ל-13:00.
+//
+// תקציב הטריגרים (ביקורת C, R3): הגרסה הקודמת יצרה טריגר של כל דקה לכל היממה —
+// 1,440 הרצות ביום, מהן ~360 בתוך החלון עם 3 קריאות UrlFetch כל אחת ≈ 36–48 דקות
+// מתוך 90 הדקות שיש לחשבון ליום, ועוד 1,080 הרצות-סרק. עכשיו: טריגר יומי ב-07:00
+// יוצר טריגר של כל 2 דקות, וטריגר יומי ב-13:00 מוחק אותו. ≈180 מדידות × ~6 שנ' ≈ 18 דקות,
+// ואפס הרצות מחוץ לחלון. בדיקת הבוקר (07:00) מסמנת שורה בולטת אם כבר אז משהו לא תקין.
 // בבוקר בחינות: זה המקום הראשון להסתכל בו, לפני דף הביצועים ולפני גיליון אבחון.
 
 var WATCHDOG_EXAM_EXEC = 'https://script.google.com/macros/s/AKfycbzOI0zrDEngP-GvlRblhOk8tQsYBvWZ2gGliIQHTpS67WrDZl4la8NPpwtJr_Vjsh3Gzg/exec';
@@ -27,23 +32,75 @@ var WATCHDOG_WINDOW_START_HOUR = 7;    // שעון ישראל, כולל
 var WATCHDOG_WINDOW_END_HOUR = 13;     // לא כולל
 var WATCHDOG_SLOW_MS = 5000;           // מעל זה = "איטי" לצורך ה-verdict
 var WATCHDOG_SHEET = 'log';
-var WATCHDOG_HEADERS = ['זמן (ישראל)', 'health ms', 'health', 'deep ms', 'deep sheetMs', 'deep', 'control ms', 'control', 'ownSheet ms', 'verdict', 'build'];
+var WATCHDOG_TICK_MINUTES = 2;
+// עמודות חדשות נוספות תמיד בסוף, כדי שהשורות הישנות בגיליון יישארו קריאות.
+var WATCHDOG_HEADERS = ['זמן (ישראל)', 'health ms', 'health', 'deep ms', 'deep sheetMs', 'deep', 'control ms', 'control', 'ownSheet ms', 'verdict', 'build', 'deep totalMs', 'outside ms'];
+var WATCHDOG_HANDLERS = ['watchdogTick', 'watchdogOpenWindow', 'watchdogCloseWindow', 'watchdogMorningCheck'];
 
+// הרצה אחת מהעורך. משאירה בדיוק שלושה טריגרים יומיים ואף טריגר דקות.
 function installWatchdog() {
-  var triggers = ScriptApp.getProjectTriggers();
+  var triggers = ScriptApp.getProjectTriggers(), removed = 0;
   for (var i = 0; i < triggers.length; i++) {
-    if (triggers[i].getHandlerFunction() === 'watchdogTick') ScriptApp.deleteTrigger(triggers[i]);
+    if (WATCHDOG_HANDLERS.indexOf(triggers[i].getHandlerFunction()) === -1) continue;
+    ScriptApp.deleteTrigger(triggers[i]);
+    removed++;
   }
-  ScriptApp.newTrigger('watchdogTick').timeBased().everyMinutes(1).create();
+  ScriptApp.newTrigger('watchdogMorningCheck').timeBased().atHour(WATCHDOG_WINDOW_START_HOUR).everyDays(1).inTimezone('Asia/Jerusalem').create();
+  ScriptApp.newTrigger('watchdogOpenWindow').timeBased().atHour(WATCHDOG_WINDOW_START_HOUR).everyDays(1).inTimezone('Asia/Jerusalem').create();
+  ScriptApp.newTrigger('watchdogCloseWindow').timeBased().atHour(WATCHDOG_WINDOW_END_HOUR).everyDays(1).inTimezone('Asia/Jerusalem').create();
   var row = watchdogMeasure();
-  Logger.log('installWatchdog: trigger every minute created; first row: ' + row.join(' | '));
+  var msg = 'installWatchdog: removed ' + removed + ' old trigger(s); daily ' + WATCHDOG_WINDOW_START_HOUR +
+    ':00 morning check + window open, daily ' + WATCHDOG_WINDOW_END_HOUR + ':00 window close; first row: ' + row.join(' | ');
+  Logger.log(msg);
   return row;
 }
 
-// הטריגר. מחוץ לחלון הבוקר חוזר מיד; בתוכו — מדידה אחת ושורה אחת.
+// 07:00 — פותח את חלון המדידה: יוצר טריגר של כל 2 דקות (ומוחק כפילויות).
+function watchdogOpenWindow() {
+  watchdogDeleteTickTriggers();
+  ScriptApp.newTrigger('watchdogTick').timeBased().everyMinutes(WATCHDOG_TICK_MINUTES).create();
+  Logger.log('watchdogOpenWindow: tick every ' + WATCHDOG_TICK_MINUTES + ' minutes');
+  return 'opened';
+}
+
+// 13:00 — סוגר את החלון: מוחק את טריגר הדקות. אין הרצות עד מחר ב-07:00.
+function watchdogCloseWindow() {
+  var n = watchdogDeleteTickTriggers();
+  Logger.log('watchdogCloseWindow: removed ' + n + ' tick trigger(s)');
+  return 'closed:' + n;
+}
+
+function watchdogDeleteTickTriggers() {
+  var triggers = ScriptApp.getProjectTriggers(), removed = 0;
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() !== 'watchdogTick') continue;
+    ScriptApp.deleteTrigger(triggers[i]);
+    removed++;
+  }
+  return removed;
+}
+
+// 07:00 — מדידה אחת לפני שהבוחנים מתחברים. אם כבר עכשיו ה-verdict אינו 'ok',
+// השורה מסומנת (רקע אדום) כדי שתיראה מיד בפתיחת הגיליון.
+function watchdogMorningCheck() {
+  var row = watchdogMeasure();
+  var verdict = row[9];
+  if (verdict !== 'ok') {
+    try {
+      var sheet = getWatchdogSheet();
+      sheet.getRange(sheet.getLastRow(), 1, 1, WATCHDOG_HEADERS.length).setBackground('#fde2e1');
+    } catch (e) { Logger.log('watchdogMorningCheck: highlight failed: ' + e); }
+  }
+  Logger.log('watchdogMorningCheck: ' + row.join(' | '));
+  return row;
+}
+
+// הטריגר. מחוץ לחלון הבוקר חוזר מיד; בתוכו — מדידה אחת ושורה אחת. שומר הזמן
+// בקוד נשאר גם אחרי המעבר לטריגר-לפי-חלון: אם טריגר הדקות שרד סגירה (כשל,
+// התקנה ידנית), הוא לא יתחיל למדוד כל היום.
 function watchdogTick() {
   var hour = Number(Utilities.formatDate(new Date(), 'Asia/Jerusalem', 'H'));
-  if (hour < WATCHDOG_WINDOW_START_HOUR || hour >= WATCHDOG_WINDOW_END_HOUR) return 'outside window';
+  if (hour < WATCHDOG_WINDOW_START_HOUR || hour >= WATCHDOG_WINDOW_END_HOUR) { watchdogCloseWindow(); return 'outside window'; }
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(0)) return 'previous tick still running';   // מדידה תקועה לא מצטברת
   try { return watchdogMeasure().join(' | '); } finally { lock.releaseLock(); }
@@ -60,8 +117,13 @@ function watchdogMeasure() {
   var own = timedOwnSheetRead();
   var sheetMs = deep.json && typeof deep.json.sheetMs === 'number' ? deep.json.sheetMs : -1;
   var build = (health.json && health.json.build) || (deep.json && deep.json.build) || '';
+  // totalMs = כמה זמן ההרצה של health&deep=1 ארכה בתוך Apps Script (השרת מודד את עצמו).
+  // outside = deep.ms − totalMs = כל מה שאינו ההרצה: הזנקת המכולה, ה-302, הרשת.
+  // זה מה שהבדיל ב-14–15/09 בין "המסמך שלנו נתקע" לבין "שער הכניסה של גוגל איטי".
+  var totalMs = deep.json && typeof deep.json.totalMs === 'number' ? deep.json.totalMs : -1;
+  var outsideMs = (totalMs >= 0 && deep.ms >= 0) ? Math.max(0, deep.ms - totalMs) : -1;
   var row = [stamp, health.ms, health.kind, deep.ms, sheetMs, deep.kind, control.ms, control.kind, own,
-    watchdogVerdict(health, deep, sheetMs, control, own), build];
+    watchdogVerdict(health, deep, sheetMs, control, own), build, totalMs, outsideMs];
   try { getWatchdogSheet().appendRow(row); } catch (e) { Logger.log('watchdog: appendRow failed: ' + e); }
   return row;
 }
@@ -95,6 +157,11 @@ function watchdogVerdict(health, deep, sheetMs, control, own) {
   var doc = sheetMs < 0 || sheetMs > WATCHDOG_SLOW_MS, o = own < 0 || own > WATCHDOG_SLOW_MS;
   if (!h && !d && !c && !doc && !o) return 'ok';
   if (doc && !h && !c) return 'our-document';
+  // dispatch-ours: שתי הבקשות לסקריפט שלנו איטיות, אבל גם המסמך שלנו מהיר וגם
+  // סקריפט הבקרה (אותו חשבון, מסמך אחר) מהיר — כלומר התור הוא של הפרויקט הזה
+  // (מכולות תפוסות / קוד גדול), לא של גוגל ולא של הגיליון. זה בדיוק המצב של
+  // 14–15/09 שבו 'mixed' לא אמר כלום.
+  if (h && d && !doc && !c) return 'dispatch-ours';
   if (h && c && !doc) return o ? 'google/account' : 'dispatch';
   if (h && c && doc) return 'google/account';
   if (o && !h && !c) return 'sheets-service';

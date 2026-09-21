@@ -223,9 +223,13 @@ function handleTeacherCommanderDashboard(p) {
   }
   var deletedClassMap = getDeletedClassMap();
 
-  // Read practice results
-  var resSheet = getSheet('תוצאות תרגול');
-  var resData = resSheet.getDataRange().getValues();
+  // Read practice results — bounded by the requested range (the loop drops
+  // anything outside it anyway). All columns: unlike the commander view this
+  // one aggregates the wrong-question JSON in column N.
+  diagMark('sheet:practice-teacher-commander');
+  var resRead = readRowsSince(getSheet('תוצאות תרגול'), 0, dateFrom);
+  var resData = resRead.rows;
+  diagMark('sheet:practice-teacher-commander-done:' + resRead.mode);
 
   var overall = { total: 0, passed: 0, failed: 0, scores: [], stayTimes: [], students: {}, teachers: {}, classes: {}, sites: {} };
   var byTeacher = {};
@@ -509,8 +513,9 @@ function handleTeacherCommanderDashboard(p) {
   // Site scoping mirrors the practice rows (local/multi-site commanders see
   // only their sites; exam rows carry the site in col 11).
   try {
-    var examResSheet = getSheet('תוצאות');
-    var examResData = examResSheet.getDataRange().getValues();
+    // Live + archive (B5), bounded by the range, columns A-H + K (site).
+    diagMark('sheet:results-teacher-commander');
+    var examResData = readResultsSince(dateFrom, [[1, 8], [11, 1]]).rows;
     var failsById = {};
     for (var er = 1; er < examResData.length; er++) {
       var erDate = parseSheetDate(examResData[er][0]);

@@ -15,8 +15,7 @@ function handleSiteCombinedReport(p) {
   }
 
   diagMark('sheet:sessions-report');
-  var sessSheet = getSheet('סשנים');
-  var sessData = sessSheet.getDataRange().getValues();
+  var sessData = sessionRows();
 
   // Locate the calling session to discover its site + date.
   var anchorSite = '';
@@ -102,30 +101,29 @@ function handleSiteCombinedReport(p) {
   var sessionCodesSet = {};
   for (var sc = 0; sc < sessions.length; sc++) sessionCodesSet[sessions[sc].code] = true;
 
-  // r11: 'תוצאות' grows forever and this handler read every row of it. The very
-  // first line the 'אבחון' sheet ever recorded was this report at 81.5s
-  // (2026-09-15) - and the 360s doGet kills cluster at end-of-exam report time,
-  // which makes this the prime suspect. Read only the tail, but ONLY when the
-  // tail provably reaches back past the reported day: this report is a
-  // historical record, so a report for an older day must still read everything.
+  // r11 read the tail and fell back to the WHOLE sheet whenever the reported
+  // day was older than the tail — the very first line the 'אבחון' sheet ever
+  // recorded was this report at 81.5 s (2026-09-15), and the 360 s doGet kills
+  // cluster at end-of-exam report time. r25: one date-bounded read that spans
+  // the live sheet and the archive, so an old day costs the rows of that day
+  // instead of every result ever recorded.
   diagMark('sheet:results-report');
-  var resRead = readResultsTail();
-  if (resRead.off > 0) {
-    var oldestInTail = parseSheetDateTime(resRead.rows[1] && resRead.rows[1][0]);
-    if (!oldestInTail || oldestInTail.getTime() > dayStart.getTime()) {
-      diagMark('sheet:results-report-full');
-      resRead = { rows: getSheet('תוצאות').getDataRange().getValues(), off: 0 };
-    }
-  }
+  var resRead = readResultsSince(dayStart);
   var resData = resRead.rows;
+  diagMark('sheet:results-report-done:' + resRead.mode);
   var results = [];
   for (var r = 1; r < resData.length; r++) {
     var sCode = String(resData[r][13] || '').trim();
     if (!sessionCodesSet[sCode]) continue;
     if (String(resData[r][7] || '').trim() === 'בוטל') continue; // skip overturned/superseded rows (consistent with the other report handlers)
-    var rDate = resData[r][0] instanceof Date ? resData[r][0] : new Date(resData[r][0]);
+    // parseSheetDateTime, not new Date(): column A is written as the STRING
+    // "DD/MM/YYYY HH:MM" and only becomes a real date when the spreadsheet's
+    // locale parses it. Where it does not (a text-formatted column, an imported
+    // row), new Date() returned Invalid Date and toISOString() threw — taking
+    // the whole report down with a 500 instead of one odd row.
+    var rDate = parseSheetDateTime(resData[r][0]);
     results.push({
-      date: rDate.toISOString(),
+      date: rDate ? rDate.toISOString() : String(resData[r][0] || ''),
       idNumber: String(resData[r][1] || ''),
       name: String(resData[r][2] || ''),
       phone: String(resData[r][3] || ''),

@@ -232,6 +232,13 @@ function buildIndex(banks, entriesByLang) {
 const sha1 = buf => crypto.createHash('sha1').update(buf).digest('hex');
 
 function main() {
+  // A fresh clone has no deployment/generated/ (gitignored, 25 MB): the
+  // committed bank/ and question_index.json ARE the build output, so the step
+  // is skipped rather than failed. Rebuilding requires the dumps.
+  if (!fs.existsSync(GENERATED) || !LANGS.every(l => fs.existsSync(path.join(GENERATED, 'questions_' + l + '.json')))) {
+    console.warn('build_bank: deployment/generated/questions_<lang>.json not present — keeping the committed bank/ and question_index.json');
+    return;
+  }
   const stats = {
     imageFiles: new Set(fs.readdirSync(IMAGES)),
     minAnswers: Infinity, maxAnswers: 0, variantRows: 0, variantIds: new Set()

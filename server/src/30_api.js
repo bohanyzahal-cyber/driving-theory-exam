@@ -1,34 +1,226 @@
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-19-r24';
-var THEORY_API_ACTIONS = ('health addExamTime adminDashboard approveExaminee cancelDisqualify cancelFailOnClose cancelRegistration centerManagerReport checkApproval closeSession commanderCorrectResult commanderDashboard confirmDQ correctExamineeMeta correctToPass createSession disqualify examinerDashboard examinerForecast forceComplete getExamQuestions getExamStatus getOfficeNumber getQuestionsByIds getResultUploadToken getSessionInfo getSites getUploadResult listActiveExaminers listAllSessions listSessions loadStudentProgress login markExamStarted markFinished markSent overturnDQ predictiveModelPreview registerExamQuestions registerExaminee rejectExaminee reportWarning resetExaminee saveStudentProgress searchQuestions siteCombinedReport studentJoinClass submitFailOnClose submitManualResult submitPracticeResult submitResult submitWrongAnswers teacherAtRiskList teacherClassDetails teacherCloseClass teacherCommanderDashboard teacherCreateClass teacherDashboard teacherDeleteClass teacherExportData teacherGetClasses teacherLogin teacherRemoveStudent teacherVerifyLogin updateSession uploadResultHtml verifyLogin viewResult').split(' ');
+var THEORY_API_BUILD = '2026-09-22-r30';
+// When the current request entered the script — health&deep=1 reports the whole
+// request against it, so a watchdog can separate our time from Google's.
+var API_STARTED_AT = 0;
+
+// Every action name known to the deployment, for the timing log (which must
+// never echo an arbitrary string a caller sent) and for feature detection.
+function apiActionList() {
+  ensureLegacyActions();
+  return apiActionNames();
+}
 
 function logTheoryApiTiming(phase, method, action, startedAt) {
   // Never log request parameters, IDs, credentials, answers or arbitrary action text.
   // A start without an end can identify a runtime timeout in the execution log.
   try {
     Logger.log('[API] ' + JSON.stringify({ build: THEORY_API_BUILD, phase: phase,
-      method: method, action: THEORY_API_ACTIONS.indexOf(action) >= 0 ? action : 'unknown',
+      method: method, action: apiActionList().indexOf(action) >= 0 ? action : 'unknown',
       elapsedMs: Math.max(0, Date.now() - startedAt) }));
   } catch (logErr) { /* diagnostics must never break an exam */ }
 }
 
 function theoryRetryableErrorResponse(err) {
   if (!err || err.retryable !== true) return null;
-  return jsonResponse({ status: 'error', code: 'question_cache_busy', retryable: true,
+  return jsonResponse({ status: 'error', code: err.code || 'retry_later', retryable: true,
     waitSec: Math.max(1, Math.min(30, Number(err.waitSec) || 3)),
-    message: 'מאגר השאלות מתעדכן כעת. אפשר לנסות שוב בעוד מספר שניות.' });
+    message: err.userMessage || 'המערכת עמוסה כעת. אפשר לנסות שוב בעוד מספר שניות.' });
 }
 
-function questionRequestRateId(p, auth) {
-  // A class starting together must not share one candidate's allowance.
-  if (auth === 'examinee') return String(p.sessionCode || '') + '_' + normalizeId(p.idNumber);
-  return p.idNumber || p.examinerId || p.studentId || p.standaloneIdNumber || p.sessionCode || 'anon';
+// ========== Dispatch ==========
+// doGet/doPost were a 300-line switch plus three hand-maintained lists of which
+// action needs which token. Now every action is a registry row (name, methods,
+// auth, handler) and the two entry points do the same four things: parse, check
+// the method, check the auth rule, call the handler.
+
+function dispatchApiAction(method, action, p) {
+  ensureLegacyActions();
+  var spec = apiRegistry()[action];
+  if (!spec) return jsonResponse({ status: 'error', message: 'Unknown action: ' + action });
+  if (spec.methods.indexOf(method) === -1) {
+    return jsonResponse({ status: 'error',
+      message: method === 'GET' ? 'פעולה זו דורשת POST' : 'פעולה זו דורשת GET' });
+  }
+  var authErr = requireActionAuth(spec.auth, p);
+  if (authErr) return authErr;
+  if (spec.rateLimit) {
+    var rlErr = requireRateLimit(action, spec.rateLimit.id(p), spec.rateLimit.max, spec.rateLimit.windowSec || 60);
+    if (rlErr) return rlErr;
+  }
+  return spec.handler(p);
 }
+
+function requireActionAuth(auth, p) {
+  if (auth === 'examiner') return requireToken(p);
+  if (auth === 'teacher') return requireTeacherToken(p);
+  if (auth === 'examinee') return requireExamineeToken(p);
+  if (auth === 'gateway') return requireGatewayKey(p);
+  return null;   // 'none' — either public, or the handler enforces its own rule
+}
+
+// The session-poll Worker is the only caller that reads a whole session's rows
+// in one request; it authenticates with a shared secret kept in ScriptProperties
+// (never in the client), so an examinee token is not involved.
+function requireGatewayKey(p) {
+  var expected = '';
+  try { expected = String(PropertiesService.getScriptProperties().getProperty('GATEWAY_KEY') || ''); } catch (e) { expected = ''; }
+  if (!expected || String(p.gatewayKey || '') !== expected) {
+    return jsonResponse({ status: 'error', code: 'gateway_denied', message: 'gateway key invalid' });
+  }
+  return null;
+}
+
+// ---- Actions owned by this package -----------------------------------------
+defineAction('startExam', { methods: ['POST'], auth: 'examinee', handler: handleStartExam,
+  rateLimit: { max: 10, windowSec: 60, id: function(p) { return String(p.sessionCode || '') + '_' + normalizeId(p.idNumber); } } });
+defineAction('startPractice', { methods: ['GET'], auth: 'none', handler: handleStartPractice });
+defineAction('markExamStarted', { methods: ['GET'], auth: 'examinee', handler: handleMarkExamStartedNoop });
+defineAction('getExamQuestions', { methods: ['GET'], auth: 'none', handler: handleClientOutdated });
+defineAction('registerExamQuestions', { methods: ['POST'], auth: 'none', handler: handleClientOutdated });
+defineAction('submitResult', { methods: ['POST'], auth: 'examinee', handler: handleSubmitResult });
+defineAction('submitFailOnClose', { methods: ['POST'], auth: 'examinee', handler: handleSubmitFailOnClose });
+defineAction('cancelFailOnClose', { methods: ['POST'], auth: 'examinee', handler: handleCancelFailOnClose });
+defineAction('getResultUploadToken', { methods: ['GET'], auth: 'examiner', handler: handleGetResultUploadToken });
+
+// ---- Every other action, with today's method and auth rule ------------------
+// S2 will move these rows next to their handlers; until then this table is the
+// single declaration of them, and it reproduces exactly what the old doGet/doPost
+// enforced (its examinerActions / teacherActions / postOnlyActions lists), so the
+// dispatcher is a refactor and not a policy change. Handlers are named, not
+// referenced, so a module that replaces one is picked up at call time.
+//   [name, methods, auth, handler function name]
+function legacyActionTable() {
+  return [
+    // -- examiner token (the old examinerActions list) --
+    ['getSites', 'GET', 'examiner', 'handleGetSites'],
+    ['listSessions', 'GET', 'examiner', 'handleListSessions'],
+    ['listAllSessions', 'GET', 'examiner', 'handleListAllSessions'],
+    ['createSession', 'GET', 'examiner', 'handleCreateSession'],
+    ['updateSession', 'GET', 'examiner', 'handleUpdateSession'],
+    ['closeSession', 'GET', 'examiner', 'handleCloseSession'],
+    ['approveExaminee', 'GET', 'examiner', 'handleApproveExaminee'],
+    ['rejectExaminee', 'GET', 'examiner', 'handleRejectExaminee'],
+    ['examinerDashboard', 'GET', 'examiner', 'handleExaminerDashboard'],
+    ['resetExaminee', 'GET', 'examiner', 'handleResetExaminee'],
+    ['correctToPass', 'GET', 'examiner', 'handleCorrectToPass'],
+    ['overturnDQ', 'GET', 'examiner', 'handleOverturnDQ'],
+    ['confirmDQ', 'GET', 'examiner', 'handleConfirmDQ'],
+    ['forceComplete', 'GET', 'examiner', 'handleForceComplete'],
+    ['markSent', 'GET', 'examiner', 'handleMarkSent'],
+    ['commanderDashboard', 'GET', 'examiner', 'handleCommanderDashboard'],
+    ['centerManagerReport', 'GET', 'examiner', 'handleCenterManagerReport'],
+    ['examinerForecast', 'GET', 'examiner', 'handleExaminerForecast'],
+    // POST-only in the old router; the handlers verify the examiner themselves too
+    ['commanderCorrectResult', 'POST', 'examiner', 'handleCommanderCorrectResult'],
+    ['submitManualResult', 'POST', 'examiner', 'handleSubmitManualResult'],
+    ['correctExamineeMeta', 'GET,POST', 'examiner', 'handleCorrectExamineeMeta'],
+    // -- teacher token (the old teacherActions list) --
+    ['teacherDashboard', 'GET', 'teacher', 'handleTeacherDashboard'],
+    ['teacherCreateClass', 'GET', 'teacher', 'handleTeacherCreateClass'],
+    ['teacherCloseClass', 'GET', 'teacher', 'handleTeacherCloseClass'],
+    ['teacherDeleteClass', 'GET', 'teacher', 'handleTeacherDeleteClass'],
+    ['teacherRemoveStudent', 'GET', 'teacher', 'handleTeacherRemoveStudent'],
+    ['teacherGetClasses', 'GET', 'teacher', 'handleTeacherGetClasses'],
+    ['teacherClassDetails', 'GET', 'teacher', 'handleTeacherClassDetails'],
+    ['teacherExportData', 'GET', 'teacher', 'handleTeacherExportData'],
+    ['teacherCommanderDashboard', 'GET', 'teacher', 'handleTeacherCommanderDashboard'],
+    ['teacherAtRiskList', 'GET', 'teacher', 'handleTeacherAtRiskList'],
+    ['adminDashboard', 'GET', 'teacher', 'handleAdminDashboard'],
+    // -- public / handler-enforced auth --
+    ['login', 'POST', 'none', 'handleLogin'],
+    ['verifyLogin', 'GET', 'none', 'handleVerifyLogin'],
+    ['teacherLogin', 'POST', 'none', 'handleTeacherLogin'],
+    ['teacherVerifyLogin', 'GET', 'none', 'handleTeacherVerifyLogin'],
+    ['getOfficeNumber', 'GET', 'none', 'handleGetOfficeNumber'],
+    ['listActiveExaminers', 'GET', 'none', 'handleListActiveExaminers'],
+    ['siteCombinedReport', 'GET', 'none', 'handleSiteCombinedReport'],
+    ['getSessionInfo', 'GET', 'none', 'handleGetSessionInfo'],
+    ['registerExaminee', 'GET', 'none', 'handleRegisterExaminee'],
+    ['cancelRegistration', 'GET', 'none', 'handleCancelRegistration'],
+    ['checkApproval', 'GET', 'none', 'handleCheckApproval'],
+    ['getExamStatus', 'GET', 'none', 'handleGetExamStatus'],
+    ['addExamTime', 'GET', 'none', 'handleAddExamTime'],
+    ['markFinished', 'GET', 'none', 'handleMarkFinished'],
+    // 'disqualify' is deliberately not examiner-gated: the examinee client sends
+    // it too, and handleDisqualify accepts either an examiner token or an active
+    // pending row of that examinee.
+    ['disqualify', 'GET,POST', 'none', 'handleDisqualify'],
+    ['reportWarning', 'GET,POST', 'none', 'handleReportWarning'],
+    ['cancelDisqualify', 'GET,POST', 'none', 'handleCancelDisqualify'],
+    ['studentJoinClass', 'GET', 'none', 'handleStudentJoinClass'],
+    ['submitPracticeResult', 'GET,POST', 'none', 'handleSubmitPracticeResult'],
+    ['loadStudentProgress', 'GET', 'none', 'handleLoadStudentProgress'],
+    ['saveStudentProgress', 'POST', 'none', 'handleSaveStudentProgress']
+  ];
+}
+
+// Registered on first dispatch rather than at load time, so a module that
+// declared the same action with defineAction() wins and a DIFFERENT declaration
+// of the same name — a merge accident between two packages — throws instead of
+// silently taking effect.
+function ensureLegacyActions() {
+  if (ensureLegacyActions._done) return;
+  ensureLegacyActions._done = true;
+  var table = legacyActionTable();
+  for (var i = 0; i < table.length; i++) {
+    var name = table[i][0], methods = table[i][1].split(','), auth = table[i][2], fnName = table[i][3];
+    var existing = apiRegistry()[name];
+    if (!existing) {
+      defineAction(name, { methods: methods, auth: auth, handler: namedHandler(fnName) });
+      continue;
+    }
+    if (existing.auth !== auth || existing.methods.join(',') !== methods.join(',')) {
+      throw new Error('conflicting defineAction for ' + name + ': ' + existing.methods.join('/') + '/' + existing.auth +
+        ' vs ' + methods.join('/') + '/' + auth);
+    }
+  }
+}
+
+// Resolved at call time: the handler may live in any module, and a test or a
+// later module may replace it.
+function namedHandler(fnName) {
+  return function(p) {
+    var fn = globalFunction(fnName);
+    if (!fn) return jsonResponse({ status: 'error', message: 'Action not available: ' + fnName });
+    return fn(p);
+  };
+}
+function globalFunction(fnName) {
+  var fn = null;
+  try { fn = globalThis[fnName]; } catch (e) { fn = null; }
+  return (typeof fn === 'function') ? fn : null;
+}
+
+function handleGetOfficeNumber() {
+  // Public read of the office WA number — used by clients for display.
+  return jsonResponse({ status: 'ok', officeWhatsApp: getOfficeWhatsAppNumber() });
+}
+
+// health&deep=1 (2026-09-19, review action 7): the plain health does no work at
+// all, so it can only say "Google is slow". This one also reads a single cell of
+// OUR document and reports that time separately, so a watchdog can tell "our
+// document stalls" from "Google's front door stalls" every minute of an exam
+// morning (tools/exam_watchdog.gs). indexIds is the deployed question index —
+// the client compares it against the static bank it loaded.
+function handleHealth(p) {
+  var body = { status: 'ok', build: THEORY_API_BUILD, indexIds: questionIndexCount() };
+  if (String(p.deep || '') !== '1') return jsonResponse(body);
+  var deepT0 = Date.now(), sheetMs = -1, sheetError = '';
+  try { getSheet('אתרים').getRange(1, 1).getValue(); sheetMs = Date.now() - deepT0; }
+  catch (eDeep) { sheetError = String(eDeep && eDeep.message ? eDeep.message : eDeep).slice(0, 120); }
+  body.deep = true;
+  body.sheetMs = sheetMs;
+  body.sheetError = sheetError;
+  body.totalMs = Date.now() - API_STARTED_AT;
+  return jsonResponse(body);
+}
+defineAction('health', { methods: ['GET'], auth: 'none', handler: handleHealth });
 
 // ========== doGet — קריאות קריאה + פעולות קלות ==========
 
 function doGet(e) {
-  var apiStartedAt = Date.now();
+  var apiStartedAt = API_STARTED_AT = Date.now();
   var action = '';
   diagBegin('GET');
   try {
@@ -37,289 +229,12 @@ function doGet(e) {
     if (DIAG_EXEC) { DIAG_EXEC.action = action; DIAG_EXEC.t0 = apiStartedAt; }
     logTheoryApiTiming('start', 'GET', action, apiStartedAt);
 
-    // Block sensitive state-mutating actions from GET — must come via POST.
-    // Prevents URL-based forging (URLs leak to logs/history; trivially craftable).
-    // Clients already use POST for these (apiPost / sendBeacon with JSON body).
-    var postOnlyActions = ['submitResult','submitFailOnClose','submitWrongAnswers','uploadResultHtml','registerExamQuestions','saveStudentProgress','commanderCorrectResult','submitManualResult'];
-    if (postOnlyActions.indexOf(action) !== -1) {
-      return jsonResponse({ status: 'error', message: 'פעולה זו דורשת POST' });
-    }
-
     // Soft origin check — log unauthorized origins (deterrent, bypassable but raises bar)
     var originErr = checkOrigin(p);
     if (originErr) return originErr;
 
-    if (action === 'health') {
-      if (String(p.deep || '') === '1') {
-        // health&deep=1 (2026-09-19, review action 7): the plain health does no
-        // work at all, so it can only say "Google is slow". This one also reads a
-        // single cell of OUR document and reports that time separately, so a
-        // watchdog can tell "our document stalls" from "Google's front door
-        // stalls" every minute of an exam morning (tools/exam_watchdog.gs).
-        var deepT0 = Date.now(), sheetMs = -1, sheetError = '';
-        try { getSheet('אתרים').getRange(1, 1).getValue(); sheetMs = Date.now() - deepT0; }
-        catch (eDeep) { sheetError = String(eDeep && eDeep.message ? eDeep.message : eDeep).slice(0, 120); }
-        return jsonResponse({ status: 'ok', build: THEORY_API_BUILD, deep: true, sheetMs: sheetMs, sheetError: sheetError,
-          totalMs: Date.now() - apiStartedAt });
-      }
-      return jsonResponse({ status: 'ok', build: THEORY_API_BUILD });
-    }
-
-    // Actions that require examiner token authentication
-    var examinerActions = ['getSites','listSessions','listAllSessions','createSession','updateSession','closeSession',
-      'approveExaminee','rejectExaminee','examinerDashboard','resetExaminee',
-      'correctToPass','overturnDQ','confirmDQ','forceComplete','markSent','commanderDashboard',
-      'commanderCorrectResult','correctExamineeMeta','getResultUploadToken','centerManagerReport',
-      'predictiveModelPreview','examinerForecast'];
-    // Note: 'disqualify' is NOT in this list because it can be sent by the examinee client (no token)
-    // — auth is enforced inside handleDisqualify itself (examiner token OR active pending row).
-    if (examinerActions.indexOf(action) !== -1) {
-      var tokenErr = requireToken(p);
-      if (tokenErr) return tokenErr;
-    }
-
-    // Actions that require teacher token authentication
-    var teacherActions = ['teacherDashboard','teacherCreateClass','teacherCloseClass','teacherDeleteClass',
-      'teacherRemoveStudent','teacherGetClasses','teacherClassDetails','teacherExportData',
-      'teacherCommanderDashboard','teacherAtRiskList','adminDashboard'];
-    if (teacherActions.indexOf(action) !== -1) {
-      var tErr = requireTeacherToken(p);
-      if (tErr) return tErr;
-    }
-
-    switch (action) {
-
-      case 'login':
-        // Login only via POST — block GET to prevent password in URL
-        return jsonResponse({ status: 'error', message: 'יש להתחבר דרך POST בלבד' });
-
-      case 'verifyLogin':
-        return handleVerifyLogin(p);
-
-      case 'getSites':
-        return handleGetSites();
-
-      case 'listSessions':
-        return handleListSessions(p);
-
-      case 'listAllSessions':
-        return handleListAllSessions(p);
-
-      case 'centerManagerReport':
-        return handleCenterManagerReport(p);
-
-      case 'getOfficeNumber':
-        // Public read of the office WA number — used by clients for display.
-        return jsonResponse({ status: 'ok', officeWhatsApp: getOfficeWhatsAppNumber() });
-
-      case 'createSession':
-        return handleCreateSession(p);
-
-      case 'listActiveExaminers':
-        return handleListActiveExaminers(p);
-
-      case 'siteCombinedReport':
-        return handleSiteCombinedReport(p);
-
-      case 'updateSession':
-        return handleUpdateSession(p);
-
-      case 'closeSession':
-        return handleCloseSession(p);
-
-      case 'getSessionInfo':
-        return handleGetSessionInfo(p);
-
-      case 'registerExaminee':
-        return handleRegisterExaminee(p);
-
-      case 'cancelRegistration':
-        return handleCancelRegistration(p);
-
-      case 'checkApproval':
-        return handleCheckApproval(p);
-
-      case 'approveExaminee':
-        return handleApproveExaminee(p);
-
-      case 'rejectExaminee':
-        return handleRejectExaminee(p);
-
-      case 'markExamStarted':
-        return handleMarkExamStarted(p);
-
-      case 'examinerDashboard':
-        return handleExaminerDashboard(p);
-
-      case 'disqualify':
-        return handleDisqualify(p);
-
-      case 'reportWarning':
-        return handleReportWarning(p);
-
-      case 'getExamStatus':
-        return handleGetExamStatus(p);
-
-      case 'addExamTime':
-        return handleAddExamTime(p);
-
-      case 'markFinished':
-        return handleMarkFinished(p);
-
-      case 'cancelDisqualify':
-        return handleCancelDisqualify(p);
-
-      case 'resetExaminee':
-        return handleResetExaminee(p);
-
-      case 'overturnDQ':
-        return handleOverturnDQ(p);
-
-      case 'confirmDQ':
-        return handleConfirmDQ(p);
-
-      case 'correctToPass':
-        return handleCorrectToPass(p);
-
-      case 'correctExamineeMeta':
-        return handleCorrectExamineeMeta(p);
-
-      case 'forceComplete':
-        return handleForceComplete(p);
-
-      case 'markSent':
-        return handleMarkSent(p);
-
-      case 'commanderDashboard':
-        return handleCommanderDashboard(p);
-
-      case 'predictiveModelPreview':
-        return handlePredictiveModelPreview(p);
-
-      case 'examinerForecast':
-        return handleExaminerForecast(p);
-
-      case 'submitResult':
-        // Decode wrongAnswers from JSON string parameter
-        var resultData = {
-          action: 'submitResult',
-          sessionCode: p.sessionCode || '',
-          idNumber: p.idNumber || '',
-          fullName: p.fullName || '',
-          phone: p.phone || '',
-          license: p.license || 'B',
-          language: p.language || 'he',
-          score: Number(p.score) || 0,
-          total: Number(p.total) || 30,
-          percent: Number(p.percent) || 0,
-          passed: p.passed === 'true' || p.passed === true,
-          time: p.time || '',
-          examinerName: p.examinerName || '',
-          site: p.site || '',
-          classroom: p.classroom || '',
-          population: p.population || '',
-          audioMode: p.audioMode || 'off',
-          device: p.device || '',
-          wrongAnswers: []
-        };
-        try { if (p.wrongAnswers) resultData.wrongAnswers = JSON.parse(p.wrongAnswers); } catch(ex) {}
-        return handleSubmitResult(resultData);
-
-      case 'submitWrongAnswers':
-        return handleSubmitWrongAnswers(p);
-
-      case 'submitFailOnClose':
-        var failData = {
-          action: 'submitFailOnClose',
-          sessionCode: p.sessionCode || '',
-          idNumber: p.idNumber || '',
-          fullName: p.fullName || '',
-          phone: p.phone || '',
-          license: p.license || 'B',
-          language: p.language || 'he',
-          examinerName: p.examinerName || '',
-          site: p.site || '',
-          classroom: p.classroom || '',
-          answeredCount: Number(p.answeredCount) || 0,
-          totalQuestions: Number(p.totalQuestions) || 30,
-          time: p.time || '',
-          population: p.population || '',
-          audioMode: p.audioMode || 'off',
-          device: p.device || ''
-        };
-        return handleSubmitFailOnClose(failData);
-
-      case 'getUploadResult':
-        return handleGetUploadResult(p);
-
-      case 'getResultUploadToken':
-        return handleGetResultUploadToken(p);
-
-      case 'getExamQuestions':
-        return handleGetExamQuestions(p);
-
-      case 'searchQuestions':
-        return handleSearchQuestions(p);
-
-      case 'getQuestionsByIds':
-        return handleGetQuestionsByIds(p);
-
-      case 'viewResult':
-        // DISABLED: see handleUploadResultHtml. Result viewing moved to the
-        // authenticated Cloudflare Worker; this no longer serves cached HTML (it
-        // used ALLOWALL framing on the trusted Google origin \u2014 an XSS/phishing vector).
-        return HtmlService.createHtmlOutput('<h1 style="text-align:center;padding:40px;font-family:Arial;direction:rtl;">\u05DC\u05D0 \u05D6\u05DE\u05D9\u05DF</h1>');
-
-      // ===== Teacher actions =====
-      case 'teacherVerifyLogin':
-        return handleTeacherVerifyLogin(p);
-
-      case 'teacherGetClasses':
-        return handleTeacherGetClasses(p);
-
-      case 'teacherCreateClass':
-        return handleTeacherCreateClass(p);
-
-      case 'teacherCloseClass':
-        return handleTeacherCloseClass(p);
-
-      case 'teacherDeleteClass':
-        return handleTeacherDeleteClass(p);
-
-      case 'teacherRemoveStudent':
-        return handleTeacherRemoveStudent(p);
-
-      case 'teacherDashboard':
-        return handleTeacherDashboard(p);
-
-      case 'teacherClassDetails':
-        return handleTeacherClassDetails(p);
-
-      case 'teacherExportData':
-        return handleTeacherExportData(p);
-
-      case 'teacherCommanderDashboard':
-        return handleTeacherCommanderDashboard(p);
-
-      case 'teacherAtRiskList':
-        return handleTeacherAtRiskList(p);
-
-      case 'adminDashboard':
-        return handleAdminDashboard(p);
-
-      // ===== Student join class (no auth) =====
-      case 'studentJoinClass':
-        return handleStudentJoinClass(p);
-
-      case 'submitPracticeResult':
-        return handleSubmitPracticeResult(p);
-
-      case 'loadStudentProgress':
-        return handleLoadStudentProgress(p);
-      default:
-        return jsonResponse({ status: 'ok', message: 'External Exam API is running' });
-    }
-
+    if (action === '') return jsonResponse({ status: 'ok', message: 'External Exam API is running' });
+    return dispatchApiAction('GET', action, p);
   } catch (err) {
     return theoryRetryableErrorResponse(err) || jsonResponse({ status: 'error', message: err.toString() });
   } finally {
@@ -331,15 +246,14 @@ function doGet(e) {
 // ========== doPost — שמירת תוצאות (נתונים גדולים) ==========
 
 function doPost(e) {
-  var apiStartedAt = Date.now();
+  var apiStartedAt = API_STARTED_AT = Date.now();
   var action = '';
   diagBegin('POST');
   try {
     if (!e || !e.postData || !e.postData.contents) {
       return jsonResponse({ status: 'error', message: 'No POST data received' });
     }
-    var raw = e.postData.contents;
-    var data = JSON.parse(raw);
+    var data = JSON.parse(e.postData.contents);
     action = data.action || '';
     if (DIAG_EXEC) { DIAG_EXEC.action = action; DIAG_EXEC.t0 = apiStartedAt; }
     logTheoryApiTiming('start', 'POST', action, apiStartedAt);
@@ -348,42 +262,7 @@ function doPost(e) {
     var originErr = checkOrigin(data);
     if (originErr) return originErr;
 
-    if (action === 'login') {
-      return handleLogin(data);
-    } else if (action === 'teacherLogin') {
-      return handleTeacherLogin(data);
-    } else if (action === 'submitPracticeResult') {
-      return handleSubmitPracticeResult(data);
-    } else if (action === 'registerExamQuestions') {
-      return handleRegisterExamQuestions(data);
-    } else if (action === 'submitResult') {
-      return handleSubmitResult(data);
-    } else if (action === 'submitFailOnClose') {
-      return handleSubmitFailOnClose(data);
-    } else if (action === 'submitWrongAnswers') {
-      return handleSubmitWrongAnswersBulk(data);
-    } else if (action === 'cancelFailOnClose') {
-      return handleCancelFailOnClose(data);
-    } else if (action === 'uploadResultHtml') {
-      return handleUploadResultHtml(data);
-    } else if (action === 'disqualify') {
-      return handleDisqualify(data);
-    } else if (action === 'reportWarning') {
-      return handleReportWarning(data);
-    } else if (action === 'cancelDisqualify') {
-      return handleCancelDisqualify(data);
-    } else if (action === 'saveStudentProgress') {
-      return handleSaveStudentProgress(data);
-    } else if (action === 'commanderCorrectResult') {
-      return handleCommanderCorrectResult(data);
-    } else if (action === 'correctExamineeMeta') {
-      return handleCorrectExamineeMeta(data);
-    } else if (action === 'submitManualResult') {
-      return handleSubmitManualResult(data);
-    } else {
-      return jsonResponse({ status: 'error', message: 'Unknown POST action: ' + action });
-    }
-
+    return dispatchApiAction('POST', action, data);
   } catch (err) {
     return theoryRetryableErrorResponse(err) || jsonResponse({ status: 'error', message: 'doPost error: ' + err.toString() });
   } finally {
@@ -391,4 +270,3 @@ function doPost(e) {
     logTheoryApiTiming('end', 'POST', action, apiStartedAt);
   }
 }
-

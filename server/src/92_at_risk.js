@@ -32,7 +32,9 @@ function computeAtRiskAll(opts) {
 
   // Exam-history index → upcoming attempt number + everPassed. Keyed by phone AND
   // name|license, mirroring the model join.
-  var examData = getSheet('תוצאות').getDataRange().getValues();
+  // Live + archive (B5), columns C name, D phone, E licence, H pass, O attempt.
+  // ⚠ Index another column and add it to the colSpec — a missing column reads ''.
+  var examData = readResultsSince(null, [[3, 3], [8, 1], [15, 1]]).rows;
   var histByPhone = {}, histByName = {};
   function histBump(idx, key, attempt, passed) {
     if (!key) return;
@@ -54,9 +56,13 @@ function computeAtRiskAll(opts) {
 
   // Group practice rows by student within the window — no scope filter here (the
   // cache holds everyone; the read handler filters by caller scope).
-  var practiceData = getSheet('תוצאות תרגול').getDataRange().getValues();
   var windowStart = new Date();
   windowStart.setDate(windowStart.getDate() - lookbackDays);
+  // Rows: only the window this loop keeps (it drops anything older itself).
+  // Columns: A date, B studentId, C name, D class, F licence, I percent,
+  // P phone — never the two JSON blobs in N/O.
+  var practiceData = readRowsSince(getSheet('תוצאות תרגול'), 0, windowStart,
+    [[1, 6], [9, 1], [16, 1]]).rows;
   var students = {};
   for (var r = 1; r < practiceData.length; r++) {
     var pDate = parseSheetDate(practiceData[r][0]);
@@ -162,10 +168,19 @@ function computeAtRiskAll(opts) {
 // by a time-based trigger (see installAtRiskTrigger) at ~03:00 so the heavy
 // model build never lands during exam/practice hours. Dashboards then READ this
 // cache instead of rebuilding — no per-request model build, no midday load.
+// The job-running FLAG is gone with the warmup that read it (r25). What the two
+// nightly jobs need from each other is stronger than a flag anyway: this one
+// reads 'תוצאות' live + archive, and the 01:00 archive MOVES rows between those
+// two sheets, so a run that overlapped it could count a row twice or not at all.
+// The script lock the archive already holds is the real interlock; 03:00 is two
+// hours later, so waiting for it is a formality that costs nothing.
 function rebuildAtRiskCache() {
-  markJobRunning('rebuildAtRiskCache', true);   // keeps the hourly cache check out of the way (see ensureQuestionCachesWarm)
+  var lock = LockService.getScriptLock();
+  var held = false;
+  try { held = lock.tryLock(60000); } catch (e) { held = false; }
+  if (!held) Logger.log('rebuildAtRiskCache: the archive still holds the lock — computing anyway');
   try { return rebuildAtRiskCacheInner(); }
-  finally { markJobRunning('rebuildAtRiskCache', false); }
+  finally { if (held) lock.releaseLock(); }
 }
 function rebuildAtRiskCacheInner() {
   var res = computeAtRiskAll({ lookbackDays: 30 });

@@ -73,7 +73,7 @@ function readResultsTail() { return readTail(getSheet('תוצאות'), 0); }    
 var PENDING_SNAPSHOT_SEC = 4;
 var PENDING_SNAPSHOT_PREFIX = 'pendsnap_';
 function pendingSnapshotKey(sessionCode) {
-  return QUESTION_CACHE_PREFIX + PENDING_SNAPSHOT_PREFIX + String(sessionCode || '').trim();
+  return CACHE_KEY_PREFIX + PENDING_SNAPSHOT_PREFIX + String(sessionCode || '').trim();
 }
 // Returns { rows, cached }. rows[0] is a header placeholder so the callers'
 // `i >= 1` loops stay exactly as they were.
@@ -198,4 +198,36 @@ function readRowsSince(sheet, tsColIdx, cutoff, colSpec) {
   if (colSpec && lastCol >= 1) return { rows: readSheetSlice(sheet, 1, lastRow, lastCol, colSpec), off: 0, mode: 'full/' + lastRow };
   return { rows: sheet.getDataRange().getValues(), off: 0, mode: 'full/' + lastRow };
 }
+
+// ---- History readers: live sheet + its archive, as one table ---------------
+// The nightly job (B5) moves rows older than the retention window out of
+// 'תוצאות' / 'ממתינים'. Every date-bounded aggregation must therefore read BOTH
+// or it would silently report a shorter history than it did yesterday. Rows
+// come back oldest-first (archive rows, then live rows) under ONE header, in
+// the requested columns only.
+//
+// The archive is read only when it can still hold a row in range:
+//   • readRowsSince answering 'rows…'/'none…' means it FOUND the boundary
+//     inside the live sheet — everything above it, archive included, is older;
+//   • otherwise the oldest live row decides; an unbounded cutoff always reads.
+// No `off` is returned: a merged table has no single sheet-row mapping, so a
+// caller that writes by row index must read the live sheet itself.
+function readHistorySince(sheetName, archiveName, tsColIdx, cutoff, colSpec) {
+  var live = readRowsSince(getSheet(sheetName), tsColIdx, cutoff, colSpec);
+  var bounded = cutoff instanceof Date && !isNaN(cutoff.getTime());
+  var needArchive = true;
+  if (bounded && /^(rows|none)/.test(String(live.mode))) needArchive = false;
+  if (bounded && needArchive && live.rows.length > 1) {
+    var oldestLive = parseSheetDateTime(live.rows[1][tsColIdx]);
+    if (oldestLive && oldestLive.getTime() <= cutoff.getTime()) needArchive = false;
+  }
+  var arch = needArchive ? getSheetIfExists(archiveName) : null;
+  if (!arch || arch.getLastRow() < 2) return { rows: live.rows, mode: live.mode + '+arch:0' };
+  var archRead = readRowsSince(arch, tsColIdx, cutoff, colSpec);
+  var header = live.rows.length ? live.rows.slice(0, 1) : archRead.rows.slice(0, 1);
+  return { rows: header.concat(archRead.rows.slice(1), live.rows.slice(1)),
+    mode: live.mode + '+arch:' + Math.max(0, archRead.rows.length - 1) };
+}
+function readResultsSince(cutoff, colSpec) { return readHistorySince('תוצאות', RESULTS_ARCHIVE_SHEET, 0, cutoff, colSpec); }
+function readPendingSince(cutoff, colSpec) { return readHistorySince('ממתינים', PENDING_ARCHIVE_SHEET, 4, cutoff, colSpec); }
 

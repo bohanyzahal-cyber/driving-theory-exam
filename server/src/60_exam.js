@@ -1,855 +1,775 @@
-function handleRegisterExamQuestions(data) {
-  // Reject the call if the examinee token doesn't match the registered row
-  // (legacy rows without a stored token still pass).
-  var reqTokenErr = requireExamineeToken(data);
-  if (reqTokenErr) return reqTokenErr;
-  // Server-side score verification setup. The client tells us which questions
-  // came up and how each was shuffled — but NOT which answer is correct. The
-  // server looks up the canonical correct index in ANSWER_KEY_BY_LANG and
-  // computes the shuffled-correct index itself, so a tampered client cannot
-  // claim "answer 0 is always correct" and pass without taking the exam.
-  //
-  // Expected payload:
-  //   { sessionCode, idNumber, language?, questions: [{qIdx, qId, shuffleOrder}] }
-  // Where shuffleOrder is an array like [2,0,1,3] meaning:
-  //   "displayed answer A = original answer 2, B = original 0, C = original 1, D = original 3".
-  //
-  // Backward-compat: old clients send {qIdx, correctShuffledIdx} (legacy, trusted).
-  // If we detect the legacy shape, we accept it but mark the registration
-  // as unverified so submitResult flags the result row accordingly.
-  if (!data.sessionCode || !data.idNumber || !data.questions) {
-    return jsonResponse({ status: 'error', message: 'חסרים נתונים לרישום מבחן' });
-  }
+// ========== Exam start, practice draw, result submission ====================
+//
+// One call starts an exam (startExam) and one call ends it (submitResult). The
+// server draws the questions from QUESTION_INDEX, stores the map it drew, and
+// scores the submission against the answer key — the client is trusted for
+// nothing but WHAT IT DISPLAYED (question and answer texts, for the certificate).
+//
+// What the old flow did instead: getExamQuestions (Drive/pool read, ~10s) →
+// registerExamQuestions (full read of 'ממתינים', no idempotency, four client
+// retries) → markExamStarted (another full read) → submitResult (full read of
+// 'מבחנים', 8.2MB, plus three full reads of 'תוצאות' and a Drive read for the
+// wrong-answer texts). That is the 15MB submit and the 10-second start.
 
-  // If server-side question delivery (getExamQuestions) was used, an entry
-  // for `issued_qs_<session>_<id>` will exist in cache. Verify the IDs the
-  // client is registering all came from that set — otherwise reject.
-  // (No cache entry means legacy flow where the client picked questions
-  // locally from questions.js; that path stays open for now.)
+// ---- The question map of one exam ------------------------------------------
+// Stored in 'מבחנים' exactly as before — six columns, one JSON map per row —
+// so nothing downstream changes; the map entries gained `topic` (the blueprint
+// bucket, for the certificate) since the server can no longer look a category up
+// in a bank it does not have.
+var EXAM_BASE_MINUTES = 40;
+var EXAM_MIN_QUESTIONS = 25;               // review E S1: never register or score a short map
+var EXAM_MAP_CACHE_SEC = 10800;            // 3h — longer than any exam plus its extensions
+var EXAM_MAP_MAX_AGE_MS = 8 * 3600 * 1000; // a session code lives 8h; an older row is a previous attempt
+var EXAM_SUSPICIOUS_SEC = 180;             // a "finished" exam faster than this is flagged, not blocked
+
+// The cache key carries the ATTEMPT, not just the person: an examinee who was
+// reset and registered again gets a new 'ממתינים' row with a new registration
+// time and must be drawn a fresh exam, not handed the cached one.
+function examAttemptKey(row) {
+  var stamp = (row && row[4] instanceof Date) ? row[4].toISOString() : String((row && row[4]) || '');
+  return stamp.replace(/[^0-9A-Za-z]/g, '').slice(-14) || 'na';
+}
+function examMapCacheKey(sessionCode, idNumber, attemptKey) {
+  return CACHE_KEY_PREFIX + 'qmap_' + String(sessionCode || '').trim() + '_' + normalizeId(idNumber) + '_' + attemptKey;
+}
+function readExamMapCache(sessionCode, idNumber, attemptKey) {
   try {
-    var issuedKey = 'issued_qs_' + String(data.sessionCode) + '_' + normalizeId(data.idNumber);
-    var issuedJson = CacheService.getScriptCache().get(issuedKey);
-    if (issuedJson) {
-      var issuedSet = {};
-      var issuedArr = JSON.parse(issuedJson) || [];
-      for (var iz = 0; iz < issuedArr.length; iz++) issuedSet[String(issuedArr[iz])] = true;
-      for (var iq = 0; iq < data.questions.length; iq++) {
-        var qq = data.questions[iq];
-        if (!qq || !qq.qId) continue;
-        if (!issuedSet[String(qq.qId)]) {
-          return jsonResponse({
-            status: 'error',
-            message: 'Question ID not in issued set — rejecting registration',
-            unexpectedId: qq.qId
-          });
-        }
-      }
-    }
-  } catch (e) { /* cache failure — fall through to existing flow */ }
-
-  // Verify examinee is in_exam / approved status
-  diagMark('sheet:pending-register');
-  var pendSheet = getSheet('ממתינים');
-  var pendData = pendSheet.getDataRange().getValues();
-  var found = false;
-  for (var i = pendData.length - 1; i >= 1; i--) {
-    if (String(pendData[i][0]) === String(data.sessionCode) && normalizeId(pendData[i][1]) === normalizeId(data.idNumber)) {
-      var status = String(pendData[i][5]).trim();
-      if (status === 'in_exam' || status === 'approved') {
-        found = true;
-        break;
-      }
-    }
-  }
-  if (!found) {
-    return jsonResponse({ status: 'error', message: 'נבחן לא מאושר למבחן' });
-  }
-
-  // Build the canonical question map. Each entry stores {qIdx, correctShuffledIdx}
-  // — same shape submitResult already consumes — but the correctShuffledIdx is
-  // computed server-side whenever possible.
-  var lang = String(data.language || 'he').toLowerCase();
-  var canonicalMap = [];
-  var unverifiedCount = 0;
-  var hasAnswerKey = (typeof ANSWER_KEY_BY_LANG !== 'undefined') && (typeof lookupCorrectIndex === 'function');
-
-  for (var qi = 0; qi < data.questions.length; qi++) {
-    var q = data.questions[qi];
-    if (!q) { canonicalMap.push(null); unverifiedCount++; continue; }
-
-    // Modern shape: client sent qId + shuffleOrder → server computes
-    if (hasAnswerKey && q.qId && Array.isArray(q.shuffleOrder)) {
-      var origCorrect = lookupCorrectIndex(Number(q.qId), lang);
-      if (origCorrect === null || origCorrect === undefined) {
-        // Question id missing from answer key → fall back to client's claim if present
-        canonicalMap.push({ qIdx: q.qIdx, qId: Number(q.qId), shuffleOrder: q.shuffleOrder, correctShuffledIdx: Number(q.correctShuffledIdx || 0) });
-        unverifiedCount++;
-        continue;
-      }
-      var idxInShuffle = q.shuffleOrder.indexOf(Number(origCorrect));
-      if (idxInShuffle < 0) {
-        // shuffleOrder doesn't contain the correct original index → malformed
-        canonicalMap.push({ qIdx: q.qIdx, qId: Number(q.qId), shuffleOrder: q.shuffleOrder, correctShuffledIdx: Number(q.correctShuffledIdx || 0) });
-        unverifiedCount++;
-        continue;
-      }
-      // Store qId + shuffleOrder so submitResult can build wrongDetails server-side
-      // (needed because we no longer send `ci` to examinees — see handleGetExamQuestions).
-      canonicalMap.push({ qIdx: q.qIdx, qId: Number(q.qId), shuffleOrder: q.shuffleOrder, correctShuffledIdx: idxInShuffle });
-      continue;
-    }
-
-    // Legacy / fallback: client sent correctShuffledIdx directly → trust but flag
-    canonicalMap.push({ qIdx: q.qIdx, qId: q.qId ? Number(q.qId) : null, shuffleOrder: Array.isArray(q.shuffleOrder) ? q.shuffleOrder : null, correctShuffledIdx: Number(q.correctShuffledIdx || 0) });
-    unverifiedCount++;
-  }
-
-  // Guard: if the server answer key is entirely unavailable (answer_key.gs not
-  // deployed, or every selected qId missing from it), do NOT register a map full
-  // of unverifiable garbage — that is what produced silent 0/30 fails (פינטו/דיין
-  // 03/06). Return an error so the confirmed-register client blocks the exam and
-  // retries, surfacing the problem instead of mis-scoring a real examinee.
-  if (!hasAnswerKey || (data.questions.length > 0 && unverifiedCount >= data.questions.length)) {
-    return jsonResponse({ status: 'error', message: 'מפתח התשובות אינו זמין בשרת — פנה למנהל המערכת', keyUnavailable: true });
-  }
-
-  // Store in מבחנים sheet (create if needed). Add a fifth column for unverified
-  // count so submitResult can flag results scored from unverified data.
-  var examSheet;
-  try { examSheet = getSheet('מבחנים'); } catch(e) {
-    var ss = getSpreadsheet();
-    examSheet = ss.insertSheet('מבחנים');
-    examSheet.appendRow(['קוד סשן', 'ת.ז.', 'שאלות JSON', 'זמן רישום', 'שפה', 'שגויות לא מאומתות']);
-  }
-  diagMark('sheet:append-register');
-  examSheet.appendRow([
-    String(data.sessionCode),
-    normalizeId(data.idNumber),
-    JSON.stringify(canonicalMap),
-    nowISO(),
-    lang,
-    unverifiedCount
-  ]);
-
-  // Layer-1 consolidation: also mark the examinee in_exam here — the same write
-  // markExamStarted did — so the start no longer needs a separate markExamStarted
-  // round-trip. Only flips 'approved' → 'in_exam' (same guard). Because this is
-  // the CONFIRMED/blocking call, it also strengthens the iPhone "stuck in
-  // ממתינים" fix. `marked` is returned so the client knows whether to keep the
-  // visibilitychange fallback armed.
-  var marked = false;
+    var hit = CacheService.getScriptCache().get(examMapCacheKey(sessionCode, idNumber, attemptKey));
+    if (!hit) return null;
+    var record = JSON.parse(hit);
+    return (record && record.map && record.map.length) ? record : null;
+  } catch (e) { return null; }
+}
+function writeExamMapCache(sessionCode, idNumber, attemptKey, record) {
   try {
-    var penSheet = pendSheet;
-    var penData = refreshExamineePendingRows(penSheet, pendData, data.sessionCode, data.idNumber);
-    for (var mi = penData.length - 1; mi >= 1; mi--) {
-      if (String(penData[mi][0]) !== String(data.sessionCode) || normalizeId(penData[mi][1]) !== normalizeId(data.idNumber)) continue;
-      var mst = String(penData[mi][5]).trim();
-      if (mst === 'approved') { penSheet.getRange(mi + 1, 6).setValue('in_exam'); penSheet.getRange(mi + 1, 12).setValue(nowISO()); marked = true; break; }
-      if (mst === 'in_exam') { marked = true; break; }
-      // other status (cancelled/completed): keep scanning for an approved/in_exam row
-    }
-  } catch (msErr) { /* non-fatal — client fallback + dashboard cleanup cover it */ }
-
-  return jsonResponse({ status: 'ok', verified: unverifiedCount === 0, unverifiedCount: unverifiedCount, examStarted: marked });
+    CacheService.getScriptCache().put(examMapCacheKey(sessionCode, idNumber, attemptKey), JSON.stringify(record), EXAM_MAP_CACHE_SEC);
+  } catch (e) { /* the sheet is the source of truth; the cache only saves a read */ }
 }
 
-function handleSubmitResult(data) {
-  // Rate limit: max 5 submissions per minute per (sessionCode, idNumber).
-  // One legitimate submission + retries on flaky network; floods are blocked.
-  var srRlErr = requireRateLimit('submitResult', String(data.sessionCode || '') + '_' + normalizeId(data.idNumber), 5, 60);
-  if (srRlErr) return srRlErr;
-  // Require the examinee token before accepting any result. Legacy rows
-  // (no stored token) pass through requireExamineeToken with legacy=true.
-  diagMark('sheet:token-submit');
-  var srTokenErr = requireExamineeToken(data);
-  if (srTokenErr) return srTokenErr;
-  var sheet = getSheet('תוצאות');
-
-  // Verify examinee is approved (in_exam status) before accepting results
-  if (data.sessionCode && data.idNumber) {
-    diagMark('sheet:pending-submit');
-    var pendSheet = getSheet('ממתינים');
-    var pendData = pendSheet.getDataRange().getValues();
-    var isApproved = false;
-    for (var pi = pendData.length - 1; pi >= 1; pi--) {
-      if (String(pendData[pi][0]) === String(data.sessionCode) && normalizeId(pendData[pi][1]) === normalizeId(data.idNumber)) {
-        var pStatus = String(pendData[pi][5]).trim();
-        // 'cancelled' accepted too: if an examiner reset an examinee who was
-        // actually still mid-exam, a genuine finished submit must be RECORDED,
-        // not rejected and lost. The fabricated-fail supersede + dup-check below
-        // prevent a double-row; close-fails for 'cancelled' are suppressed.
-        if (pStatus === 'in_exam' || pStatus === 'approved' || pStatus === 'completed' || pStatus === 'cancelled') {
-          isApproved = true;
-        }
-        break;
-      }
-    }
-    if (!isApproved) {
-      return jsonResponse({ status: 'error', message: 'נבחן לא מאושר — לא ניתן לשלוח תוצאות' });
-    }
+// 'מבחנים' carries one JSON map per row and grows forever — reading it whole to
+// use a single row was 8.2MB of the 15MB submit. Columns A-B (session, id) are
+// scanned bottom-up and only the matching row's C-F is read.
+// maxAgeMs bounds the search to the current session; 0 accepts any age (a submit
+// must find its own registration however long the exam ran).
+// Returns null when there is no row, or { map: null } when the row cannot be
+// parsed — "a registration exists but is unreadable" is not "no registration".
+function readExamRegistration(sessionCode, idNumber, maxAgeMs) {
+  var sheet = getSheet('מבחנים'), lastRow = sheet.getLastRow();
+  if (lastRow < 2) return null;
+  diagMark('sheet:exam-keys');
+  var keys = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
+  for (var i = keys.length - 1; i >= 0; i--) {
+    if (String(keys[i][0]) !== String(sessionCode)) continue;
+    if (normalizeId(keys[i][1]) !== normalizeId(idNumber)) continue;
+    diagMark('sheet:exam-row');
+    var record = parseExamRegistrationRow(sheet.getRange(i + 2, 3, 1, 4).getValues()[0]);
+    if (maxAgeMs && examRegistrationAgeMs(record) > maxAgeMs) return null;
+    return record;
   }
-
-  // SECURITY (anti score-forge): if a registered exam (מבחנים row) exists for this
-  // session+id, the answers array is MANDATORY so the server re-scores from the
-  // answer key. Without this, an examinee could POST a forged score with NO answers
-  // and skip BOTH the re-score and the unverified-guard below (both answers-gated).
-  // Keep the full history for old-result recovery and retakes; do not tail-read
-  // it. Reuse only within this call, and retry a failed read in the later guards.
-  var registeredExamRows = null;
-  function readRegisteredExams() {
-    var registeredSheet = getSheet('מבחנים');
-    if (!registeredExamRows || registeredSheet.getLastRow() !== registeredExamRows.length) {
-      // r20 (marks only): prime suspect for the 32s this handler spends after
-      // meta:wrong-answers — 'מבחנים' carries the question-map JSON of EVERY
-      // exam ever registered, one blob per row, and this pulls all of it to use
-      // a single row. Do NOT narrow it blindly: column C IS the answer key the
-      // re-score depends on (line ~3461). Measure first.
-      diagMark('sheet:registered-submit');
-      registeredExamRows = registeredSheet.getDataRange().getValues();
-    }
-    return registeredExamRows;
-  }
-  var hasRegisteredExam = false;
+  return null;
+}
+function parseExamRegistrationRow(cells) {
+  var record = {
+    map: null,
+    at: (cells[1] instanceof Date) ? cells[1].toISOString() : String(cells[1] || ''),
+    lang: String(cells[2] || ''),
+    unverified: Number(cells[3] || 0)
+  };
   try {
-    var regChk = readRegisteredExams();
-    for (var rc = regChk.length - 1; rc >= 1; rc--) {
-      if (String(regChk[rc][0]) === String(data.sessionCode) && normalizeId(regChk[rc][1]) === normalizeId(data.idNumber)) { hasRegisteredExam = true; break; }
+    var map = JSON.parse(cells[0]);
+    // An empty array IS a readable map — and a refusable one (review E S1).
+    // Only unparseable JSON leaves map null, i.e. "registered but unreadable".
+    if (Array.isArray(map)) record.map = map;
+  } catch (e) { /* record.map stays null → the result is stored unverified */ }
+  return record;
+}
+function examRegistrationAgeMs(record) {
+  var at = record && record.at ? new Date(record.at) : null;
+  if (!at || isNaN(at.getTime())) return 0;   // unparseable stamp: do not discard the map over it
+  return Date.now() - at.getTime();
+}
+
+function appendExamRegistration(sessionCode, idNumber, map, at, lang) {
+  diagMark('sheet:append-exam');
+  var sheet = getSheet('מבחנים');
+  // Every reader here skips row 1 as a header, so a sheet that somehow has none
+  // would swallow its first exam.
+  if (sheet.getLastRow() === 0 && SHEET_HEADERS['מבחנים']) sheet.appendRow(SHEET_HEADERS['מבחנים']);
+  sheet.appendRow([String(sessionCode), normalizeId(idNumber), JSON.stringify(map), at, lang, 0]);
+}
+
+// ---- startExam --------------------------------------------------------------
+// POST, examinee token. Replaces getExamQuestions + registerExamQuestions +
+// markExamStarted with one idempotent call: the same (session, attempt) always
+// gets the same 30 questions back, so a retry after a lost response resumes the
+// exam instead of drawing a second one.
+function handleStartExam(data) {
+  var sessionCode = String(data.sessionCode || '').trim();
+  if (!sessionCode || !data.idNumber) return jsonResponse({ status: 'error', message: 'חסרים פרטי נבחן' });
+  var ctx = examineeRowContext(sessionCode, data.idNumber);
+  if (!ctx.active) return jsonResponse({ status: 'error', code: 'not_approved', message: 'נבחן לא מאושר למבחן' });
+
+  var row = ctx.active.row;
+  var lang = String(data.language || row[6] || 'he').toLowerCase();
+  var license = String(data.license || row[8] || 'B').trim();
+  if (!EXAM_STRUCTURE_SERVER[license]) {
+    return jsonResponse({ status: 'error', code: 'unknown_license', message: 'דרגה לא מוכרת: ' + license });
+  }
+
+  var attempt = examAttemptKey(row);
+  var record = readExamMapCache(sessionCode, data.idNumber, attempt);
+  // Only an exam already in progress may reuse a stored map. An 'approved' row
+  // is a NEW attempt (a reset examinee re-registered), and it must be drawn
+  // fresh even though a map of the previous attempt is still in the sheet.
+  if (!record && ctx.active.status === 'in_exam') {
+    record = readExamRegistration(sessionCode, data.idNumber, EXAM_MAP_MAX_AGE_MS);
+    if (record && (!record.map || record.map.length < EXAM_MIN_QUESTIONS)) record = null;
+  }
+  if (!record) {
+    try { record = drawExamRegistration(sessionCode, data.idNumber, license, lang); }
+    catch (err) {
+      if (!err || err.code !== 'bank_unavailable') throw err;
+      return jsonResponse({ status: 'error', code: 'bank_unavailable', detail: err.detail,
+        message: 'מאגר השאלות אינו זמין כעת — פנה לבוחן' });
     }
-  } catch (regChkErr) {}
-  if (hasRegisteredExam && (!data.answers || !Array.isArray(data.answers) || data.answers.length === 0)) {
+  }
+  writeExamMapCache(sessionCode, data.idNumber, attempt, record);
+
+  // approved → in_exam, through the single status writer (it flushes and drops
+  // the poller snapshot). An in_exam row keeps its original start time.
+  if (ctx.active.status === 'approved') {
+    setPendingStatus(getSheet('ממתינים'), ctx.active.rowNumber, sessionCode, 'in_exam', { examStart: nowISO() });
+    ctx.active.status = 'in_exam';
+  }
+
+  return jsonResponse({
+    status: 'ok', build: THEORY_API_BUILD,
+    examMinutes: examMinutesFor(row), extraMinutes: sumExtraMinutes(sessionCode, data.idNumber),
+    audioMode: String(row[9] || '').trim() === 'on' ? 'on' : 'off',
+    language: record.lang || lang, license: license, registeredAt: record.at,
+    questions: examQuestionsForClient(record.map)
+  });
+}
+
+function drawExamRegistration(sessionCode, idNumber, license, lang) {
+  var drawn = drawExamIds(license, lang);
+  if (drawn.length < EXAM_MIN_QUESTIONS) {
+    throw questionBankUnavailable('נדרשות לפחות ' + EXAM_MIN_QUESTIONS + ' שאלות', String(drawn.length));
+  }
+  var map = [];
+  for (var i = 0; i < drawn.length; i++) {
+    var order = drawShuffleOrder();
+    // Non-null by construction: drawExamIds skips every id the key cannot answer.
+    var correct = answerKeyIndex(drawn[i].id, lang);
+    map.push({ qIdx: i, qId: drawn[i].id, shuffleOrder: order, correctShuffledIdx: order.indexOf(correct), topic: drawn[i].topic });
+  }
+  var at = nowISO();
+  appendExamRegistration(sessionCode, idNumber, map, at, lang);
+  return { map: map, at: at, lang: lang, unverified: 0 };
+}
+
+// The client holds the texts (bank/<lang>.json) and needs only what the server
+// decided: which questions, in which answer order, under which topic.
+function examQuestionsForClient(map) {
+  var out = [];
+  for (var i = 0; i < map.length; i++) {
+    out.push({ id: map[i].qId, order: map[i].shuffleOrder, topic: map[i].topic || '' });
+  }
+  return out;
+}
+
+// Column K of 'ממתינים' holds the examiner's time extension — same whitelist the
+// approval poll applies, so both sides compute the same deadline.
+function examMinutesFor(row) {
+  var ext = parseFloat(row[10]) || 1;
+  if (ext !== 1.25 && ext !== 1.5) ext = 1;
+  return Math.round(EXAM_BASE_MINUTES * ext);
+}
+
+// ---- startPractice ----------------------------------------------------------
+// GET, no token. Practice scores on the client, so it gets the correct index of
+// every language the question exists in (XOR-encoded) and never needs another
+// round trip — a language switch mid-practice is local.
+var PRACTICE_MAX_COUNT = 50;
+var PRACTICE_DEFAULT_COUNT = 15;
+function handleStartPractice(p) {
+  var rlErr = practiceRateLimit(p);
+  if (rlErr) return rlErr;
+  var lang = String(p.language || 'he').toLowerCase();
+  var license = String(p.license || p.licenseType || 'B').trim();
+  if (!EXAM_STRUCTURE_SERVER[license]) {
+    return jsonResponse({ status: 'error', code: 'unknown_license', message: 'דרגה לא מוכרת: ' + license });
+  }
+  var mode = String(p.mode || 'exam');
+  var picked;
+  try { picked = practiceSelection(mode, license, lang, p); }
+  catch (err) {
+    if (!err || err.code !== 'bank_unavailable') throw err;
+    return jsonResponse({ status: 'error', code: 'bank_unavailable', detail: err.detail, message: 'אין מספיק שאלות לתרגול' });
+  }
+  if (!picked.length) return jsonResponse({ status: 'error', code: 'no_questions', message: 'לא נמצאו שאלות לתרגול' });
+  var questions = [];
+  for (var i = 0; i < picked.length; i++) {
+    questions.push({ id: picked[i].id, topic: picked[i].topic, ci: practiceCiByLang(picked[i].id) || {} });
+  }
+  return jsonResponse({ status: 'ok', mode: mode, count: questions.length, questions: questions });
+}
+
+function practiceSelection(mode, license, lang, p) {
+  if (mode === 'ids') return practiceByIds(p.ids, license, lang);
+  if (mode === 'category' && p.categoryFilter) return practiceByCategory(String(p.categoryFilter), license, lang, practiceCount(p));
+  return drawExamIds(license, lang);   // full 30-question blueprint
+}
+
+function practiceCount(p) {
+  var n = Number(p.maxCount) || PRACTICE_DEFAULT_COUNT;
+  return Math.max(1, Math.min(PRACTICE_MAX_COUNT, n));
+}
+
+function practiceByCategory(topic, license, lang, maxCount) {
+  var byTopic = indexIdsByTopic(license, lang), pool = shuffleArrayServer(byTopic[topic] || []), out = [];
+  for (var i = 0; i < pool.length && out.length < maxCount; i++) out.push({ id: pool[i], topic: topic });
+  return out;
+}
+
+// Spaced repetition: the client names the ids it wants back. Unknown ids and ids
+// missing from this language are dropped rather than failing the whole request.
+function practiceByIds(raw, license, lang) {
+  var bit = questionLangBit(lang), out = [], seen = {};
+  var parts = String(raw || '').split(',');
+  for (var i = 0; i < parts.length && out.length < PRACTICE_MAX_COUNT; i++) {
+    var id = parseInt(String(parts[i]).trim(), 10);
+    if (isNaN(id) || seen[id]) continue;
+    seen[id] = true;
+    var entry = questionIndexEntry(id);
+    if (!entry || !(entry.l & bit)) continue;
+    out.push({ id: id, topic: entry.c[license] || '' });
+  }
+  return out;
+}
+
+// Class practice is identified by class+student, standalone by the ID typed into
+// exam.html, and everything else is a guest. The guest allowance is also capped
+// globally: `ci` makes the draw an answer oracle, so a scraper must not be able
+// to walk the bank quickly by inventing identifiers.
+var PRACTICE_GUEST_GLOBAL_MAX = 120;
+function practiceRateLimit(p) {
+  if (p.classCode && p.studentId) {
+    return requireRateLimit('startPractice_student', String(p.classCode) + '_' + String(p.studentId), 20, 60);
+  }
+  if (p.standaloneIdNumber) {
+    return requireRateLimit('startPractice_standalone', normalizeId(p.standaloneIdNumber), 5, 60);
+  }
+  return requireRateLimit('startPractice_guest', 'anon', 5, 60)
+    || requireRateLimit('startPractice_guest', 'guest_global', PRACTICE_GUEST_GLOBAL_MAX, 60);
+}
+
+// ---- Retired actions --------------------------------------------------------
+// One release of grace for a client that was loaded before the deploy: it asks
+// for questions, gets a clear "refresh the page" instead of a broken exam.
+function handleClientOutdated() {
+  return jsonResponse({ status: 'error', code: 'client_outdated',
+    message: 'גרסה חדשה של המערכת — יש לרענן את הדף (F5)' });
+}
+
+// startExam already flipped the row to in_exam; the old client's separate ping
+// has nothing left to do. Kept (as a no-op) only so that client does not treat
+// an unknown action as a failure. Remove in the next release.
+function handleMarkExamStartedNoop() {
+  return jsonResponse({ status: 'ok', already: true });
+}
+
+// ---- submitResult -----------------------------------------------------------
+// Columns of 'תוצאות' by name — the handler used to index 30 positions by hand.
+var RESULT_COL = { date: 0, id: 1, name: 2, phone: 3, license: 4, score: 5, percent: 6, verdict: 7,
+  time: 8, examiner: 9, site: 10, classroom: 11, language: 12, session: 13, attempt: 14, wrongDetails: 15,
+  sent: 16, dq: 17, waLink: 18, population: 19, corrected: 20, audio: 21, verified: 22, suspicious: 23,
+  dqEventId: 24, correctedBy: 25, correctionReason: 26, correctionDate: 27, langPath: 28, device: 29 };
+var RESULT_PASS_RATIO = 0.86;             // 26/30
+var FABRICATED_FAIL_MARKERS = ['סגירת דפדפן', 'טיימאאוט', 'סיום ידני'];
+var UNVERIFIED_PREFIX = '⚠️ ציון לא אומת';
+
+function handleSubmitResult(data) {
+  var gate = submitGate(data);
+  if (gate.error) return gate.error;
+  recordSubmitClientLog(data);
+
+  var registration = readExamRegistration(data.sessionCode, data.idNumber, 0);
+  var guard = submitRegistrationGuard(registration, data);
+  if (guard) return guard;
+
+  var scored = registration && registration.map && registration.map.length
+    ? scoreRegisteredExam(registration.map, data.answers, registration.lang)
+    : null;
+  applyScore(data, scored, registration, !!(data.answers && data.answers.length));
+  var wrongAnswers = scored ? wrongAnswerItems(scored, data.license) : [];
+
+  // 'תוצאות' is read ONCE, as late as possible: supersede, duplicate, פסול and
+  // idempotency all decide from the same snapshot. Three full reads of a sheet
+  // that grows forever were most of what was left of the submit's cost.
+  diagMark('sheet:results-submit');
+  var sheet = getSheet('תוצאות');
+  var tail = readTail(sheet, RESULT_COL.date);
+  supersedeFabricatedFails(sheet, tail, data);
+
+  var duplicate = findDuplicateResult(tail, data, gate);
+  if (duplicate) {
+    markPendingCompleted(data.sessionCode, data.idNumber, gate.pending);
+    return jsonResponse({ status: 'ok', waLink: duplicate[RESULT_COL.waLink] || '', duplicate: true });
+  }
+  // Counted BEFORE the פסול rows are voided below: a disqualified exam was
+  // still an attempt, and voiding it is only about not leaving two live rows.
+  var attemptNum = countAttempts(data.idNumber, data.license, attemptRows(tail)) + 1;
+  supersedeDisqualifications(sheet, tail, data);
+
+  var waLink = buildResultWaLink(data, wrongAnswers, attemptNum);
+  if (findIdenticalResult(tail, data)) {
+    markPendingCompleted(data.sessionCode, data.idNumber, gate.pending);
+    return jsonResponse({ status: 'ok', duplicate: true, waLink: waLink });
+  }
+
+  sheet.appendRow(buildResultRow(data, wrongAnswers, attemptNum, waLink));
+  markPendingCompleted(data.sessionCode, data.idNumber, gate.pending);
+  diagMark('compute:submit-done');
+  return jsonResponse({ status: 'ok', waLink: waLink });
+}
+
+// Rate limit, examinee token and "is this person actually in this exam".
+// Returns { error } or { pending, status } — the pending snapshot is handed on
+// so the completion write does not read 'ממתינים' a second time.
+function submitGate(data) {
+  var rlErr = requireRateLimit('submitResult', String(data.sessionCode || '') + '_' + normalizeId(data.idNumber), 5, 60);
+  if (rlErr) return { error: rlErr };
+  var ctx = examineeRowContext(data.sessionCode, data.idNumber);
+  var status = ctx.latest ? ctx.latest.status : '';
+  // 'cancelled' is accepted: if an examiner reset an examinee who was in fact
+  // still mid-exam, a genuine finished submit must be RECORDED, not lost. The
+  // fabricated-fail supersede and the duplicate check keep the sheet clean.
+  if (data.sessionCode && data.idNumber && ['in_exam', 'approved', 'completed', 'cancelled'].indexOf(status) === -1) {
+    return { error: jsonResponse({ status: 'error', message: 'נבחן לא מאושר — לא ניתן לשלוח תוצאות' }) };
+  }
+  return { pending: pendingSnapshotFromTail(ctx), status: status, ctx: ctx };
+}
+
+// markPendingCompleted writes by absolute row index, so a tail read's rows are
+// padded back to their sheet positions instead of paying for a second full read.
+function pendingSnapshotFromTail(ctx) {
+  var sheet = getSheet('ממתינים'), tail = ctx.tail;
+  if (!tail || !tail.rows.length) return { sheet: sheet, rows: null };
+  if (!tail.off) return { sheet: sheet, rows: tail.rows };
+  var padded = [tail.rows[0]];
+  for (var i = 0; i < tail.off; i++) padded.push([]);
+  return { sheet: sheet, rows: padded.concat(tail.rows.slice(1)) };
+}
+
+// The client's last events (≤2KB) ride along with the submit; S2's recorder
+// parks them next to the server-side diagnostics. Never fatal to a result.
+function recordSubmitClientLog(data) {
+  if (!data.clientLog) return;
+  try {
+    if (typeof diagRecordClientLog === 'function') diagRecordClientLog(data.sessionCode, data.idNumber, data.clientLog);
+  } catch (e) { /* a diagnostic must never cost a result */ }
+}
+
+// A registered exam MUST come with answers (otherwise a forged score would skip
+// the re-score entirely), and a map that is empty or shorter than a real exam is
+// a data fault — refuse it loudly instead of scoring 3 questions out of 30 and
+// possibly declaring a pass (review E S1).
+function submitRegistrationGuard(registration, data) {
+  if (!registration) return null;
+  if (!data.answers || !Array.isArray(data.answers) || data.answers.length === 0) {
     return jsonResponse({ status: 'error', message: 'הגשה לא תקינה — חסרות תשובות למבחן רשום' });
   }
-
-  // Server-side score verification: if answers array is present, recalculate
-  // score using the question map registered at exam start. The map's
-  // correctShuffledIdx values are server-computed (from ANSWER_KEY_BY_LANG)
-  // when possible — only fall back to client-claimed values for questions
-  // missing from the answer key, in which case we mark the result unverified.
-  if (data.answers && Array.isArray(data.answers)) {
-    try {
-      var examData = readRegisteredExams();
-      var questionMap = null;
-      var unverifiedCount = 0;
-      var registeredLang = '';
-      // Find the latest registered exam for this session+ID
-      for (var ei = examData.length - 1; ei >= 1; ei--) {
-        if (String(examData[ei][0]) === String(data.sessionCode) && normalizeId(examData[ei][1]) === normalizeId(data.idNumber)) {
-          questionMap = JSON.parse(examData[ei][2]);
-          // Column F (index 5) = unverified-count (added when registerExamQuestions stored this row).
-          // Older rows may not have this column → treat as fully unverified to be safe.
-          unverifiedCount = (examData[ei].length > 5) ? Number(examData[ei][5] || 0) : questionMap.length;
-          // Column E (index 4) = language (added in registerExamQuestions)
-          registeredLang = (examData[ei].length > 4) ? String(examData[ei][4] || '') : '';
-          break;
-        }
-      }
-      if (questionMap) {
-        // Shuffle indexes refer to original answer positions in whatever
-        // language the questions were registered in. Translators reorder
-        // answers, so the original "correct index" can differ between
-        // languages (e.g. he Q128 → idx 1, ar Q128 → idx 2). When the
-        // examinee switched language mid-exam, score each answer against
-        // the correct index for THE LANGUAGE THEY SAW IT IN, not the one
-        // captured at registration.
-        function correctIdxForLang(mapEntry, lang) {
-          if (!mapEntry || !lang) return null;
-          if (typeof lookupCorrectIndex !== 'function') return null;
-          if (!mapEntry.qId || !Array.isArray(mapEntry.shuffleOrder)) return null;
-          var orig = lookupCorrectIndex(Number(mapEntry.qId), String(lang).toLowerCase());
-          if (orig === null || orig === undefined) return null;
-          var pos = mapEntry.shuffleOrder.indexOf(Number(orig));
-          return pos >= 0 ? pos : null;
-        }
-        function effectiveCorrectIdx(mapEntry, langAtAnswer) {
-          var lang = langAtAnswer ? String(langAtAnswer).toLowerCase() : '';
-          if (lang && lang !== registeredLang) {
-            var alt = correctIdxForLang(mapEntry, lang);
-            if (alt !== null) return alt;
-          }
-          return Number(mapEntry.correctShuffledIdx);
-        }
-        var correctCount = 0;
-        var totalQ = questionMap.length;
-        for (var ai = 0; ai < data.answers.length && ai < totalQ; ai++) {
-          if (data.answers[ai] !== null && data.answers[ai] !== undefined && questionMap[ai]) {
-            var selected = Number(data.answers[ai].selected);
-            var correctIdx = effectiveCorrectIdx(questionMap[ai], data.answers[ai].langAtAnswer);
-            if (selected === correctIdx) correctCount++;
-          }
-        }
-        var pct = Math.round((correctCount / totalQ) * 100);
-        var passThreshold = Math.ceil(totalQ * 0.86); // ~26/30
-        data.score = correctCount;
-        data.total = totalQ;
-        data.percent = pct;
-        data.passed = correctCount >= passThreshold;
-        // verified=true ONLY when every question in the map was scored against
-        // a server-trusted answer key. Any fallback entry → unverified.
-        data.verified = (unverifiedCount === 0);
-
-        // ===== Server-side wrong-answers reconstruction =====
-        // Each wrong answer is rendered in the language the examinee was viewing
-        // WHEN they answered that specific question (data.answers[i].langAtAnswer).
-        // Without this, an examinee who switched mid-exam sees mixed-language
-        // feedback that doesn't match what they actually saw.
-        try {
-          // Lazy per-language cache: questions DB + byId map per language code.
-          // Avoids loading every language up-front when most exams use one.
-          //
-          // r15: this used to call loadQuestionsForLanguageServer — a DRIVE read,
-          // on the result-submission hot path. The 'אבחון' sheet caught it live on
-          // 2026-09-15: `SLOW POST submitResult 20066 ... drive:he@4000`, i.e. 16
-          // of those 20 seconds were Drive, while the examinee's device sat on a
-          // 60s deadline and the examiner waited for a result that never arrived.
-          // The cached per-license pools hold the same objects, and they are the
-          // very pools this exam was served from, so every question the examinee
-          // saw is provably in the union — questionMetaForLanguage still falls
-          // back to Drive if a pool is missing, so nothing is reconstructed from
-          // a partial bank.
-          var langDbCache = {}, qMetaMemo = {};
-          function getLangDb(lang) {
-            var safeLang = String(lang || 'he').toLowerCase();
-            if (langDbCache[safeLang]) return langDbCache[safeLang];
-            try {
-              diagMark('meta:wrong-answers');
-              var qs = questionMetaForLanguage(safeLang, qMetaMemo);
-              if (!qs || !qs.length) return null;
-              var idx = {};
-              for (var q = 0; q < qs.length; q++) {
-                if (qs[q] && qs[q].id !== undefined) idx[String(qs[q].id)] = qs[q];
-              }
-              langDbCache[safeLang] = { byId: idx, labels: (safeLang === 'he') ? ['א','ב','ג','ד','ה','ו'] : ['A','B','C','D','E','F'] };
-              return langDbCache[safeLang];
-            } catch (loadErr) {
-              langDbCache[safeLang] = null;
-              return null;
-            }
-          }
-          var defaultLang = String(data.language || registeredLang || 'he').toLowerCase();
-          // No feedback needs a bank when the authoritative score is perfect.
-          // For wrong answers keep the existing default-language fallback intact.
-          var allCorrect = totalQ > 0 && correctCount === totalQ;
-          var defaultDb = allCorrect ? null : getLangDb(defaultLang);
-
-          var serverWrong = [];
-          for (var wi = 0; wi < data.answers.length && wi < questionMap.length; wi++) {
-            var mapEntry = questionMap[wi];
-            var ans2 = data.answers[wi];
-            if (!mapEntry) continue;
-            var selected2 = ans2 ? Number(ans2.selected) : -1;
-            // Use the per-answer language's correctIdx — same logic as the
-            // scoring loop above, so wrong-answer reconstruction matches the
-            // pass/fail tally instead of contradicting it after a mid-exam
-            // language switch.
-            var correctIdx2 = effectiveCorrectIdx(mapEntry, ans2 && ans2.langAtAnswer);
-            if (selected2 === correctIdx2) continue; // got it right
-            // Pick the language the examinee was viewing when they answered this Q.
-            // Falls back to the exam's primary language when missing (old clients).
-            var perAnsLang = (ans2 && ans2.langAtAnswer) ? String(ans2.langAtAnswer).toLowerCase() : defaultLang;
-            var db = getLangDb(perAnsLang) || defaultDb;
-            if (!db || !db.byId) continue;
-            var qInfo = (mapEntry.qId !== undefined && mapEntry.qId !== null) ? db.byId[String(mapEntry.qId)] : null;
-            if (!qInfo || !Array.isArray(mapEntry.shuffleOrder) || !Array.isArray(qInfo.answers)) continue;
-            var shuffled = mapEntry.shuffleOrder.map(function(origIdx) { return qInfo.answers[origIdx]; });
-            var yourLabel = '', yourText = '';
-            if (selected2 === -1 || selected2 < 0 || selected2 >= shuffled.length) {
-              yourText = (perAnsLang === 'he') ? 'לא נענתה' : 'Not answered';
-            } else {
-              yourLabel = db.labels[selected2] || '';
-              yourText = shuffled[selected2] || '';
-            }
-            var correctLabel = (correctIdx2 >= 0 && correctIdx2 < shuffled.length) ? (db.labels[correctIdx2] || '') : '';
-            var correctText = (correctIdx2 >= 0 && correctIdx2 < shuffled.length) ? (shuffled[correctIdx2] || '') : '';
-            // Classify the raw question category to the bucket name used by
-            // EXAM_STRUCTURE (בטיחות / הכרת הרכב / חוק / תמרורים / ספציפי).
-            // Without classification the certificate shows all-100%.
-            var classifiedCat = (typeof classifyCategoryServer === 'function')
-              ? classifyCategoryServer(qInfo.category)
-              : '';
-            serverWrong.push({
-              question: qInfo.text || ('שאלה ' + (wi + 1)),
-              yourAnswer: yourLabel ? (yourLabel + ' - ' + yourText) : yourText,
-              correctAnswer: correctLabel ? (correctLabel + ' - ' + correctText) : correctText,
-              category: classifiedCat || qInfo.category || ''
-            });
-          }
-          // Always replace client-provided wrongAnswers — server is authoritative.
-          if (allCorrect || defaultDb) data.wrongAnswers = serverWrong;
-        } catch (rwe) {
-          // Reconstruction failed (Drive load, etc.) — keep whatever client sent
-          // rather than wiping it. Log for diagnosis.
-          try { Logger.log('wrong-answer rebuild failed: ' + (rwe && rwe.message)); } catch(_) {}
-        }
-      }
-    } catch(ve) {
-      // If verification fails, fall through to client-provided score with flag
-      data.verified = false;
-    }
+  if (registration.map && registration.map.length < EXAM_MIN_QUESTIONS) {
+    return jsonResponse({ status: 'error', code: 'invalid_registration',
+      message: 'רישום המבחן פגום — לא ניתן לנקד. פנה לבוחן.' });
   }
+  return null;
+}
 
-  // Server-side timing check: if exam took less than 3 minutes, flag as suspicious
-  if (data.sessionCode && data.idNumber) {
-    try {
-      var examData2 = readRegisteredExams();
-      for (var ti = examData2.length - 1; ti >= 1; ti--) {
-        if (String(examData2[ti][0]) === String(data.sessionCode) && normalizeId(examData2[ti][1]) === normalizeId(data.idNumber)) {
-          var regTime = new Date(examData2[ti][3]);
-          var elapsed = (new Date() - regTime) / 1000; // seconds
-          if (elapsed < 180 && elapsed > 0) { // less than 3 minutes
-            data.suspicious = true;
-          }
-          break;
-        }
-      }
-    } catch(te) {}
+// ---- scoring ---------------------------------------------------------------
+// review E S2: only a real selection counts. null / '' / undefined / a
+// non-number / a negative or fractional index all mean "not answered".
+function submitAnswerIndex(answer) {
+  if (!answer) return -1;
+  var raw = answer.selected;
+  if (raw === null || raw === undefined || raw === '') return -1;
+  var n = Number(raw);
+  if (!isFinite(n) || n < 0 || Math.floor(n) !== n) return -1;
+  return n;
+}
+
+function answerLanguage(answer, registeredLang) {
+  var lang = (answer && answer.langAtAnswer) ? String(answer.langAtAnswer) : String(registeredLang || 'he');
+  return lang.toLowerCase() || 'he';
+}
+
+// review E S4: the correctShuffledIdx stored at registration is NOT read back.
+// It is recomputed from the answer key every time, which is also what scores a
+// mid-exam language switch against the key of the language the question was
+// ANSWERED in (translators reorder answers — en/fr/es/ar have their own order).
+// null = this entry cannot be verified at all, and then it can never be correct.
+function correctIndexForEntry(entry, lang) {
+  if (!entry || !entry.qId || !Array.isArray(entry.shuffleOrder)) return null;
+  var orig = answerKeyIndex(entry.qId, lang);
+  if (orig === null) return null;
+  var pos = entry.shuffleOrder.indexOf(Number(orig));
+  return pos >= 0 ? pos : null;
+}
+
+function scoreRegisteredExam(map, answers, registeredLang) {
+  var scored = { correct: 0, total: map.length, verifiable: 0, items: [] };
+  for (var i = 0; i < map.length; i++) {
+    var entry = map[i] || null, answer = (answers && answers[i]) || null;
+    var lang = answerLanguage(answer, registeredLang);
+    var key = correctIndexForEntry(entry, lang);
+    var selected = submitAnswerIndex(answer);
+    var item = { qIdx: i, qId: entry ? entry.qId : null, topic: (entry && entry.topic) || '',
+      lang: lang, key: key, selected: selected, answer: answer };
+    item.right = (key !== null && selected === key);
+    if (key !== null) scored.verifiable++;
+    if (item.right) scored.correct++;
+    scored.items.push(item);
   }
+  scored.verified = scored.total > 0 && scored.verifiable === scored.total;
+  return scored;
+}
 
-  // Guard: answers were present but the server never re-scored (no מבחנים row /
-  // questionMap missing → data.verified left undefined above). Do NOT silently
-  // trust the client's score — it is computed from a deliberately-stripped `ci`
-  // and can be garbage (the historical false-0/30). Flag the row unverified so
-  // the examiner reviews it instead of recording a bogus pass/fail.
-  if (data.answers && Array.isArray(data.answers) && typeof data.verified === 'undefined') {
+// The server's tally replaces whatever the client claimed. Without a readable
+// registration nothing can be verified, so the row is stored with the unverified
+// marker and the examiner reviews it — never silently trusted.
+function applyScore(data, scored, registration, hasAnswers) {
+  if (!scored) {
     data.verified = false;
+    // Without answers there was nothing to verify in the first place (an
+    // examiner-entered or legacy row) — only a real submission is flagged.
+    if (hasAnswers) {
+      data.scoreUnverified = true;
+      data.unverifiedReason = registration ? 'רישום מבחן פגום' : 'רישום מבחן חסר';
+    }
+    // The new client sends no score at all (it never holds the key); an old one
+    // sent its own tally. Either way an unverifiable result is stored as what it
+    // is — a number the examiner must review — and never as a pass by default.
+    data.total = Number(data.total) || (Array.isArray(data.answers) ? data.answers.length : 0) || 30;
+    data.score = Math.max(0, Math.min(data.total, Number(data.score) || 0));
+    data.percent = Number(data.percent) || Math.round((data.score / data.total) * 100);
+    data.passed = data.passed === true || data.passed === 'true';
+    return;
+  }
+  data.score = scored.correct;
+  data.total = scored.total;
+  data.percent = Math.round((scored.correct / scored.total) * 100);
+  data.passed = scored.correct >= Math.ceil(scored.total * RESULT_PASS_RATIO);
+  data.verified = scored.verified;
+  if (!scored.verified) {
     data.scoreUnverified = true;
+    data.unverifiedReason = 'שאלות ללא מפתח תשובות';
   }
+  data.suspicious = registration && examRegistrationAgeMs(registration) > 0 &&
+    examRegistrationAgeMs(registration) < EXAM_SUSPICIOUS_SEC * 1000;
+}
 
-  // ===== Supersede any SYSTEM-FABRICATED fail for this session+id =====
-  // A real finished submit must WIN over a system-written fail — the browser-
-  // close beacon (handleSubmitFailOnClose) or the dashboard timeout/disconnect
-  // row — created while the examinee was offline/backgrounded. Those are 'נכשל'
-  // rows whose note carries a machine marker. Match on session+id ONLY (NOT
-  // language/license): the fabricated row is stamped with the REGISTRATION
-  // language, but the real submit may carry a DIFFERENT final language after a
-  // mid-exam switch (Russian/Arabic/Amharic examinees), so a language-scoped
-  // match would miss it and the dup-check below would swallow the real result →
-  // a false 0/30 "vanished" exam, especially on iOS. Mark them בוטל (audit kept).
-  // Mirrors the פסול-supersede pass below; genuine real נכשל rows lack the marker.
-  diagMark('sheet:results-submit');
-  var fabRows = sheet.getDataRange().getValues();
-  var fabSuperseded = false;
-  for (var fb = 1; fb < fabRows.length; fb++) {
-    if (String(fabRows[fb][13]) !== String(data.sessionCode)) continue;
-    if (normalizeId(fabRows[fb][1]) !== normalizeId(data.idNumber)) continue;
-    if (String(fabRows[fb][7]).trim() !== 'נכשל') continue;
-    var fbNote = String(fabRows[fb][15] || '');
-    // markers: close-beacon ('סגירת דפדפן'), dashboard timeout ('טיימאאוט'), and
-    // examiner manual-disconnect ('סיום ידני ... ניתוק/תקלה'). All three mean "did
-    // not finish properly" — a real finished submit must override them.
-    if (fbNote.indexOf('סגירת דפדפן') === -1 && fbNote.indexOf('טיימאאוט') === -1 && fbNote.indexOf('סיום ידני') === -1) continue;
-    sheet.getRange(fb + 1, 8).setValue('בוטל');                                    // H = pass/fail
-    sheet.getRange(fb + 1, 27).setValue('בוטל אוטומטית — הנבחן השלים והגיש מבחן');  // AA = reason
-    sheet.getRange(fb + 1, 28).setValue(todayStr());                               // AB = correction date
-    // The duplicate and attempt checks below reuse this complete snapshot.
-    fabRows[fb][7] = 'בוטל';
-    fabSuperseded = true;
+// ---- feedback (certificate + WhatsApp) -------------------------------------
+// Built from what the client DISPLAYED: q = the question text, a = the four
+// answers in displayed order. The server owns which of them is correct. An old
+// client that sends no texts still gets a scored result.
+var ANSWER_LABELS_HE = ['א', 'ב', 'ג', 'ד', 'ה', 'ו'];
+var ANSWER_LABELS_LATIN = ['A', 'B', 'C', 'D', 'E', 'F'];
+var TEXT_UNAVAILABLE = '(טקסט לא זמין)';
+function answerLabel(lang, idx) {
+  var labels = (String(lang) === 'he') ? ANSWER_LABELS_HE : ANSWER_LABELS_LATIN;
+  return labels[idx] || '';
+}
+function displayedAnswer(shown, idx, lang) {
+  if (idx === null) return '(לא זמין כעת)';                 // no key for this language
+  var count = (shown && shown.length) ? shown.length : QUESTION_ANSWER_COUNT;
+  if (idx < 0 || idx >= count) return (String(lang) === 'he') ? 'לא נענתה' : 'Not answered';
+  var text = shown ? String(shown[idx] || '') : '';
+  return answerLabel(lang, idx) + ' - ' + (text || TEXT_UNAVAILABLE);
+}
+
+function wrongAnswerItems(scored, license) {
+  var out = [];
+  for (var i = 0; i < scored.items.length; i++) {
+    var item = scored.items[i];
+    if (item.right) continue;
+    var shown = (item.answer && item.answer.a && item.answer.a.length) ? item.answer.a : null;
+    out.push({
+      questionId: item.qId || '',
+      question: (item.answer && item.answer.q) ? String(item.answer.q) : TEXT_UNAVAILABLE,
+      yourAnswer: displayedAnswer(shown, item.selected, item.lang),
+      correctAnswer: displayedAnswer(shown, item.key, item.lang),
+      category: item.topic || questionTopic(item.qId, license)
+    });
   }
-  if (fabSuperseded) SpreadsheetApp.flush();
+  return out;
+}
 
-  // Duplicate protection: check if result already exists for this session+ID+license+language
-  // Skip disqualified (פסול) and cancelled (בוטל) rows — those are not real results and should not block retakes
-  // Also skip duplicate check entirely if examinee has an active in_exam pending row (retake after DQ)
-  var hasPendingInExam = false;
-  // Re-check current status after potentially slow scoring/bank work. New rows
-  // or changed row positions require a full read; otherwise only this person's
-  // rows need refreshing. Never overwrite a newer examiner decision.
-  pendData = refreshExamineePendingRows(pendSheet, pendData, data.sessionCode, data.idNumber);
-  var pendCheck = pendData;
-  for (var pc = pendCheck.length - 1; pc >= 1; pc--) {
-    if (String(pendCheck[pc][0]) === String(data.sessionCode) && normalizeId(pendCheck[pc][1]) === normalizeId(data.idNumber) && String(pendCheck[pc][5]).trim() === 'in_exam') {
-      hasPendingInExam = true;
-      break;
-    }
+// 'פירוט שגויות' (column P) — the commander dashboard aggregates by the מזהה
+// שאלה line, and readers tolerate any line being missing.
+function formatWrongDetails(items, data) {
+  var text = '';
+  for (var i = 0; i < items.length; i++) {
+    var w = items[i];
+    if (w.questionId) text += 'מזהה שאלה: ' + w.questionId + '\n';
+    text += 'שאלה: ' + w.question + '\n';
+    text += 'תשובת הנבחן: ' + w.yourAnswer + '\n';
+    text += 'תשובה נכונה: ' + w.correctAnswer + '\n';
+    if (w.category) text += 'קטגוריה: ' + w.category + '\n';
+    text += '\n';
   }
-  if (!hasPendingInExam) {
-    diagMark('sheet:results-submit-2');
-    var existingData = sheet.getDataRange().getValues();
-    for (var d = 1; d < existingData.length; d++) {
-      var existingStatus = String(existingData[d][7] || '').trim();
-      if (existingStatus === 'פסול' || existingStatus === 'בוטל') continue;
-      if (String(existingData[d][13]) === String(data.sessionCode) && normalizeId(existingData[d][1]) === normalizeId(data.idNumber) && String(existingData[d][4]) === String(data.license) && String(existingData[d][12]) === String(data.language || 'he')) {
-        // Genuine prior real result for this exact exam — a true duplicate.
-        // (Fabricated close/timeout fails were already superseded to בוטל above
-        // and are skipped by the status filter, so they can't masquerade here.)
-        markPendingCompleted(data.sessionCode, data.idNumber, { sheet: pendSheet, rows: pendData });
-        return jsonResponse({ status: 'ok', waLink: existingData[d][18] || '', duplicate: true });
-      }
-    }
-  }
-
-  // Belt-and-suspenders: never let the literal "undefined" reach the certificate.
-  // The client never receives `ci`, so its locally-built wrongAnswers carry
-  // "undefined - undefined" as the correct answer; the server normally rebuilds
-  // them, but if that failed (Drive/cache down) the client text is kept. Replace
-  // any "undefined" with a neutral placeholder so feedback is never garbled.
-  if (Array.isArray(data.wrongAnswers)) {
-    for (var sw = 0; sw < data.wrongAnswers.length; sw++) {
-      var swItem = data.wrongAnswers[sw];
-      if (swItem && typeof swItem.correctAnswer === 'string' && swItem.correctAnswer.indexOf('undefined') !== -1) swItem.correctAnswer = '(לא זמין כעת)';
-      if (swItem && typeof swItem.yourAnswer === 'string' && swItem.yourAnswer.indexOf('undefined') !== -1) swItem.yourAnswer = '(לא זמין)';
-    }
-  }
-
-  var wrongDetails = '';
-  var wrongForWA = '';
-  if (data.wrongAnswers && data.wrongAnswers.length > 0) {
-    for (var i = 0; i < data.wrongAnswers.length; i++) {
-      var w = data.wrongAnswers[i];
-      // Question ID prefix lets the commander dashboard aggregate by the exact
-      // question (not just generic text "מה פירוש התמרור?" that collapses 50+
-      // distinct sign questions into one row). Backward-compatible — readers
-      // tolerate the line being missing for legacy rows.
-      if (w.questionId) wrongDetails += 'מזהה שאלה: ' + w.questionId + '\n';
-      wrongDetails += 'שאלה: ' + w.question + '\n';
-      wrongDetails += 'תשובת הנבחן: ' + w.yourAnswer + '\n';
-      wrongDetails += 'תשובה נכונה: ' + w.correctAnswer + '\n';
-      if (w.category) wrongDetails += 'קטגוריה: ' + w.category + '\n';
-      wrongDetails += '\n';
-
-      wrongForWA += '❌ ' + w.question + '\n';
-      wrongForWA += 'ענית: ' + w.yourAnswer + '\n';
-      wrongForWA += '✅ נכון: ' + w.correctAnswer + '\n\n';
-    }
-  }
-
-  // Surface the unverified-score guard (set above) loudly in the stored detail.
   if (data.scoreUnverified) {
-    wrongDetails = '⚠️ ציון לא אומת בשרת (רישום מבחן חסר) — נדרש אימות ידני\n\n' + wrongDetails;
+    text = UNVERIFIED_PREFIX + ' בשרת (' + (data.unverifiedReason || '') + ') — נדרש אימות ידני\n\n' + text;
   }
+  return text;
+}
 
-  var passText = data.passed ? 'עבר' : 'נכשל';
-  var waMessage = '*🚗 אישור תוצאת מבחן תאוריה חיצוני*\n\n' +
+function buildResultWaLink(data, items, attemptNum) {
+  var message = '*🚗 אישור תוצאת מבחן תאוריה חיצוני*\n\n' +
     'שם: ' + data.fullName + '\n' +
     'ת.ז.: ' + data.idNumber + '\n' +
     'דרגה: ' + data.license + '\n' +
     (data.population ? 'אוכלוסיה: ' + data.population + '\n' : '') +
     'תאריך: ' + todayStr() + '\n' +
-    'תוצאה: *' + passText + '* (' + data.score + '/' + data.total + ')\n' +
+    'תוצאה: *' + resultVerdict(data) + '* (' + data.score + '/' + data.total + ')\n' +
     'זמן: ' + data.time + '\n';
-
-  var wrongCount = Number(data.total) - Number(data.score);
-  if (data.wrongAnswers && data.wrongAnswers.length > 0) {
-    waMessage += '\n*שאלות שגויות (' + data.wrongAnswers.length + '):*\n\n' + wrongForWA;
-  } else if (wrongCount === 0) {
-    waMessage += '\nכל התשובות נכונות! 🎉';
+  if (items.length > 0) {
+    var wrongForWA = '';
+    for (var i = 0; i < items.length; i++) {
+      wrongForWA += '❌ ' + items[i].question + '\n' + 'ענית: ' + items[i].yourAnswer + '\n' + '✅ נכון: ' + items[i].correctAnswer + '\n\n';
+    }
+    message += '\n*שאלות שגויות (' + items.length + '):*\n\n' + wrongForWA;
+  } else if (Number(data.total) - Number(data.score) === 0) {
+    message += '\nכל התשובות נכונות! 🎉';
   }
+  if (attemptNum > 1) message += 'ניסיון: ' + attemptNum + '\n';
+  return 'https://wa.me/' + formatPhoneForWA(data.phone) + '?text=' + encodeURIComponent(message);
+}
 
-  var phone = formatPhoneForWA(data.phone);
+function resultVerdict(data) { return data.passed ? 'עבר' : 'נכשל'; }
 
-  // Count attempt number for this examinee + license combination
-  var attemptNum = countAttempts(data.idNumber, data.license, fabRows, sheet) + 1;
-
-  var waMessage2 = waMessage; // preserve for link
-  if (attemptNum > 1) {
-    waMessage2 = waMessage + 'ניסיון: ' + attemptNum + '\n';
-  }
-  var waLink = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(waMessage2);
-
-  // Format language history into a readable path. Single language = just the
-  // code (e.g. "he"). Multiple = arrow-joined (e.g. "he → ru → he") so the
-  // examiner can see at a glance that the examinee switched languages.
-  var langPath = '';
+// "he → ru → he" tells the examiner at a glance that the examinee switched.
+function languagePath(data) {
   if (Array.isArray(data.languageHistory) && data.languageHistory.length > 0) {
-    langPath = data.languageHistory.length === 1
-      ? String(data.languageHistory[0])
-      : data.languageHistory.join(' → ');
-  } else {
-    langPath = data.language || 'he';
+    return data.languageHistory.length === 1 ? String(data.languageHistory[0]) : data.languageHistory.join(' → ');
   }
-
-  // Supersede any prior פסול row for THIS session+id. Scenario: examinee was
-  // auto-DQ'd, the overturn flow didn't finish (examiner clicked אשר, or hit
-  // a stale "תוצאה לא נמצאה" path), then the examinee was re-allowed in and
-  // finished the exam. Without this cleanup the sheet ends up with both a
-  // פסול row AND a עבר/נכשל row — which is what happened at base 14 today.
-  // We mark the old row as בוטל (audit trail preserved) and log the reason.
-  // Preserve the late complete read: another submission may have completed
-  // since scoring. In particular, do not move final retry detection earlier.
-  diagMark('sheet:results-submit-3');
-  var existingRows = sheet.getDataRange().getValues();
-  for (var ex = existingRows.length - 1; ex >= 1; ex--) {
-    if (String(existingRows[ex][13]) === String(data.sessionCode) &&
-        normalizeId(existingRows[ex][1]) === normalizeId(data.idNumber) &&
-        String(existingRows[ex][7]).trim() === 'פסול') {
-      sheet.getRange(ex + 1, 8).setValue('בוטל');           // H = pass/fail
-      sheet.getRange(ex + 1, 18).setValue(false);            // R = disqualified flag
-      sheet.getRange(ex + 1, 27).setValue('בוטל אוטומטית — נבחן ניגש למבחן מחדש'); // AA = reason
-      sheet.getRange(ex + 1, 28).setValue(todayStr());       // AB = correction date
-      existingRows[ex][7] = 'בוטל';
-      existingRows[ex][17] = false;
-    }
-  }
-
-  // Idempotency: skip if an identical result row already exists. A retry/resend
-  // whose original response was lost (flaky network) would otherwise create a
-  // duplicate. Matches session+id+license+score+time+result, so a re-take or a
-  // post-overturn submit (different score/time/result) is still appended.
-  for (var dc = existingRows.length - 1; dc >= 1; dc--) {
-    if (String(existingRows[dc][13]) === String(data.sessionCode) &&
-        normalizeId(existingRows[dc][1]) === normalizeId(data.idNumber) &&
-        String(existingRows[dc][4]) === String(data.license) &&
-        String(existingRows[dc][5]) === (data.score + '/' + data.total) &&
-        String(existingRows[dc][7]).trim() === String(passText).trim() &&
-        String(existingRows[dc][8]) === String(data.time)) {
-      markPendingCompleted(data.sessionCode, data.idNumber, { sheet: pendSheet, rows: pendData });
-      return jsonResponse({ status: 'ok', duplicate: true, waLink: waLink });
-    }
-  }
-
-  sheet.appendRow([
-    todayStr(),
-    data.idNumber,
-    data.fullName,
-    data.phone,
-    data.license,
-    data.score + '/' + data.total,
-    data.percent + '%',
-    passText,
-    data.time,
-    data.examinerName || '',
-    data.site || '',
-    data.classroom || '',
-    data.language || 'he',
-    data.sessionCode || '',
-    attemptNum,
-    wrongDetails,
-    false,
-    false,
-    waLink,
-    data.population || '',
-    false,
-    data.audioMode || 'off',
-    data.verified ? 'מאומת' : '',
-    data.suspicious ? 'חשוד' : '',
-    '',                                 // Y (24) dqEventId — not a DQ row
-    '',                                 // Z (25) תוקן ע"י — empty (no correction yet)
-    '',                                 // AA (26) סיבת תיקון — empty
-    '',                                 // AB (27) תאריך תיקון — empty
-    langPath,                           // AC (28) מסלול שפות — full path he → ru → he
-    String(data.device || '')           // AD (29) מכשיר — phone / tablet / desktop
-  ]);
-
-  // Update pending status to completed
-  markPendingCompleted(data.sessionCode, data.idNumber, { sheet: pendSheet, rows: pendData });
-
-  diagMark('compute:submit-done');
-  return jsonResponse({ status: 'ok', waLink: waLink });
+  return data.language || 'he';
 }
 
-function handleSubmitWrongAnswers(p) {
-  var swaTokenErr = requireExamineeToken(p);
-  if (swaTokenErr) return swaTokenErr;
-  // Append a single wrong answer item to existing result row
-  var sheet = getSheet('תוצאות');
-  var data = sheet.getDataRange().getValues();
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][13]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
-      var existing = String(data[i][15] || '');
-
-      // New format: individual item with question/yourAnswer/correctAnswer params
-      if (p.question) {
-        var line = 'שאלה: ' + p.question + '\n' +
-                   'תשובת הנבחן: ' + p.yourAnswer + '\n' +
-                   'תשובה נכונה: ' + p.correctAnswer + '\n\n';
-        sheet.getRange(i + 1, 16).setValue(existing + line);
-        SpreadsheetApp.flush();
-        return jsonResponse({ status: 'ok' });
-      }
-
-      // Legacy format: chunk with JSON array
-      var chunk = p.chunk || '';
-      var totalChunks = Number(p.totalChunks) || 1;
-      if (totalChunks === 1) {
-        try {
-          var wrongArr = JSON.parse(chunk);
-          var formatted = '';
-          for (var w = 0; w < wrongArr.length; w++) {
-            formatted += 'שאלה: ' + wrongArr[w].question + '\n';
-            formatted += 'תשובת הנבחן: ' + wrongArr[w].yourAnswer + '\n';
-            formatted += 'תשובה נכונה: ' + wrongArr[w].correctAnswer + '\n\n';
-          }
-          sheet.getRange(i + 1, 16).setValue(formatted);
-        } catch(ex) {
-          sheet.getRange(i + 1, 16).setValue(existing + chunk);
-        }
-      } else {
-        sheet.getRange(i + 1, 16).setValue(existing + chunk);
-      }
-      return jsonResponse({ status: 'ok' });
-    }
-  }
-  return jsonResponse({ status: 'error', message: 'Result row not found for wrong answers' });
+function buildResultRow(data, wrongAnswers, attemptNum, waLink) {
+  var row = [];
+  row[RESULT_COL.date] = todayStr();
+  row[RESULT_COL.id] = data.idNumber;
+  row[RESULT_COL.name] = data.fullName;
+  row[RESULT_COL.phone] = data.phone;
+  row[RESULT_COL.license] = data.license;
+  row[RESULT_COL.score] = data.score + '/' + data.total;
+  row[RESULT_COL.percent] = data.percent + '%';
+  row[RESULT_COL.verdict] = resultVerdict(data);
+  row[RESULT_COL.time] = data.time;
+  row[RESULT_COL.examiner] = data.examinerName || '';
+  row[RESULT_COL.site] = data.site || '';
+  row[RESULT_COL.classroom] = data.classroom || '';
+  row[RESULT_COL.language] = data.language || 'he';
+  row[RESULT_COL.session] = data.sessionCode || '';
+  row[RESULT_COL.attempt] = attemptNum;
+  row[RESULT_COL.wrongDetails] = formatWrongDetails(wrongAnswers, data);
+  row[RESULT_COL.sent] = false;
+  row[RESULT_COL.dq] = false;
+  row[RESULT_COL.waLink] = waLink;
+  row[RESULT_COL.population] = data.population || '';
+  row[RESULT_COL.corrected] = false;
+  row[RESULT_COL.audio] = data.audioMode || 'off';
+  row[RESULT_COL.verified] = data.verified ? 'מאומת' : '';
+  row[RESULT_COL.suspicious] = data.suspicious ? 'חשוד' : '';
+  row[RESULT_COL.dqEventId] = '';
+  row[RESULT_COL.correctedBy] = '';
+  row[RESULT_COL.correctionReason] = '';
+  row[RESULT_COL.correctionDate] = '';
+  row[RESULT_COL.langPath] = languagePath(data);
+  row[RESULT_COL.device] = String(data.device || '');
+  return row;
 }
 
-function handleSubmitWrongAnswersBulk(data) {
-  var swabTokenErr = requireExamineeToken(data);
-  if (swabTokenErr) return swabTokenErr;
-  // Receive ALL wrong answers in a single POST and write to result row
-  var sheet = getSheet('תוצאות');
-  var rows = sheet.getDataRange().getValues();
+// The attempt number counts a lifetime of results, so it may not be decided
+// from a tail: an earlier attempt this month can sit above the last 1,000 rows.
+// When the snapshot IS the whole sheet it is reused as it is; otherwise
+// countAttempts reads the three columns it needs from live + archive itself.
+function attemptRows(tail) { return tail.off ? null : tail.rows; }
+
+// ---- the four passes over the one 'תוצאות' snapshot ------------------------
+function resultRowMatchesExaminee(row, data) {
+  return String(row[RESULT_COL.session]) === String(data.sessionCode) &&
+    normalizeId(row[RESULT_COL.id]) === normalizeId(data.idNumber);
+}
+
+// A real finished submit must WIN over a system-written fail (the close beacon,
+// the dashboard timeout row, an examiner's manual disconnect). Matched on
+// session+id ONLY: the fabricated row carries the REGISTRATION language while a
+// real submit may carry a different final one after a mid-exam switch.
+function supersedeFabricatedFails(sheet, tail, data) {
+  var rows = tail.rows, changed = false;
+  for (var i = 1; i < rows.length; i++) {
+    if (!resultRowMatchesExaminee(rows[i], data)) continue;
+    if (String(rows[i][RESULT_COL.verdict]).trim() !== 'נכשל') continue;
+    if (!isFabricatedFailNote(String(rows[i][RESULT_COL.wrongDetails] || ''))) continue;
+    var sheetRow = i + tail.off + 1;
+    sheet.getRange(sheetRow, RESULT_COL.verdict + 1).setValue('בוטל');
+    sheet.getRange(sheetRow, RESULT_COL.correctionReason + 1).setValue('בוטל אוטומטית — הנבחן השלים והגיש מבחן');
+    sheet.getRange(sheetRow, RESULT_COL.correctionDate + 1).setValue(todayStr());
+    rows[i][RESULT_COL.verdict] = 'בוטל';
+    changed = true;
+  }
+  if (changed) SpreadsheetApp.flush();
+}
+function isFabricatedFailNote(note) {
+  for (var i = 0; i < FABRICATED_FAIL_MARKERS.length; i++) {
+    if (note.indexOf(FABRICATED_FAIL_MARKERS[i]) !== -1) return true;
+  }
+  return false;
+}
+
+// A genuine prior result for this exact exam. Skipped while the examinee still
+// has an in_exam row (a retake after a disqualification is not a duplicate).
+function findDuplicateResult(tail, data, gate) {
+  if (hasPendingInExam(gate)) return null;
+  var rows = tail.rows;
+  for (var i = 1; i < rows.length; i++) {
+    var verdict = String(rows[i][RESULT_COL.verdict] || '').trim();
+    if (verdict === 'פסול' || verdict === 'בוטל') continue;
+    if (!resultRowMatchesExaminee(rows[i], data)) continue;
+    if (String(rows[i][RESULT_COL.license]) !== String(data.license)) continue;
+    if (String(rows[i][RESULT_COL.language]) !== String(data.language || 'he')) continue;
+    return rows[i];
+  }
+  return null;
+}
+
+// Re-read this examinee's pending rows: an examiner may have decided something
+// while the submit was in flight. Never overwrite a newer examiner decision.
+function hasPendingInExam(gate) {
+  var snapshot = gate.pending;
+  snapshot.rows = refreshExamineePendingRows(snapshot.sheet, snapshot.rows, gate.ctx.sessionCode, gate.ctx.idNumber);
+  var rows = snapshot.rows;
   for (var i = rows.length - 1; i >= 1; i--) {
-    if (String(rows[i][13]) === String(data.sessionCode) && normalizeId(rows[i][1]) === normalizeId(data.idNumber)) {
-      // Detect the bug pattern where client sent "undefined" because it doesn't
-      // know correct answers (handleGetExamQuestions strips `ci` from examinee
-      // responses). If client data is bogus AND the sheet already has good data
-      // (written by handleSubmitResult's server-side rebuild), keep the sheet's version.
-      var clientHasBogus = false;
-      if (data.wrongAnswers && data.wrongAnswers.length > 0) {
-        for (var bi = 0; bi < data.wrongAnswers.length; bi++) {
-          var ca = String((data.wrongAnswers[bi] && data.wrongAnswers[bi].correctAnswer) || '');
-          if (ca.indexOf('undefined') !== -1) { clientHasBogus = true; break; }
-        }
-      }
-      var existingWrong = String(rows[i][15] || '');
-      if (clientHasBogus && existingWrong && existingWrong.indexOf('undefined') === -1) {
-        // Sheet already has authoritative data → keep it, skip overwrite.
-        SpreadsheetApp.flush();
-        return jsonResponse({ status: 'ok', skipped: true, reason: 'client_bogus_server_good' });
-      }
-
-      var wrongDetails = '';
-      var wrongForWA = '';
-      if (data.wrongAnswers && data.wrongAnswers.length > 0) {
-        for (var w = 0; w < data.wrongAnswers.length; w++) {
-          var item = data.wrongAnswers[w];
-          // Question ID prefix — see comment in handleSubmitWrongAnswers above.
-          if (item.questionId) wrongDetails += 'מזהה שאלה: ' + item.questionId + '\n';
-          wrongDetails += 'שאלה: ' + item.question + '\n';
-          wrongDetails += 'תשובת הנבחן: ' + item.yourAnswer + '\n';
-          wrongDetails += 'תשובה נכונה: ' + item.correctAnswer + '\n';
-          if (item.category) wrongDetails += 'קטגוריה: ' + item.category + '\n';
-          wrongDetails += '\n';
-          wrongForWA += '❌ ' + item.question + '\n';
-          wrongForWA += 'ענית: ' + item.yourAnswer + '\n';
-          wrongForWA += '✅ נכון: ' + item.correctAnswer + '\n\n';
-        }
-      }
-      // Update wrong details column
-      sheet.getRange(i + 1, 16).setValue(wrongDetails);
-
-      // Regenerate WA link with wrong answers included
-      var isCorrected = rows[i][20] === true || String(rows[i][20]) === 'TRUE';
-      if (!isCorrected && data.wrongAnswers && data.wrongAnswers.length > 0) {
-        var passText = String(rows[i][7] || 'נכשל');
-        var phone = formatPhoneForWA(rows[i][3]);
-        var waMsg = '*🚗 אישור תוצאת מבחן תאוריה חיצוני*\n\n' +
-          'שם: ' + rows[i][2] + '\n' +
-          'ת.ז.: ' + rows[i][1] + '\n' +
-          'דרגה: ' + rows[i][4] + '\n' +
-          (rows[i][19] ? 'אוכלוסיה: ' + rows[i][19] + '\n' : '') +
-          'תאריך: ' + rows[i][0] + '\n' +
-          'תוצאה: *' + passText + '* (' + rows[i][5] + ')\n' +
-          'זמן: ' + rows[i][8] + '\n' +
-          '\n*שאלות שגויות (' + data.wrongAnswers.length + '):*\n\n' + wrongForWA;
-        var attemptNum = rows[i][14] || 1;
-        if (attemptNum > 1) waMsg += 'ניסיון: ' + attemptNum + '\n';
-        var waLink = 'https://wa.me/' + phone + '?text=' + encodeURIComponent(waMsg);
-        sheet.getRange(i + 1, 19).setValue(waLink);
-      }
-
-      SpreadsheetApp.flush();
-      return jsonResponse({ status: 'ok', count: data.wrongAnswers ? data.wrongAnswers.length : 0 });
-    }
+    if (!rows[i] || String(rows[i][0]) !== String(gate.ctx.sessionCode)) continue;
+    if (normalizeId(rows[i][1]) !== normalizeId(gate.ctx.idNumber)) continue;
+    if (String(rows[i][5]).trim() === 'in_exam') return true;
   }
-  return jsonResponse({ status: 'error', message: 'Result row not found for wrong answers' });
+  return false;
 }
 
+// An examinee who was auto-disqualified, let back in and then finished must not
+// keep both a פסול row and a real one (base 14, 2026). The audit trail stays.
+function supersedeDisqualifications(sheet, tail, data) {
+  var rows = tail.rows;
+  for (var i = rows.length - 1; i >= 1; i--) {
+    if (!resultRowMatchesExaminee(rows[i], data)) continue;
+    if (String(rows[i][RESULT_COL.verdict]).trim() !== 'פסול') continue;
+    var sheetRow = i + tail.off + 1;
+    sheet.getRange(sheetRow, RESULT_COL.verdict + 1).setValue('בוטל');
+    sheet.getRange(sheetRow, RESULT_COL.dq + 1).setValue(false);
+    sheet.getRange(sheetRow, RESULT_COL.correctionReason + 1).setValue('בוטל אוטומטית — נבחן ניגש למבחן מחדש');
+    sheet.getRange(sheetRow, RESULT_COL.correctionDate + 1).setValue(todayStr());
+    rows[i][RESULT_COL.verdict] = 'בוטל';
+    rows[i][RESULT_COL.dq] = false;
+  }
+}
+
+// Idempotency: the same result sent twice (a retry whose response was lost)
+// must not append a second row. A retake differs in score or time, so it does.
+function findIdenticalResult(tail, data) {
+  var rows = tail.rows, verdict = resultVerdict(data);
+  for (var i = rows.length - 1; i >= 1; i--) {
+    if (!resultRowMatchesExaminee(rows[i], data)) continue;
+    if (String(rows[i][RESULT_COL.license]) !== String(data.license)) continue;
+    if (String(rows[i][RESULT_COL.score]) !== (data.score + '/' + data.total)) continue;
+    if (String(rows[i][RESULT_COL.verdict]).trim() !== verdict) continue;
+    if (String(rows[i][RESULT_COL.time]) !== String(data.time)) continue;
+    return rows[i];
+  }
+  return null;
+}
+
+// ---- submitFailOnClose / cancelFailOnClose ---------------------------------
+// The browser-close beacon. It writes a 0/30 fail, which a genuine submit later
+// supersedes; it must never write one for an examinee the examiner reset.
 function handleSubmitFailOnClose(data) {
-  var focTokenErr = requireExamineeToken(data);
-  if (focTokenErr) return focTokenErr;
+  var ctx = examineeRowContext(data.sessionCode, data.idNumber);
+  var status = ctx.latest ? ctx.latest.status : '';
+  if (status === 'cancelled' || status === 'rejected') return jsonResponse({ status: 'ok', skipped: 'cancelled' });
+
   var sheet = getSheet('תוצאות');
-
-  // Do NOT record a close-fail for an examinee an examiner reset/removed
-  // (status 'cancelled') or 'rejected' — reset semantics are "won't count as a
-  // fail". A clean finish of such an examinee IS still recorded (submitResult
-  // accepts 'cancelled'); only the auto-0/30-on-close is suppressed here.
-  try {
-    var focPend = getSheet('ממתינים').getDataRange().getValues();
-    for (var fp = focPend.length - 1; fp >= 1; fp--) {
-      if (String(focPend[fp][0]) === String(data.sessionCode) && normalizeId(focPend[fp][1]) === normalizeId(data.idNumber)) {
-        var fpStatus = String(focPend[fp][5]).trim();
-        if (fpStatus === 'cancelled' || fpStatus === 'rejected') return jsonResponse({ status: 'ok', skipped: 'cancelled' });
-        break;
-      }
-    }
-  } catch (focErr) {}
-
-  // Duplicate protection: if ANY non-בוטל result already exists for this session+id,
-  // do NOT add a close-fail. Match on session+id ONLY (not language/license): the
-  // close-beacon carries the REGISTRATION language, but a real submit may carry a
-  // different FINAL language after a mid-exam switch — a language-scoped check would
-  // miss it and append a spurious 0/30 next to the real result.
-  var existingData = sheet.getDataRange().getValues();
-  for (var d = 1; d < existingData.length; d++) {
-    if (String(existingData[d][13]) === String(data.sessionCode) && normalizeId(existingData[d][1]) === normalizeId(data.idNumber)) {
-      if (String(existingData[d][7] || '').trim() === 'בוטל') continue; // a voided row is not a real result
-      markPendingCompleted(data.sessionCode, data.idNumber);
-      return jsonResponse({ status: 'ok', duplicate: true });
-    }
+  var tail = readTail(sheet, RESULT_COL.date);
+  // Any non-בוטל result for this session+id means the examinee already has a
+  // real outcome. Matched on session+id only — see supersedeFabricatedFails.
+  for (var i = 1; i < tail.rows.length; i++) {
+    if (!resultRowMatchesExaminee(tail.rows[i], data)) continue;
+    if (String(tail.rows[i][RESULT_COL.verdict] || '').trim() === 'בוטל') continue;
+    markPendingCompleted(data.sessionCode, data.idNumber, pendingSnapshotFromTail(ctx));
+    return jsonResponse({ status: 'ok', duplicate: true });
   }
 
-  var attemptNum = countAttempts(data.idNumber, data.license || '') + 1;
+  var attemptNum = countAttempts(data.idNumber, data.license || '', attemptRows(tail)) + 1;
+  var row = buildResultRow({
+    idNumber: data.idNumber, fullName: data.fullName, phone: data.phone, license: data.license || '',
+    score: 0, total: data.totalQuestions || 30, percent: 0, passed: false, time: data.time || '00:00',
+    examinerName: data.examinerName, site: data.site, classroom: data.classroom,
+    language: data.language || 'he', sessionCode: data.sessionCode, population: data.population,
+    audioMode: data.audioMode, device: data.device, languageHistory: null, verified: false
+  }, [], attemptNum, '');
+  row[RESULT_COL.wrongDetails] = 'סגירת דפדפן באמצע מבחן (נענו ' + (data.answeredCount || 0) + ' שאלות)';
+  row[RESULT_COL.audio] = data.audioMode || 'off';
+  row[RESULT_COL.verified] = '';
+  row[RESULT_COL.langPath] = '';      // a close-fail has no language path to report
+  sheet.appendRow(row);
 
-  sheet.appendRow([
-    todayStr(),
-    data.idNumber,
-    data.fullName,
-    data.phone,
-    data.license || '',
-    '0/' + (data.totalQuestions || 30),
-    '0%',
-    'נכשל',
-    data.time || '00:00',
-    data.examinerName || '',
-    data.site || '',
-    data.classroom || '',
-    data.language || 'he',
-    data.sessionCode || '',
-    attemptNum,
-    'סגירת דפדפן באמצע מבחן (נענו ' + (data.answeredCount || 0) + ' שאלות)',
-    false,
-    false,
-    '',
-    data.population || '',
-    false,
-    data.audioMode || 'off',
-    '', '', '', '', '', '', '',         // idx 22-28 (מאומת..מסלול שפות) — N/A for a close-fail row
-    String(data.device || '')           // AD (29) מכשיר — phone / tablet / desktop
-  ]);
-
-  markPendingCompleted(data.sessionCode, data.idNumber);
-
+  markPendingCompleted(data.sessionCode, data.idNumber, pendingSnapshotFromTail(ctx));
   return jsonResponse({ status: 'ok' });
 }
 
+// The page reloaded rather than closed: undo the premature close-fail. The row
+// is marked בוטל, never deleted — deleteRow was the only path that could destroy
+// a result — and the examinee goes back to in_exam so they can finish.
 function handleCancelFailOnClose(data) {
-  // Called when page reloads (refresh, not actual close) — undo the fail
-  var cfocTokenErr = requireExamineeToken(data);
-  if (cfocTokenErr) return cfocTokenErr;
-  var sc = String(data.sessionCode || '');
-  var id = normalizeId(data.idNumber || '');
-  if (!sc || !id) return jsonResponse({ status: 'ok' });
-
+  var sessionCode = String(data.sessionCode || ''), id = normalizeId(data.idNumber || '');
+  if (!sessionCode || !id) return jsonResponse({ status: 'ok' });
   var sheet = getSheet('תוצאות');
-  var rows = sheet.getDataRange().getValues();
-  // Find the most recent row for this session+ID that is a "close" fail
-  for (var r = rows.length - 1; r >= 1; r--) {
-    if (String(rows[r][13]) === sc && normalizeId(rows[r][1]) === id) {
-      var notes = String(rows[r][15] || '');
-      if (notes.indexOf('\u05E1\u05D2\u05D9\u05E8\u05EA \u05D3\u05E4\u05D3\u05E4\u05DF') !== -1) {
-        // Examinee resumed — the fail-on-close was premature. Mark בוטל instead
-        // of DELETING: sheet.deleteRow was the ONLY path that could ever destroy a
-        // result row (latent "vanished result" vector). At most one בוטל row
-        // results, since submitFailOnClose's dup-guard blocks further close-fails.
-        sheet.getRange(r + 1, 8).setValue('בוטל');
-        sheet.getRange(r + 1, 27).setValue('בוטל אוטומטי - רענון/חזרה למבחן');
-        sheet.getRange(r + 1, 28).setValue(todayStr());
-        // Also un-mark pending as completed so exam can continue
-        unmarkPendingCompleted(sc, id);
-      }
-      break; // only check the most recent match
+  var tail = readTail(sheet, RESULT_COL.date);
+  for (var i = tail.rows.length - 1; i >= 1; i--) {
+    if (!resultRowMatchesExaminee(tail.rows[i], data)) continue;
+    if (String(tail.rows[i][RESULT_COL.wrongDetails] || '').indexOf('סגירת דפדפן') !== -1) {
+      var sheetRow = i + tail.off + 1;
+      sheet.getRange(sheetRow, RESULT_COL.verdict + 1).setValue('בוטל');
+      sheet.getRange(sheetRow, RESULT_COL.correctionReason + 1).setValue('בוטל אוטומטי - רענון/חזרה למבחן');
+      sheet.getRange(sheetRow, RESULT_COL.correctionDate + 1).setValue(todayStr());
+      restorePendingToInExam(sessionCode, data.idNumber);
     }
+    break;   // only the most recent row of this examinee
   }
   return jsonResponse({ status: 'ok' });
 }
 
+// The mirror of markPendingCompleted for a resumed exam: the newest completed
+// row of this examinee goes back to in_exam, through the single status writer.
+function restorePendingToInExam(sessionCode, idNumber) {
+  var ctx = examineeRowContext(sessionCode, idNumber, true);
+  if (!ctx.latest || ctx.latest.status !== 'completed') return;
+  setPendingStatus(getSheet('ממתינים'), ctx.latest.rowNumber, sessionCode, 'in_exam', null);
+}
+
+// ---- Result-upload token (examiner → results Worker) ------------------------
+// A short-lived HMAC the browser sends as X-Auth-Token when it POSTs the result
+// HTML to the Cloudflare Worker; the Worker verifies it with the same secret.
+// Set ScriptProperty RESULT_UPLOAD_SECRET and the Worker secret UPLOAD_SECRET to
+// the same long random string. The secret never reaches the browser.
+function handleGetResultUploadToken() {
+  var secret = PropertiesService.getScriptProperties().getProperty('RESULT_UPLOAD_SECRET');
+  if (!secret) {
+    return jsonResponse({ status: 'error', code: 'not_configured',
+      message: 'RESULT_UPLOAD_SECRET not configured in Apps Script properties' });
+  }
+  var payloadB64 = Utilities.base64EncodeWebSafe(JSON.stringify({ exp: Date.now() + 5 * 60 * 1000 })).replace(/=+$/, '');
+  var sigB64 = Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature(payloadB64, secret)).replace(/=+$/, '');
+  return jsonResponse({ status: 'ok', token: payloadB64 + '.' + sigB64 });
+}

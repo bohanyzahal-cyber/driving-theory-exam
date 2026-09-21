@@ -59,10 +59,22 @@ function handleLogin(p) {
   return jsonResponse({ status: 'error', message: 'בוחן לא נמצא' });
 }
 
+// A remembered login is verified on every page load and every reload — and on
+// 16/09 the reload storm made that a full read of 'בוחנים' per reload per
+// device. The POSITIVE verdict is cached exactly as verifyToken's is (review C
+// R13): same 60 s, same key shape, so a disabled account or a rotated token
+// costs at most one minute of grace.
+var LOGIN_VERDICT_CACHE_SEC = 60;
 function handleVerifyLogin(p) {
   if (!p.examinerId || !p.token) {
     return jsonResponse({ status: 'error', message: 'חסרים פרטי אימות', tokenExpired: true });
   }
+  var vKey = CACHE_KEY_PREFIX + 'vlog_' + normalizeId(p.examinerId) + '_' + String(p.token).slice(0, 80), vCache = null;
+  try {
+    vCache = CacheService.getScriptCache();
+    var vHit = vCache.get(vKey);
+    if (vHit) return jsonResponse({ status: 'ok', examiner: JSON.parse(vHit) });
+  } catch (eGet) { vCache = null; }
   var sheet = getSheet('בוחנים');
   var data = sheet.getDataRange().getValues();
   for (var i = 1; i < data.length; i++) {
@@ -82,7 +94,9 @@ function handleVerifyLogin(p) {
       if (!(data[i][3] === 'כן' || data[i][3] === true || data[i][3] === 'TRUE')) {
         return jsonResponse({ status: 'error', message: 'החשבון אינו פעיל' });
       }
-      return jsonResponse({ status: 'ok', examiner: { name: data[i][0], id: normalizeId(data[i][1]), examinerNumber: String(data[i][4] || ''), role: String(data[i][5] || 'בוחן'), token: p.token } });
+      var examiner = { name: data[i][0], id: normalizeId(data[i][1]), examinerNumber: String(data[i][4] || ''), role: String(data[i][5] || 'בוחן'), token: p.token };
+      try { if (!vCache) vCache = CacheService.getScriptCache(); vCache.put(vKey, JSON.stringify(examiner), LOGIN_VERDICT_CACHE_SEC); } catch (ePut) {}
+      return jsonResponse({ status: 'ok', examiner: examiner });
     }
   }
   return jsonResponse({ status: 'error', message: 'בוחן לא נמצא', tokenExpired: true });

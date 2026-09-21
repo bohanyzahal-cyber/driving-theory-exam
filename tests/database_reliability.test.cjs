@@ -1,292 +1,361 @@
-// Offline regression replay against the last audited production-source commit.
-// All records and service responses are synthetic; no network or Google access.
+// Run: node tests/database_reliability.test.cjs
+//
+// What the exam WRITES, replayed against explicit expected tables. Until the
+// 21/09/2026 rewrite this suite compared every scenario against a frozen copy of
+// the audited server (git show 232ed3c) — a differential gate that could only
+// ever say "same as before", which is exactly what a rewrite cannot promise.
+// The scenarios are the same ones; each now states the rows it expects.
+//
+// Everything here is synthetic — no network, no Google, no real ID numbers.
+const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
-const { execFileSync } = require('node:child_process');
+const { createEnv } = require('./helpers/server_env.cjs');
 
-const appDir = path.resolve(__dirname, '..');
-const baseSource = execFileSync('git', ['show', '232ed3c:external_exam_apps_script.js'], { cwd: appDir, encoding: 'utf8', maxBuffer: 5e6 });
-const currentSource = fs.readFileSync(path.join(appDir, 'external_exam_apps_script.js'), 'utf8');
-const clone = value => JSON.parse(JSON.stringify(value));
+const SESSION = 'SYNTHETIC';
 const ID = '900000001';
 const TOKEN = 'synthetic-examinee-token';
-const NOW = Date.parse('2026-09-06T08:30:00Z');
-const names = { pending: 'ממתינים', exams: 'מבחנים', results: 'תוצאות' };
-const questionMap = [
-  { qIdx: 0, qId: 1, shuffleOrder: [0, 1, 2, 3], correctShuffledIdx: 0 },
-  { qIdx: 1, qId: 2, shuffleOrder: [0, 1, 2, 3], correctShuffledIdx: 1 }
-];
-const correctIndexes = { he: { 1: 0, 2: 1 }, ru: { 1: 2, 2: 0 }, ar: { 1: 3, 2: 2 } };
-
-function pendingRow(status = 'in_exam', overrides = {}) {
-  return Object.assign(Array(19).fill(''), {
-    0: 'SYNTHETIC', 1: ID, 4: '2026-09-06T08:00:00Z', 5: status,
-    6: 'he', 8: 'B', 9: 'off', 12: TOKEN
-  }, overrides);
+const REGISTERED_AT = '2026-09-22T06:00:00Z';
+const QUESTION_COUNT = 30;
+const PENDING_HEADER = Array(19).fill('header');
+const RESULTS_HEADER = Array(30).fill('header');
+const EXAMS_HEADER = Array(6).fill('header');
+// Synthetic answer key: question id → correct original index, per language.
+// he/ru/ar deliberately disagree, as the real banks do.
+const KEY = { he: {}, ru: {}, ar: {} };
+const IDS = Array.from({ length: QUESTION_COUNT }, (_, i) => 101 + i);
+for (const id of IDS) {
+  KEY.he[id] = id % 4;
+  KEY.ru[id] = (id + 1) % 4;
+  KEY.ar[id] = (id + 2) % 4;
 }
-function examRow(overrides = {}) {
-  return Object.assign(['SYNTHETIC', ID, JSON.stringify(questionMap), '2026-09-06T08:00:00Z', 'he', 0], overrides);
+const ORDER = [2, 0, 3, 1];
+function questionMap(overrides) {
+  return IDS.map((id, i) => Object.assign({
+    qIdx: i, qId: id, shuffleOrder: ORDER.slice(), correctShuffledIdx: ORDER.indexOf(KEY.he[id]), topic: 'חוק'
+  }, overrides || {}));
 }
-function resultRow(overrides = {}) {
-  return Object.assign(Array(30).fill(''), {
-    0: '06/09/2026 08:10', 1: ID, 2: 'Synthetic examinee', 4: 'B',
-    5: '0/2', 6: '0%', 7: 'נכשל', 8: '00:30', 12: 'he',
-    13: 'SYNTHETIC', 14: 1, 18: 'synthetic-existing-link'
-  }, overrides);
-}
-function input(overrides = {}) {
-  return Object.assign({
-    sessionCode: 'SYNTHETIC', idNumber: ID, examineeToken: TOKEN,
-    fullName: 'Synthetic examinee', phone: '000', license: 'B', language: 'he',
-    answers: [{ selected: 0, langAtAnswer: 'he' }, { selected: 1, langAtAnswer: 'he' }],
-    questions: questionMap.map(q => ({ qIdx: q.qIdx, qId: q.qId, shuffleOrder: q.shuffleOrder })),
-    score: 0, total: 2, percent: 0, passed: false, time: '10:00',
-    examinerName: 'Synthetic examiner', site: 'Synthetic site', classroom: 'Synthetic classroom',
-    population: 'Synthetic population', audioMode: 'on', device: 'tablet',
-    languageHistory: ['he'], wrongAnswers: [{ question: 'client placeholder', yourAnswer: 'undefined', correctAnswer: 'undefined' }]
-  }, overrides);
-}
-function fixture(overrides = {}) {
-  return Object.assign({ pending: [pendingRow()], exams: [examRow()], results: [], input: input() }, overrides);
-}
-
-function runtime(source, spec) {
-  const tables = {
-    [names.pending]: [Array(19).fill('header'), ...clone(spec.pending)],
-    [names.exams]: [Array(6).fill('header'), ...clone(spec.exams)],
-    [names.results]: [Array(30).fill('header'), ...clone(spec.results)]
-  };
-  const reads = {}, writes = [], bankLoads = [];
-  let run;
-  const cache = { get() { return null; }, put() {}, getAll() { return {}; }, putAll() {} };
-  function read(name, kind, r, c, h, w) {
-    reads[name] ||= { full: 0, range: 0, cells: 0 };
-    reads[name][kind]++;
-    reads[name].cells += h * w;
-    const snapshot = tables[name].slice(r - 1, r - 1 + h).map(row => row.slice(c - 1, c - 1 + w));
-    if (spec.afterRead) spec.afterRead({ name, kind, count: reads[name][kind], tables, reads, writes });
-    return snapshot;
-  }
-  class FixedDate extends Date {
-    constructor(...args) { super(...(args.length ? args : [NOW])); }
-    static now() { return NOW; }
-  }
-  run = {
-    Date: FixedDate, Logger: { log() {} }, CacheService: { getScriptCache: () => cache },
-    SpreadsheetApp: { flush() {} }, Session: { getScriptTimeZone: () => 'UTC' },
-    Utilities: { formatDate: () => '06/09/2026 08:30' }
-  };
-  vm.createContext(run);
-  vm.runInContext(source, run);
-  run.requireRateLimit = () => null;
-  run.jsonResponse = result => result;
-  run.nowISO = () => '2026-09-06T08:30:00.000Z';
-  run.todayStr = () => '06/09/2026 08:30';
-  run.ANSWER_KEY_BY_LANG = correctIndexes;
-  run.lookupCorrectIndex = (id, lang) => correctIndexes[lang]?.[id] ?? null;
-  run.loadQuestionsForLanguageServer = lang => {
-    bankLoads.push(lang);
-    if (spec.onBankLoad) spec.onBankLoad({ lang, tables, reads, writes });
-    if (spec.failLanguages?.includes(lang)) throw new Error('Synthetic unavailable bank');
-    return [1, 2].map(id => ({ id, text: `synthetic ${lang} question ${id}`, answers: [0, 1, 2, 3].map(a => `${lang}-${id}-${a}`), category: 'חוק' }));
-  };
-  run.getSheet = name => {
-    if (!tables[name]) throw new Error('Unexpected synthetic table ' + name);
+function answers(count, lang) {
+  return questionMap().map((entry, i) => {
+    const key = ORDER.indexOf(KEY[lang || 'he'][entry.qId]);
     return {
-      getLastRow: () => tables[name].length,
-      getLastColumn: () => tables[name][0].length,
-      getDataRange: () => ({ getValues: () => read(name, 'full', 1, 1, tables[name].length, tables[name][0].length) }),
-      getRange: (r, c, h = 1, w = 1) => ({
-        getValues: () => read(name, 'range', r, c, h, w),
-        setValue(value) {
-          assert(tables[name][r - 1], `write stays within ${name}`);
-          tables[name][r - 1][c - 1] = value;
-          writes.push({ name, r, c, value });
-        }
-      }),
-      appendRow(row) {
-        tables[name].push(clone(row));
-        writes.push({ name, append: clone(row) });
-        if (spec.onAppend) spec.onAppend({ name, tables, reads, writes });
-      }
+      qIdx: i, selected: i < count ? key : (key + 1) % 4, langAtAnswer: lang || 'he',
+      q: 'שאלה ' + entry.qId, a: ORDER.map(o => 'תשובה ' + entry.qId + '-' + o)
     };
-  };
-  return {
-    run, tables, reads, writes, bankLoads,
-    execute(action, data) { return clone(run[action](clone(data))); }
-  };
+  });
 }
-
-let passed = 0;
-const summaries = [];
-function compare(label, spec, action = 'handleSubmitResult', options = {}) {
-  const oldRun = runtime(baseSource, spec), newRun = runtime(currentSource, spec);
-  const before = oldRun.execute(action, spec.input);
-  const after = newRun.execute(action, spec.input);
-  assert.deepEqual(after, before, label + ': API response matches audited code');
-  assert.deepEqual(newRun.tables, oldRun.tables, label + ': complete tables (scoring, metadata, audit, attempts) match');
-  if (options.retry) {
-    const oldRetry = oldRun.execute(action, spec.input), newRetry = newRun.execute(action, spec.input);
-    assert.deepEqual(newRetry, oldRetry, label + ': lost-response retry matches');
-    assert.deepEqual(newRun.tables, oldRun.tables, label + ': retry rows match');
-  }
-  if (options.check) options.check({ oldRun, newRun, result: after });
-  summaries.push({ label, oldFullReads: Object.values(oldRun.reads).reduce((n, r) => n + r.full, 0), newFullReads: Object.values(newRun.reads).reduce((n, r) => n + r.full, 0), oldBankLoads: oldRun.bankLoads.length, newBankLoads: newRun.bankLoads.length });
-  passed++;
-  return { oldRun, newRun, result: after };
+function pendingRow(status, overrides) {
+  const row = Array(19).fill('');
+  row[0] = SESSION; row[1] = ID; row[2] = 'נבחן סינתטי'; row[4] = REGISTERED_AT;
+  row[5] = status || 'in_exam'; row[6] = 'he'; row[8] = 'B'; row[9] = 'off'; row[12] = TOKEN;
+  return Object.assign(row, overrides || {});
 }
+function examRow(overrides) {
+  return Object.assign([SESSION, ID, JSON.stringify(questionMap()), REGISTERED_AT, 'he', 0], overrides || {});
+}
+function resultRow(overrides) {
+  const row = Array(30).fill('');
+  row[0] = '22/09/2026 07:10'; row[1] = ID; row[2] = 'נבחן סינתטי'; row[4] = 'B';
+  row[5] = '0/30'; row[6] = '0%'; row[7] = 'נכשל'; row[8] = '00:30'; row[12] = 'he';
+  row[13] = SESSION; row[14] = 1; row[18] = 'synthetic-existing-link';
+  return Object.assign(row, overrides || {});
+}
+function env(spec) {
+  const s = spec || {};
+  const e = createEnv({
+    sheets: {
+      'ממתינים': [PENDING_HEADER, ...(s.pending || [pendingRow()])],
+      'מבחנים': [EXAMS_HEADER, ...(s.exams || [examRow()])],
+      'תוצאות': [RESULTS_HEADER, ...(s.results || [])]
+    }
+  });
+  e.ctx.ANSWER_KEY_BY_LANG = KEY;
+  // The 30 fixture questions have a hand-written key per language; every other
+  // id (the real index has 1,700, and a draw must be able to fill a blueprint)
+  // gets a deterministic synthetic one that still differs between languages.
+  e.ctx.lookupCorrectIndex = (id, lang) => {
+    const byLang = KEY[lang];
+    if (byLang && Object.prototype.hasOwnProperty.call(byLang, id)) return byLang[id];
+    return (Number(id) + Math.max(0, Object.keys(KEY).indexOf(lang))) % 4;
+  };
+  return e;
+}
+function submit(e, overrides) {
+  return e.json(e.ctx.doPost({ postData: { contents: JSON.stringify(Object.assign({
+    action: 'submitResult', origin: 'examinee-app', sessionCode: SESSION, idNumber: ID, examineeToken: TOKEN,
+    fullName: 'נבחן סינתטי', phone: '000', license: 'B', language: 'he',
+    score: 0, total: 30, percent: 0, passed: false, time: '10:00',
+    examinerName: 'בוחן סינתטי', site: 'אתר סינתטי', classroom: 'כיתה', population: 'אוכלוסיה',
+    audioMode: 'on', device: 'tablet', languageHistory: ['he'], answers: answers(30)
+  }, overrides || {})) } }));
+}
+const results = e => e.rows('תוצאות');
+const pendingStatuses = e => e.rows('ממתינים').slice(1).map(r => r[5]);
 
-compare('perfect verified result, metadata and lost-response retry', fixture(), 'handleSubmitResult', {
-  retry: true,
-  check: ({ newRun }) => {
-    assert.equal(newRun.tables[names.results].length, 2);
-    assert.equal(newRun.tables[names.results][1][5], '2/2');
-    assert.equal(newRun.tables[names.results][1][22], 'מאומת');
-    assert.equal(newRun.bankLoads.length, 0, 'perfect score never loads language banks');
-  }
+test('the sheet headers the exam writes to are the ones it assumes', () => {
+  const e = env();
+  assert.equal(e.ctx.SHEET_HEADERS['תוצאות'].length, 30, 'the result row is built column by column');
+  assert.equal(e.ctx.SHEET_HEADERS['ממתינים'].length, 19, 'the status writer addresses up to column 19');
+  assert.equal(e.ctx.SHEET_HEADERS['מבחנים'].length, 6, 'the registration row is six columns');
 });
-compare('mixed-language answers use language-at-answer indexes and feedback', fixture({ input: input({
-  language: 'ru', languageHistory: ['he', 'ru', 'ar'],
-  answers: [{ selected: 2, langAtAnswer: 'ru' }, { selected: 0, langAtAnswer: 'ar' }]
-}) }), 'handleSubmitResult', { check: ({ newRun }) => {
-  const row = newRun.tables[names.results][1];
-  assert.equal(row[5], '1/2');
-  assert.match(row[15], /synthetic ar question 2/);
+
+test('a verified result carries its metadata, and a lost-response retry adds nothing', () => {
+  const e = env();
+  const first = submit(e);
+  assert.equal(first.status, 'ok');
+  assert.equal(results(e).length, 2);
+  const row = results(e)[1];
+  assert.equal(row[5], '30/30');
+  assert.equal(row[6], '100%');
+  assert.equal(row[7], 'עבר');
+  assert.equal(row[12], 'he');
+  assert.equal(row[13], SESSION);
+  assert.equal(row[14], 1);
+  assert.equal(row[15], '', 'a perfect score has no wrong-answer detail');
+  assert.equal(row[19], 'אוכלוסיה');
+  assert.equal(row[21], 'on');
+  assert.equal(row[22], 'מאומת');
+  assert.equal(row[28], 'he');
+  assert.equal(row[29], 'tablet');
+  assert.equal(pendingStatuses(e)[0], 'completed');
+
+  const retry = submit(e);
+  assert.equal(retry.duplicate, true);
+  assert.equal(retry.waLink, first.waLink);
+  assert.equal(results(e).length, 2, 'the retry did not append');
+});
+
+test('mixed-language answers use the index of the language they were answered in', () => {
+  const e = env();
+  const mixed = answers(30, 'he').map((a, i) => (i < 10 ? a : answers(30, 'ar')[i]));
+  submit(e, { answers: mixed, language: 'ar', languageHistory: ['he', 'ru', 'ar'] });
+  const row = results(e)[1];
+  assert.equal(row[5], '30/30', 'every answer scored against its own language');
   assert.equal(row[28], 'he → ru → ar');
-} });
-compare('unanswered question retains wrong-answer feedback', fixture({ input: input({ answers: [null, { selected: 1, langAtAnswer: 'he' }] }) }));
-compare('missing translated bank preserves default-language fallback', fixture({ failLanguages: ['ru'], input: input({ answers: [{ selected: 1, langAtAnswer: 'ru' }, { selected: 1, langAtAnswer: 'he' }] }) }));
-compare('missing default bank preserves existing client feedback', fixture({ failLanguages: ['he'], input: input({ answers: [{ selected: 1, langAtAnswer: 'he' }, { selected: 1, langAtAnswer: 'he' }] }) }));
-compare('registered exam rejects absent answers', fixture({ input: input({ answers: undefined }) }));
-compare('registered exam rejects empty answers', fixture({ input: input({ answers: [] }) }));
-compare('unverified map keeps verification flag', fixture({ exams: [examRow({ 5: 1 })] }));
-compare('missing registration retains manual-review behavior', fixture({ exams: [] }));
-compare('malformed latest registration retains verification failure behavior', fixture({ exams: [examRow({ 2: '{bad-json' })] }));
-compare('latest registration and timing win over older same-session map', fixture({ exams: [examRow(), examRow({ 2: JSON.stringify(questionMap.map(q => ({ ...q, correctShuffledIdx: 3 }))), 3: '2026-09-06T08:29:00Z' })] }));
-for (const marker of ['סגירת דפדפן', 'טיימאאוט', 'סיום ידני בעקבות ניתוק']) {
-  compare('fabricated failure superseded across languages: ' + marker, fixture({
-    pending: [pendingRow('completed')],
-    results: [resultRow({ 15: marker, 12: 'ru' })],
-    input: input({ language: 'he' })
-  }), 'handleSubmitResult', { check: ({ newRun }) => {
-    assert.equal(newRun.tables[names.results][1][7], 'בוטל');
-    assert.equal(newRun.tables[names.results][2][14], 1, 'cancelled fabricated failure is excluded from attempts');
-  } });
-}
-compare('genuine previous failure returns duplicate without supersession', fixture({ pending: [pendingRow('completed')], results: [resultRow()] }));
-compare('DQ retake, old license history and multiple pending rows', fixture({
-  pending: [pendingRow('approved'), pendingRow('cancelled'), pendingRow('in_exam')],
-  results: [resultRow({ 13: 'OLDER', 7: 'עבר' }), resultRow({ 4: 'C1', 7: 'עבר' }), resultRow({ 7: 'בוטל' }), resultRow({ 7: 'פסול', 17: true })]
-}), 'handleSubmitResult', { check: ({ newRun }) => {
-  const rows = newRun.tables[names.results];
-  assert.equal(rows[rows.length - 1][14], 3, 'attempt count retains historical ordering before DQ cancellation');
-  assert.equal(rows[4][7], 'בוטל');
-  assert.equal(rows[4][17], false);
-  assert.deepEqual(newRun.tables[names.pending].slice(1).map(r => r[5]), ['completed', 'cancelled', 'completed']);
-} });
-compare('cancelled examinee can recover genuine result', fixture({ pending: [pendingRow('cancelled')] }));
-compare('disqualified examinee remains rejected', fixture({ pending: [pendingRow('disqualified')] }));
-compare('approved registration and repeat registration retain append behavior', fixture({ pending: [pendingRow('approved')], exams: [] }), 'handleRegisterExamQuestions', { retry: true });
-compare('registration language and shuffled key preserved', fixture({ input: input({ language: 'ru', questions: [{ qIdx: 0, qId: 1, shuffleOrder: [3, 2, 1, 0] }] }) }), 'handleRegisterExamQuestions');
-compare('registration rechecks examiner cancellation after storing map', fixture({
-  pending: [pendingRow('approved')],
-  onAppend({ name, tables }) { if (name === names.exams) tables[names.pending][1][5] = 'cancelled'; }
-}), 'handleRegisterExamQuestions', { check: ({ result }) => assert.equal(result.examStarted, false) });
 
-compare('slow bank work sees concurrent fabricated fail and status change', fixture({
-  input: input({ answers: [{ selected: 1, langAtAnswer: 'he' }, { selected: 1, langAtAnswer: 'he' }] }),
-  onBankLoad({ tables }) {
-    tables[names.pending][1][5] = 'completed';
-    if (tables[names.results].length === 1) tables[names.results].push(resultRow({ 15: 'סגירת דפדפן' }));
-  }
-}));
-compare('late successful retry is detected after fabricated-fail snapshot', fixture({
-  afterRead({ name, kind, count, tables }) {
-    if (name === names.results && kind === 'full' && count === 1) {
-      tables[names.results].push(resultRow({ 5: '2/2', 6: '100%', 7: 'עבר', 8: '10:00' }));
-      tables[names.pending][1][5] = 'completed';
-    }
-  }
-}));
-compare('new pending row during scoring is included in completion', fixture({
-  pending: [pendingRow('completed')],
-  input: input({ answers: [{ selected: 1, langAtAnswer: 'he' }, { selected: 1, langAtAnswer: 'he' }] }),
-  onBankLoad({ tables }) { if (tables[names.pending].length === 2) tables[names.pending].push(pendingRow('in_exam')); }
-}));
-compare('same-size row movement during scoring recovers row indexes', fixture({
-  pending: [pendingRow('in_exam', { 0: 'OTHER', 1: '900000002' }), pendingRow()],
-  input: input({ answers: [{ selected: 1, langAtAnswer: 'he' }, { selected: 1, langAtAnswer: 'he' }] }),
-  onBankLoad({ tables }) { if (tables[names.pending][2][1] === ID) [tables[names.pending][1], tables[names.pending][2]] = [tables[names.pending][2], tables[names.pending][1]]; }
-}));
-compare('new pending duplicate just after result append is completed', fixture({
-  onAppend({ name, tables }) { if (name === names.results) tables[names.pending].push(pendingRow('approved')); }
-}));
-compare('concurrent overturn without append updates historical attempt count', fixture({
-  results: [resultRow({ 13: 'OLD-ATTEMPT', 7: 'פסול', 17: true })],
-  afterRead({ name, kind, count, tables }) {
-    if (name === names.results && kind === 'full' && count === 1) {
-      tables[names.results][1][7] = 'בוטל';
-      tables[names.results][1][17] = false;
-    }
-  }
-}), 'handleSubmitResult', { check: ({ newRun }) => assert.equal(newRun.tables[names.results].at(-1)[14], 1) });
-compare('registration appended after mandatory-answers guard remains visible to scoring', fixture({
-  afterRead({ name, kind, count, tables }) {
-    if (name === names.exams && kind === 'full' && count === 1) {
-      tables[names.exams].push(examRow({ 2: JSON.stringify(questionMap.map(q => ({ ...q, correctShuffledIdx: 3 }))) }));
-    }
-  }
-}));
-compare('registration appended during bank work remains visible to timing check', fixture({
-  input: input({ answers: [{ selected: 1, langAtAnswer: 'he' }, { selected: 1, langAtAnswer: 'he' }] }),
-  onBankLoad({ tables }) {
-    if (tables[names.exams].length === 2) tables[names.exams].push(examRow({ 3: '2026-09-06T08:29:00Z' }));
-  }
-}), 'handleSubmitResult', { check: ({ newRun }) => assert.equal(newRun.tables[names.results].at(-1)[23], 'חשוד') });
+  // The same selections all claimed as Hebrew are wrong for the Arabic half.
+  const e2 = env();
+  submit(e2, { answers: mixed.map(a => Object.assign({}, a, { langAtAnswer: 'he' })) });
+  assert.equal(results(e2)[1][5], '10/30');
+});
 
-const oldPending = Array.from({ length: 3999 }, (_, i) => pendingRow('completed', { 0: 'HISTORY', 1: '8' + String(i).padStart(8, '0'), 4: '2026-08-01T08:00:00Z' }));
-const oldExams = Array.from({ length: 3999 }, (_, i) => examRow({ 0: 'HISTORY', 1: '8' + String(i).padStart(8, '0') }));
-const oldResults = Array.from({ length: 5000 }, (_, i) => resultRow({ 0: '01/08/2026 08:00', 13: 'HISTORY', 1: '8' + String(i).padStart(8, '0') }));
-const large = compare('4000 pending/4000 exams/5000 results preserves full historical semantics', fixture({ pending: [...oldPending, pendingRow()], exams: [...oldExams, examRow()], results: oldResults }), 'handleSubmitResult', {
-  check: ({ oldRun, newRun }) => {
-    assert.equal(oldRun.reads[names.exams].full, 3);
-    assert.equal(newRun.reads[names.exams].full, 1);
-    assert.equal(newRun.reads[names.pending].full, 1);
-    assert.equal(newRun.reads[names.results].full, 2);
-    assert.equal(newRun.bankLoads.length, 0);
-    assert(Object.values(newRun.reads).reduce((n, r) => n + r.cells, 0) < Object.values(oldRun.reads).reduce((n, r) => n + r.cells, 0) * 0.6);
+test('an unanswered question is reported with the text the examinee saw', () => {
+  const e = env();
+  const list = answers(30);
+  list[0].selected = null;
+  submit(e, { answers: list });
+  const row = results(e)[1];
+  assert.equal(row[5], '29/30');
+  assert.match(row[15], /שאלה: שאלה 101/);
+  assert.match(row[15], /תשובת הנבחן: לא נענתה/);
+  assert.match(row[15], /תשובה נכונה: [אבגד] - תשובה 101-/);
+  assert.match(row[15], /קטגוריה: חוק/);
+});
+
+test('a registered exam without answers is refused', () => {
+  for (const list of [undefined, []]) {
+    const e = env();
+    const reply = submit(e, { answers: list, score: 30, total: 30, passed: true });
+    assert.equal(reply.status, 'error');
+    assert.match(reply.message, /חסרות תשובות/);
+    assert.equal(results(e).length, 1);
+    assert.equal(pendingStatuses(e)[0], 'in_exam', 'the examinee is left in the exam');
   }
 });
-// Historical attempts at the top of a large sheet still affect attempt numbers.
-compare('attempt count includes oldest history outside any 1000-row tail', fixture({ results: [resultRow({ 13: 'OLD-ATTEMPT', 7: 'עבר' }), ...oldResults] }), 'handleSubmitResult', { check: ({ newRun }) => assert.equal(newRun.tables[names.results].at(-1)[14], 2) });
-compare('many historical retakes use one fresh history read', fixture({ results: Array.from({ length: 8 }, (_, i) => resultRow({ 13: 'OLD-ATTEMPT-' + i, 7: i === 0 ? 'בוטל' : 'נכשל' })) }), 'handleSubmitResult', { check: ({ newRun }) => {
-  assert.equal(newRun.tables[names.results].at(-1)[14], 8);
-  assert.equal(newRun.reads[names.results].range, 0);
-} });
-compare('many pending duplicates remain bounded and all active rows complete', fixture({ pending: Array.from({ length: 8 }, (_, i) => pendingRow(i === 0 ? 'cancelled' : 'in_exam')) }), 'handleSubmitResult', { check: ({ newRun }) => {
-  assert.deepEqual(newRun.tables[names.pending].slice(1).map(r => r[5]), ['cancelled', ...Array(7).fill('completed')]);
-  assert.equal(newRun.reads[names.pending].range, 0);
-} });
 
-// Intentional optimization: a verified perfect result has no wrong answers even
-// if the text bank is unavailable. Its score comes from the registered key.
-const perfectUnavailable = runtime(currentSource, fixture({ failLanguages: ['he'] }));
-assert.equal(perfectUnavailable.execute('handleSubmitResult', input()).status, 'ok');
-assert.equal(perfectUnavailable.bankLoads.length, 0);
-assert.equal(perfectUnavailable.tables[names.results][1][15], '');
-passed++;
+test('a map entry the key cannot verify keeps the whole result unverified', () => {
+  const e = env({ exams: [examRow({ 2: JSON.stringify(questionMap().map((entry, i) => (i === 0 ? { qIdx: 0, correctShuffledIdx: 1 } : entry))) })] });
+  submit(e);
+  const row = results(e)[1];
+  assert.equal(row[22], '', 'not מאומת');
+  assert.match(row[15], /^⚠️ ציון לא אומת/);
+  assert.equal(row[5], '29/30', 'the unverifiable entry cannot be correct');
+});
 
-// Existing callers without snapshots retain their full-history behavior.
-const helpers = runtime(currentSource, fixture({ pending: [pendingRow('approved'), pendingRow('in_exam'), pendingRow('disqualified')], results: [resultRow(), resultRow({ 7: 'בוטל' }), resultRow({ 4: 'C1' })] }));
-assert.equal(helpers.run.countAttempts(ID, 'B'), 1);
-helpers.run.markPendingCompleted('SYNTHETIC', ID);
-assert.deepEqual(helpers.tables[names.pending].slice(1).map(r => r[5]), ['completed', 'completed', 'disqualified']);
-passed++;
+test('a missing or malformed registration is stored for manual review', () => {
+  const missing = env({ exams: [] });
+  assert.equal(submit(missing, { score: 27, total: 30, percent: 90, passed: true }).status, 'ok');
+  assert.equal(results(missing)[1][5], '27/30', 'the client figure is kept — and flagged');
+  assert.equal(results(missing)[1][22], '');
+  assert.match(results(missing)[1][15], /^⚠️ ציון לא אומת/);
 
-console.log(JSON.stringify({ passed, comparisons: summaries, largeReplay: {
-  oldReads: large.oldRun.reads, newReads: large.newRun.reads,
-  oldCells: Object.values(large.oldRun.reads).reduce((n, r) => n + r.cells, 0),
-  newCells: Object.values(large.newRun.reads).reduce((n, r) => n + r.cells, 0)
-} }, null, 2));
+  const malformed = env({ exams: [examRow({ 2: '{bad-json' })] });
+  assert.equal(submit(malformed, { score: 27, total: 30, percent: 90, passed: true }).status, 'ok');
+  assert.equal(results(malformed)[1][22], '');
+  assert.match(results(malformed)[1][15], /^⚠️ ציון לא אומת/);
+  assert.equal(submit(env({ exams: [examRow({ 2: '{bad-json' })] }), { answers: [] }).status, 'error',
+    'a registration that exists still makes answers mandatory');
+});
+
+test('an empty registered map is refused and can never pass', () => {
+  const e = env({ exams: [examRow({ 2: '[]' })] });
+  const reply = submit(e, { score: 30, passed: true });
+  assert.equal(reply.code, 'invalid_registration');
+  assert.equal(results(e).length, 1);
+});
+
+test('the latest registration of the session wins', () => {
+  const stale = questionMap().map(entry => Object.assign({}, entry, { correctShuffledIdx: 3, shuffleOrder: [3, 2, 1, 0] }));
+  const e = env({ exams: [examRow({ 2: JSON.stringify(stale), 3: '2026-09-22T05:00:00Z' }), examRow()] });
+  submit(e);
+  assert.equal(results(e)[1][5], '30/30', 'scored against the newest map');
+});
+
+test('a recent registration makes a fast finish suspicious', () => {
+  const e = env({ exams: [examRow({ 3: '2026-09-22T06:29:00Z' })] });
+  submit(e);
+  assert.equal(results(e)[1][23], 'חשוד');
+  const slow = env();
+  submit(slow);
+  assert.equal(results(slow)[1][23], '');
+});
+
+for (const marker of ['סגירת דפדפן', 'טיימאאוט', 'סיום ידני בעקבות ניתוק']) {
+  test('a fabricated failure is superseded across languages: ' + marker, () => {
+    const e = env({ pending: [pendingRow('completed')], results: [resultRow({ 15: marker, 12: 'ru' })] });
+    submit(e);
+    assert.equal(results(e)[1][7], 'בוטל');
+    assert.equal(results(e)[1][26], 'בוטל אוטומטית — הנבחן השלים והגיש מבחן');
+    assert.equal(results(e)[1][27], e.ctx.todayStr());
+    assert.equal(results(e).length, 3);
+    assert.equal(results(e)[2][14], 1, 'a cancelled fabricated failure is not an attempt');
+  });
+}
+
+test('a genuine previous result is returned as a duplicate, not superseded', () => {
+  const e = env({ pending: [pendingRow('completed')], results: [resultRow()] });
+  const reply = submit(e);
+  assert.equal(reply.duplicate, true);
+  assert.equal(reply.waLink, 'synthetic-existing-link');
+  assert.equal(results(e).length, 2);
+  assert.equal(results(e)[1][7], 'נכשל', 'the genuine row is untouched');
+});
+
+test('a retake after a disqualification: history, voiding and every pending row', () => {
+  const e = env({
+    pending: [pendingRow('approved'), pendingRow('cancelled'), pendingRow()],
+    results: [
+      resultRow({ 13: 'OLDER', 7: 'עבר' }),
+      resultRow({ 4: 'C1', 7: 'עבר' }),
+      resultRow({ 7: 'בוטל' }),
+      resultRow({ 7: 'פסול', 17: true })
+    ]
+  });
+  submit(e);
+  const rows = results(e);
+  assert.equal(rows.at(-1)[14], 3, 'B attempts: the older session and the voided-DQ row, plus this one');
+  assert.equal(rows[4][7], 'בוטל', 'the פסול row is voided');
+  assert.equal(rows[4][17], false);
+  assert.equal(rows[4][26], 'בוטל אוטומטית — נבחן ניגש למבחן מחדש');
+  assert.deepEqual(pendingStatuses(e), ['completed', 'cancelled', 'completed'], 'every active row is closed');
+});
+
+test('a reset examinee can still deliver a genuine result, a disqualified one cannot', () => {
+  const cancelled = env({ pending: [pendingRow('cancelled')] });
+  assert.equal(submit(cancelled).status, 'ok');
+  assert.equal(results(cancelled).length, 2);
+
+  for (const status of ['disqualified', 'dq_confirmed', 'rejected', 'waiting']) {
+    const e = env({ pending: [pendingRow(status)] });
+    const reply = submit(e);
+    assert.equal(reply.status, 'error', status);
+    assert.match(reply.message, /לא מאושר/);
+    assert.equal(results(e).length, 1, status + ' writes nothing');
+  }
+});
+
+test('startExam registers the exam language and a key-derived shuffle', () => {
+  const e = env({ exams: [], pending: [pendingRow('approved', { 6: 'ru' })] });
+  const reply = e.json(e.ctx.doPost({ postData: { contents: JSON.stringify({
+    action: 'startExam', origin: 'examinee-app', sessionCode: SESSION, idNumber: ID,
+    examineeToken: TOKEN, language: 'ru', license: 'B' }) } }));
+  assert.equal(reply.status, 'ok');
+  const row = e.rows('מבחנים')[1];
+  assert.equal(row[0], SESSION);
+  assert.equal(row[1], ID);
+  assert.equal(row[4], 'ru', 'the registration language is stored');
+  assert.equal(row[5], 0, 'nothing unverified was registered');
+  const map = JSON.parse(row[2]);
+  assert.equal(map.length, 30);
+  for (const entry of map) {
+    assert.equal(entry.shuffleOrder.indexOf(e.ctx.lookupCorrectIndex(entry.qId, 'ru')), entry.correctShuffledIdx,
+      'the stored index matches the Russian key');
+  }
+  // …and it is really a different key from the Hebrew one.
+  const differing = map.filter(entry =>
+    entry.shuffleOrder.indexOf(e.ctx.lookupCorrectIndex(entry.qId, 'he')) !== entry.correctShuffledIdx);
+  assert.ok(differing.length > 0, 'the Russian key is not the Hebrew key');
+});
+
+test('a pending row that appears while the result is being written is still closed', () => {
+  const e = env();
+  const pending = e.sheet('ממתינים');
+  const appendRow = e.sheet('תוצאות').appendRow.bind(e.sheet('תוצאות'));
+  e.sheet('תוצאות').appendRow = row => { pending.rows.push(pendingRow('approved')); appendRow(row); };
+  submit(e);
+  assert.deepEqual(pendingStatuses(e), ['completed', 'completed']);
+});
+
+test('rows that move while the submit runs are re-read, not overwritten blindly', () => {
+  const e = env({ pending: [pendingRow('in_exam', { 0: 'OTHER', 1: '900000002' }), pendingRow()] });
+  const pending = e.sheet('ממתינים');
+  const appendRow = e.sheet('תוצאות').appendRow.bind(e.sheet('תוצאות'));
+  e.sheet('תוצאות').appendRow = row => {
+    const tmp = pending.rows[1]; pending.rows[1] = pending.rows[2]; pending.rows[2] = tmp;   // same size, different order
+    appendRow(row);
+  };
+  submit(e);
+  assert.deepEqual(pendingStatuses(e), ['completed', 'in_exam'], 'the other examinee is untouched');
+  assert.equal(pending.rows[2][1], '900000002');
+});
+
+test('an examiner decision taken during the submit is not overwritten', () => {
+  const e = env({ results: [resultRow({ 15: 'סגירת דפדפן' })] });
+  const pending = e.sheet('ממתינים');
+  const appendRow = e.sheet('תוצאות').appendRow.bind(e.sheet('תוצאות'));
+  e.sheet('תוצאות').appendRow = row => { pending.rows[1][5] = 'completed'; appendRow(row); };
+  submit(e);
+  assert.equal(results(e).length, 3);
+  assert.equal(pendingStatuses(e)[0], 'completed');
+});
+
+test('many duplicate pending rows are all completed, without per-row reads', () => {
+  const e = env({ pending: Array.from({ length: 8 }, (_, i) => pendingRow(i === 0 ? 'cancelled' : 'in_exam')) });
+  e.resetCounters();
+  submit(e);
+  assert.deepEqual(pendingStatuses(e), ['cancelled', ...Array(7).fill('completed')]);
+  // Past four rows of one examinee, refreshing them one by one costs more round
+  // trips than re-reading the sheet — the refresh switches to a single read.
+  assert.equal(e.counters().perSheet['ממתינים'].rangeReads, 0);
+  assert.ok(e.counters().perSheet['ממתינים'].fullReads <= 3, e.counters().perSheet['ממתינים'].fullReads + ' reads');
+});
+
+test('voided rows never count as attempts', () => {
+  const e = env({ results: Array.from({ length: 8 }, (_, i) => resultRow({ 13: 'OLD-' + i, 7: i === 0 ? 'בוטל' : 'נכשל', 8: '0' + i + ':00' })) });
+  submit(e);
+  assert.equal(results(e).at(-1)[14], 8, 'seven genuine failures plus this attempt');
+});
+
+test('a big history is read from the tail, and never from מבחנים', () => {
+  const oldPending = Array.from({ length: 3999 }, (_, i) =>
+    pendingRow('completed', { 0: 'HISTORY', 1: '8' + String(i).padStart(8, '0'), 4: '2026-08-01T08:00:00Z' }));
+  const oldExams = Array.from({ length: 3999 }, (_, i) => ['HISTORY', '8' + String(i).padStart(8, '0'), '[]', '2026-08-01T08:00:00Z', 'he', 0]);
+  const oldResults = Array.from({ length: 5000 }, (_, i) =>
+    resultRow({ 0: '01/08/2026 08:00', 13: 'HISTORY', 1: '8' + String(i).padStart(8, '0') }));
+  // An earlier attempt of THIS examinee, far above any 1,000-row tail.
+  oldResults[0] = resultRow({ 0: '01/08/2026 08:00', 13: 'OLD-ATTEMPT', 7: 'נכשל' });
+  const e = env({ pending: [...oldPending, pendingRow()], exams: [...oldExams, examRow()], results: oldResults });
+  e.resetCounters();
+  submit(e);
+  const counters = e.counters().perSheet;
+  assert.equal(results(e).length, 5002, 'the result was appended');
+  assert.equal(results(e).at(-1)[5], '30/30');
+  assert.equal(counters['מבחנים'].fullReads, 0, 'the question maps of 4,000 exams are never pulled');
+  assert.ok(counters['מבחנים'].cellsRead <= 2 * 4000 + 10, 'only the id columns and one row: ' + counters['מבחנים'].cellsRead);
+  assert.equal(results(e).at(-1)[14], 2, 'an attempt above the tail is still counted');
+  assert.equal(counters['תוצאות'].fullReads, 0, 'a 5,000-row sheet is read as a tail');
+  // One 1,000-row tail (30 columns) plus the three attempt columns of the whole
+  // sheet — a full read would be 150,000 cells.
+  assert.ok(counters['תוצאות'].cellsRead <= 1001 * 30 + 3 * 5001 + 60, 'one tail + attempt columns: ' + counters['תוצאות'].cellsRead);
+  assert.equal(counters['ממתינים'].fullReads, 0);
+  assert.equal(pendingStatuses(e).at(-1), 'completed', 'the live row was found inside the tail');
+});

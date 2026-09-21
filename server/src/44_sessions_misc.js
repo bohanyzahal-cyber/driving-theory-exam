@@ -123,6 +123,40 @@ function decodeSessionQuotas(colL, colM, sessionLicense) {
   return [];
 }
 
+// Address of the polling Worker (DESIGN §3.4). Empty = examinees poll this
+// script directly; setting/clearing the ScriptProperty switches the whole fleet
+// within one getSessionInfo, without a Pages deploy.
+function gatewayUrl() {
+  try { return String(PropertiesService.getScriptProperties().getProperty('GATEWAY_URL') || '').trim(); }
+  catch (e) { return ''; }
+}
+
+// ---- One 'סשנים' read per execution ----------------------------------------
+// addExamTime and disqualify each read the whole sheet twice — once for the
+// ownership check, once for the session's examiner name (review C R12). The
+// memo lives for one request, which is far shorter than any state it caches.
+var _sessionRowsMemo = null;
+function sessionRows() {
+  if (!_sessionRowsMemo) _sessionRowsMemo = getSheet('סשנים').getDataRange().getValues();
+  return _sessionRowsMemo;
+}
+function sessionRowByCode(sessionCode) {
+  var rows = sessionRows(), want = String(sessionCode || '').trim();
+  for (var i = 1; i < rows.length; i++) {
+    if (String(rows[i][0]).trim() === want) return rows[i];
+  }
+  return null;
+}
+// Same rule as verifyExaminerForSession (20_auth.js): the session's own
+// examiner, and nothing when the session does not exist. Served from the memo
+// so the caller's later lookups are free. ⚠ The two must stay in step until the
+// auth module is rewritten to take a row.
+function examinerOwnsSession(sessionCode, examinerId) {
+  if (!examinerId) return false;
+  var row = sessionRowByCode(sessionCode);
+  return !!row && normalizeId(row[1]) === normalizeId(examinerId);
+}
+
 function handleUpdateSession(p) {
   var sheet = getSheet('סשנים');
   var data = sheet.getDataRange().getValues();
@@ -175,8 +209,9 @@ function cleanupStuckDisqualified(sessionCode) {
   }
   if (stuck.length === 0) return { cancelled: 0, completed: 0, skipped: 0 };
 
-  var resSheet = getSheet('תוצאות');
-  var resData = resSheet.getDataRange().getValues();
+  // A session closes at the end of its day; results older than the retention
+  // window cannot belong to it, so the tail is enough.
+  var resData = readResultsTail().rows;
   var latestByExaminee = {};
   for (var r = 1; r < resData.length; r++) {
     if (String(resData[r][13]) !== String(sessionCode)) continue;
@@ -188,22 +223,21 @@ function cleanupStuckDisqualified(sessionCode) {
   for (var k = 0; k < stuck.length; k++) {
     var latest = latestByExaminee[stuck[k].idKey];
     if (!latest) {
-      pendSheet.getRange(stuck[k].rowIdx + 1, 6).setValue('cancelled');
+      setPendingStatus(pendSheet, stuck[k].rowIdx + 1, sessionCode, 'cancelled');
       cancelled++;
     } else if (latest === 'בוטל') {
-      pendSheet.getRange(stuck[k].rowIdx + 1, 6).setValue('completed');
+      setPendingStatus(pendSheet, stuck[k].rowIdx + 1, sessionCode, 'completed');
       completed++;
     } else {
       skipped++;
     }
   }
-  if (cancelled || completed) SpreadsheetApp.flush();
   return { cancelled: cancelled, completed: completed, skipped: skipped };
 }
 
 function handleGetSessionInfo(p) {
   var sheet = getSheet('סשנים');
-  var data = sheet.getDataRange().getValues();
+  var data = sessionRows();
   var searchCode = String(p.sessionCode).trim();
   for (var i = 1; i < data.length; i++) {
     var rowCode = String(data[i][0]).trim();
@@ -232,6 +266,12 @@ function handleGetSessionInfo(p) {
       return jsonResponse({
         status: 'ok',
         session: {
+          // The client checks `build` to notice an old server behind a new page,
+          // and reads `gateway.url` to decide where the examinee polls. An empty
+          // url (ScriptProperty GATEWAY_URL unset) means "poll me directly" —
+          // that is the kill switch for the Worker, with no Pages push.
+          build: THEORY_API_BUILD,
+          gateway: { url: gatewayUrl() },
           site: data[i][3],
           sites: _sites,
           classroom: data[i][4],
