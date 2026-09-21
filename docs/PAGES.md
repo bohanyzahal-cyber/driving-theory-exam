@@ -50,7 +50,7 @@
 
 ### פעולות ב-API
 
-`getSessionInfo` (מחזיר גם `build` ו-`gateway.url`) · `registerExaminee` · `cancelRegistration` · `checkApproval` (פולינג **דרך ה-session-gateway** בבקשה שנשארת פתוחה עד 25 שניות ונענית ברגע שההחלטה נכנסת — DESIGN §12; בלי החזקה 2–3 שניות; ישיר 8; נפילה לישיר רק כשה-Worker עצמו לא עונה) · `startExam` (POST — בחירת 30 מזהים + סדר תשובות + **אישור חתום לבנק** + רישום ב"מבחנים", אידמפוטנטי) · `getExamStatus` (דרך ה-gateway בקשה פתוחה עד 25 שניות; בלי החזקה 6; ישיר 12) · `markFinished` · `submitResult` (POST — התשובות עם הטקסטים שהוצגו) · `disqualify` / `cancelDisqualify` / `reportWarning` · `submitFailOnClose` / `cancelFailOnClose`. הטקסטים: `shared/bank.js` מושך מיד אחרי `startExam` את 30 השאלות בכל 7 השפות מה-Worker (`/v1/bank?grant=…`); החלפת שפה מקומית; רענון באמצע מבחן מושך שוב עם אותו אישור.
+`getSessionInfo` (מחזיר גם `build` ו-`gateway.url`) · `registerExaminee` · `cancelRegistration` · `checkApproval` (פולינג **דרך ה-session-gateway** בבקשה שנשארת פתוחה עד 25 שניות ונענית ברגע שההחלטה נכנסת — DESIGN §12; בלי החזקה 2–3 שניות; אין נפילה לסקר ישיר — ה-Worker הוא המסלול היחיד) · `startExam` (POST — בחירת 30 מזהים + סדר תשובות + **אישור חתום לבנק** + רישום ב"מבחנים", אידמפוטנטי) · `getExamStatus` (דרך ה-gateway בקשה פתוחה עד 25 שניות; בלי החזקה 6) · `markFinished` · `submitResult` (POST — התשובות עם הטקסטים שהוצגו) · `disqualify` / `cancelDisqualify` / `reportWarning` · `submitFailOnClose` / `cancelFailOnClose`. הטקסטים: `shared/bank.js` מושך מיד אחרי `startExam` את 30 השאלות בכל 7 השפות מה-Worker (`/v1/bank?grant=…`); החלפת שפה מקומית; רענון באמצע מבחן מושך שוב עם אותו אישור.
 
 ### שמור מקומי
 

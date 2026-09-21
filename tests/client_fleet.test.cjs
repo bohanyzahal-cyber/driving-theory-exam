@@ -97,9 +97,12 @@ async function simulate({ clients, latency, minutes = 10, deadlineMs = 60000 }) 
   };
 }
 
-const APPROVAL_DIRECT = { baseMs: 8000, maxMs: 20000 };     // the constants examinee.html ships
+// The DIRECT pair is history: examinee.html has no route to Apps Script any
+// more. They are kept as the slow-fleet baseline the 18/09 review measured, and
+// as the model for any page that still polls the backend itself.
+const APPROVAL_DIRECT = { baseMs: 8000, maxMs: 20000 };
 const STATUS_DIRECT = { baseMs: 12000, maxMs: 20000 };
-const APPROVAL_GATEWAY = { baseMs: 3000, maxMs: 20000 };    // 2 s for the first two minutes, then this
+const APPROVAL_GATEWAY = { baseMs: 3000, maxMs: 20000 };    // what examinee.html ships (2 s for the first two minutes)
 const STATUS_GATEWAY = { baseMs: 6000, maxMs: 20000 };
 
 test('fleet: a healthy morning — 38 polling pages, one live request each at most', async () => {
@@ -109,10 +112,60 @@ test('fleet: a healthy morning — 38 polling pages, one live request each at mo
   ] });
   assert.ok(fleet.alivePerClient < 1, 'answer → wait → ask again: never two at once from one device (' + fleet.alivePerClient.toFixed(2) + ')');
   assert.ok(fleet.aliveAverage < 10, 'the ~30 execution slots are nowhere near full: ' + fleet.aliveAverage.toFixed(1));
-  // the review measured 254 req/min for the same 38 clients on the OLD 5 s/10 s
-  // constants; the shipped direct intervals must be below that.
-  assert.ok(fleet.requestsPerMinute < 254, 'direct polling is cheaper than it was: ' + fleet.requestsPerMinute.toFixed(0) + '/min');
-  assert.ok(fleet.requestsPerMinute > 150, 'and still answers within seconds: ' + fleet.requestsPerMinute.toFixed(0) + '/min');
+});
+
+test('fleet: a two-minute Worker outage costs Apps Script nothing, and the room resumes by itself', async () => {
+  // The Worker is the ONLY route the examinee page has. An outage is answered by
+  // the poll loop's own ladder — never by forty devices turning to Apps Script,
+  // which is the storm the gateway exists to prevent and is worst exactly when
+  // something is already broken.
+  const clock = new Clock();
+  const gateway = [], appsScript = [];
+  const live = new Map();
+  let maxLive = 0, down = false;
+  const transport = loadTransport(clock, url => {
+    const who = new URL(url).searchParams.get('id');
+    (String(url).indexOf('/v1/poll') !== -1 ? gateway : appsScript).push(clock.now);
+    live.set(who, (live.get(who) || 0) + 1);
+    maxLive = Math.max(maxLive, live.get(who));
+    return new Promise(resolve => clock.set(() => {
+      live.set(who, live.get(who) - 1);
+      resolve(down ? { ok: false, status: 502, text: () => Promise.resolve('bad gateway') }
+                   : { ok: true, status: 200, text: () => Promise.resolve('{"status":"ok","approval":"waiting"}') });
+    }, 300));
+  });
+  const loops = [];
+  for (let i = 0; i < 40; i++) {
+    loops.push(transport.createPollLoop(Object.assign({ name: 'e' + i,
+      // fetchJsonQuiet, as the page does: a Worker failure is not a backend failure,
+      // so the ladder tops out at maxMs and never at the 30-60 s degraded floor.
+      tick: () => transport.fetchJsonQuiet('https://gw.test/v1/poll?kind=approval&id=' + i, { cache: 'no-store' }, transport.LONGPOLL_TIMEOUT_MS)
+    }, APPROVAL_GATEWAY)));
+  }
+  loops.forEach((loop, i) => clock.set(() => loop.start(), (i * 100) % 3000));
+  await clock.advance(120000);                    // two healthy minutes, for the baseline
+  const healthy = gateway.length;
+
+  down = true;
+  const outageStart = gateway.length;
+  await clock.advance(120000);                    // and two minutes with the Worker down
+  const during = gateway.length - outageStart;
+  assert.equal(appsScript.length, 0, 'forty examinees, and Apps Script heard nothing');
+  assert.ok(during < healthy / 3, 'the room slowed DOWN instead of retrying harder: ' + during + ' vs ' + healthy);
+  assert.equal(maxLive, 1, 'and each device still holds exactly one request at a time');
+  for (const loop of loops) {
+    assert.ok(loop.currentDelayMs() >= APPROVAL_GATEWAY.baseMs, 'never faster than base: ' + loop.currentDelayMs());
+    assert.ok(loop.currentDelayMs() <= (APPROVAL_GATEWAY.maxMs || 20000), 'and bounded by the ladder (maxMs, never the degraded floor): ' + loop.currentDelayMs());
+  }
+
+  down = false;                                   // the Worker comes back
+  await clock.advance(400000);
+  const resumed = gateway.length;
+  await clock.advance(60000);
+  assert.ok(gateway.length - resumed > 40 * 60 / 5, 'every device is polling again: ' + (gateway.length - resumed) + ' in a minute');
+  for (const loop of loops) assert.equal(loop.currentDelayMs(), APPROVAL_GATEWAY.baseMs, 'back at the base cadence, with no restart');
+  assert.equal(appsScript.length, 0);
+  loops.forEach(loop => loop.stop());
 });
 
 test('fleet: the old 5 s/10 s constants reproduce the review\'s 254 req/min, so the model is the same one', async () => {

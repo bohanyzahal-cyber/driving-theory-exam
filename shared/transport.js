@@ -18,8 +18,6 @@
 //      on the wire, so the next request goes out at once.
 //   5. createApi — GET/POST helpers with an always-forwarded timeout and a page
 //      supplied decorator that attaches credentials.
-//   6. createFailover — route a call to a primary endpoint (the session gateway)
-//      and fall back to the direct endpoint only when the primary ITSELF fails.
 //   7. createUpdateCheck — version.json based (per-page content hash), never an
 //      ETag: a Pages push that did not change this page shows nothing, and a
 //      proxy that rewrites headers cannot fake a new version.
@@ -239,28 +237,6 @@
     };
   }
 
-  // ---------- 6. failover ----------
-  // primary(args) and fallback(args) return promises. Only failures of the primary
-  // ENDPOINT (timeout / network / http 5xx / non-JSON) count towards falling back;
-  // a JSON answer from the primary — even {status:'error', code:'upstream_unavailable'}
-  // — is an answer, because the primary exists precisely to shield the backend.
-  function createFailover(opts) {
-    var failures = 0, fallbackUntil = 0;
-    var threshold = opts.failuresBeforeFallback || 3, fallbackMs = opts.fallbackMs || 300000;
-    return {
-      call: function (args) {
-        if (!opts.primary || Date.now() < fallbackUntil) return opts.fallback(args);
-        return opts.primary(args).then(function (data) { failures = 0; return data; }, function (err) {
-          failures++;
-          if (failures >= threshold) { fallbackUntil = Date.now() + fallbackMs; failures = 0; }
-          return opts.fallback(args);
-        });
-      },
-      usingFallback: function () { return Date.now() < fallbackUntil; },
-      reset: function () { failures = 0; fallbackUntil = 0; }
-    };
-  }
-
   // ---------- 7. update check ----------
   // opts: { page: 'examinee.html', versionUrl: 'version.json', intervalMs, onNewVersion(build) }
   // A change must be seen on two consecutive polls; anything that is not a 200 JSON
@@ -329,7 +305,6 @@
     pacePoll: pacePoll,
     createPollLoop: createPollLoop,
     createApi: createApi,
-    createFailover: createFailover,
     createUpdateCheck: createUpdateCheck,
     log: log,
     drainLog: drainLog,

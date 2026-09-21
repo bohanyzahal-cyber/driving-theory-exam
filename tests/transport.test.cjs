@@ -373,53 +373,6 @@ test('long poll: a page that knows nothing about holds sees exactly the old loop
   loop.stop();
 });
 
-// ===== 5. createFailover =====
-function failoverWith(primary, fallback) {
-  const { T, timer } = load();
-  return { T, timer, fo: T.createFailover({ primary, fallback, failuresBeforeFallback: 3, fallbackMs: 300000 }) };
-}
-
-test('failover: three gateway TRANSPORT failures hand the next five minutes to the direct call', async () => {
-  let primaryCalls = 0, fallbackCalls = 0, primaryFails = true;
-  const { timer, fo } = failoverWith(
-    () => { primaryCalls++; return primaryFails ? Promise.reject(Object.assign(new Error('gone'), { transport: 'http' })) : Promise.resolve({ status: 'ok', via: 'gateway' }); },
-    () => { fallbackCalls++; return Promise.resolve({ status: 'ok', via: 'direct' }); });
-  for (let i = 0; i < 3; i++) assert.equal((await fo.call()).via, 'direct');
-  assert.equal(primaryCalls, 3); assert.equal(fallbackCalls, 3);
-  assert.equal(fo.usingFallback(), true);
-  primaryFails = false;
-  assert.equal((await fo.call()).via, 'direct', 'still direct inside the five minutes');
-  assert.equal(primaryCalls, 3, 'the gateway is not probed while it is parked');
-  await timer.advance(300001);
-  assert.equal((await fo.call()).via, 'gateway', 'and is tried again afterwards');
-});
-
-test('failover: upstream_unavailable is an ANSWER, not a reason to storm Apps Script', async () => {
-  let primaryCalls = 0, fallbackCalls = 0;
-  const { fo } = failoverWith(
-    () => { primaryCalls++; return Promise.resolve({ status: 'error', code: 'upstream_unavailable', retryable: true }); },
-    () => { fallbackCalls++; return Promise.resolve({ status: 'ok', via: 'direct' }); });
-  for (let i = 0; i < 10; i++) {
-    const answer = await fo.call();
-    assert.equal(answer.code, 'upstream_unavailable');
-  }
-  assert.equal(fallbackCalls, 0, 'the gateway exists precisely to shield Google when it is busy');
-  assert.equal(fo.usingFallback(), false);
-  assert.equal(primaryCalls, 10);
-});
-
-test('failover: a good gateway answer resets the failure run', async () => {
-  let fail = true, fallbackCalls = 0;
-  const { fo } = failoverWith(
-    () => fail ? Promise.reject(Object.assign(new Error('x'), { transport: 'timeout' })) : Promise.resolve({ via: 'gateway' }),
-    () => { fallbackCalls++; return Promise.resolve({ via: 'direct' }); });
-  await fo.call(); await fo.call();            // two failures
-  fail = false; await fo.call();               // one success resets
-  fail = true; await fo.call(); await fo.call();
-  assert.equal(fo.usingFallback(), false, 'two + two is not three in a row');
-  assert.equal(fallbackCalls, 4);
-});
-
 // ===== 6. createUpdateCheck =====
 function updateCheckWith(answers) {
   const queue = answers.slice();

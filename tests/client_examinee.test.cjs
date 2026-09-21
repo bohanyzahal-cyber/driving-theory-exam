@@ -175,7 +175,10 @@ const SERVER_QUESTIONS = Array.from({ length: TOTAL }, (_, i) => ({
 const ISSUED_IDS = SERVER_QUESTIONS.map(q => q.id);
 
 // ---------- the whole page ----------
-function completePage({ local = memoryStore(), session = memoryStore(), reply, gateway = '', onReload, userAgent = 'Synthetic desktop', touchPoints = 0 } = {}) {
+// gateway: the Worker every session names. It is the page's ONLY poll route, so
+// a session without one is a misconfigured deployment — pass gateway: '' to test
+// exactly that, and nothing else.
+function completePage({ local = memoryStore(), session = memoryStore(), reply, gateway = 'https://gw.example/', onReload, userAgent = 'Synthetic desktop', touchPoints = 0 } = {}) {
   const ui = makeDom();
   const timer = new Timers();
   const requests = [], beacons = [];
@@ -216,6 +219,7 @@ function completePage({ local = memoryStore(), session = memoryStore(), reply, g
       const isPost = opts && opts.method === 'POST';
       const request = isPost ? JSON.parse(opts.body) : Object.fromEntries(new URL(url, 'https://synthetic.test/').searchParams);
       request.__url = String(url);
+      request.__at = timer.now;      // when it left the device, for cadence assertions
       const data = answer(request);
       if (data && data.__network) return Promise.reject(new TypeError('Failed to fetch'));
       if (data && data.__hang) return new Promise(() => {});
@@ -289,8 +293,9 @@ function defaultReply(request, gateway) {
       return { status: 'ok', build: 'r25', session: { site: 'בדיקת נתונים', license: 'B', language: 'he', audioMode: 'off',
         examinerName: 'בוחן', classroom: '1', sites: ['בדיקת נתונים'], gateway: { url: gateway } } };
     case 'registerExaminee': return { status: 'ok', examineeToken: 'tok-1' };
-    case 'checkApproval': return { status: 'ok', approval: 'approved', audioMode: 'off', examMinutes: 40 };
-    case 'getExamStatus': return { status: 'ok', examStatus: 'in_exam', extraMinutes: 0 };
+    // No checkApproval / getExamStatus: the page cannot reach Apps Script with
+    // either one any more. A request carrying them would be a regression, and
+    // the assertions below name it.
     case 'startExam': return { status: 'ok', build: 'r25', examMinutes: 40, extraMinutes: 0, audioMode: 'off',
       language: request.language, license: request.license, registeredAt: '', questions: SERVER_QUESTIONS,
       bank: EXAM_BANK };
@@ -333,8 +338,8 @@ test('start: ONE startExam call builds the 30 questions, in the server order, wi
   assert.equal(state.screen, 'screenExam');
   assert.equal(state.questions.length, TOTAL);
   const apiCalls = page.requests.filter(r => r.action).map(r => r.action);
-  assert.deepEqual(apiCalls.slice(0, 4), ['getSessionInfo', 'registerExaminee', 'checkApproval', 'startExam'],
-    'four calls take an examinee from the code screen into the exam');
+  assert.deepEqual(apiCalls.slice(0, 3), ['getSessionInfo', 'registerExaminee', 'startExam'],
+    'three Apps Script calls take an examinee from the code screen into the exam; the approval wait is the Worker\'s');
   assert.equal(page.sent('startExam').length, 1);
   assert.equal(page.sent('getExamQuestions').length, 0);
   assert.equal(page.sent('registerExamQuestions').length, 0);
@@ -716,22 +721,17 @@ test('D10: a disqualification costs ONE execution — the beacon, with the fetch
 });
 
 test('D14: an examinee whose row is already in_exam is told, not left polling forever', async () => {
-  const page = completePage({ reply: r => (r.action === 'checkApproval' || r.kind === 'approval')
+  const page = completePage({ reply: r => r.kind === 'approval'
     ? { status: 'ok', approval: 'in_exam', audioMode: 'off' } : undefined });
   await register(page);
   assert.match(page.el('rejectedMsg').textContent, /המבחן שלך כבר התחיל/);
-  const polls = page.sent('checkApproval').length;
+  const polls = pollsOf(page, 'approval').length;
   await page.timer.advance(120000);
-  assert.equal(page.sent('checkApproval').length, polls, 'the chain stopped');
+  assert.equal(pollsOf(page, 'approval').length, polls, 'the chain stopped');
 });
 
 test('D13: the timer-expiry extension check waits the full poll deadline', async () => {
-  let asked = 0;
-  const page = completePage({ reply(request) {
-    if (request.action !== 'getExamStatus') return undefined;
-    asked++;
-    return asked === 1 ? undefined : { __hang: true };
-  } });
+  const page = completePage();
   await register(page);
   await startExam(page);
   const src = examinee.replace(/\r/g, '');
@@ -746,8 +746,7 @@ test('D13: the timer-expiry extension check waits the full poll deadline', async
 
 test('extension: minutes granted mid-exam extend the deadline exactly once', async () => {
   let extra = 0;
-  const page = completePage({ reply: r => r.action === 'getExamStatus' || r.kind === 'status'
-    ? { status: 'ok', examStatus: 'in_exam', extraMinutes: extra } : undefined });
+  const page = completePage({ reply: r => r.kind === 'status' ? { status: 'ok', examStatus: 'in_exam', extraMinutes: extra } : undefined });
   await register(page);
   await startExam(page);
   const deadline = page.t.state().deadline;
@@ -760,8 +759,7 @@ test('extension: minutes granted mid-exam extend the deadline exactly once', asy
 
 test('DQ: an examiner-initiated disqualification reaches the examinee through the status poll', async () => {
   let status = 'in_exam';
-  const page = completePage({ reply: r => (r.action === 'getExamStatus' || r.kind === 'status')
-    ? { status: 'ok', examStatus: status, extraMinutes: 0 } : undefined });
+  const page = completePage({ reply: r => r.kind === 'status' ? { status: 'ok', examStatus: status, extraMinutes: 0 } : undefined });
   await register(page);
   await startExam(page);
   status = 'disqualified';
@@ -776,8 +774,8 @@ test('DQ: an overturned disqualification resumes the exam with its questions and
   // the overturn poll waits for 'in_exam' and does nothing until then.
   let approval = 'approved';
   const page = completePage({ reply(r) {
-    if (r.action === 'getExamStatus' || r.kind === 'status') return { status: 'ok', examStatus: 'disqualified', extraMinutes: 0 };
-    if (r.action === 'checkApproval' || r.kind === 'approval') return { status: 'ok', approval: approval, audioMode: 'off' };
+    if (r.kind === 'status') return { status: 'ok', examStatus: 'disqualified', extraMinutes: 0 };
+    if (r.kind === 'approval') return { status: 'ok', approval: approval, audioMode: 'off' };
     return undefined;
   } });
   await register(page);
@@ -801,8 +799,8 @@ test('DQ: an overturned disqualification resumes the exam with its questions and
 test('DQ: an overturn after a RELOAD resumes from the texts the suspended state kept, with no network', async () => {
   let approval = 'approved';
   const dqReply = r => {
-    if (r.action === 'getExamStatus' || r.kind === 'status') return { status: 'ok', examStatus: 'disqualified', extraMinutes: 0 };
-    if (r.action === 'checkApproval' || r.kind === 'approval') return { status: 'ok', approval: approval, audioMode: 'off' };
+    if (r.kind === 'status') return { status: 'ok', examStatus: 'disqualified', extraMinutes: 0 };
+    if (r.kind === 'approval') return { status: 'ok', approval: approval, audioMode: 'off' };
     return undefined;
   };
   const local = memoryStore(), session = memoryStore();
@@ -844,7 +842,24 @@ test('D15: the local copy is the only source tried first; the proxy and gov.il a
 });
 
 // ===================== 6. gateway =====================
-test('gateway: both polls go to the Worker when the session names one', async () => {
+test('gateway: a session with no Worker is a misconfiguration, said at the code screen', async () => {
+  // The server refuses to start an exam without GATEWAY_URL, and this page has
+  // no second route for its polls. Nobody should get as far as registering.
+  const page = completePage({ gateway: '' });
+  page.el('sessionCodeInput').value = 'ABC12345';
+  page.el('codeSubmitBtn').click();
+  await drain();
+  await page.timer.advance(120000);
+  assert.match(page.el('codeApiError').textContent, /המערכת אינה מוגדרת \(Worker\)/);
+  assert.equal(page.el('codeApiError').style.display, 'block');
+  assert.equal(page.t.state().screen, 'screenCode', 'the examinee stays where they are');
+  assert.equal(page.requests.filter(r => String(r.__url).includes('/v1/poll')).length, 0, 'nothing was polled');
+  assert.equal(page.sent('checkApproval').length, 0, 'and Apps Script was not asked to stand in');
+  assert.equal(page.sent('registerExaminee').length, 0);
+  assert.equal(page.el('codeSubmitBtn').disabled, false, 'the button is usable again once it is fixed');
+});
+
+test('gateway: both polls go to the Worker — it is the only route there is', async () => {
   const page = completePage({ gateway: 'https://gw.example/' });
   await register(page);
   await startExam(page);
@@ -901,16 +916,37 @@ test('gateway: upstream_unavailable slows the poll down but never sends the flee
   assert.ok(polls < 20, 'and the client backs off instead of hammering: ' + polls);
 });
 
-test('gateway: three transport failures of the Worker itself fall back to the direct call', async () => {
+test('gateway: a Worker outage is retried on the ladder — never answered by sending the room at Apps Script', async () => {
+  // Five consecutive real failures (a 502 the page can see, while it is on
+  // screen). There is nowhere else to go: the loop keeps asking the Worker, more
+  // and more slowly, and it never dies.
   let gatewayDown = true;
-  const page = completePage({ gateway: 'https://gw.example/',
+  const page = completePage({
     reply: r => (String(r.__url).includes('/v1/poll') && gatewayDown) ? { __status: 502, __raw: 'bad gateway' } : undefined });
   page.el('sessionCodeInput').value = 'ABC12345';
   page.el('codeSubmitBtn').click(); await drain();
   for (const [id, value] of [['idNumber', '123456789'], ['firstName', 'א'], ['lastName', 'ב'], ['phoneNumber', '0501234567']]) page.el(id).value = value;
   page.el('registerBtn').click(); await drain();
-  await page.timer.advance(60000);
-  assert.ok(page.sent('checkApproval').length >= 1, 'the examinee is not stranded by a broken Worker');
+
+  await page.timer.advance(300000);
+  const failed = pollsOf(page, 'approval');
+  assert.ok(failed.length >= 5, 'five failures and more: ' + failed.length);
+  assert.equal(page.sent('checkApproval').length, 0, 'not one of them went to Apps Script');
+  assert.equal(page.sent('getExamStatus').length, 0);
+  // growing delays, and a ceiling: the loop's own ladder ends at maxMs (20 s)
+  // and stays there — a Worker 502 never marks the BACKEND degraded (that would
+  // slow the submit path too). Five minutes of outage is a handful of requests
+  // per device, not a storm.
+  const gap = i => failed[i + 1].__at - failed[i].__at;
+  assert.ok(gap(failed.length - 2) > gap(0), 'the retries spread out: ' + gap(0) + ' ms then ' + gap(failed.length - 2) + ' ms');
+  assert.ok(gap(failed.length - 2) <= 20000, 'and stop growing at maxMs: ' + gap(failed.length - 2));
+  assert.ok(failed.length <= 20, 'a whole outage cost this device ' + failed.length + ' requests');
+  assert.match(page.el('approvalError').textContent, /\S/, 'the examinee is told that the line is down');
+
+  gatewayDown = false;                           // the Worker comes back
+  await page.timer.advance(120000);
+  assert.ok(pollsOf(page, 'approval').length > failed.length, 'the chain was still alive and picked it straight back up');
+  assert.equal(page.el('instructionsPhase').style.display, 'block', 'and the approval it had been waiting for lands');
 });
 
 // ===================== 6b. long polling =====================
@@ -975,38 +1011,32 @@ test('long poll: an approval that lands inside a held answer is applied exactly 
   assert.ok(pollsOf(page, 'approval').length < 10, 'a whole approval wait cost a handful of requests: ' + pollsOf(page, 'approval').length);
 });
 
-test('long poll: a fingerprint never crosses a route change, and the direct call carries neither', async () => {
+test('long poll: a dropped hold takes its fingerprint with it, so the next poll is answered at once', async () => {
   let gatewayDown = false;
   const page = completePage({ gateway: 'https://gw.example/', reply(r) {
-    if (r.action === 'checkApproval') return { status: 'ok', approval: 'waiting', audioMode: 'off' };
     if (!String(r.__url).includes('/v1/poll')) return undefined;
-    return gatewayDown ? { __status: 502, __raw: 'bad gateway' } : waitingAnswer('gw-1');
+    return gatewayDown ? { __network: true } : waitingAnswer('gw-1');
   } });
   await register(page);
   await page.timer.advance(6000);
   assert.ok(pollsOf(page, 'approval').pop().fp === 'gw-1', 'a fingerprint is established');
 
-  gatewayDown = true;                            // the Worker itself is broken, and the page is on screen
-  await page.timer.advance(60000);
-  const direct = page.sent('checkApproval');
-  assert.ok(direct.length >= 1, 'the examinee is not stranded');
-  assert.ok(direct.every(r => r.wait === undefined && r.fp === undefined), 'Apps Script knows nothing about holds');
-  const parked = pollsOf(page, 'approval').length;
-  await page.timer.advance(120000);
-  assert.equal(pollsOf(page, 'approval').length, parked, 'and the Worker is parked for five minutes');
-
+  page.setVisibility('hidden');                  // the phone locks and the held request dies
+  gatewayDown = true;
+  await page.timer.advance(30000);
+  page.setVisibility('visible');
   gatewayDown = false;
-  await page.timer.advance(240000);              // past the five minutes
-  const back = pollsOf(page, 'approval').slice(parked);
-  assert.ok(back.length >= 1, 'the gateway is tried again');
-  assert.equal(back[0].fp, undefined, 'with no fingerprint: the first poll back on the route is answered at once');
-  assert.equal(back[0].wait, '25');
+  await page.timer.advance(5000);
+  const back = pollsOf(page, 'approval').filter(r => r.__at > 36000);
+  assert.ok(back.length >= 1, 'the chain is still alive');
+  assert.equal(back[0].fp, undefined, 'and asks without a fingerprint, so the Worker answers immediately');
+  assert.equal(back[0].wait, '25', 'while still offering the next hold');
+  assert.equal(page.sent('checkApproval').length, 0, 'none of this involved Apps Script');
 });
 
 test('long poll: a held request killed by a screen lock is not a broken Worker', async () => {
   let mode = 'ok';
   const page = completePage({ gateway: 'https://gw.example/', reply(r) {
-    if (r.action === 'checkApproval') return { status: 'ok', approval: 'waiting', audioMode: 'off' };
     if (!String(r.__url).includes('/v1/poll')) return undefined;
     if (mode === 'network') return { __network: true };
     if (mode === 'http') return { __status: 502, __raw: 'bad gateway' };
@@ -1022,17 +1052,22 @@ test('long poll: a held request killed by a screen lock is not a broken Worker',
   assert.ok(whileHidden >= 3, 'the chain kept trying, backing off: ' + whileHidden);
   assert.ok(whileHidden < 40, 'and it did back off: ' + whileHidden);
 
+  // The difference a dropped hold makes is on the SCREEN, not in the routing:
+  // both go on asking the Worker, but only a failure the examinee could see is
+  // allowed to accuse the server.
+  assert.ok(!page.el('approvalError') || page.el('approvalError').style.display !== 'block',
+    'nothing was said while the phone was asleep');
   page.setVisibility('visible');
   await page.timer.advance(3000);                // past the 2 s wake grace
   mode = 'http';                                 // now the Worker really is answering 502, on screen
   await page.timer.advance(180000);
-  assert.ok(page.sent('checkApproval').length >= 1, 'a real failure the examinee can see still falls back');
+  assert.equal(page.sent('checkApproval').length, 0, 'and a real failure is still no reason to call Apps Script');
+  assert.equal(page.el('approvalError').style.display, 'block', 'it is a reason to tell the examinee');
 });
 
 test('long poll: three screen locks never raise a server error on the waiting screen', async () => {
   let mode = 'ok';
   const page = completePage({ gateway: 'https://gw.example/', reply(r) {
-    if (r.action === 'checkApproval') return { status: 'ok', approval: 'waiting', audioMode: 'off' };
     if (!String(r.__url).includes('/v1/poll')) return undefined;
     return mode === 'network' ? { __network: true } : waitingAnswer('gw-1');
   } });
@@ -1042,6 +1077,11 @@ test('long poll: three screen locks never raise a server error on the waiting sc
   await page.timer.advance(120000);
   const banner = page.el('approvalError');
   assert.ok(!banner || banner.style.display !== 'block', 'the examinee sees nothing: their phone was asleep');
+  // poll_interrupted, not a failure: the debug line says the wait was cut short
+  // and the chain simply asks again.
+  assert.match(page.el('approvalDebugResponse').textContent, /ההמתנה נקטעה/);
+  assert.ok(pollsOf(page, 'approval').length >= 3, 'while the chain kept asking the Worker');
+  assert.equal(page.sent('checkApproval').length, 0);
 });
 
 test('long poll: the DQ-overturn wait is held too, starting from the decision as it is now', async () => {
@@ -1070,7 +1110,7 @@ test('long poll: the DQ-overturn wait is held too, starting from the decision as
 test('D20: a state left by another examinee is never adopted silently', async () => {
   const local = memoryStore();
   local.setItem('ext_examinee_state_123456789', JSON.stringify({
-    sessionCode: 'ABC12345', sessionData: { site: 'בדיקת נתונים', license: 'B', language: 'he' },
+    sessionCode: 'ABC12345', sessionData: { site: 'בדיקת נתונים', license: 'B', language: 'he', gateway: { url: 'https://gw.example/' } },
     examineeData: { idNumber: '123456789', fullName: 'ישראל ישראלי', license: 'B', language: 'he' },
     examineeToken: 'tok-old', screen: 'screenInstructions', savedAt: 1
   }));
@@ -1091,11 +1131,11 @@ test('D20: a state left by another examinee is never adopted silently', async ()
 test('D20: saying "yes, it is me" restores the waiting screen as before', async () => {
   const local = memoryStore();
   local.setItem('ext_examinee_state_123456789', JSON.stringify({
-    sessionCode: 'ABC12345', sessionData: { site: 'בדיקת נתונים', license: 'B', language: 'he' },
+    sessionCode: 'ABC12345', sessionData: { site: 'בדיקת נתונים', license: 'B', language: 'he', gateway: { url: 'https://gw.example/' } },
     examineeData: { idNumber: '123456789', fullName: 'ישראל ישראלי', license: 'B', language: 'he' },
     examineeToken: 'tok-old', screen: 'screenInstructions', savedAt: 1
   }));
-  const page = completePage({ local, reply: r => (r.action === 'checkApproval') ? { status: 'ok', approval: 'waiting', audioMode: 'off' } : undefined });
+  const page = completePage({ local, reply: r => r.kind === 'approval' ? { status: 'ok', approval: 'waiting', audioMode: 'off' } : undefined });
   await drain();
   page.el('restoreYes').click();
   await drain(); await page.timer.advance(50); await drain();
@@ -1107,11 +1147,11 @@ test('D20: saying "yes, it is me" restores the waiting screen as before', async 
 test('D20: this tab\'s own state is restored without a question', async () => {
   const session = memoryStore();
   session.setItem('ext_examinee_state', JSON.stringify({
-    sessionCode: 'ABC12345', sessionData: { site: 'בדיקת נתונים', license: 'B', language: 'he' },
+    sessionCode: 'ABC12345', sessionData: { site: 'בדיקת נתונים', license: 'B', language: 'he', gateway: { url: 'https://gw.example/' } },
     examineeData: { idNumber: '123456789', fullName: 'ישראל ישראלי', license: 'B', language: 'he' },
     examineeToken: 'tok-old', screen: 'screenInstructions', savedAt: 1
   }));
-  const page = completePage({ session, reply: r => (r.action === 'checkApproval') ? { status: 'ok', approval: 'waiting', audioMode: 'off' } : undefined });
+  const page = completePage({ session, reply: r => r.kind === 'approval' ? { status: 'ok', approval: 'waiting', audioMode: 'off' } : undefined });
   await drain(); await page.timer.advance(50); await drain();
   assert.ok(!page.el('restoreConfirm'), 'the tab that wrote the state owns it');
   assert.equal(page.t.state().id, '123456789');
@@ -1325,8 +1365,20 @@ test('source: the page owns no transport of its own any more', () => {
   assert.ok(!/setInterval\(approvalPollTick/.test(src));
   assert.equal((src.match(/ExamTransport\.createPollLoop/g) || []).length, 3, 'approval, exam status and DQ overturn');
   assert.ok(/ExamTransport\.createUpdateCheck/.test(src));
-  assert.ok(/ExamTransport\.createFailover/.test(src));
   assert.ok(/ExamTransport\.drainLog\(\)/.test(src));
+});
+
+test('source: the direct poll route is gone — the Worker is the only one', () => {
+  const src = examinee.replace(/\r/g, '');
+  assert.ok(!/createFailover/.test(src), 'nothing to fail over to');
+  for (const gone of ['directApprovalCall', 'directStatusCall', 'APPROVAL_DIRECT_BASE_MS', 'EXAMSTATUS_DIRECT_BASE_MS']) {
+    assert.ok(!new RegExp('\\b' + gone + '\\b').test(src), gone + ' is gone');
+  }
+  assert.ok(!/action: 'checkApproval'|action: 'getExamStatus'/.test(src),
+    'the page has no way left to poll Apps Script directly');
+  assert.ok(!/gatewayUrl\(\)\s*\?/.test(src), 'and no cadence branches on whether a gateway exists');
+  assert.ok(src.includes('המערכת אינה מוגדרת (Worker) — פנה למנהל המערכת'), 'a missing Worker is named, not polled');
+  assert.ok(!/falls? back to (the )?direct|five minutes/.test(src), 'and the comments do not promise a fallback');
 });
 
 test('source: the service worker precaches the shared layers and never the question texts', () => {

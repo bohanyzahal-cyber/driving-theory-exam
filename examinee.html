@@ -1210,20 +1210,29 @@
   function logEvent(event, data) { ExamTransport.log(event, data); }
 
   // ========== Session gateway ==========
-  // getSessionInfo reports whether a Cloudflare Worker fronts the two polls
-  // (empty url = straight to Apps Script). Through the gateway 40 waiting
-  // examinees cost ONE upstream call per session per 3 s instead of 480 Apps
-  // Script executions a minute, so the poll can stay fast.
+  // The Cloudflare Worker named by getSessionInfo is THE route for this page's
+  // two polls. There is no second one: 40 waiting examinees cost ONE upstream
+  // call per session instead of 480 Apps Script executions a minute, and the
+  // page never gives that up — sending the fleet straight at Google is exactly
+  // the storm the gateway exists to prevent, and it is worst precisely when
+  // things are already going wrong. An {status:'error', code:'upstream_unavailable'}
+  // JSON is a normal failed poll: Google is busy BEHIND the Worker.
   //
-  // Falling back to the direct call is reserved for a gateway that is ITSELF
-  // unreachable (timeout / network / 5xx / non-JSON) three polls in a row, and
-  // then only for five minutes. An {status:'error', code:'upstream_unavailable'}
-  // JSON is a normal failed poll — it means Google is busy behind the gateway,
-  // and answering that by sending the whole fleet straight at Google is exactly
-  // the storm the gateway exists to prevent.
+  // A Worker that does not answer at all (timeout / network / 5xx / non-JSON) is
+  // retried by the poll loop on its own ladder — x1.5 per failure up to maxMs
+  // (20 s); it never touches the transport's backend-health state, so a Worker
+  // hiccup cannot slow the submit path or push polls to the degraded floor — and
+  // the waiting screen raises its error banner after three failed polls. The
+  // loop never dies. A Cloudflare outage is handled operationally (roll back to
+  // the previous release), not by this page.
+  //
+  // Since r30 the server refuses to start an exam without GATEWAY_URL, so a
+  // session that names no gateway is a misconfigured deployment; the code screen
+  // says so (GATEWAY_MISSING_MESSAGE) instead of polling a url that is not there.
   function gatewayUrl() { return String((sessionData && sessionData.gateway && sessionData.gateway.url) || ''); }
+  var GATEWAY_MISSING_MESSAGE = 'המערכת אינה מוגדרת (Worker) — פנה למנהל המערכת';
 
-  // ----- Long polling (the gateway route only) -----
+  // ----- Long polling -----
   // The Worker HOLDS a poll for up to 25 s and answers the moment the examiner's
   // decision for THIS examinee lands. Two parameters carry it: 'wait' (how long
   // it may hold) and 'fp' (the fingerprint of the answer this device already
@@ -1246,9 +1255,9 @@
     else if (data && data.status === 'ok') forgetPollFp(kind);   // an answer with no fp cannot be held against
   }
   // A held request dies when the phone locks its screen or the examinee switches
-  // app — the browser kills the fetch. That is the DEVICE, not the Worker, and
-  // counting it as a gateway failure would hand five minutes of direct Apps
-  // Script calls to every examinee who put their phone down. A request that was
+  // app — the browser kills the fetch. That is the DEVICE, not the Worker: the
+  // loop still backs off a step, but the waiting screen must not accuse a server
+  // that never failed (three screen locks are not an outage). A request that was
   // ANSWERED (5xx, an HTML error page, our own deadline while the page was on
   // screen) is a real failure and still counts, exactly as before.
   var POLL_WAKE_GRACE_MS = 2000;      // a request killed on the way back up is the same event
@@ -1274,50 +1283,43 @@
     return url;
   }
   var approvalRoute = null, statusRoute = null;
-  function pollRoute(kind, directCall) {
-    if (!gatewayUrl()) return directCall;
-    var failover = ExamTransport.createFailover({
-      primary: function(args) {
-        var noWait = !!(args && args.noWait);
-        return ExamTransport.fetchJsonWithTimeout(gatewayPollUrl(kind, noWait), { cache: 'no-store' },
-            noWait ? POLL_TIMEOUT_MS : LONGPOLL_TIMEOUT_MS)
-          .then(function(data) { rememberPollFp(kind, data); return data; }, function(err) {
-            if (gatewayFailureCounts(err)) throw err;
-            // Neither news nor a fault: the loop backs off one step like any
-            // failed poll, the screen says nothing, and nobody is sent at Google.
-            forgetPollFp(kind);
-            logEvent('poll_hold_dropped', kind);
-            return { status: 'error', code: POLL_INTERRUPTED, retryable: true };
-          });
-      },
-      // The direct route knows nothing about holds, and a fingerprint is the
-      // gateway's view of this examinee: drop it, so the first poll back on the
-      // gateway asks without one and is answered at once.
-      fallback: function(args) { forgetPollFp(kind); return directCall(args); },
-      failuresBeforeFallback: 3,
-      fallbackMs: 300000
-    });
-    return function(args) { return failover.call(args); };
-  }
-  function directApprovalCall() {
-    return apiGet({ action: 'checkApproval', sessionCode: sessionCode, idNumber: examineeData.idNumber }, POLL_TIMEOUT_MS);
-  }
-  function directStatusCall() {
-    return apiGet({ action: 'getExamStatus', sessionCode: sessionCode, idNumber: examineeData.idNumber, examineeToken: examineeToken }, POLL_TIMEOUT_MS);
+  // One route, always the Worker. A rejection is handed straight back to the
+  // poll loop, which backs off exactly as it does for any failed poll — there is
+  // nowhere else to send it, and retrying the Worker is the correct answer to a
+  // Worker that is briefly unwell.
+  function pollRoute(kind) {
+    return function(args) {
+      var noWait = !!(args && args.noWait);
+      // fetchJsonQuiet, not fetchJsonWithTimeout: the Worker is not the exam
+      // backend. A Worker 5xx/timeout must not mark Apps Script "degraded" —
+      // that would push the submit path and every poll to the 30-60 s floor
+      // for a hiccup on a different service. The loop's own ladder is enough.
+      return ExamTransport.fetchJsonQuiet(gatewayPollUrl(kind, noWait), { cache: 'no-store' },
+          noWait ? POLL_TIMEOUT_MS : LONGPOLL_TIMEOUT_MS)
+        .then(function(data) { rememberPollFp(kind, data); return data; }, function(err) {
+          if (gatewayFailureCounts(err)) throw err;
+          // Neither news nor a fault: the loop backs off one step like any
+          // failed poll and the screen says nothing. The fingerprint goes with
+          // it, so the next poll asks without one and is answered at once.
+          forgetPollFp(kind);
+          logEvent('poll_hold_dropped', kind);
+          return { status: 'error', code: POLL_INTERRUPTED, retryable: true };
+        });
+    };
   }
   // opts.noWait = true for the one-off calls a person is waiting for on screen
   // (the timer-expiry extension check, the restore verification): they must be
   // answered immediately, never held.
   function approvalPollCall(opts) {
-    if (!approvalRoute) approvalRoute = pollRoute('approval', directApprovalCall);
+    if (!approvalRoute) approvalRoute = pollRoute('approval');
     return approvalRoute(opts);
   }
   function statusPollCall(opts) {
-    if (!statusRoute) statusRoute = pollRoute('status', directStatusCall);
+    if (!statusRoute) statusRoute = pollRoute('status');
     return statusRoute(opts);
   }
-  // A new session code may come with a different gateway setting (or none), and
-  // a fingerprint only means anything for the session it was issued in.
+  // A new session code comes with its own gateway url, and a fingerprint only
+  // means anything for the session it was issued in.
   function resetPollRoutes() { approvalRoute = null; statusRoute = null; resetPollFps(); }
 
   // A server that does not know an action is an OLD server behind a new page
@@ -1483,9 +1485,18 @@
       codeSubmitBtn.disabled = false;
       codeSubmitBtn.textContent = 'המשך';
       if (data.status === 'ok') {
+        // No Worker, no exam: the server refuses to hand out questions without
+        // GATEWAY_URL (bank_not_configured) and this page has no other route for
+        // its polls. Say it here, before anyone registers, instead of spinning
+        // on a url that does not exist.
+        if (!String((data.session && data.session.gateway && data.session.gateway.url) || '')) {
+          codeApiError.textContent = GATEWAY_MISSING_MESSAGE;
+          codeApiError.style.display = 'block';
+          return;
+        }
         sessionCode = code;
         sessionData = data.session;
-        resetPollRoutes();   // this session may front its polls with a different gateway
+        resetPollRoutes();   // this session's polls carry their own gateway url and fingerprints
         // Ensure license is string (Google Sheets may return number for "1")
         sessionData.license = String(sessionData.license || 'B');
         // Save original session language/license as default (for resetForNextExaminee)
@@ -1841,23 +1852,23 @@
   // shared/transport.js — see createPollLoop.
 
   // ===== Approval polling =====
-  // Through the gateway a poll costs Apps Script nothing (the Worker coalesces a
-  // whole session into one upstream call per 2 s), so the cadence is free: 2 s
-  // for the first two minutes — the window in which the examiner actually walks
-  // the room and approves, and the one the examinee watches — then 3 s. A DIRECT
-  // poll is one Apps Script execution per waiting examinee, dozens of which were
-  // a large share of the flood that saturated the ~30 execution slots on exam
-  // mornings, so the direct fallback stays at 8 s (what e1755c8 set, r6 undid).
+  // Every poll goes through the Worker, where it costs Apps Script nothing (the
+  // Worker coalesces a whole session into one upstream call per 2 s), so the
+  // cadence is free: 2 s for the first two minutes — the window in which the
+  // examiner actually walks the room and approves, and the one the examinee
+  // watches — then 3 s.
   //
-  // Since long polling the two GATEWAY constants are a FALLBACK cadence: they
-  // pace the loop only when the Worker answered WITHOUT holding — an old Worker
-  // that ignores wait/fp, the first poll of a route (no fingerprint yet), or a
-  // poll the Worker refused to hold (upstream busy, stale snapshot). A held
-  // answer is paced by ExamTransport.LONGPOLL_GAP_MS instead.
+  // Since long polling these constants are a FALLBACK cadence: they pace the
+  // loop only when the Worker answered WITHOUT holding — an old Worker that
+  // ignores wait/fp, the first poll of a route (no fingerprint yet), or a poll
+  // the Worker refused to hold (upstream busy, stale snapshot). A held answer is
+  // paced by ExamTransport.LONGPOLL_GAP_MS instead, and a FAILED poll by the
+  // loop's own x1.5 ladder up to APPROVAL_POLL_MAX_MS (a Worker failure never
+  // marks the backend degraded: fetchJsonQuiet) — which is the whole of this page's
+  // answer to a Worker that stops answering.
   var APPROVAL_GATEWAY_BASE_MS = 3000;
   var APPROVAL_GATEWAY_FAST_MS = 2000;
   var APPROVAL_FAST_WINDOW_MS = 120000;
-  var APPROVAL_DIRECT_BASE_MS = 8000;
   var APPROVAL_POLL_MAX_MS = 20000;
   var approvalPollStartedAt = 0;
   var approvalLoop = null;
@@ -1874,20 +1885,20 @@
     forgetPollFp('approval');   // a fresh chain asks for the state as it is NOW
     approvalPollStartedAt = Date.now();
     setupWaitingProtections(); // wake-lock + tab-title flash
-    var baseMs = gatewayUrl() ? APPROVAL_GATEWAY_BASE_MS : APPROVAL_DIRECT_BASE_MS;
+    var baseMs = APPROVAL_GATEWAY_BASE_MS;
     approvalLoop = ExamTransport.createPollLoop({
       name: 'approval',
       baseMs: baseMs,
       maxMs: APPROVAL_POLL_MAX_MS,
       tick: doCheckApproval,
-      // The fast opening window, and only through the gateway. Like the examiner
-      // dashboard, it may pull the next tick in ONLY when the answer was healthy
-      // and the pacing is already back at base: a struggling backend always wins.
+      // The fast opening window. Like the examiner dashboard, it may pull the
+      // next tick in ONLY when the answer was healthy and the pacing is already
+      // back at base: a struggling Worker always wins.
       // A HELD answer needs no cadence at all: the Worker already did the
       // waiting, and transport hands back its 250 ms gap as 'paced'.
       nextDelay: function(info, paced) {
         if (info.held > 0) return paced;
-        if (!gatewayUrl() || info.slow || info.failed || paced > baseMs) return paced;
+        if (info.slow || info.failed || paced > baseMs) return paced;
         return (Date.now() - approvalPollStartedAt) < APPROVAL_FAST_WINDOW_MS ? APPROVAL_GATEWAY_FAST_MS : baseMs;
       },
       // The rescue below restarts the chain; bump the generation first so a late
@@ -3262,14 +3273,13 @@
   // The exam runs locally, so an examiner who disqualifies from the dashboard
   // would otherwise be INVISIBLE to the examinee. This poll also carries the
   // mid-exam time extensions. In-exam examinees are the majority of connected
-  // clients on an exam day: through the gateway the poll is free (6 s — the
-  // Worker coalesces the whole session), direct it is one Apps Script execution
-  // per examinee (12 s). As on the approval poll, the GATEWAY constant is the
-  // cadence for an answer that was NOT held (an old Worker, the first poll of a
-  // route, or a poll the Worker refused to hold); a held answer is paced by
-  // ExamTransport.LONGPOLL_GAP_MS.
+  // clients on an exam day, and through the Worker the poll is free (6 s — it
+  // coalesces the whole session into one upstream call). As on the approval
+  // poll, the constant is the cadence for an answer that was NOT held (an old
+  // Worker, the first poll of a route, or a poll the Worker refused to hold); a
+  // held answer is paced by ExamTransport.LONGPOLL_GAP_MS, and a failed one by
+  // the loop's x1.5 ladder up to EXAMSTATUS_POLL_MAX_MS.
   var EXAMSTATUS_GATEWAY_BASE_MS = 6000;
-  var EXAMSTATUS_DIRECT_BASE_MS = 12000;
   var EXAMSTATUS_POLL_MAX_MS = 20000;
   var examStatusLoop = null;
   var examStatusGen = 0;
@@ -3307,7 +3317,7 @@
     forgetPollFp('status');     // a fresh chain asks for the state as it is NOW
     examStatusLoop = ExamTransport.createPollLoop({
       name: 'exam-status',
-      baseMs: gatewayUrl() ? EXAMSTATUS_GATEWAY_BASE_MS : EXAMSTATUS_DIRECT_BASE_MS,
+      baseMs: EXAMSTATUS_GATEWAY_BASE_MS,
       maxMs: EXAMSTATUS_POLL_MAX_MS,
       tick: examStatusPollTick
     });
