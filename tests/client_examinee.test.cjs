@@ -730,6 +730,65 @@ test('D14: an examinee whose row is already in_exam is told, not left polling fo
   assert.equal(pollsOf(page, 'approval').length, polls, 'the chain stopped');
 });
 
+// The examiner's decision about the registration itself. Until r30 the server
+// answered these as 'לא נמצא רישום' and the examinee watched a 'שגיאת שרת'
+// banner with nothing to click.
+test('rejected: the examinee is told at once, polling stops, and one button takes them back to registration', async () => {
+  let approval = 'waiting';
+  const page = completePage({ reply: r => r.kind === 'approval'
+    ? { status: 'ok', approval: approval, audioMode: 'off' } : undefined });
+  await register(page);
+  assert.equal(page.t.state().screen, 'screenInstructions');
+
+  approval = 'rejected';
+  await page.timer.advance(5000);
+
+  assert.equal(page.el('rejectedMsg').textContent, 'הבוחן דחה את הכניסה שלך. פנה לבוחן.');
+  assert.equal(page.el('rejectedMsg').style.display, 'block');
+  assert.equal(page.el('waitingPhase').style.display, 'none');
+  const back = page.el('backToRegisterBtn');
+  assert.equal(back.textContent, 'חזרה להרשמה');
+  assert.equal(back.style.display, 'block');
+  assert.ok(!page.el('approvalError') || page.el('approvalError').style.display !== 'block',
+    'a decision is not a server error');
+
+  const stopped = pollsOf(page, 'approval').length;
+  await page.timer.advance(120000);
+  assert.equal(pollsOf(page, 'approval').length, stopped, 'the chain stopped');
+
+  back.click();
+  await drain();
+  assert.equal(page.t.state().screen, 'screenCode');
+  assert.equal(page.local.getItem('ext_examinee_state_123456789'), null, 'the dead registration is off the device');
+  assert.equal(page.session.getItem('ext_examinee_state'), null);
+  assert.equal(back.style.display, 'none', 'and the decision screen is cleared behind them');
+  assert.equal(page.el('rejectedMsg').style.display, 'none');
+  assert.equal(page.el('waitingPhase').style.display, 'block');
+  assert.equal(pollsOf(page, 'approval').length, stopped, 'leaving started no new chain');
+});
+
+test('cancelled: the reset is named in the examinee\'s own language, with the same way back', async () => {
+  let approval = 'waiting';
+  const page = completePage({ reply: r => r.kind === 'approval'
+    ? { status: 'ok', approval: approval, audioMode: 'off' } : undefined });
+  await register(page, { language: 'ru' });
+
+  approval = 'cancelled';
+  await page.timer.advance(5000);
+
+  assert.equal(page.el('rejectedMsg').textContent, 'Регистрация отменена экзаменатором. Зарегистрируйтесь заново.');
+  assert.equal(page.el('rejectedMsg').style.display, 'block');
+  assert.equal(page.el('backToRegisterBtn').textContent, 'Вернуться к регистрации');
+  const stopped = pollsOf(page, 'approval').length;
+  await page.timer.advance(120000);
+  assert.equal(pollsOf(page, 'approval').length, stopped, 'the chain stopped');
+
+  page.el('backToRegisterBtn').click();
+  await drain();
+  assert.equal(page.t.state().screen, 'screenCode');
+  assert.equal(page.local.getItem('ext_examinee_state_123456789'), null);
+});
+
 test('D13: the timer-expiry extension check waits the full poll deadline', async () => {
   const page = completePage();
   await register(page);
@@ -1106,6 +1165,33 @@ test('long poll: the DQ-overturn wait is held too, starting from the decision as
   assert.match(page.el('dqWaitingMsg').innerHTML, /הבוחן אישר את הפסילה/);
 });
 
+test('the DQ-overturn wait ignores a rejected/cancelled answer instead of acting on it', async () => {
+  // Both chains speak to the same route. A decision about a REGISTRATION
+  // cannot happen while that registration is mid-exam, so the only requirement
+  // here is that one would do nothing at all — no resume, no final DQ screen.
+  let approval = 'approved';
+  const page = completePage({ reply: r => r.kind === 'approval'
+    ? { status: 'ok', approval: approval, audioMode: 'off', examMinutes: 40 } : undefined });
+  await register(page);
+  await startExam(page);
+  approval = 'disqualified';
+  page.setVisibility('hidden');
+  await page.timer.advance(2100);
+  page.setVisibility('visible'); await drain();
+  assert.equal(page.t.state().dq, true);
+
+  const before = pollsOf(page, 'approval').length;
+  approval = 'cancelled';
+  await page.timer.advance(10000);
+  assert.ok(pollsOf(page, 'approval').length > before, 'it kept waiting for the examiner');
+  assert.equal(page.t.state().screen, 'screenExam', 'nothing moved');
+  assert.ok(!/הבוחן אישר את הפסילה/.test(page.el('dqWaitingMsg').innerHTML));
+  approval = 'rejected';
+  await page.timer.advance(10000);
+  assert.equal(page.t.state().screen, 'screenExam');
+  assert.equal(page.t.state().inProgress, false, 'and the suspended exam is still suspended');
+});
+
 // ===================== 7. restore =====================
 test('D20: a state left by another examinee is never adopted silently', async () => {
   const local = memoryStore();
@@ -1142,6 +1228,30 @@ test('D20: saying "yes, it is me" restores the waiting screen as before', async 
   assert.equal(page.t.state().id, '123456789');
   assert.equal(page.t.state().token, 'tok-old');
   assert.equal(page.t.state().screen, 'screenInstructions');
+});
+
+test('D20: a saved wait whose registration was cancelled starts fresh, not on the decision screen', async () => {
+  const local = memoryStore();
+  local.setItem('ext_examinee_state_123456789', JSON.stringify({
+    sessionCode: 'ABC12345', sessionData: { site: 'בדיקת נתונים', license: 'B', language: 'he', gateway: { url: 'https://gw.example/' } },
+    examineeData: { idNumber: '123456789', fullName: 'ישראל ישראלי', license: 'B', language: 'he' },
+    examineeToken: 'tok-old', screen: 'screenInstructions', savedAt: 1
+  }));
+  const page = completePage({ local, reply: r => r.kind === 'approval' ? { status: 'ok', approval: 'cancelled' } : undefined });
+  await drain();
+  page.el('restoreYes').click();
+  await drain(); await page.timer.advance(50); await drain();
+
+  // A decision found on RELOAD still means "that registration is over": the
+  // examinee is put back on the code screen, not in front of a message about a
+  // wait they were not watching.
+  assert.equal(page.t.state().screen, 'screenCode');
+  assert.equal(local.getItem('ext_examinee_state_123456789'), null, 'the dead row is not carried forward');
+  assert.equal(page.el('rejectedMsg').style.display, 'none');
+  assert.equal(page.el('backToRegisterBtn').style.display, 'none');
+  assert.equal(pollsOf(page, 'approval').length, 1, 'one verification poll, and no chain behind it');
+  await page.timer.advance(60000);
+  assert.equal(pollsOf(page, 'approval').length, 1);
 });
 
 test('D20: this tab\'s own state is restored without a question', async () => {

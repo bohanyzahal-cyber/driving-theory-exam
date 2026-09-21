@@ -314,3 +314,69 @@ test('a handler that has gone missing answers an error instead of crashing', () 
   assert.equal(reply.status, 'error');
   assert.match(reply.message, /Action not available/);
 });
+
+// ---- checkApproval: the answer that ends an examinee's polling --------------
+// The waiting screen polls until it is told something final. A LIVE row answers
+// as it always did; when none is left, the NEWEST finished row decides, and
+// only when it is the examiner's own decision about the registration
+// (rejected / cancelled). Everything else stays 'לא נמצא רישום', which the page
+// reads as "your saved state is dead, start over".
+const ID = idOf(1);
+const approvalRow = (id, status, over) => pendingRow(id, Object.assign({ 5: status }, over || {}));
+const approvals = rows => runtime({ sheets: { 'ממתינים': [PENDING_HEADER, ...rows] } });
+const checkApproval = (e, id, token) => get(e, { action: 'checkApproval', sessionCode: SESSION, idNumber: id,
+  examineeToken: token === undefined ? 'token-' + id : token });
+
+test('a live registration outranks every finished row above it', () => {
+  const e = approvals([approvalRow(ID, 'rejected'), approvalRow(ID, 'cancelled'), approvalRow(ID, 'waiting')]);
+  assert.deepEqual(checkApproval(e, ID), { status: 'ok', approval: 'waiting', audioMode: 'off' });
+  const approved = approvals([approvalRow(ID, 'cancelled'), approvalRow(ID, 'approved', { 9: 'on', 10: '1.25' })]);
+  assert.deepEqual(checkApproval(approved, ID), { status: 'ok', approval: 'approved', audioMode: 'on', examMinutes: 50 });
+});
+
+test('the examiner rejecting or resetting the last registration is answered as itself', () => {
+  assert.deepEqual(checkApproval(approvals([approvalRow(ID, 'rejected')]), ID), { status: 'ok', approval: 'rejected' });
+  assert.deepEqual(checkApproval(approvals([approvalRow(ID, 'cancelled')]), ID), { status: 'ok', approval: 'cancelled' });
+});
+
+test('the shared-ID incident: the NEWEST decision answers, never an older rejection', () => {
+  // Two examinees on one id (family): the first was rejected at 17:47, the
+  // second cancelled at 18:05. The third visitor, polling on stale
+  // localStorage, must be told the registration was cancelled — the whole
+  // reason 'rejected' used to be skipped outright.
+  assert.deepEqual(checkApproval(approvals([approvalRow(ID, 'rejected'), approvalRow(ID, 'cancelled')]), ID),
+    { status: 'ok', approval: 'cancelled' });
+  // ...and the mirror image, so this is "newest", not "cancelled wins".
+  assert.deepEqual(checkApproval(approvals([approvalRow(ID, 'cancelled'), approvalRow(ID, 'rejected')]), ID),
+    { status: 'ok', approval: 'rejected' });
+});
+
+test('a finished exam, a pending disqualification and an unknown id stay "לא נמצא רישום"', () => {
+  for (const status of ['completed', 'disqualified']) {
+    const e = approvals([approvalRow(ID, 'rejected'), approvalRow(ID, status)]);
+    assert.deepEqual(checkApproval(e, ID), { status: 'error', message: 'לא נמצא רישום' }, status);
+  }
+  assert.equal(checkApproval(approvals([]), ID).message, 'לא נמצא רישום');
+  assert.equal(checkApproval(approvals([approvalRow('900000777', 'rejected')]), ID).message, 'לא נמצא רישום');
+  // dq_confirmed is not terminal: the examinee must receive it.
+  assert.equal(checkApproval(approvals([approvalRow(ID, 'dq_confirmed')]), ID).approval, 'dq_confirmed');
+});
+
+test('a stale token is refused on a decided registration exactly as on a live one', () => {
+  assert.equal(checkApproval(approvals([approvalRow(ID, 'waiting')]), ID, 'stale').examineeTokenError, 'mismatch');
+  assert.equal(checkApproval(approvals([approvalRow(ID, 'rejected')]), ID, 'stale').examineeTokenError, 'mismatch');
+  // A legacy row that stored no token, and a client that echoes none, are both
+  // still answered — the deploy-window rule, unchanged.
+  assert.equal(checkApproval(approvals([approvalRow(ID, 'rejected', { 12: '' })]), ID, 'anything').approval, 'rejected');
+  assert.equal(checkApproval(approvals([approvalRow(ID, 'cancelled')]), ID, '').approval, 'cancelled');
+});
+
+test('a decision is never served from a cached snapshot — the re-registration is read first', () => {
+  const e = approvals([approvalRow(ID, 'rejected')]);
+  assert.equal(checkApproval(e, ID).approval, 'rejected');   // this poll fills the r23 snapshot
+  // The examinee registers again a second later. The snapshot still holds only
+  // the rejected row, and answering from it would stop their polling on a
+  // decision that is no longer the truth.
+  e.sheet('ממתינים').rows.push(approvalRow(ID, 'waiting'));
+  assert.deepEqual(checkApproval(e, ID), { status: 'ok', approval: 'waiting', audioMode: 'off' });
+});

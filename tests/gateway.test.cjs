@@ -244,7 +244,7 @@ test('approval skips terminal rows and reports audio and authorised minutes', as
   const { gateway } = harness({ [SESSION]: [
     row({ status: 'completed' }),
     row({ status: 'approved', audio: 'on', examMinutes: 60 }),
-    row({ id: '900000002', status: 'cancelled' })
+    row({ id: '900000002', status: 'completed' })
   ] });
 
   const active = await poll(gateway, approvalPoll('900000001'));
@@ -252,6 +252,32 @@ test('approval skips terminal rows and reports audio and authorised minutes', as
 
   const allTerminal = await poll(gateway, approvalPoll('900000002'));
   assert.deepEqual(allTerminal.body, { status: 'error', message: 'לא נמצא רישום' });
+});
+
+// The examiner's decision about the REGISTRATION reaches the examinee as
+// itself: 'הבוחן דחה' / 'ההרשמה בוטלה' with a way back to the code screen,
+// instead of the 'לא נמצא רישום' error the page used to show them.
+test('the newest decision answers when nothing live is left, and audio/minutes are dropped with it', async () => {
+  const { gateway } = harness({ [SESSION]: [
+    row({ id: '900000001', status: 'rejected', audio: 'on', examMinutes: 60 }),
+    row({ id: '900000002', status: 'cancelled', audio: 'on', examMinutes: 60 }),
+    row({ id: '900000003', status: 'disqualified' }),
+    // The shared-ID incident, as the sheet held it: rejected at 17:47, then a
+    // second examinee on the same id cancelled at 18:05.
+    row({ id: '900000004', status: 'rejected' }),
+    row({ id: '900000004', status: 'cancelled' }),
+    // ...and a live row still outranks any decision above it.
+    row({ id: '900000005', status: 'rejected' }),
+    row({ id: '900000005', status: 'waiting' })
+  ] });
+
+  assert.deepEqual((await poll(gateway, approvalPoll('900000001'))).body, { status: 'ok', approval: 'rejected' });
+  assert.deepEqual((await poll(gateway, approvalPoll('900000002'))).body, { status: 'ok', approval: 'cancelled' });
+  assert.deepEqual((await poll(gateway, approvalPoll('900000003'))).body, { status: 'error', message: 'לא נמצא רישום' });
+  assert.deepEqual((await poll(gateway, approvalPoll('900000004'))).body, { status: 'ok', approval: 'cancelled' },
+    'the NEWEST row decides — the third visitor is never shown the older rejection');
+  assert.deepEqual((await poll(gateway, approvalPoll('900000005'))).body,
+    { status: 'ok', approval: 'waiting', audioMode: 'off' });
 });
 
 test('approval defaults an empty status to waiting and omits minutes until approved', async () => {
@@ -909,6 +935,39 @@ test('an examiner nudge ends the hold at once, for zero executions', async () =>
   assert.equal(state.calls.length, 1, 'the decision reached the device with no upstream read at all');
   assert.equal(state.clock, CLOCK0, 'and without waiting out a single tick');
   assert.equal(gateway._debug().waiting, 0);
+});
+
+test('a hold ends the moment the examiner rejects or resets the registration', async () => {
+  for (const [status, decided] of [['rejected', 'a:rejected:off:-'], ['cancelled', 'a:cancelled:off:-']]) {
+    const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting', audio: 'on' })] });
+    await poll(gateway, approvalPoll('900000001'));
+    assert.equal(state.calls.length, 1, status);
+
+    const holding = poll(gateway, approvalPoll('900000001', { wait: 25, fp: 'a:waiting:on:-' }));
+    await flush();
+    assert.equal(gateway._debug().waiting, 1, status + ': parked');
+
+    assert.deepEqual((await nudge(gateway, '&idNumber=900000001&status=' + status)).body,
+      { status: 'ok', patched: true });
+
+    const { body } = await settle(state, holding);
+    assert.deepEqual(body, { status: 'ok', approval: status, fp: decided, held: 0 },
+      'the decision itself, with no audio and no minutes left to carry');
+    assert.equal(state.calls.length, 1, status + ': it reached the device with no upstream read at all');
+    assert.equal(state.clock, CLOCK0, status + ': and without waiting out a single tick');
+    assert.equal(gateway._debug().waiting, 0);
+  }
+});
+
+test('the not-found fingerprint is unchanged by the decisions: completed, disqualified and no row at all', async () => {
+  const { gateway } = harness({ [SESSION]: [
+    row({ id: '900000001', status: 'completed' }),
+    row({ id: '900000002', status: 'disqualified' })
+  ] });
+  const fp = async params => (await poll(gateway, params)).body.fp;
+  assert.equal(await fp(approvalPoll('900000001', { wait: 0 })), 'a:none');
+  assert.equal(await fp(approvalPoll('900000002', { wait: 0 })), 'a:none');
+  assert.equal(await fp(approvalPoll('900000009', { wait: 0 })), 'a:none');
 });
 
 test('a status hold ends on the disqualification the nudge carries', async () => {

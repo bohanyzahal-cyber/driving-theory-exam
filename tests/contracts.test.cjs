@@ -135,7 +135,15 @@ test('the gateway answers exactly what the server answers, for every row state',
     pendingRow('900000005', 'rejected'),
     pendingRow('900000006', 'dq_confirmed'),
     pendingRow('900000007', 'disqualified'),
-    pendingRow('900000008', 'waiting', { 12: '' })   // legacy row without a token
+    pendingRow('900000008', 'waiting', { 12: '' }),  // legacy row without a token
+    pendingRow('900000009', 'cancelled'),
+    // The shared-ID incident (see scanApprovalRows): rejected at 17:47, the
+    // second examinee on the same id cancelled at 18:05 — the NEWEST decides.
+    pendingRow('900000010', 'rejected'),
+    pendingRow('900000010', 'cancelled'),
+    // ...and a live row still outranks a decision written above it.
+    pendingRow('900000011', 'rejected'),
+    pendingRow('900000011', 'waiting')
   ];
   const env = serverEnv(pending, [['2026-09-22T06:20:00Z', SESSION, '900000003', 'x', 7, 'evacuation', 'examiner']]);
   const gw = gatewayOver(env);
@@ -155,6 +163,18 @@ test('the gateway answers exactly what the server answers, for every row state',
   const a = await gw.poll({ kind: 'approval', sessionCode: SESSION, idNumber: '900000002', examineeToken: 'tok-900000002' });
   assert.equal(a.examMinutes, 50);
   assert.equal(a.audioMode, 'on');
+  // The examiner's decision on a registration nobody is testing under any more:
+  // the status itself, and NOTHING else — no audioMode, no examMinutes.
+  const decided = id => gw.poll({ kind: 'approval', sessionCode: SESSION, idNumber: id, examineeToken: 'tok-' + id });
+  assert.deepEqual(await decided('900000005'), { status: 'ok', approval: 'rejected' });
+  assert.deepEqual(await decided('900000009'), { status: 'ok', approval: 'cancelled' });
+  assert.deepEqual(await decided('900000010'), { status: 'ok', approval: 'cancelled' },
+    'the newest row decides: the third visitor is told "cancelled", never "rejected"');
+  assert.equal((await decided('900000011')).approval, 'waiting', 'a live row still wins');
+  // A finished exam still answers "not registered" — there is nothing to say to
+  // a device that is still polling one.
+  assert.equal((await decided('900000004')).message, 'לא נמצא רישום');
+  assert.equal((await decided('900000007')).message, 'לא נמצא רישום');
   // Eight examinees polled twice each → the server ran the snapshot ONCE for
   // the fresh window, plus ONE forced re-read when a terminal row produced
   // 'not registered' (the Worker mirrors the server's re-read-on-miss rule, at
@@ -173,6 +193,17 @@ test('a wrong token and an unknown examinee get the same answer from both routes
   const missingGateway = await gw.poll({ kind: 'approval', sessionCode: SESSION, idNumber: '900000099', examineeToken: 'x' });
   assert.deepEqual(missingGateway, missingDirect);
   assert.equal(missingGateway.status, 'error');
+
+  // The token check applies to the decision below a dead registration exactly
+  // as it applies to a live row: a device holding another examinee's stale
+  // token is refused, not told "you were rejected".
+  const decidedEnv = serverEnv([pendingRow('900000001', 'rejected')]);
+  const decidedGw = gatewayOver(decidedEnv);
+  const params = { sessionCode: SESSION, idNumber: '900000001', examineeToken: 'stale-token' };
+  const stolenDirect = get(decidedEnv, Object.assign({ action: 'checkApproval' }, params));
+  const stolenGateway = await decidedGw.poll(Object.assign({ kind: 'approval' }, params));
+  assert.deepEqual(stolenGateway, stolenDirect);
+  assert.equal(stolenGateway.examineeTokenError, 'mismatch');
 });
 
 test('the snapshot never leaks names, phones or tokens, and refuses a wrong key', () => {

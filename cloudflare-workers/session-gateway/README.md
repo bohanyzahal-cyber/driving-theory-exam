@@ -12,7 +12,7 @@ Worker עם שני תפקידים (DESIGN_2026-09-21 §3.4 ו‑§11):
 | נתיב | מי מורשה | תשובה |
 |---|---|---|
 | `GET /` | — | `{status:'ok', service:'session-gateway', build:'…', bank:'<manifest.build>'}` |
-| `GET /v1/poll?kind=approval&sessionCode=ABC12345&idNumber=…&examineeToken=…` | — | בדיוק כמו `checkApproval` בשרת |
+| `GET /v1/poll?kind=approval&sessionCode=ABC12345&idNumber=…&examineeToken=…` | — | בדיוק כמו `checkApproval` בשרת (כולל `approval:rejected`/`cancelled` כשזו השורה החדשה ביותר ואין רישום חי — 21/09 ערב) |
 | `GET /v1/poll?kind=status&…` | — | בדיוק כמו `getExamStatus` בשרת |
 | `GET /v1/poll?…&wait=25&fp=<טביעת האצבע האחרונה>` | — | **סקר ארוך:** אותה תשובה, אבל הבקשה מוחזקת עד שהתשובה משתנה |
 | `GET /v1/bank?grant=…` | scope `exam`/`practice` | המזהים שב‑grant, בכל 7 השפות |

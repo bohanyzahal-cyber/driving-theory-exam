@@ -91,6 +91,10 @@ const BANK_UNAVAILABLE = { status: 'error', code: 'bank_unavailable', retryable:
 // handleCheckApproval skips these and keeps looking for an active row; see the
 // long comment there about the shared-ID incident that put 'rejected' on it.
 const TERMINAL_APPROVALS = { completed: 1, disqualified: 1, cancelled: 1, rejected: 1 };
+// ...and these two, when they are the NEWEST row an id has, are the examiner's
+// decision about the registration itself, so they are answered as themselves
+// instead of 'no registration'. A live row is never either one.
+const FINAL_APPROVALS = { rejected: 1, cancelled: 1 };
 
 // The statuses a /v1/invalidate nudge may write into a snapshot — the complete
 // set ממתינים ever holds. Anything else is a bug or a probe, and the examinee
@@ -203,13 +207,28 @@ function tokenMismatch(row, tokenHex) {
   return Boolean(stored && tokenHex && stored !== tokenHex);
 }
 
-/** null = no active row for this id (the caller decides what that means). */
+/**
+ * null = this id has no row this session, or its newest finished row says
+ * nothing to a device that is still polling (completed / disqualified).
+ *
+ * A LIVE row answers, exactly as the server's scanApprovalRows does. When none
+ * is left, the NEWEST finished row decides, and only when it carries the
+ * examiner's own decision about the registration: 'rejected' and 'cancelled'
+ * are answered as themselves, so the examinee is told what happened instead of
+ * being left on a 'שגיאת שרת' banner. Newest — never "the first terminal row
+ * the loop likes" — is what keeps the shared-ID incident impossible; the long
+ * comment in server/src/50_pending.js tells that story in full.
+ */
 function approvalAnswer(rows, idNumber, tokenHex) {
+  let newestFinished = null;
   for (let i = rows.length - 1; i >= 0; i--) {
     const row = rows[i];
     if (normalizeId(row.id) !== idNumber) continue;
     const approval = String(row.status || 'waiting').trim();
-    if (TERMINAL_APPROVALS[approval]) continue;
+    if (TERMINAL_APPROVALS[approval]) {
+      if (!newestFinished) newestFinished = row;   // walking newest→oldest: the first one IS the newest
+      continue;
+    }
     if (tokenMismatch(row, tokenHex)) {
       return { status: 'error', message: 'טוקן נבחן לא תקין', examineeTokenError: 'mismatch' };
     }
@@ -224,7 +243,15 @@ function approvalAnswer(rows, idNumber, tokenHex) {
     if ((approval === 'approved' || approval === 'in_exam') && minutes > 0) answer.examMinutes = minutes;
     return answer;
   }
-  return null;
+  if (!newestFinished) return null;
+  const decided = String(newestFinished.status || '').trim();
+  if (!FINAL_APPROVALS[decided]) return null;
+  if (tokenMismatch(newestFinished, tokenHex)) {
+    return { status: 'error', message: 'טוקן נבחן לא תקין', examineeTokenError: 'mismatch' };
+  }
+  // Byte for byte what the server answers here: no audioMode, no examMinutes —
+  // there is no exam left to configure (tests/contracts.test.cjs pins it).
+  return { status: 'ok', approval: decided };
 }
 
 /** null = this id has no row at all in the session. */
@@ -257,6 +284,7 @@ const NOT_FOUND = {
  *
  *   approval  a:<approval>:<on|off>:<examMinutes|->   a:approved:on:50
  *   status    s:<examStatus>:<extraMinutes>           s:in_exam:7
+ *   decided   a:rejected:off:- / a:cancelled:off:-    (no audio, no minutes)
  *   no row    a:none / s:none        token mismatch   a:tok / s:tok
  *   errors    x:up (no snapshot at all)               x:kind / x:sess / x:id
  *
@@ -293,6 +321,12 @@ function evaluate(kind, snapshot, idNumber, tokenHex, stale) {
     answer: answer,
     fp: fingerprint(kind, answer, missing),
     missing: missing,
+    // Both of these END the examinee's polling: "no registration" sends the
+    // device back to the code screen, and a rejected/cancelled decision puts a
+    // final message in front of them. A snapshot taken before they registered
+    // again would end it wrongly, so firstLook re-reads once for either — the
+    // same rule the server applies to its own cached snapshot.
+    provisional: missing || Boolean(FINAL_APPROVALS[answer.approval]),
     // A stale copy is never held (the client must back off while we cannot
     // refresh it) and neither is a token mismatch (that one never changes by
     // waiting — the device has to stop). "No row yet" IS held: the row appears
@@ -307,7 +341,7 @@ const UNAVAILABLE_VIEW = {
     status: 'error', code: 'upstream_unavailable', retryable: true,
     message: 'השרת עמוס — ננסה שוב אוטומטית'
   },
-  fp: 'x:up', missing: false, holdable: false
+  fp: 'x:up', missing: false, provisional: false, holdable: false
 };
 
 // --- the gateway -----------------------------------------------------------
@@ -768,8 +802,9 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
     if (!loaded.ok) return UNAVAILABLE_VIEW;
     const view = evaluate(kind, loaded.snapshot, idNumber, tokenHex, loaded.stale);
     // A row the examinee just created is missing from a snapshot taken before
-    // it existed — read once more before telling them they are not registered.
-    if (view.missing && loaded.fromCache && mayForceReread(session)) {
+    // it existed — read once more before telling them they are not registered,
+    // or that the registration they are polling for was rejected or reset.
+    if (view.provisional && loaded.fromCache && mayForceReread(session)) {
       const refreshed = await loadSnapshot(session, true);
       if (refreshed.ok) return evaluate(kind, refreshed.snapshot, idNumber, tokenHex, refreshed.stale);
     }

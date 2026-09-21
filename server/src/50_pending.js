@@ -100,60 +100,90 @@ function handleCheckApproval(p) {
   var rlErr = requireRateLimit('checkApproval', String(p.sessionCode || '') + '_' + normalizeId(p.idNumber), 60, 60);
   if (rlErr) return rlErr;
   var BASE_EXAM_MINUTES = 40;
-  // r23: served from the per-session snapshot (pendingRowsForSession); a row
-  // missing from a cached snapshot is re-read from the sheet before "not found".
+  // r23: served from the per-session snapshot (pendingRowsForSession). Every
+  // answer that is NOT a live row ends the examinee's polling — 'לא נמצא רישום'
+  // sends them back to the code screen, and the examiner's rejected/cancelled
+  // decision puts a final message in front of them — and a cached snapshot can
+  // simply predate a re-registration. So those answers are re-read from the
+  // sheet first; only a live row is answered straight out of the snapshot.
   var snap = pendingRowsForSession(p.sessionCode);
   var found = scanApprovalRows(snap.rows, p, BASE_EXAM_MINUTES);
-  if (!found && snap.cached) found = scanApprovalRows(pendingRowsForSession(p.sessionCode, true).rows, p, BASE_EXAM_MINUTES);
-  return found || jsonResponse({ status: 'error', message: 'לא נמצא רישום' });
+  if (snap.cached && (!found || found.terminal)) {
+    found = scanApprovalRows(pendingRowsForSession(p.sessionCode, true).rows, p, BASE_EXAM_MINUTES);
+  }
+  return found ? jsonResponse(found.body) : jsonResponse({ status: 'error', message: 'לא נמצא רישום' });
 }
 
-// The scan handleCheckApproval used to run inline — unchanged; null = no active row.
+// Token check: when a token is stored for this row, reject mismatches. Legacy
+// rows (no stored token) and the very first poll (the client may not have
+// echoed the token yet) are accepted so we don't break in-flight registrations
+// during the deploy window.
+function approvalTokenMismatch(row, p) {
+  var storedToken = String((row.length > 12 ? row[12] : '') || '').trim();
+  return Boolean(storedToken && p.examineeToken && String(p.examineeToken).trim() !== storedToken);
+}
+
+// The scan handleCheckApproval runs: { body, terminal } — `terminal` marks an
+// answer taken from a FINISHED row, which handleCheckApproval refuses to serve
+// from a cached snapshot — or null when this session has no row for this id.
 function scanApprovalRows(data, p, BASE_EXAM_MINUTES) {
+  var newestFinished = null;
   for (var i = data.length - 1; i >= 1; i--) {
-    if (String(data[i][0]).trim() === String(p.sessionCode).trim() && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
-      var approval = String(data[i][5] || 'waiting').trim();
-      // Skip terminal statuses from previous exams — keep looking for active row
-      // Note: dq_confirmed is NOT skipped — examinee needs to receive this status
-      //
-      // 'rejected' is intentionally on the skip list. Real exam-day incident:
-      // two examinees shared an ID number (family), first was rejected at
-      // 17:47, second cancelled at 18:05. A third visitor with stale
-      // localStorage polled later — the loop skipped the newest cancelled row
-      // and returned the older 'rejected' status, showing "הבוחן דחה" on a
-      // screen that nobody actually rejected. Skipping rejected here forces
-      // the response to "no registration found" when all rows are terminal,
-      // which the client interprets as "your saved state is stale, start over".
-      //
-      // Trade-off: when an examiner rejects a CURRENT registration, the
-      // examinee no longer sees an in-app rejection notice — they see "no
-      // registration" and reset to the code screen. Acceptable because the
-      // examiner is physically next to them and can explain verbally.
-      if (approval === 'completed' || approval === 'disqualified' || approval === 'cancelled' || approval === 'rejected') continue;
-      // Token check: when a token is stored for this row, reject mismatches.
-      // Legacy rows (no stored token) and the very first poll (client may not
-      // have echoed the token yet) are accepted so we don't break in-flight
-      // registrations during the deploy window.
-      var storedToken = String((data[i].length > 12 ? data[i][12] : '') || '').trim();
-      if (storedToken && p.examineeToken && String(p.examineeToken).trim() !== storedToken) {
-        return jsonResponse({ status: 'error', message: 'טוקן נבחן לא תקין', examineeTokenError: 'mismatch' });
-      }
-      var response = { status: 'ok', approval: approval };
-      // Per-examinee audio (column J). Returned on EVERY poll so the examinee's
-      // client stays in sync with what the examiner set on their row — the
-      // client used to freeze the session-level flag at code-entry time and had
-      // no refresh path at all.
-      response.audioMode = String(data[i][9] || '').trim() === 'on' ? 'on' : 'off';
-      // When approved, compute and return authorized exam duration
-      if (approval === 'approved' || approval === 'in_exam') {
-        var ext = parseFloat(data[i][10]) || 1;
-        if (ext !== 1.25 && ext !== 1.5) ext = 1;
-        response.examMinutes = Math.round(BASE_EXAM_MINUTES * ext);
-      }
-      return jsonResponse(response);
+    if (String(data[i][0]).trim() !== String(p.sessionCode).trim() || normalizeId(data[i][1]) !== normalizeId(p.idNumber)) continue;
+    var approval = String(data[i][5] || 'waiting').trim();
+    // Terminal statuses are skipped so that the LIVE attempt is what answers:
+    // a finished row from earlier in the day must never outrank the row the
+    // examinee is waiting on right now. dq_confirmed is NOT terminal — the
+    // examinee has to receive it.
+    //
+    // When nothing live is left, the NEWEST finished row decides, and only
+    // when it is the examiner's own decision about the registration:
+    //   rejected  → {approval:'rejected'}  — 'הבוחן דחה', + 'חזרה להרשמה'
+    //   cancelled → {approval:'cancelled'} — 'ההרשמה בוטלה', + 'חזרה להרשמה'
+    //   completed / disqualified / no row → 'לא נמצא רישום' (start over)
+    //
+    // Until r30 'rejected' was skipped outright and every all-terminal id was
+    // answered 'not found', because of a real exam-day incident: two examinees
+    // shared an ID number (family), the first was rejected at 17:47, the second
+    // cancelled at 18:05, and a third visitor with stale localStorage polled
+    // later — the scan skipped the newest (cancelled) row and returned the
+    // older 'rejected' one, showing 'הבוחן דחה' on a screen nobody had
+    // rejected. Taking the NEWEST finished row instead of the first one the
+    // loop happens to like keeps that impossible: for that visitor the newest
+    // row is the 18:05 'cancelled', so they are told the registration was
+    // cancelled and sent to register again — never that they were rejected.
+    // And the examinee whose CURRENT registration the examiner just rejected or
+    // reset now learns it in-app instead of waiting out a 'שגיאת שרת' banner.
+    if (approval === 'completed' || approval === 'disqualified' || approval === 'cancelled' || approval === 'rejected') {
+      if (!newestFinished) newestFinished = data[i];   // walking newest→oldest: the first one IS the newest
+      continue;
     }
+    if (approvalTokenMismatch(data[i], p)) {
+      return { body: { status: 'error', message: 'טוקן נבחן לא תקין', examineeTokenError: 'mismatch' }, terminal: false };
+    }
+    var response = { status: 'ok', approval: approval };
+    // Per-examinee audio (column J). Returned on EVERY poll so the examinee's
+    // client stays in sync with what the examiner set on their row — the
+    // client used to freeze the session-level flag at code-entry time and had
+    // no refresh path at all.
+    response.audioMode = String(data[i][9] || '').trim() === 'on' ? 'on' : 'off';
+    // When approved, compute and return authorized exam duration
+    if (approval === 'approved' || approval === 'in_exam') {
+      var ext = parseFloat(data[i][10]) || 1;
+      if (ext !== 1.25 && ext !== 1.5) ext = 1;
+      response.examMinutes = Math.round(BASE_EXAM_MINUTES * ext);
+    }
+    return { body: response, terminal: false };
   }
-  return null;
+  if (!newestFinished) return null;
+  var decided = String(newestFinished[5] || '').trim();
+  // completed / disqualified say nothing to a device that is still polling: the
+  // exam is over, and 'לא נמצא רישום' is what sends it back to the code screen.
+  if (decided !== 'rejected' && decided !== 'cancelled') return null;
+  if (approvalTokenMismatch(newestFinished, p)) {
+    return { body: { status: 'error', message: 'טוקן נבחן לא תקין', examineeTokenError: 'mismatch' }, terminal: true };
+  }
+  return { body: { status: 'ok', approval: decided }, terminal: true };
 }
 
 function handleApproveExaminee(p) {
