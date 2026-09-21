@@ -78,6 +78,15 @@ const WAIT_MAX_S = 25;
 const HOLD_TICK_MS = 1000;
 const HOLD_MAX_STEPS = 26;
 
+// A hold answers at its deadline plus this grace even when the look it started
+// is still in flight. A look may open an upstream read, and a slow Apps Script
+// (4-20 s a call on a bad morning) once stretched a 25 s hold to 44 s of wall
+// time: the client aborts at 40 s and counts that as a real communication
+// failure. The hold is bounded by its own deadline, never by Google's answer.
+const HOLD_GRACE_MS = 1000;
+// The loser of that race and nothing else: a value no view can ever be.
+const HOLD_TIMED_OUT = Symbol('hold-timed-out');
+
 // The assets binding is addressed by URL; the host is arbitrary and never
 // leaves the isolate. Paths are built from validated numbers only.
 const ASSET_ORIGIN = 'https://assets.local';
@@ -845,7 +854,7 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
     return old ? look(old, true) : UNAVAILABLE_VIEW;
   }
 
-  async function poll(request, url) {
+  async function poll(request, url, ctx) {
     const kind = url.searchParams.get('kind') || '';
     const session = String(url.searchParams.get('sessionCode') || '').trim();
     const rawId = url.searchParams.get('idNumber') || '';
@@ -887,7 +896,26 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
       const deadline = start + waitMs;
       for (let step = 0; step < HOLD_MAX_STEPS && clock() < deadline; step++) {
         await waitForChange(session, Math.min(HOLD_TICK_MS, deadline - clock()));
-        view = await holdLook(session, kind, idNumber, tokenHex, clientFp);
+        // The look may open an upstream read, so it races what is left of the
+        // hold plus HOLD_GRACE_MS. A read started a second before the deadline
+        // and answered 10 s later would otherwise hold the request past the
+        // client's own 40 s abort: a slow Google must never turn a held poll
+        // into a client-side communication failure.
+        const grace = Math.max(0, deadline - clock()) + HOLD_GRACE_MS;
+        const look = holdLook(session, kind, idNumber, tokenHex, clientFp);
+        const next = await Promise.race([look, nap(grace).then(() => HOLD_TIMED_OUT)]);
+        if (next === HOLD_TIMED_OUT) {
+          // Abandoned, not cancelled. The read is coalesced, so letting it
+          // finish lands the snapshot in memory and in caches.default for the
+          // other holders and for this client's next poll; without waitUntil
+          // the runtime may kill it together with this response and the next
+          // poll pays for the same read again. The answer is the view we
+          // already had - same fp, so the client just polls again.
+          const abandoned = look.catch(() => { /* a late failure is no longer ours */ });
+          if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(abandoned);
+          break;
+        }
+        view = next;
         if (!view.holdable || view.fp !== clientFp) break;
       }
       held = Math.max(0, clock() - start);
@@ -895,7 +923,9 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
     return reply(view.answer, view.fp, held);
   }
 
-  const handle = async function handle(request) {
+  // `ctx` is the Workers execution context and may be absent (a test, a direct
+  // call): only the hold uses it, and only to let an abandoned look finish.
+  const handle = async function handle(request, ctx) {
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders(request) });
     }
@@ -912,7 +942,7 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
         status: 'ok', service: 'session-gateway', build: BUILD, bank: await bankBuild()
       });
     }
-    if (url.pathname === '/v1/poll') return poll(request, url);
+    if (url.pathname === '/v1/poll') return poll(request, url, ctx);
     if (url.pathname === '/v1/bank') return bank(request, url);
     if (url.pathname === '/v1/bank/full') return bankFull(request, url);
     return jsonResponse(request, { status: 'error', message: 'not found' }, 404);
@@ -936,7 +966,7 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
 let singleton = null;
 
 export default {
-  fetch(request, env) {
+  fetch(request, env, ctx) {
     if (!singleton) {
       singleton = createGateway({
         fetch: (url, init) => globalThis.fetch(url, init),
@@ -945,6 +975,6 @@ export default {
         env: env
       });
     }
-    return singleton(request);
+    return singleton(request, ctx);
   }
 };

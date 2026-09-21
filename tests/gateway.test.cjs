@@ -158,10 +158,13 @@ async function advance(state, ms) {
  * isolate: new memory, same cache, same clock, same upstream counter.
  */
 function harness(snapshots, assets, withCache) {
-  const state = { calls: [], clock: CLOCK0, mode: 'ok', snapshots: snapshots || {} };
+  const state = { calls: [], clock: CLOCK0, mode: 'ok', snapshots: snapshots || {}, upstreamDelayMs: 0 };
   state.timers = timerQueue(state);
   const fetchFn = async url => {
     state.calls.push(String(url));
+    // A slow Google, through the same fake clock: `upstreamDelayMs` is what a
+    // held request's look can still be waiting on when its deadline passes.
+    if (state.upstreamDelayMs) await state.timers.sleep(state.upstreamDelayMs);
     if (state.mode === 'error500') return new Response('<html>Google internal error</html>', { status: 500 });
     if (state.mode === 'notfound') return new Response('Not Found', { status: 404 });
     if (state.mode === 'html200') return new Response('<!DOCTYPE html><html>Drive error</html>', { status: 200 });
@@ -180,8 +183,8 @@ function harness(snapshots, assets, withCache) {
 }
 
 /** Any route: the raw text matters for the bank, which never re-serialises. */
-async function call(gateway, pathAndQuery, init) {
-  const res = await gateway(new Request('https://session-gateway.test' + pathAndQuery, init));
+async function call(gateway, pathAndQuery, init, ctx) {
+  const res = await gateway(new Request('https://session-gateway.test' + pathAndQuery, init), ctx);
   const text = await res.text();
   let body = null;
   try { body = JSON.parse(text); } catch (e) { /* the test asserts on text */ }
@@ -192,8 +195,8 @@ function pollRequest(params, origin) {
   const url = 'https://session-gateway.test/v1/poll?' + new URLSearchParams(params).toString();
   return new Request(url, origin ? { headers: { Origin: origin } } : undefined);
 }
-async function poll(gateway, params, origin) {
-  const res = await gateway(pollRequest(params, origin));
+async function poll(gateway, params, origin, ctx) {
+  const res = await gateway(pollRequest(params, origin), ctx);
   return { res, body: await res.json() };
 }
 const approvalPoll = (id, over) => Object.assign({ kind: 'approval', sessionCode: SESSION, idNumber: id }, over);
@@ -910,7 +913,7 @@ test('a hold runs out its `wait` and answers the same fingerprint', async () => 
 
   assert.deepEqual(body, { status: 'ok', approval: 'waiting', audioMode: 'off', fp: WAITING_FP, held: 5000 });
   assert.equal(state.clock, CLOCK0 + 5000, 'it really waited the five seconds');
-  assert.equal(state.timers.calls, 5, 'one evaluation per second, not a spin');
+  assert.equal(state.timers.calls, 10, 'five evaluations, one per second, not a spin');
   assert.equal(state.calls.length, 2, 'five seconds of holding cost one extra execution, not five');
   assert.deepEqual(gateway._debug().waiting, 0, 'and it took its resolver back out');
 });
@@ -1130,7 +1133,72 @@ test('a hold is refused when the client is already behind, and `wait` is clamped
   // second and not one more, whatever wakes it.
   const { body } = await settle(state, poll(gateway, approvalPoll('900000001', { wait: 26, fp: 'a:approved:off:50' })));
   assert.equal(body.held, 25000, 'clamped to the 25 s ceiling');
-  assert.ok(state.timers.calls <= 26, 'at most 26 evaluations for a full hold, got ' + state.timers.calls);
-  assert.equal(state.timers.calls, 25);
+  assert.ok(state.timers.calls <= 26 * 2,
+    'at most 26 evaluations for a full hold, got ' + state.timers.calls / 2);
+  assert.equal(state.timers.calls, 50, '25 evaluations, each parking a tick and a grace timer');
+  assert.equal(gateway._debug().waiting, 0);
+});
+
+// --- the hold never outlives its own deadline ------------------------------
+
+test('a slow upstream started late in the hold does not stretch it past the deadline', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
+  await poll(gateway, approvalPoll('900000001'));
+  assert.equal(state.calls.length, 1, 'a fresh snapshot to hold on');
+
+  // One second on, so the snapshot expires with a second of the hold still to
+  // run: the look at t=3 s finds nothing fresh and opens an upstream read that
+  // Google answers only ten seconds later. This is the shape seen live, where
+  // a read started at second 24 of a 25 s hold made it 44 s long.
+  await advance(state, 1000);
+  state.upstreamDelayMs = 10000;
+
+  const { body } = await settle(state,
+    poll(gateway, approvalPoll('900000001', { wait: 3, fp: WAITING_FP })));
+
+  assert.equal(state.calls.length, 2, 'the look really did open the read');
+  assert.deepEqual(body, {
+    status: 'ok', approval: 'waiting', audioMode: 'off', fp: WAITING_FP, held: 4000
+  }, 'the unchanged answer, so the client simply polls again');
+  assert.ok(body.held <= 3000 + 1000, 'the deadline plus one second of grace, got ' + body.held);
+  assert.equal(state.clock, CLOCK0 + 5000,
+    'answered at 5 s - NOT at 13 s, when Google finally replied');
+  assert.equal(gateway._debug().waiting, 0, 'and it took its resolver back out');
+
+  // Let the abandoned read finish, so no real abort timer outlives the test.
+  await advance(state, 20000);
+});
+
+test('the abandoned look still lands, and the next poll is served from it', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
+  await poll(gateway, approvalPoll('900000001'));
+  await advance(state, 1000);
+  state.upstreamDelayMs = 10000;
+
+  const pending = [];
+  const ctx = { waitUntil: promise => pending.push(promise) };
+  const held = await settle(state,
+    poll(gateway, approvalPoll('900000001', { wait: 3, fp: WAITING_FP }), undefined, ctx));
+
+  assert.equal(held.body.held, 4000);
+  assert.equal(held.body.fp, WAITING_FP, 'the client keeps the answer it had');
+  assert.equal(pending.length, 1, 'the look was handed to waitUntil, not dropped with the response');
+
+  // While Google was answering, the examiner approved: the read this hold
+  // walked away from is the one carrying the decision.
+  state.snapshots[SESSION] = [row({ status: 'approved', examMinutes: 50 })];
+  await settle(state, Promise.all(pending));
+  assert.equal(state.clock, CLOCK0 + 13000, 'it finished ten seconds after it started');
+  assert.equal(state.calls.length, 2, 'and it was that same read, not a new one');
+
+  // Half a second later the examinee polls again. Memory holds what the
+  // abandoned look put there, so Apps Script is not asked a second time.
+  await advance(state, 500);
+  const after = await poll(gateway, approvalPoll('900000001', { wait: 25, fp: WAITING_FP }));
+  assert.deepEqual(after.body, {
+    status: 'ok', approval: 'approved', audioMode: 'off', examMinutes: 50,
+    fp: 'a:approved:off:50', held: 0
+  });
+  assert.equal(state.calls.length, 2, 'the abandoned read paid for this answer');
   assert.equal(gateway._debug().waiting, 0);
 });
