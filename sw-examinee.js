@@ -3,15 +3,16 @@
 // fallback). Was cache-first, which left devices running a STALE examinee.html
 // after every deploy until a manual cache bump — a real source of "old code on
 // some devices". Mirrors sw-examiner.js (already network-first).
-var CACHE = 'examinee-b438919a';
+var CACHE = 'examinee-c8c301d0';
 var IMG_CACHE = 'exam-images-v1';   // question images, warmed by the page at exam start, served offline
 
 self.addEventListener('install', function(e) {
-  // The shared layers and the bank manifest are part of the shell now: without
-  // transport.js or bank.js the page cannot run at all, and without the manifest
-  // it cannot even name the bank files it needs.
+  // The shared layers are part of the shell: without transport.js or bank.js the
+  // page cannot run at all. The question TEXTS are not here and never will be —
+  // they come from the session-gateway Worker against a per-exam signed grant,
+  // and a grant is not something a cache may hand to the next device.
   e.waitUntil(caches.open(CACHE).then(function(c) {
-    return c.addAll(['./examinee.html', './shared/transport.js', './shared/bank.js', './bank/manifest.json',
+    return c.addAll(['./examinee.html', './shared/transport.js', './shared/bank.js',
                      './icon-examinee-192.png', './icon-examinee-512.png']);
   }));
   self.skipWaiting();
@@ -32,17 +33,14 @@ self.addEventListener('fetch', function(e) {
   if (url.origin === self.location.origin) {
     // NETWORK-FIRST same-origin: try the network so the latest HTML is always
     // served; refresh the cache on success; fall back to cache only when offline.
-    var isBank = url.pathname.indexOf('/bank/') !== -1 && /\.json$/.test(url.pathname);
     e.respondWith(
       fetch(req).then(function(resp) {
         if (resp && resp.ok) { var clone = resp.clone(); caches.open(CACHE).then(function(c) { c.put(req, clone); }); }
         return resp;
       }).catch(function() {
-        // bank/<lang>.json is requested with ?v=<sha>; offline, the cached copy
-        // of the previous build is the only text the examinee has, and a query
-        // string must not be what stands between them and their exam.
-        return caches.match(req, isBank ? { ignoreSearch: true } : undefined)
-          .then(function(r) { return r || (isBank ? Response.error() : caches.match('./examinee.html')); });
+        // Offline: serve the cached copy, and the page itself for anything else —
+        // a reload mid-exam must land on examinee.html even with no network.
+        return caches.match(req).then(function(r) { return r || caches.match('./examinee.html'); });
       })
     );
     return;

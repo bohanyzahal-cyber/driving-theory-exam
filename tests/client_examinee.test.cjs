@@ -122,16 +122,26 @@ function makeDom() {
 function memoryStore() {
   const entries = new Map();
   const store = {
-    entries, reject: () => false,
+    entries, reject: () => false, rejectBig: 0,
     get length() { return entries.size; }, key: i => [...entries.keys()][i] ?? null,
     getItem: k => entries.get(String(k)) ?? null,
-    setItem(k, v) { if (store.reject(String(k))) throw Object.assign(new Error('quota'), { name: 'QuotaExceededError' }); entries.set(String(k), String(v)); },
+    setItem(k, v) {
+      // rejectBig models the real quota: the SAME key is accepted once it is small
+      // enough, which is what the drop-the-texts fallback depends on.
+      if (store.reject(String(k)) || (store.rejectBig && String(v).length > store.rejectBig)) {
+        throw Object.assign(new Error('quota'), { name: 'QuotaExceededError' });
+      }
+      entries.set(String(k), String(v));
+    },
     removeItem: k => entries.delete(String(k))
   };
   return store;
 }
 
 // ---------- the synthetic bank ----------
+// The texts are not on this site any more: the Worker serves the 30 ids the
+// grant names, in every language at once. BANK_FILES is still the source of the
+// texts, so every rendering assertion below means exactly what it meant before.
 const LANGS = ['he', 'ru', 'en', 'ar', 'fr', 'es', 'am'];
 const BANK_FILES = {};
 for (const lang of LANGS) {
@@ -144,12 +154,25 @@ for (const lang of LANGS) {
     BANK_FILES[lang].push({ id, t: lang + ' question ' + id, a: answers, i: id % 5 === 0 ? 'TQ_PIC_' + id + '.jpg' : '' });
   }
 }
-const MANIFEST = { build: 'bank-test', langs: {} };
-for (const lang of LANGS) MANIFEST.langs[lang] = { sha: lang + 'sha', count: BANK_FILES[lang].length };
+const EXAM_BANK = { url: 'https://gw.test', grant: 'g1' };
+
+/** One /v1/bank record: the question in every language `langs` lists. */
+function bankRecord(id, langs) {
+  const l = {};
+  for (const lang of langs) {
+    const entry = BANK_FILES[lang][id - 1];
+    if (entry) l[lang] = { t: entry.t, a: entry.a, i: entry.i };
+  }
+  return { id, l };
+}
+function bankAnswer(ids, langs = LANGS) {
+  return { status: 'ok', build: 'bank-test', missing: [], questions: ids.map(id => bankRecord(id, langs)) };
+}
 
 const SERVER_QUESTIONS = Array.from({ length: TOTAL }, (_, i) => ({
   id: i + 1, order: [[2, 0, 3, 1], [1, 3, 0, 2], [0, 1, 2, 3], [3, 2, 1, 0]][i % 4], topic: 'חוק'
 }));
+const ISSUED_IDS = SERVER_QUESTIONS.map(q => q.id);
 
 // ---------- the whole page ----------
 function completePage({ local = memoryStore(), session = memoryStore(), reply, gateway = '', onReload, userAgent = 'Synthetic desktop', touchPoints = 0 } = {}) {
@@ -255,9 +278,7 @@ function defaultReply(request, gateway) {
     return request.kind === 'approval' ? { status: 'ok', approval: 'approved', audioMode: 'off', examMinutes: 40 }
                                        : { status: 'ok', examStatus: 'in_exam', extraMinutes: 0 };
   }
-  if (url.indexOf('bank/manifest.json') !== -1) return MANIFEST;
-  const bank = /bank\/([a-z]{2})\.json/.exec(url);
-  if (bank) return BANK_FILES[bank[1]] || { __status: 404, __raw: 'not found' };
+  if (url.indexOf('/v1/bank') !== -1) return bankAnswer(ISSUED_IDS);
   if (url.indexOf('version.json') !== -1) return { build: 'v1', pages: { 'examinee.html': 'hash-1' } };
   switch (request.action) {
     case 'getSessionInfo':
@@ -267,7 +288,8 @@ function defaultReply(request, gateway) {
     case 'checkApproval': return { status: 'ok', approval: 'approved', audioMode: 'off', examMinutes: 40 };
     case 'getExamStatus': return { status: 'ok', examStatus: 'in_exam', extraMinutes: 0 };
     case 'startExam': return { status: 'ok', build: 'r25', examMinutes: 40, extraMinutes: 0, audioMode: 'off',
-      language: request.language, license: request.license, registeredAt: '', questions: SERVER_QUESTIONS };
+      language: request.language, license: request.license, registeredAt: '', questions: SERVER_QUESTIONS,
+      bank: EXAM_BANK };
     case 'submitResult': return { status: 'ok', waLink: '' };
     default: return { status: 'ok' };
   }
@@ -298,7 +320,7 @@ async function startExam(page) {
 }
 
 // ===================== 1. exam start =====================
-test('start: ONE startExam call builds the 30 questions from the static bank, in the server order', async () => {
+test('start: ONE startExam call builds the 30 questions, in the server order, with texts from the grant', async () => {
   const page = completePage();
   await register(page);
   await startExam(page);
@@ -360,7 +382,7 @@ test('start: a bad answer permutation falls back to the natural order instead of
   const page = completePage({ reply(request) {
     if (request.action !== 'startExam') return undefined;
     const questions = SERVER_QUESTIONS.map((q, i) => i === 0 ? { id: q.id, order: [0, 0, 1, 2], topic: q.topic } : q);
-    return { status: 'ok', examMinutes: 40, extraMinutes: 0, audioMode: 'off', questions };
+    return { status: 'ok', examMinutes: 40, extraMinutes: 0, audioMode: 'off', questions, bank: EXAM_BANK };
   } });
   await register(page);
   await startExam(page);
@@ -369,7 +391,7 @@ test('start: a bad answer permutation falls back to the natural order instead of
 
 test('start: examMinutes and a pre-granted extension both reach the clock', async () => {
   const page = completePage({ reply: r => r.action === 'startExam'
-    ? { status: 'ok', examMinutes: 50, extraMinutes: 10, audioMode: 'off', questions: SERVER_QUESTIONS } : undefined });
+    ? { status: 'ok', examMinutes: 50, extraMinutes: 10, audioMode: 'off', questions: SERVER_QUESTIONS, bank: EXAM_BANK } : undefined });
   await register(page);
   await startExam(page);
   const state = page.t.state();
@@ -377,15 +399,97 @@ test('start: examMinutes and a pre-granted extension both reach the clock', asyn
   assert.ok(Math.abs(state.deadline - page.timer.now - 60 * 60 * 1000) < 1000, '50 authorised + 10 granted');
 });
 
+// ===================== 1b. the question texts =====================
+const bankCalls = page => page.requests.filter(r => String(r.__url).includes('/v1/bank'));
+
+test('bank: nothing is fetched while the examinee waits — the grant does not exist yet', async () => {
+  const page = completePage();
+  await register(page);
+  await page.timer.advance(120000);
+  assert.equal(bankCalls(page).length, 0, 'registration and the whole approval wait cost the bank Worker nothing');
+  assert.equal(page.t.state().screen, 'screenInstructions');
+  await startExam(page);
+  assert.equal(bankCalls(page).length, 1, 'ONE request, right after startExam, carrying the grant it just issued');
+  assert.equal(bankCalls(page)[0].grant, 'g1');
+});
+
+test('bank: the texts the examinee reads are the ones the grant bought', async () => {
+  const page = completePage();
+  await register(page);
+  await startExam(page);
+  assert.equal(page.el('examArea').querySelector('.q-text').textContent, BANK_FILES.he[0].t);
+  page.t.goTo(7);
+  assert.equal(page.el('examArea').querySelector('.q-text').textContent, BANK_FILES.he[7].t);
+  assert.deepEqual(page.el('examArea').querySelectorAll('.ans-text').map(n => n.textContent),
+    SERVER_QUESTIONS[7].order.map(i => BANK_FILES.he[7].a[i]));
+});
+
+test('bank: a server with no gateway configured says so instead of offering a pointless cooldown', async () => {
+  const page = completePage({ reply: r => r.action === 'startExam'
+    ? { status: 'ok', examMinutes: 40, extraMinutes: 0, audioMode: 'off', questions: SERVER_QUESTIONS } : undefined });
+  await register(page);
+  await startExam(page);
+  assert.equal(page.t.state().inProgress, false, 'an exam without texts is not an exam');
+  assert.equal(bankCalls(page).length, 0, 'there is nothing to ask and no grant to ask with');
+  const html = page.el('examArea').innerHTML;
+  assert.match(html, /מאגר השאלות אינו מוגדר בשרת/);
+  assert.ok(!/השרת עמוס/.test(html), 'this is a missing server setting, not a busy server');
+  assert.equal(page.el('retryExamStartBtn').disabled, false, 'no cooldown: re-clicking cannot fix it, but it is not blocked either');
+});
+
+test('bank: a Worker that will not answer is retried on the ladder, then the examinee gets a retry', async () => {
+  let down = true;
+  const page = completePage({ reply: r => (String(r.__url).includes('/v1/bank') && down)
+    ? { __status: 503, __raw: '{"status":"error","code":"bank_unavailable"}' } : undefined });
+  await register(page);
+  page.el('airplaneCheckbox').checked = true;
+  page.el('airplaneCheckbox').fire('change');
+  page.el('startExamBtn').click();
+  await drain();
+  await page.timer.advance(6000);                       // the 1.5 s + 3 s ladder inside bank.js
+  assert.equal(bankCalls(page).length, 3, 'three attempts and then it stops — a ladder, not a storm');
+  assert.equal(page.t.state().inProgress, false);
+  assert.match(page.el('examArea').innerHTML, /לא הצלחנו לטעון את השאלות/);
+  assert.equal(page.sent('startExam').length, 1, 'the row was already written; the retry does not write a second one');
+
+  down = false;
+  await page.timer.advance(5000);
+  assert.equal(page.el('retryExamStartBtn').disabled, false);
+  page.el('retryExamStartBtn').click();
+  await drain(); await page.timer.advance(100); await drain();
+  assert.equal(page.t.state().inProgress, true, 'and the retry starts the exam');
+  assert.deepEqual(plain(page.t.state().questions).map(q => q.id), ISSUED_IDS, 'with the same 30 ids');
+});
+
+test('bank: an id no language could serve is a failed load, never a blank question', async () => {
+  const page = completePage({ reply(r) {
+    if (!String(r.__url).includes('/v1/bank')) return undefined;
+    const body = bankAnswer(ISSUED_IDS);
+    body.questions = body.questions.slice(1);
+    body.missing = [ISSUED_IDS[0]];
+    return body;
+  } });
+  await register(page);
+  page.el('airplaneCheckbox').checked = true;
+  page.el('airplaneCheckbox').fire('change');
+  page.el('startExamBtn').click();
+  await drain(); await page.timer.advance(6000);
+  assert.equal(page.t.state().inProgress, false);
+  assert.match(page.el('examArea').innerHTML, /לא הצלחנו לטעון את השאלות/);
+});
+
 // ===================== 2. language =====================
-test('language: a switch is local — no request — and the answers follow the new language', async () => {
+test('language: a switch is local — no request at all — and the answers follow the new language', async () => {
   const page = completePage();
   await register(page);
   await startExam(page);
   const before = page.requests.length;
-  page.t.switchLang('ru');
-  await drain();
-  assert.equal(page.requests.length, before, 'every bank was prefetched while waiting for approval');
+  for (const lang of ['ru', 'en', 'ar', 'fr', 'es', 'am', 'he']) { page.t.switchLang(lang); await drain(); }
+  await page.timer.advance(50);
+  assert.equal(page.requests.filter(r => String(r.__url).includes('/v1/bank')).length, 1,
+    'ONE request bought all seven languages; a switch never touches the network again');
+  page.t.switchLang('ru'); await drain();
+  assert.equal(page.requests.length, before, 'and nothing else was sent either');
   assert.equal(page.t.state().lang, 'ru');
   const shown = page.el('examArea').querySelectorAll('.ans-text').map(n => n.textContent);
   assert.deepEqual(shown, SERVER_QUESTIONS[0].order.map(i => BANK_FILES.ru[0].a[i]));
@@ -445,15 +549,17 @@ test('language: he/ru/am share an order, so an answer given in Hebrew is NOT fro
   assert.equal(page.el('examArea').querySelector('.frozen-answer-notice'), null);
 });
 
-test('language: a language whose bank cannot be fetched keeps the exam running', async () => {
-  const page = completePage({ reply: r => String(r.__url).includes('bank/am.json') ? { __network: true } : undefined });
+test('language: a language the Worker had no text for keeps the exam running', async () => {
+  const served = LANGS.filter(l => l !== 'am');
+  const page = completePage({ reply: r => String(r.__url).includes('/v1/bank') ? bankAnswer(ISSUED_IDS, served) : undefined });
   await register(page);
   await startExam(page);
   page.t.switchLang('am');
   await drain(); await page.timer.advance(100); await drain();
   assert.equal(page.t.state().lang, 'he', 'the exam stays in the language it was in');
-  assert.match(page.el('examNotice').textContent, /לא ניתן לטעון/);
+  assert.match(page.el('examNotice').textContent, /אינן זמינות בשפה/);
   assert.equal(page.t.state().inProgress, true);
+  assert.equal(page.requests.filter(r => String(r.__url).includes('/v1/bank')).length, 1, 'and it did not go looking for one');
 });
 
 // ===================== 3. submit =====================
@@ -683,6 +789,37 @@ test('DQ: an overturned disqualification resumes the exam with its questions and
   assert.equal(page.el('examArea').querySelector('.q-text').textContent, BANK_FILES.he[0].t, 'and its texts, from the bank');
 });
 
+test('DQ: an overturn after a RELOAD resumes from the texts the suspended state kept, with no network', async () => {
+  let approval = 'approved';
+  const dqReply = r => {
+    if (r.action === 'getExamStatus' || r.kind === 'status') return { status: 'ok', examStatus: 'disqualified', extraMinutes: 0 };
+    if (r.action === 'checkApproval' || r.kind === 'approval') return { status: 'ok', approval: approval, audioMode: 'off' };
+    return undefined;
+  };
+  const local = memoryStore(), session = memoryStore();
+  const first = completePage({ local, session, reply: dqReply });
+  await register(first);
+  await startExam(first);
+  first.t.answerCurrent(1);
+  const answered = plain(first.t.state().answers[0]);
+  await first.timer.advance(30000);                  // the examiner disqualifies
+  assert.equal(first.t.state().dq, true);
+  const suspended = JSON.parse(local.getItem('examSuspended_ABC12345_123456789'));
+  assert.equal(suspended.records.length, TOTAL, 'the texts were suspended with the exam');
+
+  // the examinee reloads while disqualified, and only then is it overturned
+  approval = 'in_exam';
+  const second = completePage({ local, session, reply: r => (String(r.__url).includes('/v1/bank') || r.action === 'startExam')
+    ? { __network: true } : dqReply(r) });
+  await drain(); await second.timer.advance(30000); await drain();
+  const state = second.t.state();
+  assert.equal(state.inProgress, true, 'the exam resumes');
+  assert.deepEqual(plain(state.answers[0]), answered, 'with the answers it had');
+  assert.equal(second.el('examArea').querySelector('.q-text').textContent, BANK_FILES.he[0].t, 'and its texts, from the device');
+  assert.equal(bankCalls(second).length, 0);
+  assert.equal(second.sent('startExam').length, 0);
+});
+
 // ===================== 5. images =====================
 test('D15: the local copy is the only source tried first; the proxy and gov.il are fallbacks', async () => {
   const page = completePage();
@@ -709,6 +846,37 @@ test('gateway: both polls go to the Worker when the session names one', async ()
   assert.ok(polls.some(p => p.kind === 'status'));
   assert.ok(polls.every(p => p.sessionCode === 'ABC12345' && p.idNumber === '123456789' && p.examineeToken === 'tok-1'));
   assert.equal(page.sent('checkApproval').length, 0, 'nothing reached Apps Script');
+});
+
+test('gateway: the approval poll runs at 2 s for the first two minutes, then settles to 3 s', async () => {
+  // Through the Worker a poll costs Apps Script nothing, so the window in which
+  // the examiner is actually walking the room is the fast one.
+  const page = completePage({ gateway: 'https://gw.example/',
+    reply: r => String(r.__url).includes('/v1/poll') ? { status: 'ok', approval: 'waiting', audioMode: 'off' } : undefined });
+  await register(page);
+  const polls = () => page.requests.filter(r => String(r.__url).includes('/v1/poll') && r.kind === 'approval').length;
+  const opening = polls();
+  await page.timer.advance(60000);
+  const fast = polls() - opening;
+  assert.ok(Math.abs(fast - 30) <= 2, 'about one every 2 s in the opening minute: ' + fast);
+  await page.timer.advance(70000);                 // now past the 120 s window
+  const settled = polls();
+  await page.timer.advance(60000);
+  const slow = polls() - settled;
+  assert.ok(Math.abs(slow - 20) <= 2, 'and one every 3 s afterwards: ' + slow);
+  assert.equal(page.sent('checkApproval').length, 0, 'none of it reached Apps Script');
+});
+
+test('gateway: the in-exam status poll runs at 6 s', async () => {
+  const page = completePage({ gateway: 'https://gw.example/' });
+  await register(page);
+  await startExam(page);
+  const polls = () => page.requests.filter(r => String(r.__url).includes('/v1/poll') && r.kind === 'status').length;
+  const before = polls();
+  await page.timer.advance(60000);
+  const n = polls() - before;
+  assert.ok(Math.abs(n - 10) <= 2, 'one every 6 s: ' + n);
+  assert.equal(page.sent('getExamStatus').length, 0);
 });
 
 test('gateway: upstream_unavailable slows the poll down but never sends the fleet at Apps Script', async () => {
@@ -787,7 +955,8 @@ test('D20: this tab\'s own state is restored without a question', async () => {
   assert.equal(page.t.state().id, '123456789');
 });
 
-test('resume: a reload during the exam rebuilds the questions from the bank and keeps the answers', async () => {
+/** Runs one exam up to an answer and hands back the stores it wrote. */
+async function examInProgressStores() {
   const local = memoryStore(), session = memoryStore();
   const first = completePage({ local, session });
   await register(first);
@@ -795,15 +964,144 @@ test('resume: a reload during the exam rebuilds the questions from the bank and 
   first.t.answerCurrent(3);
   const savedAnswer = plain(first.t.state().answers[0]);
   await first.timer.advance(5000);
+  return { local, session, savedAnswer, first };
+}
+const activeBlob = session => JSON.parse(session.getItem('ext_exam_active'));
 
-  const second = completePage({ local, session });
-  await drain(); await second.timer.advance(100); await drain();
+test('resume: an exam that has started is LOCAL — a reload with no network at all still resumes it', async () => {
+  const { local, session, savedAnswer } = await examInProgressStores();
+  assert.equal(activeBlob(session).records.length, TOTAL, 'the texts were saved next to the exam');
+
+  // Nothing answers: no Worker, no Apps Script, no Pages. This is the invariant.
+  const second = completePage({ local, session, reply: () => ({ __network: true }) });
+  await drain(); await second.timer.advance(10000); await drain();
   const state = second.t.state();
   assert.equal(state.inProgress, true, 'the exam resumes');
   assert.equal(state.questions.length, TOTAL);
   assert.deepEqual(plain(state.answers[0]), savedAnswer, 'with the answer exactly as it was displayed');
   assert.equal(second.el('examArea').querySelector('.q-text').textContent, BANK_FILES.he[0].t);
+  assert.equal(bankCalls(second).length, 0, 'it never asked the Worker');
+  assert.equal(second.sent('startExam').length, 0, 'and never asked the server for a new grant');
+  // and every language is still there, so a switch mid-reconnection is local too
+  second.t.switchLang('ru'); await drain();
+  assert.equal(second.el('examArea').querySelector('.q-text').textContent, BANK_FILES.ru[0].t);
 });
+
+test('resume: the resumed exam saves the texts and the grant again, so a second reload is local too', async () => {
+  const { local, session } = await examInProgressStores();
+  const second = completePage({ local, session, reply: () => ({ __network: true }) });
+  await drain(); await second.timer.advance(10000); await drain();
+  const blob = activeBlob(session);
+  assert.equal(blob.records.length, TOTAL);
+  assert.deepEqual(blob.bank, EXAM_BANK, 'the grant rode along even though it was never used');
+
+  const third = completePage({ local, session, reply: () => ({ __network: true }) });
+  await drain(); await third.timer.advance(10000); await drain();
+  assert.equal(third.t.state().inProgress, true);
+  assert.equal(bankCalls(third).length, 0);
+});
+
+test('resume: a blob with no texts (an older one, or one that did not fit) uses the STORED grant', async () => {
+  const { local, session, savedAnswer } = await examInProgressStores();
+  const blob = activeBlob(session);
+  delete blob.records;                       // exactly what a pre-snapshot blob looks like
+  session.setItem('ext_exam_active', JSON.stringify(blob));
+
+  const second = completePage({ local, session });
+  await drain(); await second.timer.advance(100); await drain();
+  const state = second.t.state();
+  assert.equal(state.inProgress, true);
+  assert.deepEqual(plain(state.answers[0]), savedAnswer);
+  assert.equal(second.el('examArea').querySelector('.q-text').textContent, BANK_FILES.he[0].t);
+  assert.equal(bankCalls(second).length, 1);
+  assert.equal(bankCalls(second)[0].grant, 'g1', 'the grant that was saved with the exam');
+  assert.equal(second.sent('startExam').length, 0, 'a reload still costs the server nothing');
+});
+
+test('resume: a truncated snapshot is not trusted — it falls back to the grant', async () => {
+  const { local, session } = await examInProgressStores();
+  const blob = activeBlob(session);
+  blob.records = blob.records.slice(0, 5);   // 5 of 30: some questions would be blank
+  session.setItem('ext_exam_active', JSON.stringify(blob));
+
+  const second = completePage({ local, session });
+  await drain(); await second.timer.advance(100); await drain();
+  assert.equal(second.t.state().inProgress, true);
+  assert.equal(bankCalls(second).length, 1, 'a partial copy is no better than none');
+  assert.equal(second.el('examArea').querySelector('.q-text').textContent, BANK_FILES.he[0].t);
+});
+
+test('resume: a stored grant the Worker refuses costs ONE startExam, not the exam', async () => {
+  const { local, session, savedAnswer } = await examInProgressStores();
+  const blob = activeBlob(session);
+  delete blob.records;                       // force the network path
+  session.setItem('ext_exam_active', JSON.stringify(blob));
+
+  const second = completePage({ local, session, reply(r) {
+    const url = String(r.__url);
+    if (url.includes('/v1/bank') && r.grant === 'g1') return { __status: 403, __raw: '{"status":"error","code":"grant_invalid"}' };
+    if (r.action === 'startExam') return { status: 'ok', examMinutes: 40, extraMinutes: 0, audioMode: 'off',
+      questions: SERVER_QUESTIONS, bank: { url: 'https://gw.test', grant: 'g2' } };
+    return undefined;
+  } });
+  await drain(); await second.timer.advance(10000); await drain();
+  assert.equal(second.sent('startExam').length, 1, 'startExam is idempotent: the same ids come back with a fresh grant');
+  assert.deepEqual(bankCalls(second).map(r => r.grant), ['g1', 'g1', 'g1', 'g2'],
+    'the stored grant on its own ladder first, then the new one');
+  const state = second.t.state();
+  assert.equal(state.inProgress, true);
+  assert.deepEqual(plain(state.questions).map(q => q.id), ISSUED_IDS);
+  assert.deepEqual(plain(state.answers[0]), savedAnswer);
+  assert.equal(second.el('examArea').querySelector('.q-text').textContent, BANK_FILES.he[0].t);
+});
+
+test('resume: a snapshot too big for storage is skipped, and the exam is unharmed', async () => {
+  // 30 questions x 7 languages of ~8 KB each is past the 1.5 MB cap. The exam
+  // must run exactly as before; only the offline resume is given up.
+  const huge = 'x'.repeat(8000);
+  const local = memoryStore(), session = memoryStore();
+  const first = completePage({ local, session, reply(r) {
+    if (!String(r.__url).includes('/v1/bank')) return undefined;
+    const body = bankAnswer(ISSUED_IDS);
+    for (const q of body.questions) for (const lang of Object.keys(q.l)) q.l[lang].t = huge + q.l[lang].t;
+    return body;
+  } });
+  await register(first);
+  await startExam(first);
+  first.t.answerCurrent(1);
+  assert.equal(first.t.state().inProgress, true, 'the exam itself is untouched');
+  const blob = activeBlob(session);
+  assert.equal(blob.records, null, 'the snapshot was skipped');
+  assert.equal(blob.activeQuestions.length, TOTAL, 'but the exam state was stored — that is the part with no fallback');
+  assert.deepEqual(blob.bank, EXAM_BANK, 'and the grant, which is now the only way back');
+
+  const second = completePage({ local, session, reply(r) {
+    if (!String(r.__url).includes('/v1/bank')) return undefined;
+    const body = bankAnswer(ISSUED_IDS);
+    for (const q of body.questions) for (const lang of Object.keys(q.l)) q.l[lang].t = huge + q.l[lang].t;
+    return body;
+  } });
+  await drain(); await second.timer.advance(100); await drain();
+  assert.equal(second.t.state().inProgress, true, 'and the reload resumes over the network');
+  assert.equal(bankCalls(second).length, 1);
+});
+
+test('resume: a sessionStorage quota error drops the texts, never the exam state', async () => {
+  const local = memoryStore(), session = memoryStore();
+  // The blob with the texts is ~19 KB here, the one without ~2.5 KB: a 12 KB
+  // ceiling refuses the first and accepts the second, as a real quota would.
+  session.rejectBig = 12000;
+  const page = completePage({ local, session });
+  await register(page);
+  await startExam(page);
+  page.t.answerCurrent(1);
+  const blob = activeBlob(session);
+  assert.equal(blob.records, null);
+  assert.equal(blob.activeQuestions.length, TOTAL);
+  assert.equal(blob.userAnswers.filter(Boolean).length, 1, 'the answer is on the device, which is the whole point');
+  assert.equal(page.t.state().inProgress, true);
+});
+
 
 // ===================== 8. update check =====================
 test('update check: a real deploy never reloads a registered examinee, and reaches an idle page later', async () => {
@@ -846,6 +1144,16 @@ test('source: every inline script parses, and the dead legacy paths are gone', (
   assert.ok(examinee.includes('<script src="shared/bank.js"></script>'));
 });
 
+test('source: the page has no way left to read a public bank', () => {
+  const src = examinee.replace(/\r/g, '');
+  assert.ok(!/loadExamBanks/.test(src), 'the per-language loader is gone with the public bank');
+  assert.ok(!/QuestionBank\.prefetch/.test(src), 'and so is warming languages during the wait');
+  assert.ok(!/QuestionBank\.load\s*\(/.test(src), 'only loadGrant remains');
+  assert.ok(!/QuestionBank\.(loadManifest|configure|build)\b/.test(src));
+  assert.ok(!/bank\/[a-z]{2}\.json|bank\/manifest\.json/.test(src), 'no same-origin bank path is referenced');
+  assert.equal((src.match(/QuestionBank\.loadGrant/g) || []).length, 1, 'ONE place knows how to fetch the texts');
+});
+
 test('source: the page owns no transport of its own any more', () => {
   const src = examinee.replace(/\r/g, '');
   assert.ok(!/function fetchJsonWithTimeout/.test(src), 'the bounded fetch is shared');
@@ -859,11 +1167,13 @@ test('source: the page owns no transport of its own any more', () => {
   assert.ok(/ExamTransport\.drainLog\(\)/.test(src));
 });
 
-test('source: the service worker precaches the shared layers and matches the bank without its query', () => {
+test('source: the service worker precaches the shared layers and never the question texts', () => {
   const sw = fs.readFileSync(path.join(app, 'sw-examinee.js'), 'utf8');
   new vm.Script(sw, { filename: 'sw-examinee.js' });
-  for (const asset of ['./shared/transport.js', './shared/bank.js', './bank/manifest.json']) assert.ok(sw.includes(asset), asset);
-  assert.match(sw, /ignoreSearch: true/);
+  for (const asset of ['./examinee.html', './shared/transport.js', './shared/bank.js']) assert.ok(sw.includes(asset), asset);
+  assert.ok(!/bank\//.test(sw), 'no same-origin bank files exist any more, so no special case for them');
+  assert.ok(!/v1\/bank/.test(sw), 'and a grant-bearing Worker answer is never put in a shared cache');
+  assert.match(sw, /ignoreSearch: true/, 'still there for the cross-origin image cache');
   assert.match(sw, /req\.method !== 'GET'/, 'GET only — a HEAD can never be cached');
   const cacheLine = sw.split('\n').filter(l => /^var CACHE = '/.test(l));
   assert.equal(cacheLine.length, 1, 'the build tool rewrites exactly this line');

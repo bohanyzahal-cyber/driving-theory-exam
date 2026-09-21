@@ -1,19 +1,32 @@
 #!/usr/bin/env node
 /**
- * build_bank.js — builds the STATIC public question bank and the server index.
+ * build_bank.js — builds the PRIVATE question-bank assets and the server index.
  *
  * Inputs  (source of truth, gitignored, == the Drive copies):
  *   deployment/generated/questions_<lang>.json   — one row per question×license
  * Outputs:
- *   bank/<lang>.json            — one entry per UNIQUE id: {id,t,a,i} (+v)
- *   bank/manifest.json          — sha per language, used for ?v= cache-busting
+ *   cloudflare-workers/session-gateway/assets/q/<id>.json
+ *                               — one question, every language: {id, l:{lang:{t,a,i,v?}}}
+ *   cloudflare-workers/session-gateway/assets/bank/<lang>.json
+ *                               — one entry per UNIQUE id: {id,t,a,i} (+v), sorted
+ *   cloudflare-workers/session-gateway/assets/manifest.json
+ *                               — {build, generatedAt, questions, langs:{sha,count,bytes}}
  *   deployment/question_index.json — {id: {c:{license:topic}, l:mask, img}}
  *
- * WHY this shape:
- *  - The texts are already public (gov.il publishes the Hebrew bank), so the
- *    client can hold them; what stays on the server is the ANSWER KEY and this
- *    id index. That removes Drive, the caches, the warmups and the leases from
- *    the hot path (DESIGN_2026-09-21 §3.1).
+ * WHY this shape (DESIGN_2026-09-21 §11.1 — decision 19, the bank is NOT public):
+ *  - The texts do not live in the repo and are never served from Pages. The
+ *    assets/ tree is uploaded by `npx wrangler deploy` as Workers Static Assets
+ *    with run_worker_first, so only the Worker can read it — and it hands a
+ *    device exactly the ids its signed grant names.
+ *  - `q/<id>.json` carries all 7 languages of ONE question, so an exam device
+ *    gets its 30 questions in every language in a single request and switching
+ *    language mid-exam is local. The Worker concatenates these files as raw
+ *    text (no JSON.parse) to stay inside the 10 ms CPU budget.
+ *  - `bank/<lang>.json` is the whole language, for the examiner-scope tools
+ *    (find_image search, the commander's wrong-question table).
+ *  - The index (still committed, still injected into the server file) is what
+ *    stays on the server together with the ANSWER KEY. That removes Drive, the
+ *    caches, the warmups and the leases from the hot path (§3.1).
  *  - The dumps repeat a question once per license. Only 9 Hebrew rows really
  *    differ between licenses, so the bank keeps ONE canonical entry per id and
  *    a tiny `v` map for the exceptions — the client applies it by license.
@@ -23,7 +36,9 @@
  *    re-derives both from the raw JSON with a verbatim copy of the server
  *    functions and demands set equality.
  *
- * Deterministic: same input bytes -> identical bank/<lang>.json bytes.
+ * Deterministic: same input bytes -> identical q/ and bank/ bytes (only the
+ * manifest's `generatedAt` moves). Unchanged files are left untouched on disk,
+ * so a rebuild does not re-sync 1,700 files through OneDrive.
  * Usage: node tools/build_bank.js
  */
 'use strict';
@@ -35,7 +50,9 @@ const zlib = require('zlib');
 const ROOT = path.join(__dirname, '..');
 const GENERATED = path.join(ROOT, 'deployment', 'generated');
 const IMAGES = path.join(ROOT, 'images');
-const BANK_DIR = path.join(ROOT, 'bank');
+const ASSETS_DIR = path.join(ROOT, 'cloudflare-workers', 'session-gateway', 'assets');
+const Q_DIR = path.join(ASSETS_DIR, 'q');
+const BANK_DIR = path.join(ASSETS_DIR, 'bank');
 const INDEX_FILE = path.join(ROOT, 'deployment', 'question_index.json');
 
 // Fixed order — bit 0 = he … bit 6 = am in the index language mask.
@@ -229,14 +246,68 @@ function buildIndex(banks, entriesByLang) {
 }
 
 // ---------------------------------------------------------------------------
+// Assets
+// ---------------------------------------------------------------------------
 const sha1 = buf => crypto.createHash('sha1').update(buf).digest('hex');
 
+/** Leaves an identical file alone: 1,700 needless writes cost a OneDrive sync. */
+function writeIfChanged(file, bytes) {
+  try {
+    if (fs.readFileSync(file).equals(bytes)) return false;
+  } catch (e) { /* missing or unreadable — write it */ }
+  fs.writeFileSync(file, bytes);
+  return true;
+}
+
+/**
+ * One file per question id, holding every language that has it. A language
+ * that lacks the id (ru lacks 907) is simply absent from `l` — the Worker
+ * serves the file as-is and the client falls back to Hebrew per question.
+ */
+function questionFileBytes(id, entriesByLang) {
+  const l = {};
+  for (const lang of LANGS) {
+    const entry = entriesByLang[lang].get(id);
+    if (!entry) continue;
+    const one = { t: entry.t, a: entry.a, i: entry.i };
+    if (entry.v) one.v = entry.v;
+    l[lang] = one;
+  }
+  return Buffer.from(JSON.stringify({ id, l }), 'utf8');
+}
+
+/** Writes assets/q/ and deletes the files of ids the dumps no longer contain. */
+function writeQuestionFiles(ids, entriesByLang) {
+  fs.mkdirSync(Q_DIR, { recursive: true });
+  const wanted = new Set(ids.map(id => String(id) + '.json'));
+  let written = 0;
+  let bytes = 0;
+  for (const id of ids) {
+    const buf = questionFileBytes(id, entriesByLang);
+    bytes += buf.length;
+    if (writeIfChanged(path.join(Q_DIR, id + '.json'), buf)) written++;
+  }
+  // A stale file would still be deployed and still be servable by id, which is
+  // how a removed question (id 1592) could come back to life.
+  let removed = 0;
+  for (const name of fs.readdirSync(Q_DIR)) {
+    if (wanted.has(name)) continue;
+    fs.unlinkSync(path.join(Q_DIR, name));
+    removed++;
+  }
+  return { count: ids.length, written, removed, bytes };
+}
+
 function main() {
-  // A fresh clone has no deployment/generated/ (gitignored, 25 MB): the
-  // committed bank/ and question_index.json ARE the build output, so the step
-  // is skipped rather than failed. Rebuilding requires the dumps.
+  // A fresh clone has no deployment/generated/ (gitignored, 25 MB), so the step
+  // is skipped rather than failed — deployment/question_index.json is committed
+  // and stays valid. The Worker assets are NOT committed (see .gitignore), so a
+  // fresh clone cannot rebuild them: deploying from one would ship an empty
+  // bank. Get the dumps before `npx wrangler deploy`.
   if (!fs.existsSync(GENERATED) || !LANGS.every(l => fs.existsSync(path.join(GENERATED, 'questions_' + l + '.json')))) {
-    console.warn('build_bank: deployment/generated/questions_<lang>.json not present — keeping the committed bank/ and question_index.json');
+    console.warn('build_bank: deployment/generated/questions_<lang>.json not present — keeping the committed');
+    console.warn('            deployment/question_index.json. The gateway assets CANNOT be built without the');
+    console.warn('            dumps (they are gitignored) — do not deploy the Worker from this tree.');
     return;
   }
   const stats = {
@@ -245,7 +316,7 @@ function main() {
   };
   const banks = {};
   const entriesByLang = {};
-  const manifest = { build: '', generatedAt: new Date().toISOString(), langs: {} };
+  const manifest = { build: '', generatedAt: new Date().toISOString(), questions: 0, langs: {} };
   const shas = [];
 
   fs.mkdirSync(BANK_DIR, { recursive: true });
@@ -255,7 +326,7 @@ function main() {
     const entries = buildLangBank(banks[lang], stats);
     entriesByLang[lang] = new Map(entries.map(e => [e.id, e]));
     const bytes = Buffer.from(JSON.stringify(entries), 'utf8');
-    fs.writeFileSync(path.join(BANK_DIR, lang + '.json'), bytes);
+    writeIfChanged(path.join(BANK_DIR, lang + '.json'), bytes);
     const sha = sha1(bytes);
     shas.push(sha);
     manifest.langs[lang] = { sha, count: entries.length, bytes: bytes.length };
@@ -266,11 +337,18 @@ function main() {
       '| gzip ' + String(gz).padStart(6) + ' B',
       '| sha ' + sha.slice(0, 8));
   }
-  manifest.build = sha1(shas.join(''));
-  fs.writeFileSync(path.join(BANK_DIR, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
 
   const { index, poolSizes } = buildIndex(banks, entriesByLang);
   fs.writeFileSync(INDEX_FILE, JSON.stringify(index));
+
+  // The index is the id authority: a question with no index record is never
+  // drawn and never asked for, so it gets no asset file either.
+  const ids = Object.keys(index).map(Number).sort((a, b) => a - b);
+  const q = writeQuestionFiles(ids, entriesByLang);
+
+  manifest.build = sha1(shas.join(''));
+  manifest.questions = q.count;
+  fs.writeFileSync(path.join(ASSETS_DIR, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
 
   // --- summary -------------------------------------------------------------
   console.log('');
@@ -285,6 +363,8 @@ function main() {
   const withImage = Object.values(index).filter(r => r.img).length;
   console.log('  index: ' + withImage + ' ids with an image, ' +
     LICENSES.map(l => l + ' ' + Object.values(index).filter(r => r.c[l]).length).join(' / ') + ' (union over languages)');
+  console.log('  assets/q: ' + q.count + ' files, ' + (q.bytes / 1048576).toFixed(1) + ' MB' +
+    ' (' + q.written + ' rewritten, ' + q.removed + ' stale removed)');
 
   for (const license of LICENSES) {
     if (poolSizes.he[license] !== EXPECTED_HE_POOLS[license]) {
@@ -292,7 +372,8 @@ function main() {
            EXPECTED_HE_POOLS[license] + ' — data changed? update EXPECTED_HE_POOLS deliberately');
     }
   }
-  console.log('wrote bank/<lang>.json, bank/manifest.json, deployment/question_index.json');
+  console.log('wrote cloudflare-workers/session-gateway/assets/{q/<id>.json, bank/<lang>.json, manifest.json}');
+  console.log('      deployment/question_index.json   (deploy the assets with: npx wrangler deploy)');
 }
 
 main();

@@ -9,8 +9,11 @@
 // the correct answers were already served to anyone who asked (getQuestionsByIds
 // with any studentId, verified live 21/09).
 //
-// So the texts are now static files the client loads (bank/<lang>.json, built by
-// tools/build_bank.js), and the server keeps only:
+// So the texts left the script. They are NOT public either (DESIGN §11): they
+// are private Workers assets of the session-gateway (built by tools/build_bank.js
+// into cloudflare-workers/session-gateway/assets/, never in the repo and never on
+// Pages), and the Worker serves each device only the ids it was issued, against a
+// grant this script signs (bankGrantFor, 20_auth.js). The server keeps only:
 //   * QUESTION_INDEX — id → { c: {license: topic}, l: language bitmask, img }
 //     (generated into this file at build time from deployment/question_index.json)
 //   * the answer key (deployment/answer_key.gs, pasted separately, never public)
@@ -170,4 +173,21 @@ function practiceCiByLang(id) {
     out[QUESTION_LANGS[i]] = idx ^ (Number(id) % 256);
   }
   return out;
+}
+
+// ---- bankGrant --------------------------------------------------------------
+// The examiner tools still need question TEXTS: the commander's wrong-answer
+// table (ids only, one language) and find_image.html (a full language bank, so
+// that a search can see all of it). Since the texts stopped being public, an
+// examiner gets the same kind of signed grant an examinee does — scoped to no
+// id list, valid for a working day, and read straight from the Worker. The
+// examiner token is checked by the router before this runs.
+defineAction('bankGrant', { methods: ['GET'], auth: 'examiner', handler: handleBankGrant,
+  rateLimit: { max: 30, windowSec: 60, id: function(p) { return normalizeId(p.examinerId); } } });
+function handleBankGrant(p) {
+  // normalizeId, not the raw field: the same examiner must produce the same
+  // subject whether they typed leading zeros or not.
+  var bank = bankGrantFor('examiner', null, 'ex:' + normalizeId(p.examinerId));
+  if (!bank) return bankNotConfiguredResponse();
+  return jsonResponse({ status: 'ok', bank: bank });
 }

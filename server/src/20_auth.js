@@ -241,3 +241,78 @@ function verifyExaminerForSession(sessionCode, examinerId) {
   return examinerOwnsSession(sessionCode, examinerId);
 }
 
+// ========== Signed bank grant (DESIGN §11.2) =================================
+// The question TEXTS are not public any more: they live as PRIVATE Workers
+// assets and the session-gateway hands a device only what it was issued — the
+// 30 ids of this exam, the ids of this practice draw, or (for an examiner) any
+// id and a whole language bank. What authorises that is a grant this script
+// signs; the client only carries the string, and only the Worker verifies it.
+//
+// Shape: '<payloadB64url>.<sigB64url>', exactly the construction
+// handleGetResultUploadToken uses — base64url without padding, and the HMAC is
+// taken over the ENCODED payload so the Worker verifies the bytes it received
+// rather than a re-serialisation of them.
+
+// The one place that reads GATEWAY_KEY. requireGatewayKey and the grant signer
+// must never disagree about what "configured" means.
+function gatewayKey() {
+  try { return String(PropertiesService.getScriptProperties().getProperty('GATEWAY_KEY') || ''); }
+  catch (e) { return ''; }
+}
+
+// An exam grant has to outlive the exam plus every extension and every mid-exam
+// refresh (a session code lives 8h); practice is one shorter sitting; an
+// examiner holds one for a working day.
+var BANK_GRANT_TTL_MS = { exam: 4 * 3600 * 1000, practice: 2 * 3600 * 1000, examiner: 8 * 3600 * 1000 };
+var BANK_GRANT_SUB_MAX = 128;   // an identity, not a payload: never let a caller grow the token
+
+// Escape every non-ASCII character. A practice `sub` carries a class code and a
+// student id that may be Hebrew, and the Worker decodes the payload byte-wise
+// (atob); \uXXXX keeps the JSON pure ASCII so both sides read the same string.
+function bankGrantJson(obj) {
+  return JSON.stringify(obj).replace(/[\u0080-\uFFFF]/g, function(ch) {
+    return '\\u' + ('000' + ch.charCodeAt(0).toString(16)).slice(-4);
+  });
+}
+
+// `key` is optional and exists only so a caller that has already read the
+// property does not pay for a second Properties round trip.
+function signBankGrant(payloadObj, key) {
+  var secret = key || gatewayKey();
+  var payloadB64 = Utilities.base64EncodeWebSafe(bankGrantJson(payloadObj)).replace(/=+$/, '');
+  var sigB64 = Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature(payloadB64, secret)).replace(/=+$/, '');
+  return payloadB64 + '.' + sigB64;
+}
+
+// Is the Worker that serves the texts wired up at all? startExam/startPractice
+// ask BEFORE they write anything: an exam whose questions can never load must
+// not consume the examinee's attempt.
+function bankGrantConfigured() { return Boolean(gatewayUrl() && gatewayKey()); }
+
+// { url, grant, exp } — or null when the Worker is not configured, which every
+// caller must translate into bankNotConfiguredResponse() rather than an exam
+// that starts and then cannot show a question.
+function bankGrantFor(scope, ids, sub) {
+  var ttl = BANK_GRANT_TTL_MS[String(scope)];
+  var url = gatewayUrl(), key = gatewayKey();   // read once: this runs inside exam start
+  if (!ttl || !url || !key) return null;
+  var exp = Date.now() + ttl;
+  var payload = { v: 1, s: String(scope) };
+  // The examiner scope carries no id list — it may read any id and a full
+  // language bank, so an `ids` field would only be a lie the Worker ignores.
+  if (String(scope) !== 'examiner') {
+    var list = [];
+    for (var i = 0; ids && i < ids.length; i++) list.push(Number(ids[i]));
+    payload.ids = list;
+  }
+  payload.sub = String(sub || '').slice(0, BANK_GRANT_SUB_MAX);
+  payload.exp = exp;
+  return { url: url, grant: signBankGrant(payload, key), exp: exp };
+}
+
+// One answer for every path that cannot issue a grant: this is an administrator
+// problem, and the examinee/student is told so instead of "try again".
+function bankNotConfiguredResponse() {
+  return jsonResponse({ status: 'error', code: 'bank_not_configured',
+    message: 'מאגר השאלות אינו מוגדר בשרת — פנה למנהל המערכת' });
+}

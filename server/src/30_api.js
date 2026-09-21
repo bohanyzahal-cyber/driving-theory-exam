@@ -63,8 +63,7 @@ function requireActionAuth(auth, p) {
 // in one request; it authenticates with a shared secret kept in ScriptProperties
 // (never in the client), so an examinee token is not involved.
 function requireGatewayKey(p) {
-  var expected = '';
-  try { expected = String(PropertiesService.getScriptProperties().getProperty('GATEWAY_KEY') || ''); } catch (e) { expected = ''; }
+  var expected = gatewayKey();   // the same property the bank grants are signed with
   if (!expected || String(p.gatewayKey || '') !== expected) {
     return jsonResponse({ status: 'error', code: 'gateway_denied', message: 'gateway key invalid' });
   }
@@ -202,9 +201,14 @@ function handleGetOfficeNumber() {
 // OUR document and reports that time separately, so a watchdog can tell "our
 // document stalls" from "Google's front door stalls" every minute of an exam
 // morning (tools/exam_watchdog.gs). indexIds is the deployed question index —
-// the client compares it against the static bank it loaded.
+// the client compares it against the bank build the Worker served it.
 function handleHealth(p) {
-  var body = { status: 'ok', build: THEORY_API_BUILD, indexIds: questionIndexCount() };
+  // gateway: booleans only. The question texts are served by the Worker against
+  // a signed grant, so "is it wired up" is the first thing a deploy check needs
+  // — and neither the URL nor the key is ever printed by a public probe.
+  // pollOff is the partial kill switch: the texts still flow, the polls don't.
+  var body = { status: 'ok', build: THEORY_API_BUILD, indexIds: questionIndexCount(),
+    gateway: { url: Boolean(gatewayUrl()), key: Boolean(gatewayKey()), pollOff: gatewayPollOff() } };
   if (String(p.deep || '') !== '1') return jsonResponse(body);
   var deepT0 = Date.now(), sheetMs = -1, sheetError = '';
   try { getSheet('אתרים').getRange(1, 1).getValue(); sheetMs = Date.now() - deepT0; }

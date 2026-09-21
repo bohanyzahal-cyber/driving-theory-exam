@@ -50,14 +50,11 @@
 └────────────────────┘   └──────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────┐
-│  GitHub Pages — גם בנק השאלות הסטטי (bank/<lang>.json)  │
-│  טקסטים בלבד, בלי תשובות נכונות; מיוצר מ-deployment/    │
-└─────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────┐
 │  Cloudflare Workers — שירותי צד                          │
-│  • session-gateway (סקר הנבחנים) • קישורי דו"חות (KV)   │
-│  • TTS עברית  • פרוקסי תמונות                            │
+│  • session-gateway: סקר הנבחנים המאוחד + בנק השאלות     │
+│    הפרטי (assets/, טקסטים בלי תשובות, מוגש לפי אישור    │
+│    חתום ל-30 השאלות של המבחן בלבד)                       │
+│  • קישורי דו"חות (KV) • TTS עברית • פרוקסי תמונות        │
 │  פריסה: wrangler (לא דרך הדשבורד — ראה OPERATIONS)       │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -94,13 +91,14 @@
 בוחן פותח סשן  →  קוד בן 6 תווים, תקף 8 שעות
        ↓
 נבחן מקליד קוד  →  getSessionInfo  →  ממלא פרטים  →  registerExaminee
-       ↓                    (הדף טוען את bank/<שפה>.json ברקע)          ↓
-       └──── polling כל 5 שניות דרך session-gateway (Worker) ──── שורה בגיליון "ממתינים"
-                              ↓         (ה-Worker שואל את השרת פעם ב-3 שניות לכל הסשן)
+       ↓                                                                   ↓
+       └──── polling כל 2–3 שניות דרך session-gateway (Worker) ──── שורה בגיליון "ממתינים"
+                              ↓         (ה-Worker שואל את השרת פעם ב-2 שניות לכל הסשן;
+                              ↓          הבוחן "דוחף" אותו אחרי כל החלטה)
 בוחן מאשר (+ הארכת זמן, + שמע)  →  הנבחן עובר למסך הנחיות
                               ↓
-נבחן לוחץ "התחל"  →  startExam (30 מזהים + סדר תשובות, נרשם ב"מבחנים", אידמפוטנטי)
-                              ↓   הטקסטים כבר במכשיר מהבנק הסטטי
+נבחן לוחץ "התחל"  →  startExam (30 מזהים + סדר תשובות + אישור חתום, נרשם ב"מבחנים", אידמפוטנטי)
+                              ↓   /v1/bank ב-Worker: הטקסטים של 30 השאלות בכל 7 השפות (~0.5 שנ')
               ★ מכאן המבחן רץ מקומית לחלוטין — אין תלות ברשת ★
                               ↓
 הגשה  →  submitResult (POST, התשובות + הטקסטים שהוצגו)  →  ניקוד בצד השרת  →  שורה ב"תוצאות"
@@ -119,14 +117,14 @@
 | קובץ | גודל | מה זה |
 |---|---|---|
 | `server/src/*.js` → `external_exam_apps_script.js` | ~40 מודולים | **כל ה-API.** הקובץ הגדול **מיוצר** (`node tools/build.js`) ומודבק בעורך; עורכים רק את המודולים |
-| `shared/transport.js`, `shared/bank.js` | | שכבת התקשורת ובנק השאלות המשותפים לכל הדפים |
-| `bank/` | 7 קבצים | בנק השאלות הסטטי (ללא תשובות) + `manifest.json` |
+| `shared/transport.js`, `shared/bank.js` | | שכבת התקשורת והקורא של בנק השאלות (מה-Worker, לפי אישור חתום) המשותפים לכל הדפים |
+| `cloudflare-workers/session-gateway/assets/` | 1,700 + 7 קבצים | בנק השאלות הפרטי (ללא תשובות), **לא בגיט** — מיוצר ב-`node tools/build.js` ועולה עם `wrangler deploy` |
 | `examiner.html` | ~468KB | אפליקציית הבוחן, self-contained |
 | `examinee.html` | ~252KB | אפליקציית הנבחן, self-contained |
 | `teacher.html` | ~100KB | אפליקציית המורה |
 | `student.html` | ~112KB | אפליקציית התלמיד |
 
-כל דף הוא קובץ HTML אחד שטוען את שני המודולים המשותפים ב-`shared/`; הבנייה (`tools/build.js`) מייצרת את קובץ השרת, את הבנק, את `version.json` ואת שמות המטמון ב-service workers. כל ה-JS עטוף בתבנית `(function() { 'use strict'; ... })()`.
+כל דף הוא קובץ HTML אחד שטוען את שני המודולים המשותפים ב-`shared/`; הבנייה (`tools/build.js`) מייצרת את קובץ השרת, את הבנק הפרטי ל-Worker, את `version.json` ואת שמות המטמון ב-service workers. כל ה-JS עטוף בתבנית `(function() { 'use strict'; ... })()`.
 
 ### תשתית
 
@@ -146,11 +144,11 @@
 | מה | איפה | הערה |
 |---|---|---|
 | בוחנים, נבחנים, סשנים, תוצאות, כיתות, תרגול | Google Sheets, 14 גיליונות | ראה `docs/DATA_MODEL.md` |
-| בנק השאלות (1,700 שאלות × 7 שפות) | `bank/` ב-Pages (טקסטים) + `deployment/answer_key.gs` (תשובות, לא בגיט) | המקור: `deployment/generated/` (לא בגיט); `node tools/build.js` |
+| בנק השאלות (1,700 שאלות × 7 שפות) | טקסטים: `assets/` של ה-Worker `session-gateway` (לא בגיט, מוגשים לפי אישור חתום) + `deployment/answer_key.gs` (תשובות, בשרת, לא בגיט) | המקור: `deployment/generated/` (לא בגיט); `node tools/build.js` ואז `wrangler deploy` |
 | קישורי דו"חות | Cloudflare KV | קבועים (ללא TTL) |
 | סיסמאות/טוקנים | Google Sheets + ScriptProperties | ראה §7 |
 
-**⚠️ בנק השאלות אינו במאגר הזה.** מיקום התיקייה מוגדר ב-ScriptProperty בשם `QUESTIONS_DRIVE_FOLDER_ID`. עריכת JSON מקומי **לא משנה כלום** עד להעלאה ל-Drive וניקוי מטמון. זו מלכודת חוזרת — פרטים ב-`docs/KNOWN_ISSUES.md`.
+**⚠️ בנק השאלות אינו במאגר הזה ולא ב-Pages.** עריכת JSON מקומי ב-`deployment/generated/` **לא משנה כלום** עד `node tools/build.js` + `npx wrangler deploy` (ואם השתנה האינדקס — גם הדבקת השרת). ה-Drive והמטמון של הגרסאות הקודמות (`QUESTIONS_DRIVE_FOLDER_ID`) אינם בשימוש מאז r30. פרטים ב-`docs/OPERATIONS.md` §4.
 
 ---
 
@@ -160,8 +158,10 @@
 
 | סוד | איפה הוא חי |
 |---|---|
-| `QUESTIONS_DRIVE_FOLDER_ID` | ScriptProperties של Apps Script |
-| `UPLOAD_SECRET` | Cloudflare Worker secret |
+| `GATEWAY_KEY` | Cloudflare Worker secret (`session-gateway`) **וגם** ScriptProperty באותו ערך — חותם את אישורי הבנק ומאמת את ה-Worker מול השרת |
+| `GATEWAY_URL` | ScriptProperty — כתובת ה-Worker; חובה להתחלת מבחן |
+| `UPLOAD_SECRET` | Cloudflare Worker secret (קישורי דו"חות) |
+| `QUESTIONS_DRIVE_FOLDER_ID` | ScriptProperties — היסטורי, לא בשימוש מאז r30 |
 | סיסמאות בוחנים/מורים | גיליון `בוחנים` / `מורים` |
 | טוקני התחברות | נוצרים בשרת, עם תוקף |
 

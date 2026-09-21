@@ -85,6 +85,11 @@
     });
   }
   function fetchJsonWithTimeout(url, opts, timeoutMs) { return boundedFetch(url, opts, timeoutMs, true); }
+  // Same bounded fetch for endpoints that are NOT Apps Script — the version.json
+  // probe on Pages and the question-bank Worker. A slow Worker is not a slow
+  // backend, and letting it degrade the health state would floor every poll in
+  // the page at 30-60 s while Apps Script is perfectly healthy.
+  function fetchJsonQuiet(url, opts, timeoutMs) { return boundedFetch(url, opts, timeoutMs, false); }
 
   // ---------- 2. transport health ----------
   var transportState = 'ok';   // 'ok' | 'degraded'
@@ -288,6 +293,7 @@
     CRITICAL_POST_TIMEOUT_MS: CRITICAL_POST_TIMEOUT_MS,
     SLOW_ANSWER_MS: SLOW_ANSWER_MS,
     fetchJsonWithTimeout: fetchJsonWithTimeout,
+    fetchJsonQuiet: fetchJsonQuiet,
     noteTransport: noteTransport,
     isBackendDegraded: isBackendDegraded,
     degradedSince: degradedSince,

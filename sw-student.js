@@ -6,7 +6,7 @@
 // a page that really changed also invalidates its offline copy, and a push that
 // did not change it invalidates nothing. (D8: the old hand-bumped vNN drifted
 // eight deploys behind.)
-var CACHE_NAME = 'student-792a6a93';
+var CACHE_NAME = 'student-3dc4f5cf';
 
 // Install — cache the page shell plus the shared client modules. transport.js
 // and bank.js are separate files now, so an offline shell without them is a
@@ -60,8 +60,10 @@ self.addEventListener('fetch', function(e) {
       }
       return response;
     }).catch(function() {
-      // bank/<lang>.json is fetched with a ?v=<sha> cache-buster; ignoreSearch so
-      // the copy taken at load time still answers when the network is gone.
+      // ignoreSearch: the shell can be requested with a cache-busting query
+      // (?cb=...), and the copy taken at load time must still answer offline.
+      // There is no bank/ special case any more - no question file is served
+      // from this origin; the texts come from the gateway and are never cached.
       return caches.match(req, { ignoreSearch: true });
     })
   );

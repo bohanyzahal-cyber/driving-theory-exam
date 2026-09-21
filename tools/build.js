@@ -6,10 +6,18 @@
  *                         (it injects deployment/question_index.json, so the bank
  *                         build must be able to run before it on a clean tree —
  *                         but the index only changes when the dumps change)
- *   2. build_bank.js    — bank/<lang>.json, bank/manifest.json, question_index.json
+ *   2. build_bank.js    — deployment/question_index.json (committed) and the
+ *                         PRIVATE gateway assets:
+ *                         cloudflare-workers/session-gateway/assets/{q,bank,manifest}
  *   3. build_version.js — version.json + the four service-worker cache names
  *
  * Stops at the first failure: a half-built release is worse than none.
+ *
+ * Two deploy targets come out of this, and they are separate: Pages gets the
+ * pages (git push), the Worker gets the assets (`npx wrangler deploy` from
+ * cloudflare-workers/session-gateway). A tree without deployment/generated/
+ * still builds — but build_bank.js warns, because it cannot produce the assets
+ * and the Worker would be deployed with an empty bank.
  * Usage: node tools/build.js
  */
 'use strict';

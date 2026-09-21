@@ -50,7 +50,7 @@
 
 ### פעולות ב-API
 
-`getSessionInfo` (מחזיר גם `build` ו-`gateway.url`) · `registerExaminee` · `cancelRegistration` · `checkApproval` (פולינג 5 שניות **דרך ה-session-gateway**; נפילה לישיר רק כשה-Worker עצמו לא עונה) · `startExam` (POST — בחירת 30 מזהים + סדר תשובות + רישום ב"מבחנים", אידמפוטנטי) · `getExamStatus` (8 שניות דרך ה-gateway) · `markFinished` · `submitResult` (POST — התשובות עם הטקסטים שהוצגו) · `disqualify` / `cancelDisqualify` / `reportWarning` · `submitFailOnClose` / `cancelFailOnClose`. הטקסטים: `shared/bank.js` מ-`bank/<lang>.json`; החלפת שפה מקומית.
+`getSessionInfo` (מחזיר גם `build` ו-`gateway.url`) · `registerExaminee` · `cancelRegistration` · `checkApproval` (פולינג **דרך ה-session-gateway**: 2 שניות בשתי הדקות הראשונות אחרי ההרשמה, אחר כך 3; ישיר 8; נפילה לישיר רק כשה-Worker עצמו לא עונה) · `startExam` (POST — בחירת 30 מזהים + סדר תשובות + **אישור חתום לבנק** + רישום ב"מבחנים", אידמפוטנטי) · `getExamStatus` (6 שניות דרך ה-gateway, ישיר 12) · `markFinished` · `submitResult` (POST — התשובות עם הטקסטים שהוצגו) · `disqualify` / `cancelDisqualify` / `reportWarning` · `submitFailOnClose` / `cancelFailOnClose`. הטקסטים: `shared/bank.js` מושך מיד אחרי `startExam` את 30 השאלות בכל 7 השפות מה-Worker (`/v1/bank?grant=…`); החלפת שפה מקומית; רענון באמצע מבחן מושך שוב עם אותו אישור.
 
 ### שמור מקומי
 
@@ -131,7 +131,7 @@
 
 | מצב | איך נטענות השאלות |
 |---|---|
-| מבחן מלא | `startPractice` עם `mode=exam` — 30 מזהים + `ci` לכל 7 השפות; טקסטים מ-`shared/bank.js` |
+| מבחן מלא | `startPractice` עם `mode=exam` — 30 מזהים + `ci` לכל 7 השפות + אישור חתום; הטקסטים מה-Worker דרך `shared/bank.js` (`loadGrant`) |
 | תרגול לפי נושא | `startPractice` עם `mode=category`, עד 15 |
 | כרטיסיות | `startPractice` |
 | חזרה על שגיאות | `startPractice` עם `mode=ids` — מזהי השאלות השגויות מ-`localStorage` |
@@ -146,7 +146,7 @@
 
 ### מלכודות
 
-- התרגול חולק עם הבחינות רק את חריצי הביצוע של Apps Script (בקשה אחת לתרגול — `startPractice` — ואחת להגשה); הגיליונות שלו במסמך נפרד (r24), והטקסטים מהבנק הסטטי.
+- התרגול חולק עם הבחינות רק את חריצי הביצוע של Apps Script (בקשה אחת לתרגול — `startPractice` — ואחת להגשה); הגיליונות שלו במסמך נפרד (r24), והטקסטים מה-Worker לפי האישור שחזר מ-`startPractice` (עד 30 שאלות לשליפה).
 - הדף מרענן את עצמו בשקט רק כשאין תרגול פעיל (`version.json`, לא ETag).
 - `buildFlashcardSet` (שורה ~1093) ו-`getFilteredQuestions` (שורה ~669) הם **קוד מת** — שריד מהתקופה שבה הסינון היה מקומי. הכרטיסיות עברו לשרת. אפשר למחוק.
 - **נפרד ממערכת הבחינות** — בטוח יחסית לפרוס אותו גם ביום בחינות, אך לא באמצע תרגול כיתתי.
@@ -158,7 +158,8 @@
 | דף | תפקיד | הערה |
 |---|---|---|
 | `admin.html` | ניהול בוחנים, מורים, אתרים | תפקיד `אדמין` |
-| `exam.html` | מבחן standalone ללא בוחן | `startPractice` עם `standaloneIdNumber` + הבנק הסטטי; מנקד מקומית |
+| `exam.html` | מבחן standalone ללא בוחן | `startPractice` עם `standaloneIdNumber` + טקסטים מה-Worker לפי האישור; מנקד מקומית |
+| `find_image.html` | חיפוש תמונת שאלה לבוחן | דורש כניסת בוחן (`ext_examiner_remember`) → `bankGrant` → הבנק המלא של השפה מה-Worker (`/v1/bank/full`) → חיפוש מקומי |
 | `report.html` | צפייה בדו"ח שהועלה | **מצביע על deployment אחר של Apps Script** — ראה `KNOWN_ISSUES.md` #13 |
 | `signs.html` | לומדת תמרורים | נשען על `signs_data.js` (~5MB) |
 | `examiner_training.html`, `examiner_cheat_sheet.html` | חומרי הדרכה לבוחן | סטטי |
@@ -171,5 +172,5 @@
 - **`API_ORIGIN`** — מזהה מתוך ה-allowlist (`examiner-app`, `examinee-app`, `teacher-app`, `student-app`). חסר → השרת דוחה.
 - **תבנית IIFE** — `(function() { 'use strict'; ... })()`, אחרי טעינת `shared/transport.js` (`ExamTransport`: fetch עם deadline, מצב "שרת מדרדר", pacing, לולאות סקר עם מגן in-flight, failover, בדיקת גרסה, יומן לקוח) ו-`shared/bank.js` (`QuestionBank`).
 - **RTL עברית** עם מעבר לשפות אחרות בדפי הנבחן.
-- **עדכון עצמי** — `version.json` (hash לכל דף, מיוצר בבנייה) כל 2 דקות; שינוי חייב להיראות בשני סקרים רצופים. נבחן/תלמיד: רענון שקט רק כשהדף פנוי. בוחן/מורה: **באנר וכפתור בלבד, בלי רענון אוטומטי** (מאז 22/09/2026).
+- **עדכון עצמי** — `version.json` (hash לכל דף, מיוצר בבנייה) כל 2 דקות; שינוי חייב להיראות בשני סקרים רצופים. נבחן/תלמיד: רענון שקט רק כשהדף פנוי. בוחן/מורה: באנר + כפתור, **ורענון עצמי אחרי דקה כשבטוח** (אין מודאל פתוח ואין פעולה בהמתנה; נבדק שוב כל 15 שניות) — החלטת הבעלים 21/09/2026 בערב. הלולאה של 16/09 לא יכולה לחזור כי ה-hash משתנה רק כשהדף עצמו השתנה.
 - **service worker** לכל אפליקציה, network-first, + קליפת PWA ב-iframe.

@@ -78,7 +78,10 @@ function env(options) {
       'מבחנים': [EXAMS_HEADER, ...(opts.exams || [])],
       'תוצאות': [RESULTS_HEADER, ...(opts.results || [])]
     }, opts.sheets || {}),
-    properties: opts.properties || {},
+    // startExam refuses to write anything when the Worker that serves the
+    // question texts is unset (DESIGN §11.2), so the fixture is configured.
+    properties: Object.assign({ GATEWAY_KEY: 'gateway-secret', GATEWAY_URL: 'https://gw.example.workers.dev' },
+      opts.properties || {}),
     sources: [ANSWER_KEY_SOURCE]
   });
 }
@@ -617,9 +620,21 @@ test('startPractice serves a single topic and an explicit id list', () => {
   const byIds = get(e, { action: 'startPractice', mode: 'ids', ids: known.join(',') + ',999999',
     language: 'he', license: 'B', classCode: 'C1', studentId: 'S1' });
   assert.deepEqual(byIds.questions.map(q => q.id), known, 'unknown ids are dropped, not fatal');
+  // 30 is the ceiling in EVERY mode: one draw is one /v1/bank request and the
+  // Worker reads at most 30 assets per request (DESIGN §11.3).
   const capped = get(e, { action: 'startPractice', mode: 'category', categoryFilter: 'חוק', maxCount: '500',
     language: 'he', license: 'B', classCode: 'C1', studentId: 'S1' });
-  assert.equal(capped.questions.length, 50, 'never more than 50 questions in one request');
+  assert.equal(capped.questions.length, 30, 'never more than 30 questions in one request');
+  const manyIds = get(e, { action: 'startPractice', mode: 'ids', language: 'he', license: 'B',
+    classCode: 'C1', studentId: 'S1', ids: Object.keys(INDEX).slice(0, 40).join(',') });
+  assert.equal(manyIds.questions.length, 30, 'a spaced-repetition list is capped too');
+  // Every draw carries the grant that lets the device fetch those texts.
+  for (const reply of [category, byIds, capped, manyIds]) {
+    const payload = JSON.parse(Buffer.from(reply.bank.grant.split('.')[0], 'base64url').toString('utf8'));
+    assert.equal(payload.s, 'practice');
+    assert.equal(payload.sub, 'C1:S1');
+    assert.deepEqual(payload.ids, reply.questions.map(q => q.id));
+  }
 });
 
 test('practice allowances are per identity, and guests are capped globally', () => {

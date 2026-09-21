@@ -115,6 +115,10 @@ function handleStartExam(data) {
   if (!EXAM_STRUCTURE_SERVER[license]) {
     return jsonResponse({ status: 'error', code: 'unknown_license', message: 'דרגה לא מוכרת: ' + license });
   }
+  // Before the draw, before the cache write, before the status flip: without a
+  // grant the device can never fetch a question text, and a row flipped to
+  // in_exam would have spent the examinee's attempt on an exam that cannot run.
+  if (!bankGrantConfigured()) return bankNotConfiguredResponse();
 
   var attempt = examAttemptKey(row);
   var record = readExamMapCache(sessionCode, data.idNumber, attempt);
@@ -142,13 +146,27 @@ function handleStartExam(data) {
     ctx.active.status = 'in_exam';
   }
 
+  // A retry gets the same ids with a FRESHLY signed grant: the map is
+  // idempotent, the clock is not, and an examinee who reloads at minute 38 must
+  // not be handed a grant that expires before the extension does.
+  var bank = bankGrantFor('exam', examMapIds(record.map), sessionCode + ':' + normalizeId(data.idNumber));
+
   return jsonResponse({
     status: 'ok', build: THEORY_API_BUILD,
     examMinutes: examMinutesFor(row), extraMinutes: sumExtraMinutes(sessionCode, data.idNumber),
     audioMode: String(row[9] || '').trim() === 'on' ? 'on' : 'off',
     language: record.lang || lang, license: license, registeredAt: record.at,
+    bank: bank,
     questions: examQuestionsForClient(record.map)
   });
+}
+
+// The ids of a stored map, in map order — that is the order the client shows
+// them in, and the order the grant authorises.
+function examMapIds(map) {
+  var ids = [];
+  for (var i = 0; i < map.length; i++) ids.push(map[i].qId);
+  return ids;
 }
 
 function drawExamRegistration(sessionCode, idNumber, license, lang) {
@@ -168,8 +186,9 @@ function drawExamRegistration(sessionCode, idNumber, license, lang) {
   return { map: map, at: at, lang: lang, unverified: 0 };
 }
 
-// The client holds the texts (bank/<lang>.json) and needs only what the server
-// decided: which questions, in which answer order, under which topic.
+// The client fetches the texts from the Worker with the grant above and needs
+// only what the server decided: which questions, in which answer order, under
+// which topic.
 function examQuestionsForClient(map) {
   var out = [];
   for (var i = 0; i < map.length; i++) {
@@ -190,7 +209,9 @@ function examMinutesFor(row) {
 // GET, no token. Practice scores on the client, so it gets the correct index of
 // every language the question exists in (XOR-encoded) and never needs another
 // round trip — a language switch mid-practice is local.
-var PRACTICE_MAX_COUNT = 50;
+// One draw is one Worker request, and that request may ask for at most 30 assets
+// (DESIGN §11.3) — so 30 is the cap in EVERY mode, not just the exam blueprint.
+var PRACTICE_MAX_COUNT = 30;
 var PRACTICE_DEFAULT_COUNT = 15;
 function handleStartPractice(p) {
   var rlErr = practiceRateLimit(p);
@@ -200,6 +221,8 @@ function handleStartPractice(p) {
   if (!EXAM_STRUCTURE_SERVER[license]) {
     return jsonResponse({ status: 'error', code: 'unknown_license', message: 'דרגה לא מוכרת: ' + license });
   }
+  // Same rule as startExam: no grant, no texts, so say so before drawing.
+  if (!bankGrantConfigured()) return bankNotConfiguredResponse();
   var mode = String(p.mode || 'exam');
   var picked;
   try { picked = practiceSelection(mode, license, lang, p); }
@@ -208,11 +231,21 @@ function handleStartPractice(p) {
     return jsonResponse({ status: 'error', code: 'bank_unavailable', detail: err.detail, message: 'אין מספיק שאלות לתרגול' });
   }
   if (!picked.length) return jsonResponse({ status: 'error', code: 'no_questions', message: 'לא נמצאו שאלות לתרגול' });
-  var questions = [];
+  var questions = [], ids = [];
   for (var i = 0; i < picked.length; i++) {
     questions.push({ id: picked[i].id, topic: picked[i].topic, ci: practiceCiByLang(picked[i].id) || {} });
+    ids.push(picked[i].id);
   }
-  return jsonResponse({ status: 'ok', mode: mode, count: questions.length, questions: questions });
+  return jsonResponse({ status: 'ok', mode: mode, count: questions.length,
+    bank: bankGrantFor('practice', ids, practiceSubject(p)), questions: questions });
+}
+
+// Who the practice grant was issued to — the same three identities the rate
+// limit separates, so a grant can be traced back to the draw that produced it.
+function practiceSubject(p) {
+  if (p.classCode && p.studentId) return String(p.classCode) + ':' + String(p.studentId);
+  if (p.standaloneIdNumber) return normalizeId(p.standaloneIdNumber);
+  return 'guest';
 }
 
 function practiceSelection(mode, license, lang, p) {

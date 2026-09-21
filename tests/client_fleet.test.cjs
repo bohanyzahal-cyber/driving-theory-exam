@@ -99,8 +99,8 @@ async function simulate({ clients, latency, minutes = 10, deadlineMs = 60000 }) 
 
 const APPROVAL_DIRECT = { baseMs: 8000, maxMs: 20000 };     // the constants examinee.html ships
 const STATUS_DIRECT = { baseMs: 12000, maxMs: 20000 };
-const APPROVAL_GATEWAY = { baseMs: 5000, maxMs: 20000 };
-const STATUS_GATEWAY = { baseMs: 8000, maxMs: 20000 };
+const APPROVAL_GATEWAY = { baseMs: 3000, maxMs: 20000 };    // 2 s for the first two minutes, then this
+const STATUS_GATEWAY = { baseMs: 6000, maxMs: 20000 };
 
 test('fleet: a healthy morning — 38 polling pages, one live request each at most', async () => {
   const fleet = await simulate({ latency: 2000, clients: [
@@ -124,18 +124,30 @@ test('fleet: the old 5 s/10 s constants reproduce the review\'s 254 req/min, so 
   assert.ok(fleet.alivePerClient < 1);
 });
 
-test('fleet: through the gateway the SAME room costs Apps Script one call per session per 3 s', async () => {
+test('fleet: through the gateway the SAME room costs Apps Script one call per session per 2 s', async () => {
   const fleet = await simulate({ latency: 300, clients: [   // a Worker answers in ~300 ms
     { ...APPROVAL_GATEWAY, count: 18 },
     { ...STATUS_GATEWAY, count: 20 }
   ] });
-  assert.ok(fleet.requestsPerMinute > 250, 'the examinees poll faster, because it is free: ' + fleet.requestsPerMinute.toFixed(0) + '/min');
+  assert.ok(fleet.requestsPerMinute > 400, 'the examinees poll faster, because it is free: ' + fleet.requestsPerMinute.toFixed(0) + '/min');
   // What reaches Apps Script is the Worker's coalesced upstream: one snapshot
-  // per session per 3 s, no matter how many examinees are in the room.
-  const upstreamPerMinute = 60 / 3;
-  assert.equal(upstreamPerMinute, 20);
-  assert.ok(upstreamPerMinute < fleet.requestsPerMinute / 10, 'a 13x reduction in executions for this room');
+  // per session per FRESH_MS, no matter how many examinees are in the room.
+  const upstreamPerMinute = 60 / 2;
+  assert.equal(upstreamPerMinute, 30);
+  assert.ok(upstreamPerMinute < fleet.requestsPerMinute / 10, 'a 15x reduction in executions for this room');
   assert.ok(fleet.alivePerClient < 1);
+});
+
+test('fleet: the 2 s opening window is still one live request per device', async () => {
+  // The first two minutes after registration poll at 2 s through the gateway —
+  // the window in which the examiner actually approves. Even at that cadence a
+  // device holds at most one request, because the chain is answer → wait → ask.
+  const fleet = await simulate({ latency: 300, minutes: 2, clients: [
+    { baseMs: 2000, maxMs: 20000, count: 40 }
+  ] });
+  assert.ok(fleet.alivePerClient < 1, 'measured ' + fleet.alivePerClient.toFixed(2) + ' per device');
+  assert.equal(fleet.degraded, false, 'and a Worker answering in 300 ms is never "slow"');
+  assert.ok(60 / 2 < fleet.requestsPerMinute / 20, 'still one upstream per session per 2 s behind it');
 });
 
 test('fleet: a 93 s stall — the 60 s deadline plus backoff keeps orphans near one per device', async () => {

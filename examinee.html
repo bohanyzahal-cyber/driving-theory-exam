@@ -421,18 +421,19 @@
 <!-- The two shared client layers, loaded before the inline script which assumes
      both are present. transport.js owns every bounded fetch, the failure
      classification, the backend-health state and the poll pacing; bank.js owns
-     the static question bank (bank/<lang>.json). -->
+     the question texts, read from the session-gateway Worker. -->
 <script src="shared/transport.js"></script>
 <script src="shared/bank.js"></script>
 <script>
 (function() {
   'use strict';
 
-  // Question TEXTS are static: they ship with the site as bank/<lang>.json and
-  // are read through QuestionBank. The server hands out only ids, the answer
-  // permutation and the topic (startExam), and keeps the answer key to itself —
-  // so the client never knows which answer is correct, and a language switch is
-  // a local re-render instead of a server call.
+  // Question TEXTS are not public and are not on this site. startExam hands out
+  // the ids, the answer permutation, the topic and a signed grant; the grant buys
+  // exactly those 30 questions — in all seven languages at once — from the
+  // session-gateway Worker, through QuestionBank. The answer key never leaves the
+  // server, so the client cannot know which answer is correct, and a language
+  // switch is a local re-render instead of a server call.
 
   // ========== Loading overlay (blocks interaction during server waits) ==========
   // Renders a full-screen spinner + message. Pointer events on the page below
@@ -1013,22 +1014,38 @@
   }
 
   // ========== Active exam state (for resume on refresh) ==========
+  // Writes a blob, and if it does not fit, writes it again without the question
+  // texts: the exam STATE is what must never be lost to a storage quota — the
+  // texts have the grant as a fallback, the answers have nothing.
+  function saveExamBlob(store, key, blob) {
+    try { store.setItem(key, JSON.stringify(blob)); return true; }
+    catch (e) {
+      if (!blob.records) return false;
+      blob.records = null;
+      logEvent('bank_snapshot_dropped', key);
+      try { store.setItem(key, JSON.stringify(blob)); return true; } catch (e2) { return false; }
+    }
+  }
+
   function saveActiveExam() {
     if (!examInProgress || examSubmitted) return;
-    try {
-      sessionStorage.setItem('ext_exam_active', JSON.stringify({
-        activeQuestions: activeQuestions,
-        currentIndex: currentIndex,
-        userAnswers: userAnswers,
-        shuffledOrders: shuffledOrders,
-        examDeadline: examDeadline,
-        examStartTime: examStartTime,
-        autoReadEnabled: autoReadEnabled,
-        examTimeMinutes: examTimeMinutes,
-        currentDQEventId: currentDQEventId,
-        appliedExtraMinutes: appliedExtraMinutes
-      }));
-    } catch(e) {}
+    saveExamBlob(sessionStorage, 'ext_exam_active', {
+      // The grant, so a resume that has no texts can buy them again. It carries
+      // no answers and expires with the exam.
+      bank: examBank,
+      // And the texts themselves, so the usual reload needs no network at all.
+      records: activeExamRecords(),
+      activeQuestions: activeQuestions,
+      currentIndex: currentIndex,
+      userAnswers: userAnswers,
+      shuffledOrders: shuffledOrders,
+      examDeadline: examDeadline,
+      examStartTime: examStartTime,
+      autoReadEnabled: autoReadEnabled,
+      examTimeMinutes: examTimeMinutes,
+      currentDQEventId: currentDQEventId,
+      appliedExtraMinutes: appliedExtraMinutes
+    });
   }
 
   function loadActiveExam() {
@@ -1049,6 +1066,11 @@
     examStartGeneration++;
     examLoadInFlight = false;
     if (examStartRetryTimer !== null) { clearTimeout(examStartRetryTimer); examStartRetryTimer = null; }
+    // The grant and the texts belonged to the examinee who just left this device.
+    examBank = null;
+    examRecordsSnapshot = null;
+    examRecordsTooBig = false;
+    try { QuestionBank._reset(); } catch(e) {}
     dqScreenActive = false;
     try { window.removeEventListener('beforeunload', dqBeforeUnload); } catch(e) {}
     window.removeEventListener('popstate', onBackButton);
@@ -1533,7 +1555,6 @@
         // Capture the server-issued examinee token; all subsequent API calls
         // for this examinee must echo it.
         if (data.examineeToken) examineeToken = data.examineeToken;
-        loadExamBanks(examineeData.language);   // minutes before "start exam" needs them
         saveExamineeState('screenInstructions');
         showScreen('screenInstructions');
         applyUITranslations();
@@ -1544,7 +1565,6 @@
         // This handles: cleared cache, switched browser, re-opened page after navigating away.
         var msg = String(data.message || '');
         if (msg.indexOf('כבר רשום') >= 0 || msg.indexOf('כבר רשומ') >= 0) {
-          loadExamBanks(examineeData.language);
           saveExamineeState('screenInstructions');
           showScreen('screenInstructions');
           applyUITranslations();
@@ -1561,13 +1581,6 @@
       registerError.style.display = 'block';
     });
   });
-
-  // Start loading the chosen language as soon as it is chosen — by the time the
-  // examiner approves, the texts are already on the device.
-  (function() {
-    var langSel = document.getElementById('langSelect');
-    if (langSel) langSel.addEventListener('change', function() { loadExamBanks(this.value); });
-  })();
 
   // ========== Screen 3: Waiting + Instructions ==========
   var approvalFailCount = 0;
@@ -1760,13 +1773,18 @@
 
   // ===== Approval polling =====
   // Through the gateway a poll costs Apps Script nothing (the Worker coalesces a
-  // whole session into one upstream call per 3 s), so 5 s is free. A DIRECT poll
-  // is one Apps Script execution per waiting examinee — dozens of them were a
-  // large share of the flood that saturated the ~30 execution slots on exam
-  // mornings — so the direct fallback waits 8 s (what e1755c8 set and r6 undid).
-  var APPROVAL_GATEWAY_BASE_MS = 5000;
+  // whole session into one upstream call per 2 s), so the cadence is free: 2 s
+  // for the first two minutes — the window in which the examiner actually walks
+  // the room and approves, and the one the examinee watches — then 3 s. A DIRECT
+  // poll is one Apps Script execution per waiting examinee, dozens of which were
+  // a large share of the flood that saturated the ~30 execution slots on exam
+  // mornings, so the direct fallback stays at 8 s (what e1755c8 set, r6 undid).
+  var APPROVAL_GATEWAY_BASE_MS = 3000;
+  var APPROVAL_GATEWAY_FAST_MS = 2000;
+  var APPROVAL_FAST_WINDOW_MS = 120000;
   var APPROVAL_DIRECT_BASE_MS = 8000;
   var APPROVAL_POLL_MAX_MS = 20000;
+  var approvalPollStartedAt = 0;
   var approvalLoop = null;
   // Generation counter: a response still in flight when polling is stopped and
   // restarted (reset → re-register) must not act on the new examinee's screen.
@@ -1778,12 +1796,21 @@
     approvalFailCount = 0;
     approvalPollCount = 0;
     approvalPollGen++;
+    approvalPollStartedAt = Date.now();
     setupWaitingProtections(); // wake-lock + tab-title flash
+    var baseMs = gatewayUrl() ? APPROVAL_GATEWAY_BASE_MS : APPROVAL_DIRECT_BASE_MS;
     approvalLoop = ExamTransport.createPollLoop({
       name: 'approval',
-      baseMs: gatewayUrl() ? APPROVAL_GATEWAY_BASE_MS : APPROVAL_DIRECT_BASE_MS,
+      baseMs: baseMs,
       maxMs: APPROVAL_POLL_MAX_MS,
       tick: doCheckApproval,
+      // The fast opening window, and only through the gateway. Like the examiner
+      // dashboard, it may pull the next tick in ONLY when the answer was healthy
+      // and the pacing is already back at base: a struggling backend always wins.
+      nextDelay: function(info, paced) {
+        if (!gatewayUrl() || info.slow || info.failed || paced > baseMs) return paced;
+        return (Date.now() - approvalPollStartedAt) < APPROVAL_FAST_WINDOW_MS ? APPROVAL_GATEWAY_FAST_MS : baseMs;
+      },
       // The rescue below restarts the chain; bump the generation first so a late
       // answer from the dead request cannot act on the fresh one's behalf.
       onRestart: function() { approvalPollGen++; }
@@ -1808,15 +1835,118 @@
     if (approvalLoop.restartIfStuck()) console.log('[APPROVAL] page returned to foreground — restarted a stuck chain');
   });
 
-  // The question bank is static. Load the exam language (and Hebrew, the
-  // fallback for any id a translation is missing) as soon as the examinee is
-  // registered, and warm the rest in the background while they wait for
-  // approval — minutes before "start exam" needs them.
-  function loadExamBanks(lang) {
-    var wanted = [String(lang || 'he'), 'he'];
-    var loads = [];
-    for (var i = 0; i < wanted.length; i++) loads.push(QuestionBank.load(wanted[i]));
-    return Promise.all(loads.map(function(p) { return p.catch(function(err) { logEvent('bank_load_failed', String(err)); return null; }); }));
+  // ===== Question texts (per-exam grant) =====
+  // Nothing is fetched before "start exam": the texts are not public, and the
+  // grant that buys them does not exist until startExam issues it. Every path
+  // that puts an examinee in front of a question — start, reload, DQ overturn —
+  // goes through here, so there is exactly one place that knows how to get the
+  // texts back and one place that knows how to ask for a fresh grant.
+  var examBank = null;             // { url, grant } of the running exam
+  var RESUME_BANK_RETRY_MS = 5000;
+  var RESUME_BANK_MAX_ATTEMPTS = 20;
+  // A real exam is ~85 KB of texts in all seven languages; sessionStorage holds
+  // about 5 MB. The cap is there for the pathological case only, and a snapshot
+  // that does not fit is simply not taken.
+  var EXAM_SNAPSHOT_MAX_BYTES = 1500000;
+  var examRecordsSnapshot = null;   // memoised: the issued ids and their texts never change mid-exam
+  var examRecordsTooBig = false;    // measured once — re-stringifying megabytes on every answer is not free
+
+  function issuedIdCount() {
+    var n = 0;
+    for (var i = 0; i < activeQuestions.length; i++) if (activeQuestions[i] && activeQuestions[i].id != null) n++;
+    return n;
+  }
+
+  // The 30 questions as the Worker served them, ready to be stored beside the
+  // exam. null while the texts are not (yet) on the device, or when they are too
+  // large to store — both simply mean the resume will need the grant.
+  function activeExamRecords() {
+    if (examRecordsSnapshot) return examRecordsSnapshot;
+    if (examRecordsTooBig) return null;
+    try {
+      var ids = [];
+      for (var i = 0; i < activeQuestions.length; i++) if (activeQuestions[i] && activeQuestions[i].id != null) ids.push(activeQuestions[i].id);
+      if (!ids.length) return null;
+      var records = QuestionBank.exportIds(ids);
+      if (records.length < ids.length) return null;      // a partial snapshot is not a resumable exam
+      if (JSON.stringify(records).length > EXAM_SNAPSHOT_MAX_BYTES) {
+        examRecordsTooBig = true;
+        logEvent('bank_snapshot_too_big', ids.length);
+        return null;
+      }
+      examRecordsSnapshot = records;
+      return records;
+    } catch (e) { return null; }
+  }
+
+  function loadExamTexts(bankRef) {
+    if (!bankRef || !bankRef.grant) return Promise.reject(new Error('no grant'));
+    return QuestionBank.loadGrant(bankRef).then(function(res) {
+      // An id that no language could serve is a blank question. Better to fail
+      // the load and try again than to sit an examinee in front of "(שאלה לא זמינה)".
+      if (res.missing && res.missing.length) throw new Error('missing ids ' + res.missing.join(','));
+      examBank = bankRef;
+      logEvent('bank_loaded', res.count + '@' + res.build);
+      return res;
+    });
+  }
+
+  // startExam is idempotent: the same 30 ids come back with a fresh grant, so a
+  // grant that expired or was lost with the tab costs one call, not an exam.
+  function reissueExamBank() {
+    return apiPost({
+      action: 'startExam',
+      sessionCode: sessionCode,
+      idNumber: examineeData.idNumber,
+      examineeToken: examineeToken,
+      language: String(examineeData.language || sessionData.language || 'he'),
+      license: String(examineeData.license || sessionData.license || 'B')
+    }, CRITICAL_POST_TIMEOUT_MS).then(function(resp) {
+      if (!resp || resp.status !== 'ok' || !resp.bank || !resp.bank.grant) throw new Error('no bank in startExam');
+      return resp.bank;
+    });
+  }
+
+  // Re-entering a RUNNING exam (reload, DQ overturn). The texts the exam saved
+  // with itself come FIRST: with them a reload is instant and needs no network,
+  // which is what "the exam is fully local once it has started" means. Only a
+  // blob without them (one written before this version, or one the snapshot did
+  // not fit into) pays for the network — and then the clock is already running
+  // and the examinee can do nothing else, so it keeps trying: the stored grant
+  // first, a fresh one after that, behind the loading overlay.
+  function loadExamTextsForResume(bankRef, records, onReady) {
+    if (records && QuestionBank.importRecords(records) >= issuedIdCount()) {
+      if (bankRef) examBank = bankRef;   // keep the grant with the exam for the next save
+      logEvent('bank_from_device', issuedIdCount());
+      onReady();
+      return;
+    }
+    var attempts = 0;
+    showLoadingOverlay('טוען את המבחן…');
+    function done() { hideLoadingOverlay(); onReady(); }
+    function giveUp(err) {
+      hideLoadingOverlay();
+      logEvent('bank_resume_gave_up', String(err));
+      var area = document.getElementById('examArea');
+      if (!area) return;
+      showScreen('screenExam');   // the reload path has not shown it yet
+      area.innerHTML = '<div class="info-banner warn" role="alert" style="font-size:15px;text-align:center;">' +
+        '<strong>לא הצלחנו לטעון את השאלות.</strong><br>הזמן שלך ממשיך לרוץ — קרא לבוחן.' +
+        '<p><button id="retryResumeBtn" type="button" style="padding:10px 22px;font-size:15px;font-weight:800;background:#1a73e8;color:#fff;border:none;border-radius:10px;cursor:pointer;">נסה שוב</button></p></div>';
+      var btn = document.getElementById('retryResumeBtn');
+      if (btn) btn.addEventListener('click', function() { attempts = 0; showLoadingOverlay('טוען את המבחן…'); attempt(); });
+    }
+    function attempt() {
+      attempts++;
+      loadExamTexts(bankRef).catch(function() {
+        return reissueExamBank().then(function(fresh) { bankRef = fresh; return loadExamTexts(fresh); });
+      }).then(done, function(err) {
+        logEvent('bank_resume_failed', String(err));
+        if (attempts >= RESUME_BANK_MAX_ATTEMPTS) { giveUp(err); return; }
+        setTimeout(attempt, RESUME_BANK_RETRY_MS);
+      });
+    }
+    attempt();
   }
 
   function showInstructions() {
@@ -1865,10 +1995,6 @@
     } else {
       document.getElementById('timeExtNotice').style.display = 'none';
     }
-
-    // The exam language is already loading (registration); warm the others now,
-    // so a mid-exam language switch never waits for the network.
-    QuestionBank.prefetch();
   }
 
   // ========== Change Selection (cancel + go back to registration) ==========
@@ -1963,8 +2089,9 @@
 
   // ONE call starts the exam: startExam validates the approval, picks the 30
   // ids (idempotently — a retry after a lost answer returns the identical map),
-  // writes the מבחנים row and flips the row to in_exam. Question TEXTS are not
-  // in the answer; they come from the static bank.
+  // writes the מבחנים row and flips the row to in_exam. Question TEXTS are not in
+  // the answer; the signed grant it returns buys exactly those 30 from the
+  // session-gateway Worker, in every language, in one request.
   function doStartExam() {
     // Guard: ensure an examinee is registered
     if (!examineeData.idNumber || examLoadInFlight || examInProgress || examSubmitted) {
@@ -2015,18 +2142,23 @@
         return;
       }
       if (Number(resp.examMinutes) > 0) examTimeMinutes = Number(resp.examMinutes);
-      // The texts must be here before the first question can be drawn. They
-      // normally arrived at registration; this is the late/offline path.
-      loadExamBanks(language).then(function() {
+      // No grant means the server has no GATEWAY_URL/GATEWAY_KEY: nothing the
+      // examinee can retry their way out of, so say so instead of a cooldown.
+      if (!resp.bank || !resp.bank.grant) {
+        fail({ retryable: false, code: 'bank_not_configured',
+          message: resp.message || 'מאגר השאלות אינו מוגדר בשרת — פנה לבוחן' });
+        return;
+      }
+      // The texts must be on the device before the first question is drawn.
+      loadExamTexts(resp.bank).then(function() {
         if (!examStartIsCurrent(attempt)) return;
-        if (!QuestionBank.has(language) && !QuestionBank.has('he')) {
-          fail({ retryable: true, waitSec: 5, code: 'bank_unavailable',
-            message: 'לא הצלחנו לטעון את מאגר השאלות. בדוק את החיבור ונסה שוב.' });
-          return;
-        }
         examLoadInFlight = false;
         hideLoadingOverlay();
         _finishStartingExam(resp, license, language, attempt);
+      }, function(err) {
+        logEvent('bank_load_failed', String(err));
+        fail({ retryable: true, waitSec: 5, code: 'bank_unavailable',
+          message: 'לא הצלחנו לטעון את השאלות. בדוק את החיבור ונסה שוב.' });
       });
     }).catch(function(err) {
       fail(transportErrorResponse(err));
@@ -2407,18 +2539,20 @@
     if (activeQuestions.length > 0 && examDeadline) {
       var msLeft = examDeadline - Date.now();
       if (msLeft > 0) {
-        try {
-          localStorage.setItem('examSuspended_' + sessionCode + '_' + examineeData.idNumber, JSON.stringify({
-            activeQuestions: activeQuestions,
-            currentIndex: currentIndex,
-            userAnswers: userAnswers,
-            shuffledOrders: shuffledOrders,
-            timeRemainingMs: msLeft,
-            examTimeMinutes: examTimeMinutes,
-            autoReadEnabled: autoReadEnabled,
-            dqEventId: currentDQEventId
-          }));
-        } catch(e) {}
+        // An overturn after a reload must not lose the texts: the copy first,
+        // the grant as its fallback (saveExamBlob drops the copy under quota).
+        saveExamBlob(localStorage, 'examSuspended_' + sessionCode + '_' + examineeData.idNumber, {
+          bank: examBank,
+          records: activeExamRecords(),
+          activeQuestions: activeQuestions,
+          currentIndex: currentIndex,
+          userAnswers: userAnswers,
+          shuffledOrders: shuffledOrders,
+          timeRemainingMs: msLeft,
+          examTimeMinutes: examTimeMinutes,
+          autoReadEnabled: autoReadEnabled,
+          dqEventId: currentDQEventId
+        });
       }
     }
 
@@ -2578,8 +2712,10 @@
     splitScreenBound = false;
     fullscreenBound = false;
 
-    // Re-setup exam UI (the bank is already in memory — the exam was running)
-    loadExamBanks(examineeData.language || sessionData.language || 'he').then(resumeExamUI);
+    // Usually the texts are still in memory (the exam was running in this page);
+    // a reload during the DQ wait wiped them, and then the suspended state has
+    // its own copy — and its own grant, if even that is missing.
+    loadExamTextsForResume(saved.bank || examBank, saved.records || activeExamRecords(), resumeExamUI);
   }
 
   function showTabSwitchWarning() {
@@ -3044,9 +3180,10 @@
   // The exam runs locally, so an examiner who disqualifies from the dashboard
   // would otherwise be INVISIBLE to the examinee. This poll also carries the
   // mid-exam time extensions. In-exam examinees are the majority of connected
-  // clients on an exam day: through the gateway the poll is free (8 s), direct
-  // it is one Apps Script execution per examinee (12 s).
-  var EXAMSTATUS_GATEWAY_BASE_MS = 8000;
+  // clients on an exam day: through the gateway the poll is free (6 s — the
+  // Worker coalesces the whole session), direct it is one Apps Script execution
+  // per examinee (12 s).
+  var EXAMSTATUS_GATEWAY_BASE_MS = 6000;
   var EXAMSTATUS_DIRECT_BASE_MS = 12000;
   var EXAMSTATUS_POLL_MAX_MS = 20000;
   var examStatusLoop = null;
@@ -3623,9 +3760,9 @@
     return c;
   }
 
-  // A language switch is a local re-render: every language of the bank is
-  // already in memory (prefetched while the examinee waited for approval), and
-  // nothing about the exam itself changes — same ids, same order, same clock.
+  // A language switch is a local re-render and nothing else: one request bought
+  // these 30 questions in all seven languages, so there is no network here at
+  // all, and nothing about the exam changes — same ids, same order, same clock.
   function switchExamLanguage(newLang) {
     if (newLang === getExamLang()) return;
     if (typeof stopSpeaking === 'function') stopSpeaking();
@@ -3648,17 +3785,12 @@
     };
 
     if (QuestionBank.has(newLang)) { apply(); return; }
-    showLoadingOverlay('מתחלף לשפה ' + (LANG_LABELS[newLang] || newLang) + '…');
-    QuestionBank.load(newLang).then(function() {
-      hideLoadingOverlay();
-      apply();
-    }).catch(function(err) {
-      hideLoadingOverlay();
-      logEvent('lang_switch_failed', newLang + ':' + String(err));
-      // No native alert(): on iOS it fires a blur that arms the DQ grace timer.
-      showExamNotice('לא ניתן לטעון את השאלות בשפה שנבחרה. המבחן ממשיך בשפה הנוכחית.');
-      renderQuestion();   // puts the language selector back on the active language
-    });
+    // A language the Worker had nothing for (a translation that does not cover
+    // any of these 30 ids). No native alert(): on iOS it fires a blur that arms
+    // the DQ grace timer.
+    logEvent('lang_switch_unavailable', newLang);
+    showExamNotice('השאלות אינן זמינות בשפה שנבחרה. המבחן ממשיך בשפה הנוכחית.');
+    renderQuestion();     // puts the language selector back on the active language
   }
 
   // Short in-page toast for mid-exam messages (never a native dialog — see
@@ -4906,13 +5038,10 @@
           }
         } catch(ex) {}
 
-        // The texts come from the bank, so a resumed exam waits for it (from the
-        // service-worker cache when the network is gone) before it draws.
-        showLoadingOverlay('טוען את המבחן…');
-        loadExamBanks(examineeData.language || sessionData.language || 'he').then(function() {
-          hideLoadingOverlay();
-          resumeExamUI();
-        });
+        // The texts died with the old page, but the exam saved them with itself,
+        // so a reload normally redraws with no network at all. The grant is only
+        // for a blob that has none. The clock kept running through all of it.
+        loadExamTextsForResume(activeExam.bank, activeExam.records, resumeExamUI);
         return; // done restoring
       } else {
         // Exam time expired during refresh — end it
@@ -4987,7 +5116,6 @@
       // immediately return the stale 'rejected' status and the user is stuck
       // on "הבוחן דחה את הכניסה" with no way to recover except clearing
       // browser storage. Real exam-day incident.
-      loadExamBanks(examineeData.language || sessionData.language || 'he');
       approvalPollCall().then(function(resp) {
         var st = (resp && resp.approval) || '';
         if (st === 'waiting' || st === 'approved' || st === 'in_exam') {

@@ -9,10 +9,13 @@
 //   D1  an unattended poll must never log an examiner out
 //   D17 the reset confirmation must warn about a result held on the device
 //   D22 the combined-report probe must carry the 90 s deadline
-//   D3/D4 the update check shows a banner and NEVER reloads by itself
+//   D3/D4 the update check shows a banner AND reloads the page itself 60 s
+//         later - but only when no dialog is open, no decision is waiting for
+//         the server and nobody is typing the login form (21/09 message 20)
 //   S3  the "not verified" badge keys on the stored marker, not on "0/"
 //   plus: the dashboard loop never overlaps and honours the 2 s sync window,
-//         top-wrong rendering with and without a bank entry, and both SWs.
+//         the examiner bank grant and the gateway nudge after every decision,
+//         top-wrong rendering with and without a grant, and both SWs.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -265,6 +268,138 @@ test('apiGet forwards its timeout (the commander-dashboard bug) and apiPost atta
   assert.equal(seenBody.examinerId, '111');
 });
 
+// ---------------------------------------------------------------- bank grant + gateway nudge
+// The question texts are not in the repo any more: the gateway serves them
+// against a signed grant, and every examiner decision has to tell the gateway
+// to drop its snapshot of the session or the examinee waits for a stale copy.
+const grantSection = src => section(src,
+  '  // ========== Question-bank grant + gateway nudge ==========',
+  '  // ========== Login ==========');
+
+function grantContext(firstAnswer) {
+  const ui = dom();
+  const calls = [], posts = [];
+  let answer = firstAnswer;
+  const setup = baseContext({
+    ...ui,
+    sessionCode: 'ABC12345',
+    apiGet(params) { calls.push(params.action); return Promise.resolve(answer(params)); },
+    fetch(url, opts) { posts.push({ url, opts }); return Promise.resolve({ ok: true, text: () => Promise.resolve('{}') }); }
+  });
+  load(setup.ctx, grantSection(examiner));
+  return { ...setup, ...ui, calls, posts, setAnswer(fn) { answer = fn; } };
+}
+const GRANT = { url: 'https://gateway.example', grant: 'payload.sig', exp: EPOCH + 8 * 3600 * 1000 };
+
+test('the examiner grant is fetched once and kept for the next page load', async () => {
+  const { ctx, calls, store } = grantContext(() => ({ status: 'ok', bank: GRANT }));
+  const bank = await ctx.fetchBankGrant(true);
+  assert.deepEqual(calls, ['bankGrant']);
+  assert.equal(bank.grant, GRANT.grant);
+  assert.deepEqual(JSON.parse(store.get('ext_examiner_bank')), GRANT, 'stored, so a reload costs nothing');
+  await ctx.fetchBankGrant(true);
+  assert.deepEqual(calls, ['bankGrant'], 'the grant in memory is reused');
+});
+
+test('a stored grant is adopted on a reload, and one about to expire is replaced', async () => {
+  const stored = { url: 'https://gateway.example', grant: 'old', exp: EPOCH + 3600 * 1000 };
+  const { ctx, calls, store } = grantContext(() => ({ status: 'ok', bank: GRANT }));
+  store.set('ext_examiner_bank', JSON.stringify(stored));
+  assert.equal((await ctx.fetchBankGrant()).grant, 'old');
+  assert.deepEqual(calls, [], 'an auto-restore does not pay for a grant it already holds');
+
+  ctx.examinerBank = null;
+  store.set('ext_examiner_bank', JSON.stringify({ url: 'https://gateway.example', grant: 'old', exp: EPOCH + 5 * 60 * 1000 }));
+  assert.equal((await ctx.fetchBankGrant()).grant, GRANT.grant, 'inside the 10-minute floor it is worth a request');
+  assert.deepEqual(calls, ['bankGrant']);
+});
+
+test('a login on a device somebody else used does not inherit his grant', async () => {
+  const { ctx, calls, store } = grantContext(() => ({ status: 'ok', bank: GRANT }));
+  store.set('ext_examiner_bank', JSON.stringify({ url: 'https://gateway.example', grant: 'his', exp: EPOCH + 8 * 3600 * 1000 }));
+  assert.equal((await ctx.fetchBankGrant(true)).grant, GRANT.grant, 'force=true at a fresh login');
+  assert.deepEqual(calls, ['bankGrant']);
+});
+
+test('a grant that never arrives is not fatal - the next feature asks again', async () => {
+  const { ctx, calls, setAnswer } = grantContext(() => ({ status: 'error', code: 'bank_not_configured' }));
+  assert.equal(await ctx.fetchBankGrant(true), null, 'no throw, no banner, nothing breaks');
+  setAnswer(() => ({ status: 'ok', bank: GRANT }));
+  assert.equal((await ctx.ensureBankGrant()).grant, GRANT.grant);
+  assert.deepEqual(calls, ['bankGrant', 'bankGrant']);
+});
+
+test('a successful decision nudges the gateway; a failed one does not', async () => {
+  const { ctx, posts, setAnswer } = grantContext(() => ({ status: 'ok', bank: GRANT }));
+  await ctx.fetchBankGrant(true);
+  setAnswer(() => ({ status: 'ok' }));
+  await ctx.examinerDecision({ action: 'approveExaminee', idNumber: '1' });
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].url, 'https://gateway.example/v1/invalidate?sessionCode=ABC12345');
+  assert.equal(posts[0].opts.method, 'POST');
+  assert.equal(posts[0].opts.keepalive, true, 'the re-render that follows must not cancel it');
+  assert.equal(posts[0].opts.cache, 'no-store');
+
+  setAnswer(() => ({ status: 'error', message: 'busy' }));
+  await ctx.examinerDecision({ action: 'approveExaminee', idNumber: '1' });
+  assert.equal(posts.length, 1, 'nothing changed, so there is nothing to invalidate');
+});
+
+test('a trailing slash on the gateway url does not become a double slash', async () => {
+  const { ctx, posts, setAnswer } = grantContext(() => ({ status: 'ok', bank: { url: 'https://gateway.example/', grant: 'g', exp: EPOCH + 8 * 3600 * 1000 } }));
+  await ctx.fetchBankGrant(true);
+  setAnswer(() => ({ status: 'ok' }));
+  await ctx.examinerDecision({ action: 'closeSession' });
+  assert.equal(posts[0].url, 'https://gateway.example/v1/invalidate?sessionCode=ABC12345');
+});
+
+test('without a grant a decision still works - it just does not nudge', async () => {
+  const { ctx, posts } = grantContext(() => ({ status: 'ok' }));
+  const data = await ctx.examinerDecision({ action: 'disqualify', idNumber: '1' });
+  assert.equal(data.status, 'ok');
+  assert.equal(posts.length, 0, 'no gateway url, no POST into the void');
+});
+
+test('a decision is counted while it is in flight, and the count survives a rejection', async () => {
+  const pending = deferred();
+  const { ctx, setAnswer } = grantContext(() => pending.promise);
+  assert.equal(ctx.decisionsInFlight, 0);
+  const first = ctx.examinerDecision({ action: 'forceComplete' });
+  assert.equal(ctx.decisionsInFlight, 1, 'the self-reload must be able to see this');
+  pending.resolve({ status: 'error' });
+  await first;
+  assert.equal(ctx.decisionsInFlight, 0);
+
+  setAnswer(() => Promise.reject(new Error('network down')));
+  const failed = await ctx.examinerDecision({ action: 'forceComplete' }).then(() => 'resolved', e => e.message);
+  assert.equal(failed, 'network down', 'the caller still sees its own failure');
+  assert.equal(ctx.decisionsInFlight, 0, 'a rejection must not pin the counter at 1 forever');
+});
+
+test('every examiner decision goes through the wrapper (and so nudges the gateway)', () => {
+  const wrapped = ['rejectExaminee', 'resetExaminee', 'confirmDQ', 'overturnDQ',
+                   'forceComplete', 'disqualify', 'addExamTime', 'closeSession'];
+  const offenders = examiner.split('\r\n').filter(l =>
+    /(^|[^a-zA-Z])apiGet\(\{ action: '(approveExaminee|rejectExaminee|resetExaminee|confirmDQ|overturnDQ|forceComplete|disqualify|addExamTime|closeSession)'/.test(l));
+  assert.deepEqual(offenders, [], 'a decision that skips examinerDecision leaves the examinee on a stale snapshot');
+  for (const action of wrapped) {
+    assert.ok(new RegExp("examinerDecision\\(\\{ action: '" + action + "'").test(examiner), action + ' is wrapped');
+  }
+  // approve builds its params object first (time extension, audio), then calls
+  assert.match(section(examiner, "var params = { action: 'approveExaminee'", 'actions.appendChild(approveBtn);'),
+    /examinerDecision\(params\)/, 'approveExaminee too');
+});
+
+test('the grant is fetched on all three ways in, and leaves with the examiner', () => {
+  assert.match(section(examiner, '  // ========== Login ==========', '  window.logout = function()'),
+    /fetchBankGrant\(true\);/, 'a fresh login');
+  assert.match(section(examiner, '  function enterAsRemembered(creds, data) {', '  // ========== Auto-restore on page load =========='),
+    /fetchBankGrant\(\);/, 'the remembered login');
+  assert.match(section(examiner, '  // ========== Auto-restore on page load ==========', '  function showQR(code)'),
+    /fetchBankGrant\(\);/, 'the auto-restore path');
+  assert.match(examiner, /localStorage\.removeItem\('ext_examiner_bank'\)/, 'and logout takes it away');
+});
+
 // ---------------------------------------------------------------- dashboard loop
 function dashboardContext(apiGet) {
   const ui = dom();
@@ -427,91 +562,238 @@ test('D22: the combined-report probe carries the 90 s deadline, throttles, and n
 });
 
 // ---------------------------------------------------------------- D3/D4
-test('D3/D4: a new version raises a banner with a button and never reloads by itself', async () => {
+// 21/09 message 20 reverses decision 4: the banner and its button stay, and the
+// page also reloads ITSELF 60 s later - but only at a safe moment. The section
+// now carries those safety rules, so the context has to supply what they read
+// out of the page's closure (saveState, the in-flight decision counter).
+const updateSection = src => section(src,
+  '  // ===== Auto-update: a banner, a button, and a self-reload ONLY when it is safe',
+  '  var deferredInstallPrompt = null;');
+
+function updateContext(nextAnswer) {
   const ui = dom();
-  let reloads = 0, version = { build: 'b1', pages: { 'examiner.html': 'hash-1' } };
-  const { ctx, timer } = baseContext({
+  const setup = baseContext({
     ...ui,
     sessionCode: '',
-    location: { pathname: '/examiner.html', reload() { reloads++; } },
-    fetch: () => Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify(version)) })
+    reloads: 0, saved: 0, decisionsInFlight: 0,
+    saveState() { setup.ctx.saved++; },
+    location: { pathname: '/examiner.html', reload() { setup.ctx.reloads++; } },
+    fetch: () => Promise.resolve(nextAnswer())
   });
-  load(ctx, section(examiner, '  // ===== Auto-update: BANNER ONLY', '  var deferredInstallPrompt = null;'));
+  load(setup.ctx, updateSection(examiner));
+  return { ...setup, ...ui };
+}
+const versionAnswer = v => ({ ok: true, text: () => Promise.resolve(JSON.stringify(v)) });
+
+test('D3/D4: two sightings raise the banner, and 60 s later the page reloads itself', async () => {
+  let version = { build: 'b1', pages: { 'examiner.html': 'hash-1' } };
+  const { ctx, timer, nodes } = updateContext(() => versionAnswer(version));
   await drain();
   version = { build: 'b2', pages: { 'examiner.html': 'hash-2' } };
   await timer.advance(120000);                  // first sighting: not enough
-  assert.equal(ui.nodes.get('examinerUpdateBanner') || null, null);
-  await timer.advance(120000);                  // same hash twice = a real deploy
-  assert.ok(ui.nodes.get('examinerUpdateBanner'), 'the banner appears');
+  assert.equal(nodes.get('examinerUpdateBanner') || null, null);
+  await timer.advance(120000);                  // the same new hash twice = a real deploy
+  assert.ok(nodes.get('examinerUpdateBanner'), 'the banner appears');
+  await timer.advance(59000);
+  assert.equal(ctx.reloads, 0, 'the examiner gets his minute first');
+  await timer.advance(2000);
+  assert.equal(ctx.reloads, 1, 'and then the page updates itself (message 20)');
+  assert.equal(ctx.saved, 1, 'saveState ran first, so he comes back to the same screen');
   await timer.advance(10 * 60 * 1000);
-  assert.equal(reloads, 0, 'decision 4: an examiner page NEVER reloads itself (16/09)');
-  ui.nodes.get('swUpdNow').click();
-  assert.equal(reloads, 1, 'only the button reloads');
+  assert.equal(ctx.reloads, 1, 'exactly once');
+});
+
+test('D3/D4: an open modal postpones the reload, and it happens 15 s after the modal closes', async () => {
+  let version = { build: 'b1', pages: { 'examiner.html': 'h1' } };
+  const { ctx, timer, nodes, element } = updateContext(() => versionAnswer(version));
+  const modal = element('settingsModal');
+  modal.classList.add('show');
+  await drain();
+  version = { build: 'b2', pages: { 'examiner.html': 'h2' } };
+  await timer.advance(120000); await timer.advance(120000);
+  assert.ok(nodes.get('examinerUpdateBanner'));
+  await timer.advance(60000);
+  assert.equal(ctx.reloads, 0, 'never wipe an open dialog');
+  await timer.advance(5 * 60 * 1000);
+  assert.equal(ctx.reloads, 0, 'and it keeps waiting for as long as the dialog is open');
+  modal.classList.remove('show');
+  await timer.advance(15000);
+  assert.equal(ctx.reloads, 1, 'D4: the guard is re-evaluated every 15 s, not once before the timer');
+  assert.equal(ctx.saved, 1);
+});
+
+test('D3/D4: the share dialog, the add-time overlay, a decision in flight and a half-typed login all hold the reload', async () => {
+  let version = { build: 'b1', pages: { 'examiner.html': 'h1' } };
+  const { ctx, timer, nodes, element, document } = updateContext(() => versionAnswer(version));
+  const share = element('shareDialog');
+  share.style.display = 'flex';
+  await drain();
+  version = { build: 'b2', pages: { 'examiner.html': 'h2' } };
+  await timer.advance(120000); await timer.advance(120000);
+  await timer.advance(60000);
+  assert.equal(ctx.reloads, 0, 'a share dialog is open');
+
+  // the overlay the add-time modal builds at click time has no id, only the class
+  share.style.display = 'none';
+  const overlay = { className: 'examiner-modal' };
+  document.querySelector = sel => (sel === '.examiner-modal' ? overlay : null);
+  await timer.advance(15000);
+  assert.equal(ctx.reloads, 0, 'an overlay built at click time counts too');
+
+  document.querySelector = () => null;
+  ctx.decisionsInFlight = 1;
+  await timer.advance(15000);
+  assert.equal(ctx.reloads, 0, 'an approval the server has not answered yet');
+
+  ctx.decisionsInFlight = 0;
+  const loginScreen = element('screenLogin');
+  loginScreen.classList.add('active');           // he is looking at the login form
+  const loginId = element('loginId');
+  loginId.value = '12345';
+  await timer.advance(15000);
+  assert.equal(ctx.reloads, 0, 'nine digits already typed must not be wiped');
+
+  loginId.value = '';
+  await timer.advance(15000);
+  assert.equal(ctx.reloads, 1, 'once everything is clear it finally reloads');
+});
+
+test('D3/D4: values left in the login form of a logged-in examiner do not block the reload forever', async () => {
+  // Nothing clears loginId/loginPass on a successful login, and the remembered
+  // path pre-fills the id - so reading them while the dashboard is on screen
+  // would have pinned isSafeToReload() at false for the rest of the day.
+  let version = { build: 'b1', pages: { 'examiner.html': 'h1' } };
+  const { ctx, timer, nodes, element } = updateContext(() => versionAnswer(version));
+  const loginScreen = element('screenLogin');
+  element('screenSetup').classList.add('active');   // he is inside, on the setup screen
+  const loginId = element('loginId'), loginPass = element('loginPass');
+  loginId.value = '123456789';
+  loginPass.value = 'still here from the login';
+  await drain();
+  version = { build: 'b2', pages: { 'examiner.html': 'h2' } };
+  await timer.advance(120000); await timer.advance(120000);
+  assert.ok(nodes.get('examinerUpdateBanner'));
+  await timer.advance(61000);
+  assert.equal(ctx.reloads, 1, 'stale values in a hidden section are not "somebody typing"');
+
+  assert.equal(loginScreen.classList.contains('active'), false, 'the login screen really was not the active one');
+});
+
+test('D3/D4: the button reloads at once, whatever is open', async () => {
+  let version = { build: 'b1', pages: { 'examiner.html': 'h1' } };
+  const { ctx, timer, nodes, element } = updateContext(() => versionAnswer(version));
+  element('settingsModal').classList.add('show');
+  await drain();
+  version = { build: 'b2', pages: { 'examiner.html': 'h2' } };
+  await timer.advance(120000); await timer.advance(120000);
+  nodes.get('swUpdNow').click();
+  assert.equal(ctx.reloads, 1, 'the examiner asked for it himself');
 });
 
 test('D3/D4: a rewritten header or an error page is not a new version', async () => {
-  const ui = dom();
-  let answer = { ok: true, text: () => Promise.resolve(JSON.stringify({ build: 'b1', pages: { 'examiner.html': 'hash-1' } })) };
-  const { ctx, timer } = baseContext({
-    ...ui, sessionCode: '',
-    location: { pathname: '/examiner.html', reload() { throw new Error('must not reload'); } },
-    fetch: () => Promise.resolve(answer)
-  });
-  load(ctx, section(examiner, '  // ===== Auto-update: BANNER ONLY', '  var deferredInstallPrompt = null;'));
+  let answer = versionAnswer({ build: 'b1', pages: { 'examiner.html': 'hash-1' } });
+  const { ctx, timer, nodes } = updateContext(() => answer);
+  ctx.location.reload = () => { throw new Error('must not reload'); };
   await drain();
   answer = { ok: true, text: () => Promise.resolve('<html>captive portal</html>') };
   await timer.advance(120000); await timer.advance(120000);
   answer = { ok: false, status: 503, text: () => Promise.resolve('{}') };
   await timer.advance(120000); await timer.advance(120000);
-  assert.equal(ui.nodes.get('examinerUpdateBanner') || null, null,
+  assert.equal(nodes.get('examinerUpdateBanner') || null, null,
     'only a 200 JSON with a hash for THIS page counts');
 });
 
 // ---------------------------------------------------------------- top wrong
-function topWrongContext(bankEntries) {
+// The table gets { questionId, count, category, text } from the server and
+// nothing else. The canonical text and the image are pulled from the gateway
+// for exactly the ids on screen, with the examiner grant; the stored text is
+// what shows until they arrive, and for good when they never do.
+function topWrongContext(arriving, grant) {
   const ui = dom();
   ui.element('cmdTopWrong');
+  const bankEntries = {};
+  const loadIdsCalls = [];
+  const held = { grant: grant === undefined ? { url: 'https://gateway.example', grant: 'g' } : grant };
   const { ctx } = baseContext({
     ...ui,
     cmdData: null,
     escapeHtml: s => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'),
+    ensureBankGrant: () => Promise.resolve(held.grant),
     QuestionBank: {
-      has: () => true,
-      load: () => Promise.resolve(),
       get: id => bankEntries[id] || null,
-      imageUrl: e => (e && e.image ? 'images/' + e.image : '')
+      imageUrl: e => (e && e.image ? 'images/' + e.image : ''),
+      loadIds(bank, ids, langs) {
+        loadIdsCalls.push({ bank, ids, langs });
+        ids.forEach(id => { if (arriving[id]) bankEntries[id] = arriving[id]; });
+        return Promise.resolve({ build: 'b', count: ids.length, missing: [] });
+      }
     }
   });
   load(ctx, section(examiner, '  // The server sends { questionId, count, category, text }', '  // Day-of-week'));
-  return { ctx, ...ui };
+  return { ctx, loadIdsCalls, held, ...ui };
 }
 
-test('top wrong: the canonical Hebrew text and the image come from the bank', () => {
-  const { ctx, nodes } = topWrongContext({
-    14: { id: 14, text: 'מה פירוש התמרור?', image: 'TQ_PIC_14.jpg' }
+test('top wrong: the texts are pulled from the gateway for exactly the ids on screen', async () => {
+  const { ctx, nodes, loadIdsCalls } = topWrongContext({
+    14: { id: 14, text: 'מה פירוש התמרור?', image: 'TQ_PIC_14.jpg' },
+    21: { id: 21, text: 'שאלה 21', image: '' }
   });
-  ctx.renderTopWrong([{ questionId: 14, count: 9, category: 'תמרורים', text: 'stale copy from the sheet' }]);
+  const list = [{ questionId: 14, count: 9, category: 'תמרורים', text: 'stale copy from the sheet' },
+                { questionId: 21, count: 3, category: '', text: 'stale 21' }];
+  ctx.cmdData = { topWrong: list };
+  ctx.renderTopWrong(list);
+  assert.match(nodes.get('cmdTopWrong').innerHTML, /stale copy/, 'the first paint uses what the server stored');
+  await drain();
+  assert.equal(loadIdsCalls.length, 1, 'one request for the whole table');
+  // Array.from: these were built inside the vm, so their prototype is not ours
+  assert.deepEqual(Array.from(loadIdsCalls[0].ids), [14, 21], 'exactly the ids being shown');
+  assert.deepEqual(Array.from(loadIdsCalls[0].langs), ['he']);
+  assert.equal(loadIdsCalls[0].bank.grant, 'g', 'with the examiner grant');
   const html = nodes.get('cmdTopWrong').innerHTML;
-  assert.match(html, /images\/TQ_PIC_14\.jpg/, 'the image is resolved locally, not sent by the server');
-  assert.match(html, /מה פירוש התמרור\?/, 'the bank text wins');
+  assert.match(html, /images\/TQ_PIC_14\.jpg/, 'the image name comes from the bank, not from the server');
+  assert.match(html, /מה פירוש התמרור\?/, 'and the canonical text wins');
   assert.ok(!/stale copy/.test(html));
   assert.match(html, /id: 14/);
   assert.match(html, /תמרורים/);
 });
 
-test('top wrong: an id the bank does not carry falls back to the stored text and shows no image', () => {
-  const { ctx, nodes } = topWrongContext({});
-  ctx.renderTopWrong([{ questionId: 9999, count: 4, category: '', text: 'שאלה שהוצאה מהמאגר' }]);
+test('top wrong: no grant means the stored text stays, nothing is requested, and the ids are not burnt', async () => {
+  const { ctx, nodes, loadIdsCalls, held } = topWrongContext({ 9999: { id: 9999, text: 'מהמאגר החי', image: '' } }, null);
+  const list = [{ questionId: 9999, count: 4, category: '', text: 'שאלה שהוצאה מהמאגר' }];
+  ctx.cmdData = { topWrong: list };
+  ctx.renderTopWrong(list);
+  await drain();
+  assert.equal(loadIdsCalls.length, 0, 'an examiner whose grant never arrived still sees the table');
   const html = nodes.get('cmdTopWrong').innerHTML;
   assert.match(html, /שאלה שהוצאה מהמאגר/);
   assert.ok(!/<img/.test(html), 'no broken image box');
   assert.match(html, /find_image\.html\?q=/, 'the deep link still works');
+
+  // the grant turns up later (the lazy retry): the next report asks for real
+  held.grant = { url: 'https://gateway.example', grant: 'g' };
+  ctx.renderTopWrong(list);
+  await drain();
+  assert.equal(loadIdsCalls.length, 1, 'ids are only marked as asked once they really were');
+  assert.match(nodes.get('cmdTopWrong').innerHTML, /מהמאגר החי/);
+});
+
+test('top wrong: an id the gateway does not carry is asked for once, not on every repaint', async () => {
+  const { ctx, nodes, loadIdsCalls } = topWrongContext({});   // the gateway answers, but has nothing for it
+  const list = [{ questionId: 9999, count: 4, category: '', text: 'שאלה שהוצאה מהמאגר' }];
+  ctx.cmdData = { topWrong: list };
+  ctx.renderTopWrong(list);
+  await drain();
+  assert.equal(loadIdsCalls.length, 1);
+  await drain();
+  assert.equal(loadIdsCalls.length, 1, 'the repaint must not start the request again');
+  assert.match(nodes.get('cmdTopWrong').innerHTML, /שאלה שהוצאה מהמאגר/);
 });
 
 test('top wrong: an empty list says so instead of rendering an empty table', () => {
-  const { ctx, nodes } = topWrongContext({});
+  const { ctx, nodes, loadIdsCalls } = topWrongContext({});
   ctx.renderTopWrong([]);
   assert.match(nodes.get('cmdTopWrong').innerHTML, /אין נתוני/);
+  assert.equal(loadIdsCalls.length, 0);
 });
 
 // ---------------------------------------------------------------- toasts
@@ -582,8 +864,13 @@ for (const sw of ['sw-examiner.js', 'sw-teacher.js']) {
     assert.equal(responded, false);
     fetchHandler({ request: { method: 'GET', url: 'https://script.google.com/macros/s/x/exec' }, respondWith: () => { responded = true; } });
     assert.equal(responded, false, 'the API always goes to the network');
-    fetchHandler({ request: { method: 'GET', url: 'https://example/bank/he.json?v=abc' }, respondWith: () => { responded = true; } });
+    fetchHandler({ request: { method: 'GET', url: 'https://example/examiner.html?cb=1' }, respondWith: () => { responded = true; } });
     assert.equal(responded, true, 'same-origin GETs are served network-first');
-    assert.match(src, /ignoreSearch: true/, 'bank/<lang>.json?v=<sha> must still match its cached copy offline');
+    assert.match(src, /ignoreSearch: true/, 'a cache-busted shell must still match its cached copy offline');
+
+    // The question bank is not served from this origin any more (it lives
+    // behind the gateway), so nothing here may special-case it or precache it.
+    assert.ok(!/bank\/manifest\.json/.test(src), 'no bank manifest in the shell');
+    assert.ok(!/'\.\/bank\//.test(src), 'no bank file in the shell');
   });
 }

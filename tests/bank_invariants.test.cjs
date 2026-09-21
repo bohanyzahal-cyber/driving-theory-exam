@@ -1,4 +1,4 @@
-// Gates on the static question bank and the server's id index.
+// Gates on the question-bank assets and the server's id index.
 //
 // The point of this file: the exam draw moved from "the server reads the whole
 // bank" to "the server reads an index of ids". That is only safe if the index
@@ -6,6 +6,12 @@
 // every id the client can be handed really has a text, an image and an answer
 // key in the language it will be answered in. Both server functions are copied
 // here VERBATIM on purpose — the test must not share code with the builder.
+//
+// The bank is read from cloudflare-workers/session-gateway/assets/ — the
+// private Worker assets (§11.1), which is where it now lives. The two shapes
+// there must agree: assets/q/<id>.json (what an exam device gets) is just the
+// per-language entries of assets/bank/<lang>.json turned inside out, and the
+// index is the id authority for both.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -16,7 +22,10 @@ const { execFileSync } = require('node:child_process');
 
 const ROOT = path.join(__dirname, '..');
 const GENERATED = path.join(ROOT, 'deployment', 'generated');
-const BANK_DIR = path.join(ROOT, 'bank');
+const ASSETS_DIR = path.join(ROOT, 'cloudflare-workers', 'session-gateway', 'assets');
+const BANK_DIR = path.join(ASSETS_DIR, 'bank');
+const Q_DIR = path.join(ASSETS_DIR, 'q');
+const MANIFEST_FILE = path.join(ASSETS_DIR, 'manifest.json');
 const LANGS = ['he', 'ru', 'en', 'ar', 'fr', 'es', 'am'];
 const LICENSES = ['B', '1', 'C1', 'C', 'D'];
 
@@ -67,7 +76,8 @@ function legacyPool(rows, license) {
 }
 
 // --- fixtures --------------------------------------------------------------
-if (!fs.existsSync(path.join(BANK_DIR, 'manifest.json'))) {
+// The assets are gitignored, so an untouched checkout has none: build them.
+if (!fs.existsSync(MANIFEST_FILE)) {
   execFileSync('node', [path.join(ROOT, 'tools', 'build_bank.js')], { cwd: ROOT, stdio: 'inherit' });
 }
 
@@ -78,7 +88,7 @@ for (const lang of LANGS) {
   source[lang] = read(path.join(GENERATED, 'questions_' + lang + '.json'));
   bank[lang] = read(path.join(BANK_DIR, lang + '.json'));
 }
-const manifest = read(path.join(BANK_DIR, 'manifest.json'));
+const manifest = read(MANIFEST_FILE);
 const index = read(path.join(ROOT, 'deployment', 'question_index.json'));
 const imageFiles = new Set(fs.readdirSync(path.join(ROOT, 'images')));
 
@@ -171,6 +181,46 @@ test('the manifest describes the files that are actually on disk', () => {
   }
   assert.equal(manifest.build, crypto.createHash('sha1').update(shas.join('')).digest('hex'));
   assert.deepEqual(Object.keys(manifest.langs), LANGS, 'language order is load-bearing (the index bitmask)');
+});
+
+test('every index id has a q/ file, and it holds exactly the per-language bank entries', () => {
+  // This is what an exam device actually receives. If a q/ file disagreed with
+  // bank/<lang>.json, the examinee and the examiner would be looking at two
+  // different questions under one id.
+  const entries = {};
+  for (const lang of LANGS) entries[lang] = entryMap(lang);
+
+  for (const id of Object.keys(index).map(Number)) {
+    const file = path.join(Q_DIR, id + '.json');
+    assert.ok(fs.existsSync(file), 'no assets/q/' + id + '.json — the Worker would report it missing');
+    const question = read(file);
+    assert.equal(question.id, id, 'assets/q/' + id + '.json carries id ' + question.id);
+
+    let mask = 0;
+    LANGS.forEach((lang, bit) => { if (question.l[lang]) mask |= (1 << bit); });
+    assert.equal(mask, index[id].l, 'id ' + id + ': the q/ languages disagree with the index mask');
+
+    for (const [lang, one] of Object.entries(question.l)) {
+      const entry = entries[lang].get(id);
+      assert.ok(entry, lang + ' id ' + id + ': q/ carries a language the bank does not have');
+      const expected = { t: entry.t, a: entry.a, i: entry.i };
+      if (entry.v) expected.v = entry.v;
+      assert.deepEqual(one, expected, lang + ' id ' + id + ': q/ copy differs from bank/' + lang + '.json');
+    }
+  }
+});
+
+test('assets/q holds a file per index id and nothing else', () => {
+  // A leftover file is still deployed and still servable by id — that is how a
+  // question removed from the bank (id 1592) could come back to life.
+  const files = fs.readdirSync(Q_DIR);
+  const ids = new Set(Object.keys(index));
+  for (const name of files) {
+    assert.match(name, /^\d+\.json$/, 'stray file in assets/q: ' + name);
+    assert.ok(ids.has(name.slice(0, -5)), 'assets/q/' + name + ' is not in the index — stale build');
+  }
+  assert.equal(files.length, ids.size, 'assets/q has ' + files.length + ' files for ' + ids.size + ' ids');
+  assert.equal(manifest.questions, files.length, 'manifest.questions is stale');
 });
 
 test('each bank holds one sorted entry per unique source id', () => {

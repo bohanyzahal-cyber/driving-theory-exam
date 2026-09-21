@@ -729,10 +729,11 @@ function categoryClass(cat){var n=classifyCategory(cat);if(n==='\u05d1\u05d8\u05
 
 // ===== questions =====
 // The server sends ids, the blueprint topic and the encoded correct index for
-// ALL SEVEN languages; every text comes from the static bank (bank/<lang>.json)
-// loaded in the browser. That is what makes a language switch mid-practice a
-// local operation - no getQuestionsByIds, no second server round trip, and no
-// way for a slow Apps Script to strand a student half-translated.
+// ALL SEVEN languages, plus a signed grant; the texts themselves come from the
+// session gateway, which answers that grant with exactly these ids in all seven
+// languages. That is what makes a language switch mid-practice a local
+// operation - no getQuestionsByIds, no second server round trip, and no way for
+// a slow Apps Script to strand a student half-translated.
 function decodeCI(ci,id){return ci^(id%256);}
 function getQText(q){return q.text;}
 function getQAnswers(q){return q.answers;}
@@ -762,20 +763,19 @@ function hydrateQuestions(raw,lang){
   }
   return out;
 }
-// Loads the bank of `lang` (and Hebrew as the fallback, only when something is
-// actually missing) and then hydrates.
-function withBank(lang,raw,onOk,onFail){
-  QuestionBank.load(lang).then(function(){
-    var missing=false;
-    for(var i=0;i<raw.length;i++){ if(raw[i]&&!QuestionBank.get(raw[i].id,lang,currentLicense)){missing=true;break;} }
-    if(!missing||lang==='he')return null;
-    return QuestionBank.load('he');
-  }).then(function(){
+// One request for the texts: the grant startPractice returned brings back every
+// one of these ids in all seven languages, so nothing else has to be loaded -
+// not for the Hebrew fallback of an id a translation is missing, and not for a
+// language switch later on.
+var BANK_LOAD_ERROR_TEXT='\u05dc\u05d0 \u05d4\u05e6\u05dc\u05d7\u05ea\u05d9 \u05dc\u05d8\u05e2\u05d5\u05df \u05d0\u05ea \u05d1\u05e0\u05e7 \u05d4\u05e9\u05d0\u05dc\u05d5\u05ea. \u05d1\u05d3\u05d5\u05e7 \u05d7\u05d9\u05d1\u05d5\u05e8 \u05d5\u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.';
+var BANK_NOT_CONFIGURED_TEXT='\u05de\u05d0\u05d2\u05e8 \u05d4\u05e9\u05d0\u05dc\u05d5\u05ea \u05d0\u05d9\u05e0\u05d5 \u05de\u05d5\u05d2\u05d3\u05e8 \u05d1\u05e9\u05e8\u05ea \u2014 \u05e4\u05e0\u05d4 \u05dc\u05de\u05e0\u05d4\u05dc \u05d4\u05de\u05e2\u05e8\u05db\u05ea';
+function withBank(bank,lang,raw,onOk,onFail){
+  QuestionBank.loadGrant(bank).then(function(){
     var qs=hydrateQuestions(raw,lang);
-    if(!qs.length){onFail('\u05dc\u05d0 \u05d4\u05e6\u05dc\u05d7\u05ea\u05d9 \u05dc\u05d8\u05e2\u05d5\u05df \u05d0\u05ea \u05d1\u05e0\u05e7 \u05d4\u05e9\u05d0\u05dc\u05d5\u05ea. \u05d1\u05d3\u05d5\u05e7 \u05d7\u05d9\u05d1\u05d5\u05e8 \u05d5\u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.');return;}
+    if(!qs.length){onFail(BANK_LOAD_ERROR_TEXT);return;}
     onOk(qs);
   }).catch(function(){
-    onFail('\u05dc\u05d0 \u05d4\u05e6\u05dc\u05d7\u05ea\u05d9 \u05dc\u05d8\u05e2\u05d5\u05df \u05d0\u05ea \u05d1\u05e0\u05e7 \u05d4\u05e9\u05d0\u05dc\u05d5\u05ea. \u05d1\u05d3\u05d5\u05e7 \u05d7\u05d9\u05d1\u05d5\u05e8 \u05d5\u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.');
+    onFail(BANK_LOAD_ERROR_TEXT);
   });
 }
 
@@ -802,7 +802,12 @@ function startPractice(extraParams,onOk,onFail){
     if(!resp||resp.status!=='ok'||!Array.isArray(resp.questions)||!resp.questions.length){
       hideLoadingOverlay();onFail(practiceErrorText(resp));return;
     }
-    withBank(currentLanguage,resp.questions,function(qs){hideLoadingOverlay();onOk(qs);},function(msg){hideLoadingOverlay();onFail(msg);});
+    // No grant, no texts - anywhere. Say that the server is not configured
+    // instead of opening a practice with 30 blank questions.
+    if(!resp.bank||!resp.bank.url||!resp.bank.grant){
+      hideLoadingOverlay();onFail(BANK_NOT_CONFIGURED_TEXT);return;
+    }
+    withBank(resp.bank,currentLanguage,resp.questions,function(qs){hideLoadingOverlay();onOk(qs);},function(msg){hideLoadingOverlay();onFail(msg);});
   }).catch(function(){hideLoadingOverlay();onFail(practiceErrorText(null));});
 }
 
@@ -1026,10 +1031,11 @@ function switchLanguage(newLang){
   if(Array.isArray(examQuestions)&&examQuestions.length)lists.push(examQuestions);
   if(Array.isArray(flashcardQuestions)&&flashcardQuestions.length)lists.push(flashcardQuestions);
   if(!lists.length){_finishSwitch();return;}
-  if(QuestionBank.has(newLang)){repaint();return;}
-  showLoadingOverlay('\u05de\u05ea\u05d7\u05dc\u05e3 \u05dc\u05e9\u05e4\u05d4\u2026');
-  QuestionBank.load(newLang).then(function(){hideLoadingOverlay();repaint();})
-    .catch(function(){hideLoadingOverlay();alert('\u05dc\u05d0 \u05d4\u05e6\u05dc\u05d7\u05ea\u05d9 \u05dc\u05d8\u05e2\u05d5\u05df \u05d0\u05ea \u05d4\u05e9\u05e4\u05d4 \u05d4\u05d6\u05d5. \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.');});
+  // All seven languages of these ids arrived with the grant, so a switch is a
+  // repaint and nothing else: no request, no loading overlay, nothing that can
+  // fail half-way. An id a translation does not carry stays in Hebrew, per
+  // question, inside applyLanguageToQuestion.
+  repaint();
   function repaint(){
     for(var l=0;l<lists.length;l++){
       for(var i=0;i<lists[l].length;i++)applyLanguageToQuestion(lists[l][i],newLang);
@@ -1367,7 +1373,8 @@ var priorClassCode=currentClassCode;
 currentClassCode=classInput||savedClass||currentClassCode;
 migrateLegacyProgress();
 currentStudentId=getStudentId();
-QuestionBank.load(currentLanguage).catch(function(){});   // warm the bank while the student reads the menu
+// No bank warm-up from the menu any more: there is nothing to warm. The texts
+// come with the grant that startPractice returns, for the ids it hands out.
 var proceedToApp=function(){(function(){document.getElementById('greetingText').textContent='\u05E9\u05DC\u05D5\u05DD, '+currentName+'! \u05DE\u05D4 \u05E0\u05EA\u05E8\u05D2\u05DC \u05D4\u05D9\u05D5\u05DD?';buildCategoryButtons();showScreen('screenModeSelect');renderStreak();try{var wr=JSON.parse(readProgress('student_wrong_qs','[]'));var srCard=document.getElementById('cardSpacedRep');if(srCard){if(wr.length>0){srCard.style.display='';document.getElementById('spacedRepDesc').textContent=wr.length+' שאלות שטעית בהן מחכות לך';}else{srCard.style.display='none';}}}catch(e){}})();};
 if(classInput&&classInput!==priorClassCode){joinClass(classInput,currentName,currentStudentId,function(){loadProgressFromCloud(proceedToApp);});}
 else if(savedClass){currentClassCode=savedClass;loadProgressFromCloud(proceedToApp);}

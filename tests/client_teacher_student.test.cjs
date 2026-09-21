@@ -7,12 +7,14 @@
 // What it gates (review ids from docs/reviews/2026-09-21/):
 //   D5  teacher: a stored login is dropped ONLY on tokenExpired === true
 //   D6  teacher: every request has a deadline; no raw fetch survives
-//   D4  teacher: the update banner never reloads the page by itself
+//   D4  teacher: the page reloads itself 60 s after the banner, but the modal
+//       guard is evaluated AT FIRE TIME and every 15 s after it (21/09 msg 20)
 //   D16 student: progress and studentId belong to class+name, not to the device
 //   S8  student: one pass rule, ceil(total * 0.86), for every practice mode
-//   plus: startPractice + bank hydration, a purely local language switch,
-//         spaced repetition via mode=ids, the idle-only student reload,
-//         and the standalone exam.html flow.
+//   plus: startPractice + the signed grant it returns, a purely local language
+//         switch, a missing grant named instead of a blank practice, spaced
+//         repetition via mode=ids, the idle-only student reload, and the
+//         standalone exam.html flow.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -123,6 +125,11 @@ const load = (ctx, code) => vm.runInContext(code, ctx);
 // A stand-in for shared/bank.js with a handful of questions. `he` carries them
 // all; `en` is missing 907 on purpose (the real ru bank is missing exactly that
 // id) so the Hebrew fallback is exercised.
+//
+// The three loaders mirror the real ones: loadGrant is the practice/exam path
+// (one request, the granted ids in EVERY language, which is what makes a
+// language switch local), loadIds is the examiner's, loadFull is find_image's.
+// `load` is gone - there is no public bank to fetch by language any more.
 function fakeBank() {
   const data = {
     he: {
@@ -136,23 +143,36 @@ function fakeBank() {
     }
   };
   const loaded = new Set();
-  const calls = [];
+  const grants = [], idCalls = [], fullCalls = [];
+  const result = ids => Promise.resolve({ build: 'test', count: ids, missing: [] });
   return {
-    calls,
+    grants, idCalls, fullCalls,
     api: {
       LANGS: ['he', 'ru', 'en', 'ar', 'fr', 'es', 'am'],
       has: l => loaded.has(l),
-      load(l) { calls.push(l); loaded.add(l); return Promise.resolve(); },
+      loadGrant(bank) {
+        grants.push(bank);
+        Object.keys(data).forEach(l => loaded.add(l));   // every language of the granted ids
+        return result(3);
+      },
+      loadIds(bank, ids, langs) {
+        idCalls.push({ bank, ids, langs });
+        (langs || ['he']).forEach(l => loaded.add(l));
+        return result(ids.length);
+      },
+      loadFull(bank, lang) { fullCalls.push({ bank, lang }); loaded.add(lang); return result(3); },
       get(id, lang) {
         if (!loaded.has(lang)) return null;
         const e = (data[lang] || {})[id];
         return e ? { id: e.id, text: e.t, answers: e.a, image: e.i || '' } : null;
       },
       imageUrl: e => (e && (e.image || e.i) ? 'images/' + (e.image || e.i) : ''),
-      prefetch() {}, search: () => []
+      search: () => []
     }
   };
 }
+// What startPractice now answers with, next to the questions.
+const PRACTICE_BANK = { url: 'https://gateway.example', grant: 'payload.sig', exp: 1758400000000 + 2 * 3600 * 1000 };
 
 // ======================================================================
 // teacher.html
@@ -237,25 +257,64 @@ test('D5: a transport failure keeps the stored login untouched', async () => {
   assert.ok(store.has('teacher_auth'), 'no network is not an expired token');
 });
 
-test('D4: the teacher update banner appears and never reloads by itself', async () => {
+// 21/09 message 20: the teacher page updates itself again. What stays fixed is
+// the D4 bug - the modal guard is evaluated when the timer fires and every 15 s
+// after that, never once before the grace period starts.
+function teacherUpdateContext() {
   const ui = dom();
-  let reloads = 0, version = { build: 'b1', pages: { 'teacher.html': 'h1' } };
+  const state = { reloads: 0, version: { build: 'b1', pages: { 'teacher.html': 'h1' } }, modalOpen: false };
   const { ctx, timer } = baseContext({
     ...ui,
-    location: { pathname: '/teacher.html', reload() { reloads++; } },
-    fetch: () => Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify(version)) })
+    location: { pathname: '/teacher.html', reload() { state.reloads++; } },
+    fetch: () => Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify(state.version)) })
   });
-  load(ctx, section(teacher, '// ===== Auto-update: BANNER ONLY', '\nvar deferredInstallPrompt'));
+  ctx.document.querySelector = sel => (sel === '.modal-overlay.active' && state.modalOpen ? { id: 'modalNewClass' } : null);
+  load(ctx, section(teacher, '// ===== Auto-update: a banner, a button, and a self-reload ONLY when it is safe', '\nvar deferredInstallPrompt'));
+  return { ctx, timer, state, ...ui };
+}
+
+test('D4: the teacher banner appears on the second sighting and the page then reloads itself', async () => {
+  const { timer, state, nodes } = teacherUpdateContext();
   await drain();
-  version = { build: 'b2', pages: { 'teacher.html': 'h2' } };
+  state.version = { build: 'b2', pages: { 'teacher.html': 'h2' } };
   await timer.advance(120000);
-  assert.equal(ui.nodes.get('teacherUpdateBanner') || null, null, 'one sighting proves nothing');
+  assert.equal(nodes.get('teacherUpdateBanner') || null, null, 'one sighting proves nothing');
   await timer.advance(120000);
-  assert.ok(ui.nodes.get('teacherUpdateBanner'), 'the banner appears on the second');
+  assert.ok(nodes.get('teacherUpdateBanner'), 'the banner appears on the second');
+  await timer.advance(59000);
+  assert.equal(state.reloads, 0, 'not before the grace period is over');
+  await timer.advance(2000);
+  assert.equal(state.reloads, 1, 'and then it updates itself');
   await timer.advance(10 * 60 * 1000);
-  assert.equal(reloads, 0, 'D4: no 60 s grace-then-reload; a modal can no longer be wiped mid-typing');
-  ui.nodes.get('swUpdNow').click();
-  assert.equal(reloads, 1);
+  assert.equal(state.reloads, 1, 'exactly once');
+});
+
+test('D4: an open modal postpones the teacher reload, and the guard is re-checked every 15 s', async () => {
+  const { timer, state, nodes } = teacherUpdateContext();
+  await drain();
+  state.version = { build: 'b2', pages: { 'teacher.html': 'h2' } };
+  await timer.advance(120000); await timer.advance(120000);
+  assert.ok(nodes.get('teacherUpdateBanner'));
+  // the D4 bug: the dialog was opened INSIDE the grace period, after the guard
+  // had already been evaluated - and the reload wiped what was typed in it
+  state.modalOpen = true;
+  await timer.advance(60000);
+  assert.equal(state.reloads, 0, 'the dialog opened after the timer was armed, and still counts');
+  await timer.advance(5 * 60 * 1000);
+  assert.equal(state.reloads, 0);
+  state.modalOpen = false;
+  await timer.advance(15000);
+  assert.equal(state.reloads, 1, 'within one re-check of the dialog closing');
+});
+
+test('D4: the teacher button reloads immediately', async () => {
+  const { timer, state, nodes } = teacherUpdateContext();
+  await drain();
+  state.version = { build: 'b2', pages: { 'teacher.html': 'h2' } };
+  state.modalOpen = true;
+  await timer.advance(120000); await timer.advance(120000);
+  nodes.get('swUpdNow').click();
+  assert.equal(state.reloads, 1, 'the teacher asked for it himself');
 });
 
 // ======================================================================
@@ -345,7 +404,7 @@ test('D16: a device whose saved name belongs to someone else keeps its legacy ke
   assert.equal(ctx.readProgress('student_streak', '{}'), '{}');
 });
 
-test('startPractice builds the questions from the bank, with the per-language correct index', async () => {
+test('startPractice hydrates from the grant it was handed, with the per-language correct index', async () => {
   const { ctx, bank } = studentContext();
   ctx.currentLanguage = 'he';
   const enc = (ci, id) => ci ^ (id % 256);
@@ -356,7 +415,7 @@ test('startPractice builds the questions from the bank, with the per-language co
     assert.match(url, /license=B/);
     assert.ok(url.indexOf('getExamQuestions') < 0);
     return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({
-      status: 'ok', mode: 'exam',
+      status: 'ok', mode: 'exam', bank: PRACTICE_BANK,
       questions: [
         { id: 1, topic: 'תמרורים', ci: { he: enc(2, 1), en: enc(0, 1) } },
         { id: 2, topic: 'חוק', ci: { he: enc(1, 2), en: enc(3, 2) } }
@@ -367,23 +426,39 @@ test('startPractice builds the questions from the bank, with the per-language co
   ctx.startPractice({ mode: 'exam' }, qs => { got = qs; }, m => { throw new Error('unexpected failure ' + m); });
   await drain();
   assert.equal(got.length, 2);
-  assert.equal(got[0].text, 'שאלה 1', 'text comes from the bank, not the wire');
+  assert.equal(got[0].text, 'שאלה 1', 'text comes from the gateway, not the wire');
   assert.deepEqual(got[0].answers, ['א', 'ב', 'ג', 'ד']);
   assert.equal(got[0].imageUrl, 'images/TQ_PIC_1.jpg');
   assert.equal(got[0].category, 'תמרורים', 'the blueprint topic drives the category chip');
   assert.equal(ctx.getQCorrectIndex(got[0]), 2);
   assert.equal(ctx.getQCorrectIndex(got[1]), 1);
-  assert.deepEqual(bank.calls, ['he'], 'exactly one bank load');
+  assert.equal(bank.grants.length, 1, 'exactly one request for the texts');
+  assert.equal(bank.grants[0].grant, PRACTICE_BANK.grant, 'the grant startPractice returned');
+  assert.equal(bank.grants[0].url, PRACTICE_BANK.url);
 });
 
-test('a language switch is local: no request, answers already given are preserved', async () => {
+test('a practice answer without a grant says the bank is not configured, and opens nothing', async () => {
+  const { ctx, bank } = studentContext();
+  const enc = (ci, id) => ci ^ (id % 256);
+  ctx.fetch = () => Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({
+    status: 'ok', questions: [{ id: 1, topic: 'חוק', ci: { he: enc(0, 1) } }]
+  })) });
+  let failure = '', opened = false;
+  ctx.startPractice({ mode: 'exam' }, () => { opened = true; }, m => { failure = m; });
+  await drain();
+  assert.equal(opened, false, 'never a practice with blank questions');
+  assert.match(failure, /מאגר השאלות אינו מוגדר בשרת/);
+  assert.equal(bank.grants.length, 0);
+});
+
+test('a language switch is local: no request at all, and the answers already given are preserved', async () => {
   const { ctx, bank } = studentContext();
   const enc = (ci, id) => ci ^ (id % 256);
   ctx.examQuestions = [
     { id: 1, category: '', ciByLang: { he: enc(2, 1), en: enc(0, 1) } },
     { id: 2, category: '', ciByLang: { he: enc(1, 2), en: enc(3, 2) } }
   ];
-  ctx.QuestionBank.load('he');
+  await ctx.QuestionBank.loadGrant(PRACTICE_BANK);   // what startPractice did a moment earlier
   ctx.examQuestions.forEach(q => ctx.applyLanguageToQuestion(q, 'he'));
   load(ctx, section(student, 'function switchLanguage(newLang)', 'function finishExam()'));
   ctx.nodes.get('screenPractice').classList.add('active');
@@ -394,15 +469,16 @@ test('a language switch is local: no request, answers already given are preserve
   await drain();
   assert.equal(requests, 0, 'no getQuestionsByIds, no round trip at all');
   assert.equal(ctx.currentLanguage, 'en');
-  assert.equal(ctx.examQuestions[0].text, 'question 1', 'repainted from the English bank');
+  assert.equal(ctx.examQuestions[0].text, 'question 1', 'repainted from the English texts already on the device');
   assert.equal(ctx.getQCorrectIndex(ctx.examQuestions[0]), 0, 'and the correct index moved with it');
   assert.equal(ctx.document.documentElement.dir, 'ltr');
-  assert.deepEqual(bank.calls, ['he', 'en']);
+  assert.equal(bank.grants.length, 1, 'the switch itself asked the gateway for nothing');
 
   ctx.switchLanguage('he');
   await drain();
   assert.equal(ctx.examQuestions[0].text, 'שאלה 1');
   assert.equal(ctx.getQCorrectIndex(ctx.examQuestions[0]), 2);
+  assert.equal(bank.grants.length, 1);
 });
 
 test('an id missing from a translated bank falls back to Hebrew, index included', async () => {
@@ -410,7 +486,8 @@ test('an id missing from a translated bank falls back to Hebrew, index included'
   const enc = (ci, id) => ci ^ (id % 256);
   ctx.currentLanguage = 'en';
   ctx.fetch = () => Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({
-    status: 'ok', questions: [{ id: 907, topic: 'חוק', ci: { he: enc(3, 907), en: enc(1, 907) } }]
+    status: 'ok', bank: PRACTICE_BANK,
+    questions: [{ id: 907, topic: 'חוק', ci: { he: enc(3, 907), en: enc(1, 907) } }]
   })) });
   let got = null;
   ctx.startPractice({ mode: 'exam' }, qs => { got = qs; }, m => { throw new Error(m); });
@@ -458,7 +535,7 @@ test('spaced repetition sends its own ids (mode=ids) and never getQuestionsByIds
   ctx.fetch = (url) => {
     seenUrl = url;
     return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({
-      status: 'ok', questions: [
+      status: 'ok', bank: PRACTICE_BANK, questions: [
         { id: 1, topic: 'חוק', ci: { he: enc(0, 1) } },
         { id: 2, topic: 'חוק', ci: { he: enc(1, 2) } }
       ]
@@ -568,7 +645,8 @@ test('joinClass adopts a server-side studentId under the namespace of the class 
 test('the retired student code really is gone', () => {
   for (const dead of ['getExamQuestions&', 'getQuestionsByIds&', '_practiceTranslations',
                       'TRANSLATION_VARS', 'getTransDict', 'getRuQuestion', 'getFilteredQuestions',
-                      'buildCategoryQuiz(_license', 'buildFlashcardSet', 'loadTranslationFile']) {
+                      'buildCategoryQuiz(_license', 'buildFlashcardSet', 'loadTranslationFile',
+                      'QuestionBank.load(', 'QuestionBank.prefetch']) {
     assert.ok(student.indexOf(dead) < 0, dead + ' must not appear in student.html');
   }
   assert.match(student, /<script src="shared\/transport\.js"><\/script>/);
@@ -595,7 +673,7 @@ test('exam.html standalone: startPractice with the id number, texts from the Heb
   ctx.fetch = (url) => {
     seenUrl = url;
     return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({
-      status: 'ok', questions: [
+      status: 'ok', bank: PRACTICE_BANK, questions: [
         { id: 1, topic: 'תמרורים', ci: { he: enc(2, 1) } },
         { id: 2, topic: 'חוק', ci: { he: enc(1, 2) } }
       ]
@@ -605,7 +683,8 @@ test('exam.html standalone: startPractice with the id number, texts from the Heb
   assert.match(seenUrl, /action=startPractice/);
   assert.match(seenUrl, /standaloneIdNumber=123456789/);
   assert.match(seenUrl, /origin=examinee-app/);
-  await bank.api.load('he');
+  await bank.api.loadGrant(resp.bank);
+  assert.equal(bank.grants[0].grant, PRACTICE_BANK.grant, 'the standalone page loads the grant it was given');
   const built = resp.questions.map(r => {
     const e = bank.api.get(r.id, 'he', 'B');
     return { id: r.id, text: e.text, answers: e.answers, imageUrl: bank.api.imageUrl(e), category: r.topic, ci: r.ci.he };
@@ -625,6 +704,14 @@ test('exam.html: the legacy client-side picker and the old action are gone', () 
   }
   assert.match(examPage, /action: 'startPractice'/);
   assert.match(examPage, /<script src="shared\/bank\.js"><\/script>/);
+});
+
+test('exam.html: the standalone flow requires the grant and never loads a bank by language', () => {
+  assert.match(examPage, /if \(!resp\.bank \|\| !resp\.bank\.url \|\| !resp\.bank\.grant\) \{/,
+    'no grant is a named failure, not an exam with blank questions');
+  assert.match(examPage, /message: BANK_NOT_CONFIGURED_TEXT/);
+  assert.match(examPage, /QuestionBank\.loadGrant\(resp\.bank\)/);
+  assert.ok(examPage.indexOf("QuestionBank.load(") < 0, 'QuestionBank.load no longer exists');
 });
 
 // ======================================================================
@@ -647,7 +734,11 @@ test('sw-student.js: parses, is GET-only and precaches the shared modules', () =
   let responded = false;
   fetchHandler({ request: { method: 'POST', url: 'https://example/x' }, respondWith: () => { responded = true; } });
   assert.equal(responded, false, 'D7: Cache.put throws on a non-GET request');
-  fetchHandler({ request: { method: 'GET', url: 'https://example/bank/he.json?v=abc' }, respondWith: () => { responded = true; } });
+  fetchHandler({ request: { method: 'GET', url: 'https://example/student.html?cb=1' }, respondWith: () => { responded = true; } });
   assert.equal(responded, true);
-  assert.match(src, /ignoreSearch: true/);
+  assert.match(src, /ignoreSearch: true/, 'a cache-busted shell still matches its cached copy offline');
+  // The questions are not served from this origin any more - they come from the
+  // gateway, against a grant, and are never put in a cache.
+  assert.ok(!/bank\/manifest\.json/.test(src), 'no bank manifest in the shell');
+  assert.ok(!/'\.\/bank\//.test(src), 'no bank file in the shell');
 });

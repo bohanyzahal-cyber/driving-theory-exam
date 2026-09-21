@@ -36,3 +36,13 @@ node_modules/
 
 # --- private analysis (user messages verbatim, review appendices): kept OUTSIDE the public repo in ../docs_private/ ---
 docs/reviews/
+
+# --- the question bank is NOT public (DESIGN_2026-09-21 §11.1) ---
+# Built by tools/build_bank.js and uploaded by `npx wrangler deploy` as Workers
+# Static Assets (run_worker_first), so only the gateway can read it. Never in git,
+# never on Pages. deployment/question_index.json (ids only, no texts) stays committed.
+cloudflare-workers/session-gateway/assets/
+
+# --- never: answer-key backups and scratch files ---
+deployment/answer_key.gs*
+deployment/*.bak

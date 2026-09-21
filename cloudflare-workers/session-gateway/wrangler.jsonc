@@ -1,0 +1,27 @@
+{
+  "name": "session-gateway",
+  "main": "worker.js",
+  "compatibility_date": "2026-09-01",
+
+  // The Apps Script deployment the gateway reads the session snapshot from.
+  // A new Apps Script deployment URL means editing this and re-deploying.
+  "vars": {
+    "API_URL": "https://script.google.com/macros/s/AKfycbzOI0zrDEngP-GvlRblhOk8tQsYBvWZ2gGliIQHTpS67WrDZl4la8NPpwtJr_Vjsh3Gzg/exec"
+  },
+
+  // The private question bank: `node tools/build_bank.js` fills ./assets and
+  // `npx wrangler deploy` uploads it. run_worker_first keeps the files
+  // unreachable from the internet — the Worker is the only reader, through
+  // env.ASSETS, and it only hands out what a signed grant names.
+  // ./assets is gitignored: never deploy from a tree without the dumps.
+  "assets": {
+    "directory": "./assets",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  }
+
+  // GATEWAY_KEY is a SECRET, never a var — it is both what lets the gateway
+  // read a whole session's rows and the key the grants are signed with:
+  //   npx wrangler secret put GATEWAY_KEY
+  // The same value goes into the Apps Script ScriptProperty GATEWAY_KEY.
+}

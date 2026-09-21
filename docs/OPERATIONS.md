@@ -113,13 +113,17 @@ curl -s -L --max-time 45 "<EXEC_URL>?action=getSessionInfo&sessionCode=ZZZZZZ&or
 ## 3. פריסת Cloudflare Workers
 
 ```bash
-cd cloudflare-workers
-npx wrangler deploy
+cd cloudflare-workers/session-gateway     # סקר הנבחנים + בנק השאלות הפרטי (assets/)
+node ../../tools/build_bank.js            # מייצר assets/ מהדאמפים (לא בגיט) — חובה לפני כל deploy
+npx wrangler deploy                       # מעלה את הקוד וגם את 1,700 קבצי הבנק
 ```
+(ה-Worker של קישורי הדו"חות: `cd cloudflare-workers && npx wrangler deploy`.)
 
 **אל תפרוס דרך דשבורד Cloudflare.** תועד שם כישלון כפול: הדבקת קוד Modules לעורך מסוג Service-Worker נכשלת בשקט, ו-Deploy מהעורך מחזיר 403. `wrangler` עובד.
 
-Workers פעילים: קישורי דו"חות (`steep-night-dd06`, עם KV), TTS עברית (`hebrew-tts`), פרוקסי תמונות.
+Workers פעילים: `session-gateway` (סקר הנבחנים + הבנק, `wrangler.jsonc` עם `assets`), קישורי דו"חות (`steep-night-dd06`, עם KV), TTS עברית (`hebrew-tts`), פרוקסי תמונות.
+
+אימות `session-gateway`: `curl -s https://session-gateway.bohanyzahal.workers.dev/` מחזיר `bank` לא ריק; `…/v1/bank?grant=bogus` → 403; `…/bank/he.json` → 404 (הבנק אינו נגיש ישירות).
 
 אימות: `curl https://steep-night-dd06.bohanyzahal.workers.dev/` — אמור להחזיר `"links":"permanent"`.
 
@@ -129,15 +133,15 @@ Secrets שורדים פריסה. חיבור ה-KV נשמר כי הוא ב-`wrang
 
 ## 4. עדכון בנק השאלות
 
-**מאז 22/09/2026 בנק השאלות סטטי וציבורי (בלי התשובות הנכונות):** `bank/<lang>.json` + `bank/manifest.json` ב-Pages, מיוצרים מ-`deployment/generated/questions_<lang>.json` (המקור; לא בגיט, 25MB). השרת מחזיק רק `QUESTION_INDEX` (נושא לכל דרגה + זמינות לפי שפה, מוזרק לקובץ השרת בבנייה) ואת מפתח התשובות `deployment/answer_key.gs` (קובץ נפרד בעורך, לא בגיט). אין Drive, אין מטמון שאלות, אין חימום.
+**מאז 21/09/2026 בערב בנק השאלות פרטי ומוגש מה-Worker:** הטקסטים (בלי התשובות הנכונות) יושבים ב-`cloudflare-workers/session-gateway/assets/` (לא בגיט; מיוצרים מ-`deployment/generated/questions_<lang>.json`, המקור, לא בגיט, 25MB) ומוגשים על ידי ה-Worker רק לפי אישור חתום: נבחן/תלמיד מקבלים בדיוק את השאלות שהונפקו להם (`startExam`/`startPractice` → `bank.grant`), בוחן מקבל אישור בוחן (`bankGrant`) לחיפוש ולטבלת "שאלות שגויות". השרת מחזיק רק `QUESTION_INDEX` (נושא לכל דרגה + זמינות לפי שפה, מוזרק לקובץ השרת בבנייה) ואת מפתח התשובות `deployment/answer_key.gs` (קובץ נפרד בעורך, לא בגיט). אין Drive, אין מטמון שאלות, אין חימום, ואין בנק ב-Pages. פרטים: `DESIGN_2026-09-21.md` §11.
 
 הנוהל לשינוי שאלה/תרגום:
 
 1. ערוך את ה-JSON של השפה ב-`deployment/generated/`. **התשובה הנכונה חייבת להישאר באותו אינדקס** — אחרת `answer_key.gs` צריך להתעדכן באותו קומיט (`deployment/generate_answer_key.js`).
-2. `node tools/build.js && node tools/test.js` — `bank_invariants` מוודא שלכל שאלה בכל שפה יש מפתח בטווח, שאין תמונה חסרה ושהאינדקס תואם לבנק.
-3. `git push` — הדפים טוענים את הבנק לפי ה-sha ב-`manifest.json`, כך שגרסה חדשה היא כתובת חדשה ואין מטמון ישן.
-4. אם השתנה `QUESTION_INDEX` (שאלה נוספה/הוסרה/החליפה דרגה) — גם הדבקת קובץ השרת + גרסה חדשה. אם השתנה המפתח — גם הדבקת `answer_key.gs`.
-5. אימות: `curl -s https://bohanyzahal-cyber.github.io/driving-theory-exam/bank/manifest.json` מציג את ה-build החדש; `health` מציג `indexIds`.
+2. `node tools/build.js && node tools/test.js` — `bank_invariants` מוודא שלכל שאלה בכל שפה יש מפתח בטווח, שאין תמונה חסרה, שהאינדקס תואם לבנק ושלכל מזהה יש קובץ `q/<id>.json`.
+3. `cd cloudflare-workers/session-gateway && npx wrangler deploy` — מעלה את ה-assets החדשים. הלקוח מקבל תמיד את הגרסה שב-Worker (אין מטמון בדפדפן ל-`/v1/bank`).
+4. אם השתנה `QUESTION_INDEX` (שאלה נוספה/הוסרה/החליפה דרגה) — גם הדבקת קובץ השרת + גרסה חדשה. אם השתנה המפתח — גם הדבקת `answer_key.gs`. שינוי טקסט בלבד = Worker בלבד.
+5. אימות: `curl -s https://session-gateway.bohanyzahal.workers.dev/` מציג `bank` = ה-build החדש (מ-`assets/manifest.json`); `health` מציג `indexIds`.
 
 ---
 
@@ -155,11 +159,17 @@ Secrets שורדים פריסה. חיבור ה-KV נשמר כי הוא ב-`wrang
 
 ### שאלות לא נטענות
 
-אין יותר מטמון שאלות בשרת. אם דף הנבחן מציג "שאלה לא זמינה": לבדוק ש-`bank/<lang>.json` נגיש ב-Pages (`curl -sI .../bank/he.json`) ושה-`manifest.json` תואם (`node tools/build_server.js --check`). התחלת מבחן נכשלת עם `bank_unavailable` רק כשהאינדקס בשרת ריק — כלומר הודבק קובץ שרת בלי הזרקת האינדקס (לבנות מחדש עם `node tools/build.js`).
+אין יותר מטמון שאלות בשרת ואין בנק ב-Pages. שלושה מצבים:
 
-### ה-Worker של הסקר (session-gateway) לא זמין
+- **`bank_not_configured` בהתחלת מבחן** — חסר `GATEWAY_KEY` או `GATEWAY_URL` ב-Script Properties (`health&deep=1` מציג `gateway:{url,key}`). להשלים את המאפיינים; אין צורך בפריסה.
+- **"לא הצלחנו לטעון את השאלות"** (הדף מנסה שוב לבד) — ה-Worker לא עונה או מחזיר 403/503: `curl -s https://session-gateway.bohanyzahal.workers.dev/` חייב להחזיר `bank` לא ריק. `bank` ריק = ה-assets לא הועלו (`node tools/build_bank.js` ואז `npx wrangler deploy`). 403 על אישור אמיתי = `GATEWAY_KEY` שונה בין ה-Worker (`wrangler secret`) לשרת (Property) — לקבוע את אותו ערך בשניהם.
+- **"שאלה לא זמינה"** על שאלה בודדת — מזהה שקיים באינדקס אבל לא ב-assets: הבנייה וה-Worker לא מאותו build. `node tools/build.js` ואז `npx wrangler deploy` וגם הדבקת השרת.
 
-הנבחנים נופלים לבד לסקר ישיר מול Apps Script אחרי 3 כשלים של ה-Worker עצמו. כדי לכבות אותו יזומות בלי דחיפה: למחוק/לרוקן את ה-Script Property `GATEWAY_URL` — דף הנבחן קורא אותו ב-`getSessionInfo` בכל כניסת קוד סשן.
+התחלת מבחן נכשלת עם `bank_unavailable` רק כשהאינדקס בשרת ריק — כלומר הודבק קובץ שרת בלי הזרקת האינדקס (לבנות מחדש עם `node tools/build.js`).
+
+### ה-Worker (session-gateway) לא זמין
+
+**מאז 21/09 בערב ה-Worker הוא תלות קשה של התחלת מבחן** (הטקסטים מגיעים רק ממנו) — כמו ש-Drive היה עד r30. הסקר עצמו נופל לבד לסקר ישיר מול Apps Script אחרי 3 כשלים של ה-Worker; כדי לכבות רק את הסקר המאוחד בלי לגעת בטקסטים: Script Property `GATEWAY_POLL_OFF` = `1` (דף הנבחן קורא זאת ב-`getSessionInfo` בכל כניסת קוד סשן). **למחוק את `GATEWAY_URL` = אין טקסטים = אין מבחנים** — זה כבר לא מתג כיבוי אלא חלק מחזרה מלאה לאחור (`DEPLOY_2026-09-22.md` §8: גרסת Apps Script קודמת + לקוח r24 ב-Pages, שמקבל שאלות מהשרת). סטטוס Cloudflare: https://www.cloudflarestatus.com/.
 
 ### לקוח שבור — החזרה לאחור
 
@@ -245,13 +255,15 @@ git push origin master
 1. `node tools/build.js && node tools/test.js` ירוקים.
 2. `git log --oneline -20` — לדעת מה עוד עולה.
 3. אין סשן פתוח (`listAllSessions` בלוח המפקד, או `סשנים` עמודה K).
-4. סדר: Pages → שרת (+ גרסה חדשה) → Worker → טריגרים. אחרי כל צעד אימות בשליפה טרייה (§1, §2, §3).
+4. סדר: Worker (אדיטיבי) → Script Properties → שרת (+ גרסה חדשה) → Pages → טריגרים. אחרי כל צעד אימות בשליפה טרייה (§1, §2, §3). כשהשינוי הוא בלקוח בלבד — Pages בלבד; בטקסט שאלה בלבד — Worker בלבד (§4).
 5. מבחן מלא באתר `בדיקת נתונים` (הרשמה → אישור → התחלה → החלפת שפה → הגשה → `מאומת` בלוח).
 6. רישום ב-`KNOWN_ISSUES`/זיכרון: מה עלה, מתי, מה אומת.
+
+**חריג מתועד:** מהדורת r30 נפרסה ב-21/09/2026 בערב, לפני בחינות 22/09, בהחלטה מפורשת של הבעלים (הודעה 19: "פורסים היום, הסיכון ידוע לי"), עם חזרה מלאה באותו ערב ותוכנית חזרה לאחור מוכנה (`DEPLOY_2026-09-22.md`). החוק נשאר החוק לפריסות הבאות.
 
 ### בוקר בחינות — בדיקת 07:00
 
 1. גיליון הווטשדוג: `watchdogMorningCheck` כתב שורה (verdict `ok`) — אם לא, לקרוא את ה-verdict לפני שנוגעים במשהו.
-2. `health&deep=1` מחזיר את ה-build הצפוי ו-`sheetMs` < 1,000.
-3. לוח הבוחן נפתח ומציג את הסשן; דף הנבחן טוען את הבנק (`bank/manifest.json` בשליפה טרייה).
+2. `health&deep=1` מחזיר את ה-build הצפוי, `sheetMs` < 1,000 ו-`gateway:{url:true,key:true}`.
+3. `curl -s https://session-gateway.bohanyzahal.workers.dev/` מחזיר `bank` לא ריק; לוח הבוחן נפתח ומציג את הסשן.
 4. לא לפרוס כלום. לא להריץ פונקציות מהעורך (חוץ מ-`flushDiagnostics` בסוף היום).

@@ -291,8 +291,8 @@
 <!--
   Questions are no longer loaded as a bulk JS file. Each exam fetches its
   30 question IDS from the main external-exam Apps Script (`startPractice`);
-  every text comes from the static bank in this repo (bank/he.json, via
-  shared/bank.js). See QUESTIONS_API_URL below.
+  every text comes from the session-gateway Worker, which serves the ids of
+  the signed grant startPractice returned (shared/bank.js). See QUESTIONS_API_URL below.
 -->
 <script src="shared/transport.js"></script>
 <script src="shared/bank.js"></script>
@@ -352,6 +352,10 @@
       ? '\u05d4\u05e9\u05e8\u05ea \u05e2\u05de\u05d5\u05e1 \u2014 \u05d0\u05d9\u05df \u05e6\u05d5\u05e8\u05da \u05dc\u05e8\u05e2\u05e0\u05df. \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1 \u05d1\u05e2\u05d5\u05d3 \u05d3\u05e7\u05d4.'
       : '\u05e9\u05d2\u05d9\u05d0\u05ea \u05ea\u05e7\u05e9\u05d5\u05e8\u05ea. \u05e0\u05e1\u05d4 \u05e9\u05d5\u05d1.';
   }
+  // startPractice answers with a signed grant for the ids it handed out; without
+  // one there are no texts to be had, so say what is wrong instead of opening an
+  // exam with blank questions.
+  var BANK_NOT_CONFIGURED_TEXT = '\u05de\u05d0\u05d2\u05e8 \u05d4\u05e9\u05d0\u05dc\u05d5\u05ea \u05d0\u05d9\u05e0\u05d5 \u05de\u05d5\u05d2\u05d3\u05e8 \u05d1\u05e9\u05e8\u05ea \u2014 \u05e4\u05e0\u05d4 \u05dc\u05de\u05e0\u05d4\u05dc \u05d4\u05de\u05e2\u05e8\u05db\u05ea';
 
   // ========== Config ==========
   var TOTAL_QUESTIONS = 30;
@@ -672,14 +676,18 @@
     var idNumber = (document.getElementById('phoneNumber') ? document.getElementById('phoneNumber').value : '') || '';
 
     // startPractice hands back ids + the blueprint topic + the encoded correct
-    // index per language; the standalone page is Hebrew-only, so it reads texts
-    // out of bank/he.json and keeps scoring exactly as before (local, from ci).
+    // index per language + a signed grant; the standalone page is Hebrew-only,
+    // so it reads the Hebrew texts the gateway returns for that grant and keeps
+    // scoring exactly as before (local, from ci).
     api.get({ action: 'startPractice', mode: 'exam', license: license, language: 'he', standaloneIdNumber: idNumber })
       .then(function(resp) {
         if (!resp || resp.status !== 'ok' || !Array.isArray(resp.questions) || resp.questions.length < TOTAL_QUESTIONS) {
           throw { soft: true, message: practiceErrorText(resp) };
         }
-        return QuestionBank.load('he').then(function() {
+        if (!resp.bank || !resp.bank.url || !resp.bank.grant) {
+          throw { soft: true, message: BANK_NOT_CONFIGURED_TEXT };
+        }
+        return QuestionBank.loadGrant(resp.bank).then(function() {
           var out = [];
           for (var i = 0; i < resp.questions.length; i++) {
             var r = resp.questions[i];

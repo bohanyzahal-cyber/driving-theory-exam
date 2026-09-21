@@ -110,11 +110,16 @@ function buildFixture(extra) {
     'הארכות זמן': [['תאריך', 'קוד סשן', 'ת.ז.', 'שם', 'דקות', 'סיבה', 'בוחן']] };
 }
 
+const GATEWAY_URL = 'https://gw.example.workers.dev';
+// startExam/startPractice refuse to write without a Worker to fetch the texts
+// from (DESIGN §11.2), so the fixture is a CONFIGURED deployment.
+const GATEWAY_PROPS = { GATEWAY_KEY: 'gateway-secret', GATEWAY_URL };
 function envWith(extra, properties) {
   // The real answer key: startExam refuses to draw a question it cannot score,
   // so without it the draw finds nothing (and the snapshot check below would
   // pass vacuously).
-  return createEnv({ sheets: buildFixture(extra), now: NOW, properties: properties || {},
+  return createEnv({ sheets: buildFixture(extra), now: NOW,
+    properties: Object.assign({}, GATEWAY_PROPS, properties || {}),
     sources: ['deployment/answer_key.gs'] });
 }
 
@@ -199,6 +204,47 @@ function envWith(extra, properties) {
   });
 }
 
+// ---- 3b. startExam pays for the grant in ScriptProperties, not in Sheets ----
+// The bank grant (DESIGN §11.2) is signed inside the exam-start request. It
+// must not add a single Sheets round trip to the hottest write path of the
+// morning — the whole point of the r30 rewrite was 0 Drive and 1 pending read.
+{
+  const env = envWith({});
+  const id = '400000000';   // a waiting row the examiner approves first
+  env.ctx.handleApproveExaminee({ sessionCode: SESSION, idNumber: id, examinerId: '111111111', token: 'tokX' });
+  let gatewayPropertyReads = 0;
+  const realProps = env.ctx.PropertiesService;
+  env.ctx.PropertiesService = { getScriptProperties: function() {
+    const store = realProps.getScriptProperties();
+    return Object.assign({}, store, {
+      getProperty: k => { if (String(k).indexOf('GATEWAY') === 0) gatewayPropertyReads++; return store.getProperty(k); }
+    });
+  } };
+  env.resetCounters();
+  const started = env.json(env.ctx.doPost({ postData: { contents: JSON.stringify({
+    action: 'startExam', origin: 'examinee-app', sessionCode: SESSION, idNumber: id,
+    examineeToken: 'tok-' + id, language: 'he', license: 'B' }) } }));
+  const c = env.counters();
+  env.ctx.PropertiesService = realProps;
+  check('startExam still costs one ממתינים tail read, one append and two cell writes', () => {
+    assert.equal(started.status, 'ok');
+    assert.equal(c.perSheet['ממתינים'].fullReads, 0, 'never a full read of a sheet that grows all day');
+    assert.equal(c.perSheet['ממתינים'].setValues, 2, 'status + exam start');
+    assert.equal(c.perSheet['מבחנים'].fullReads + c.perSheet['מבחנים'].rangeReads, 0, 'a fresh draw never reads מבחנים');
+    assert.equal(c.perSheet['מבחנים'].appends, 1);
+    // One tail read of ממתינים (header + tail) and the 30 s extensions map.
+    assert.equal(c.perSheet['ממתינים'].rangeReads, 2);
+    assert.equal(c.perSheet['הארכות זמן'].fullReads, 1);
+    assert.equal(c.reads, 3, 'reads=' + c.reads + ' ' + JSON.stringify(c.perSheet));
+  });
+  check('the grant is paid for in ScriptProperties, never in Sheets', () => {
+    assert.ok(started.bank && started.bank.grant, 'a grant was issued');
+    // GATEWAY_URL + GATEWAY_KEY, once for the pre-write guard and once when the
+    // grant is signed — four tiny property reads, zero Sheets round trips.
+    assert.equal(gatewayPropertyReads, 4, 'gateway property reads=' + gatewayPropertyReads);
+  });
+}
+
 // ---- 4. sessionSnapshot: one upstream call for the whole session ------------
 {
   const env = envWith({ waiting: 2, inExam: 2 });
@@ -236,16 +282,24 @@ function envWith(extra, properties) {
 
 // ---- 5. getSessionInfo carries the build and the gateway switch -------------
 {
-  const env = envWith({}, { GATEWAY_URL: 'https://gw.example.workers.dev' });
+  const env = envWith({});
   const info = env.json(env.ctx.handleGetSessionInfo({ sessionCode: SESSION }));
   check('getSessionInfo returns build + gateway url', () => {
     assert.equal(info.status, 'ok');
     assert.equal(typeof info.session.build, 'string');
-    assert.equal(info.session.gateway.url, 'https://gw.example.workers.dev');
+    assert.equal(info.session.gateway.url, GATEWAY_URL);
   });
-  const env2 = envWith({});
+  const env2 = envWith({}, { GATEWAY_URL: '' });
   const info2 = env2.json(env2.ctx.handleGetSessionInfo({ sessionCode: SESSION }));
   check('an unset GATEWAY_URL means "poll me directly"', () => assert.equal(info2.session.gateway.url, ''));
+  // ...but clearing it also takes the question texts down, so the switch that
+  // an exam morning may actually pull is the one that only stops the polling.
+  const env3 = envWith({}, { GATEWAY_POLL_OFF: 'true' });
+  const info3 = env3.json(env3.ctx.handleGetSessionInfo({ sessionCode: SESSION }));
+  check('GATEWAY_POLL_OFF stops the polling without touching the bank url', () => {
+    assert.equal(info3.session.gateway.url, '');
+    assert.equal(env3.ctx.bankGrantFor('exam', [1], 'x').url, GATEWAY_URL);
+  });
 }
 
 // ---- 6. siteCombinedReport: today is cheap, an old day reads the archive ----

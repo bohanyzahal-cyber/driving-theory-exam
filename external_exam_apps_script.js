@@ -1162,6 +1162,81 @@ function verifyExaminerForSession(sessionCode, examinerId) {
   return examinerOwnsSession(sessionCode, examinerId);
 }
 
+// ========== Signed bank grant (DESIGN §11.2) =================================
+// The question TEXTS are not public any more: they live as PRIVATE Workers
+// assets and the session-gateway hands a device only what it was issued — the
+// 30 ids of this exam, the ids of this practice draw, or (for an examiner) any
+// id and a whole language bank. What authorises that is a grant this script
+// signs; the client only carries the string, and only the Worker verifies it.
+//
+// Shape: '<payloadB64url>.<sigB64url>', exactly the construction
+// handleGetResultUploadToken uses — base64url without padding, and the HMAC is
+// taken over the ENCODED payload so the Worker verifies the bytes it received
+// rather than a re-serialisation of them.
+
+// The one place that reads GATEWAY_KEY. requireGatewayKey and the grant signer
+// must never disagree about what "configured" means.
+function gatewayKey() {
+  try { return String(PropertiesService.getScriptProperties().getProperty('GATEWAY_KEY') || ''); }
+  catch (e) { return ''; }
+}
+
+// An exam grant has to outlive the exam plus every extension and every mid-exam
+// refresh (a session code lives 8h); practice is one shorter sitting; an
+// examiner holds one for a working day.
+var BANK_GRANT_TTL_MS = { exam: 4 * 3600 * 1000, practice: 2 * 3600 * 1000, examiner: 8 * 3600 * 1000 };
+var BANK_GRANT_SUB_MAX = 128;   // an identity, not a payload: never let a caller grow the token
+
+// Escape every non-ASCII character. A practice `sub` carries a class code and a
+// student id that may be Hebrew, and the Worker decodes the payload byte-wise
+// (atob); \uXXXX keeps the JSON pure ASCII so both sides read the same string.
+function bankGrantJson(obj) {
+  return JSON.stringify(obj).replace(/[\u0080-\uFFFF]/g, function(ch) {
+    return '\\u' + ('000' + ch.charCodeAt(0).toString(16)).slice(-4);
+  });
+}
+
+// `key` is optional and exists only so a caller that has already read the
+// property does not pay for a second Properties round trip.
+function signBankGrant(payloadObj, key) {
+  var secret = key || gatewayKey();
+  var payloadB64 = Utilities.base64EncodeWebSafe(bankGrantJson(payloadObj)).replace(/=+$/, '');
+  var sigB64 = Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature(payloadB64, secret)).replace(/=+$/, '');
+  return payloadB64 + '.' + sigB64;
+}
+
+// Is the Worker that serves the texts wired up at all? startExam/startPractice
+// ask BEFORE they write anything: an exam whose questions can never load must
+// not consume the examinee's attempt.
+function bankGrantConfigured() { return Boolean(gatewayUrl() && gatewayKey()); }
+
+// { url, grant, exp } — or null when the Worker is not configured, which every
+// caller must translate into bankNotConfiguredResponse() rather than an exam
+// that starts and then cannot show a question.
+function bankGrantFor(scope, ids, sub) {
+  var ttl = BANK_GRANT_TTL_MS[String(scope)];
+  var url = gatewayUrl(), key = gatewayKey();   // read once: this runs inside exam start
+  if (!ttl || !url || !key) return null;
+  var exp = Date.now() + ttl;
+  var payload = { v: 1, s: String(scope) };
+  // The examiner scope carries no id list — it may read any id and a full
+  // language bank, so an `ids` field would only be a lie the Worker ignores.
+  if (String(scope) !== 'examiner') {
+    var list = [];
+    for (var i = 0; ids && i < ids.length; i++) list.push(Number(ids[i]));
+    payload.ids = list;
+  }
+  payload.sub = String(sub || '').slice(0, BANK_GRANT_SUB_MAX);
+  payload.exp = exp;
+  return { url: url, grant: signBankGrant(payload, key), exp: exp };
+}
+
+// One answer for every path that cannot issue a grant: this is an administrator
+// problem, and the examinee/student is told so instead of "try again".
+function bankNotConfiguredResponse() {
+  return jsonResponse({ status: 'error', code: 'bank_not_configured',
+    message: 'מאגר השאלות אינו מוגדר בשרת — פנה למנהל המערכת' });
+}
 // Key prefix shared by every CacheService / ScriptProperties entry this script
 // owns (pending snapshots, extra-minutes maps, token verdicts, diagnostics).
 // Declared here — a module that nothing in the roadmap deletes — so the live
@@ -1258,8 +1333,11 @@ function todayStr() {
 // the correct answers were already served to anyone who asked (getQuestionsByIds
 // with any studentId, verified live 21/09).
 //
-// So the texts are now static files the client loads (bank/<lang>.json, built by
-// tools/build_bank.js), and the server keeps only:
+// So the texts left the script. They are NOT public either (DESIGN §11): they
+// are private Workers assets of the session-gateway (built by tools/build_bank.js
+// into cloudflare-workers/session-gateway/assets/, never in the repo and never on
+// Pages), and the Worker serves each device only the ids it was issued, against a
+// grant this script signs (bankGrantFor, 20_auth.js). The server keeps only:
 //   * QUESTION_INDEX — id → { c: {license: topic}, l: language bitmask, img }
 //     (generated into this file at build time from deployment/question_index.json)
 //   * the answer key (deployment/answer_key.gs, pasted separately, never public)
@@ -3122,6 +3200,23 @@ function practiceCiByLang(id) {
   }
   return out;
 }
+
+// ---- bankGrant --------------------------------------------------------------
+// The examiner tools still need question TEXTS: the commander's wrong-answer
+// table (ids only, one language) and find_image.html (a full language bank, so
+// that a search can see all of it). Since the texts stopped being public, an
+// examiner gets the same kind of signed grant an examinee does — scoped to no
+// id list, valid for a working day, and read straight from the Worker. The
+// examiner token is checked by the router before this runs.
+defineAction('bankGrant', { methods: ['GET'], auth: 'examiner', handler: handleBankGrant,
+  rateLimit: { max: 30, windowSec: 60, id: function(p) { return normalizeId(p.examinerId); } } });
+function handleBankGrant(p) {
+  // normalizeId, not the raw field: the same examiner must produce the same
+  // subject whether they typed leading zeros or not.
+  var bank = bankGrantFor('examiner', null, 'ex:' + normalizeId(p.examinerId));
+  if (!bank) return bankNotConfiguredResponse();
+  return jsonResponse({ status: 'ok', bank: bank });
+}
 // Public build marker: identifies the deployed API without reading private data.
 var THEORY_API_BUILD = '2026-09-22-r30';
 // When the current request entered the script — health&deep=1 reports the whole
@@ -3187,8 +3282,7 @@ function requireActionAuth(auth, p) {
 // in one request; it authenticates with a shared secret kept in ScriptProperties
 // (never in the client), so an examinee token is not involved.
 function requireGatewayKey(p) {
-  var expected = '';
-  try { expected = String(PropertiesService.getScriptProperties().getProperty('GATEWAY_KEY') || ''); } catch (e) { expected = ''; }
+  var expected = gatewayKey();   // the same property the bank grants are signed with
   if (!expected || String(p.gatewayKey || '') !== expected) {
     return jsonResponse({ status: 'error', code: 'gateway_denied', message: 'gateway key invalid' });
   }
@@ -3326,9 +3420,14 @@ function handleGetOfficeNumber() {
 // OUR document and reports that time separately, so a watchdog can tell "our
 // document stalls" from "Google's front door stalls" every minute of an exam
 // morning (tools/exam_watchdog.gs). indexIds is the deployed question index —
-// the client compares it against the static bank it loaded.
+// the client compares it against the bank build the Worker served it.
 function handleHealth(p) {
-  var body = { status: 'ok', build: THEORY_API_BUILD, indexIds: questionIndexCount() };
+  // gateway: booleans only. The question texts are served by the Worker against
+  // a signed grant, so "is it wired up" is the first thing a deploy check needs
+  // — and neither the URL nor the key is ever printed by a public probe.
+  // pollOff is the partial kill switch: the texts still flow, the polls don't.
+  var body = { status: 'ok', build: THEORY_API_BUILD, indexIds: questionIndexCount(),
+    gateway: { url: Boolean(gatewayUrl()), key: Boolean(gatewayKey()), pollOff: gatewayPollOff() } };
   if (String(p.deep || '') !== '1') return jsonResponse(body);
   var deepT0 = Date.now(), sheetMs = -1, sheetError = '';
   try { getSheet('אתרים').getRange(1, 1).getValue(); sheetMs = Date.now() - deepT0; }
@@ -4150,6 +4249,22 @@ function gatewayUrl() {
   catch (e) { return ''; }
 }
 
+// The kill switch had to split in two (DESIGN §11, OPERATIONS §5). Clearing
+// GATEWAY_URL used to mean "poll me directly" — but the same property now names
+// the Worker that serves the question TEXTS, so clearing it stops exams
+// starting at all. GATEWAY_POLL_OFF turns only the POLLING off: the examinees
+// go back to hitting this script, while startExam/startPractice/bankGrant keep
+// issuing grants against the very same url.
+function gatewayPollOff() {
+  var raw = '';
+  try { raw = String(PropertiesService.getScriptProperties().getProperty('GATEWAY_POLL_OFF') || '').trim().toLowerCase(); }
+  catch (e) { return false; }
+  return raw === '1' || raw === 'true' || raw === 'on';
+}
+
+// What getSessionInfo tells the fleet to poll — '' means "poll me directly".
+function gatewayPollUrl() { return gatewayPollOff() ? '' : gatewayUrl(); }
+
 // ---- One 'סשנים' read per execution ----------------------------------------
 // addExamTime and disqualify each read the whole sheet twice — once for the
 // ownership check, once for the session's examiner name (review C R12). The
@@ -4287,10 +4402,10 @@ function handleGetSessionInfo(p) {
         session: {
           // The client checks `build` to notice an old server behind a new page,
           // and reads `gateway.url` to decide where the examinee polls. An empty
-          // url (ScriptProperty GATEWAY_URL unset) means "poll me directly" —
-          // that is the kill switch for the Worker, with no Pages push.
+          // url means "poll me directly" — set GATEWAY_POLL_OFF for that, with
+          // no Pages push and without taking the question texts down with it.
           build: THEORY_API_BUILD,
-          gateway: { url: gatewayUrl() },
+          gateway: { url: gatewayPollUrl() },
           site: data[i][3],
           sites: _sites,
           classroom: data[i][4],
@@ -5763,6 +5878,10 @@ function handleStartExam(data) {
   if (!EXAM_STRUCTURE_SERVER[license]) {
     return jsonResponse({ status: 'error', code: 'unknown_license', message: 'דרגה לא מוכרת: ' + license });
   }
+  // Before the draw, before the cache write, before the status flip: without a
+  // grant the device can never fetch a question text, and a row flipped to
+  // in_exam would have spent the examinee's attempt on an exam that cannot run.
+  if (!bankGrantConfigured()) return bankNotConfiguredResponse();
 
   var attempt = examAttemptKey(row);
   var record = readExamMapCache(sessionCode, data.idNumber, attempt);
@@ -5790,13 +5909,27 @@ function handleStartExam(data) {
     ctx.active.status = 'in_exam';
   }
 
+  // A retry gets the same ids with a FRESHLY signed grant: the map is
+  // idempotent, the clock is not, and an examinee who reloads at minute 38 must
+  // not be handed a grant that expires before the extension does.
+  var bank = bankGrantFor('exam', examMapIds(record.map), sessionCode + ':' + normalizeId(data.idNumber));
+
   return jsonResponse({
     status: 'ok', build: THEORY_API_BUILD,
     examMinutes: examMinutesFor(row), extraMinutes: sumExtraMinutes(sessionCode, data.idNumber),
     audioMode: String(row[9] || '').trim() === 'on' ? 'on' : 'off',
     language: record.lang || lang, license: license, registeredAt: record.at,
+    bank: bank,
     questions: examQuestionsForClient(record.map)
   });
+}
+
+// The ids of a stored map, in map order — that is the order the client shows
+// them in, and the order the grant authorises.
+function examMapIds(map) {
+  var ids = [];
+  for (var i = 0; i < map.length; i++) ids.push(map[i].qId);
+  return ids;
 }
 
 function drawExamRegistration(sessionCode, idNumber, license, lang) {
@@ -5816,8 +5949,9 @@ function drawExamRegistration(sessionCode, idNumber, license, lang) {
   return { map: map, at: at, lang: lang, unverified: 0 };
 }
 
-// The client holds the texts (bank/<lang>.json) and needs only what the server
-// decided: which questions, in which answer order, under which topic.
+// The client fetches the texts from the Worker with the grant above and needs
+// only what the server decided: which questions, in which answer order, under
+// which topic.
 function examQuestionsForClient(map) {
   var out = [];
   for (var i = 0; i < map.length; i++) {
@@ -5838,7 +5972,9 @@ function examMinutesFor(row) {
 // GET, no token. Practice scores on the client, so it gets the correct index of
 // every language the question exists in (XOR-encoded) and never needs another
 // round trip — a language switch mid-practice is local.
-var PRACTICE_MAX_COUNT = 50;
+// One draw is one Worker request, and that request may ask for at most 30 assets
+// (DESIGN §11.3) — so 30 is the cap in EVERY mode, not just the exam blueprint.
+var PRACTICE_MAX_COUNT = 30;
 var PRACTICE_DEFAULT_COUNT = 15;
 function handleStartPractice(p) {
   var rlErr = practiceRateLimit(p);
@@ -5848,6 +5984,8 @@ function handleStartPractice(p) {
   if (!EXAM_STRUCTURE_SERVER[license]) {
     return jsonResponse({ status: 'error', code: 'unknown_license', message: 'דרגה לא מוכרת: ' + license });
   }
+  // Same rule as startExam: no grant, no texts, so say so before drawing.
+  if (!bankGrantConfigured()) return bankNotConfiguredResponse();
   var mode = String(p.mode || 'exam');
   var picked;
   try { picked = practiceSelection(mode, license, lang, p); }
@@ -5856,11 +5994,21 @@ function handleStartPractice(p) {
     return jsonResponse({ status: 'error', code: 'bank_unavailable', detail: err.detail, message: 'אין מספיק שאלות לתרגול' });
   }
   if (!picked.length) return jsonResponse({ status: 'error', code: 'no_questions', message: 'לא נמצאו שאלות לתרגול' });
-  var questions = [];
+  var questions = [], ids = [];
   for (var i = 0; i < picked.length; i++) {
     questions.push({ id: picked[i].id, topic: picked[i].topic, ci: practiceCiByLang(picked[i].id) || {} });
+    ids.push(picked[i].id);
   }
-  return jsonResponse({ status: 'ok', mode: mode, count: questions.length, questions: questions });
+  return jsonResponse({ status: 'ok', mode: mode, count: questions.length,
+    bank: bankGrantFor('practice', ids, practiceSubject(p)), questions: questions });
+}
+
+// Who the practice grant was issued to — the same three identities the rate
+// limit separates, so a grant can be traced back to the draw that produced it.
+function practiceSubject(p) {
+  if (p.classCode && p.studentId) return String(p.classCode) + ':' + String(p.studentId);
+  if (p.standaloneIdNumber) return normalizeId(p.standaloneIdNumber);
+  return 'guest';
 }
 
 function practiceSelection(mode, license, lang, p) {

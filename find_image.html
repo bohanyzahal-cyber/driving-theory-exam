@@ -222,9 +222,26 @@
   <p>הקלד כמה מילים מהשאלה שהנבחן מראה לך</p>
 </header>
 
-<!-- Auth-required blocker. Shown when localStorage credentials are missing
-     (i.e. user landed here directly without logging in via examiner.html).
-     Replaces the previous "small error in results area" UX that confused users. -->
+<!-- Auth-required blocker. Shown when the examiner login stored by examiner.html
+     is missing: the question texts are served by the session gateway against an
+     examiner grant, so without a login this page has nothing to search. A
+     visible door back to the dashboard, not a small error in the results area. -->
+<div id="authBlocker" style="display:none; max-width:520px; margin:48px auto; padding:32px 28px; background:#1e293b; border:1px solid #334155; border-radius:14px; text-align:center;">
+  <div style="font-size:52px; margin-bottom:14px;">🔐</div>
+  <h2 style="font-size:20px; color:#f1f5f9; margin:0 0 12px;">דרושה התחברות</h2>
+  <p style="font-size:14px; color:#cbd5e1; line-height:1.6; margin:0 0 10px;">
+    כדי לחפש תמונות לשאלות צריך להתחבר קודם דרך לוח הבוחן.
+  </p>
+  <p style="font-size:13px; color:#94a3b8; line-height:1.6; margin:0 0 22px;">
+    ⚠️ ודא שסימנת את <strong>"זכור אותי"</strong> בכניסה — אחרת תצטרך להתחבר שוב בכל פעם.
+  </p>
+  <a href="examiner.html" style="display:inline-block; background:#1a73e8; color:#fff; padding:12px 28px; border-radius:10px; font-size:15px; font-weight:700; text-decoration:none;">🔓 כניסה ללוח הבוחן</a>
+  <p style="font-size:12px; color:#64748b; line-height:1.6; margin:16px 0 0;">
+    אחרי התחברות — חזור לעמוד הזה,<br>
+    או לחץ "🖼 חפש תמונה" בלוח הבוחן.
+  </p>
+</div>
+
 <main>
   <div class="search-box">
     <label for="searchInput">חיפוש לפי טקסט השאלה:</label>
@@ -266,21 +283,82 @@
 </div>
 
 <!--
-  The question bank is a STATIC, PUBLIC file in this repo (bank/<lang>.json,
-  built by tools/build_bank.js). This page searches it in the browser - no
-  server call, no examiner credentials, no searchQuestions action. The bank
-  carries texts, answers and image names only; the correct-answer index stays
-  on the server, so this page no longer marks the correct answer.
+  The question bank is NOT in this repo (21/09 decision, message 19): the
+  session gateway holds it as a private asset and serves a whole language only
+  against an examiner-scoped grant. This page reads the examiner login that
+  examiner.html stored ('ext_examiner_remember'), asks the server for that grant
+  (action=bankGrant, or reuses 'ext_examiner_bank' while it is still valid),
+  pulls the chosen language with QuestionBank.loadFull and then searches IN THE
+  BROWSER - no searchQuestions action, no per-keystroke server call. The bank
+  carries texts, answers and image names only; the correct-answer index stays on
+  the server, so this page does not mark the correct answer.
 -->
+<script src="shared/transport.js"></script>
 <script src="shared/bank.js"></script>
 <script>
 (function() {
   'use strict';
 
+  var API_URL = 'https://script.google.com/macros/s/AKfycbzOI0zrDEngP-GvlRblhOk8tQsYBvWZ2gGliIQHTpS67WrDZl4la8NPpwtJr_Vjsh3Gzg/exec';
+  var API_ORIGIN = 'examiner-app';
+  var BANK_GRANT_MIN_TTL_MS = 10 * 60 * 1000;   // a grant about to expire is worth less than one request
+
   var LANG_LABELS = { he: 'עברית', ru: 'רוסית', ar: 'ערבית', en: 'אנגלית', am: 'אמהרית', fr: 'צרפתית', es: 'ספרדית' };
   var MAX_RESULTS = 8;
   var currentLang = 'he';
   var lastQuery = '';
+
+  // The examiner login examiner.html stores on "remember me". Nothing else on
+  // this page works without it.
+  var examinerCreds = (function() {
+    try {
+      var raw = localStorage.getItem('ext_examiner_remember');
+      var creds = raw ? JSON.parse(raw) : null;
+      return (creds && creds.id && creds.token) ? creds : null;
+    } catch (e) { return null; }
+  })();
+
+  var api = ExamTransport.createApi({
+    apiUrl: API_URL,
+    origin: API_ORIGIN,
+    decorate: function(params) {
+      if (examinerCreds) { params.examinerId = examinerCreds.id; params.token = examinerCreds.token; }
+      return params;
+    }
+  });
+
+  var examinerBank = null, grantPromise = null;
+  function grantUsable(bank) {
+    return !!(bank && bank.url && bank.grant &&
+              typeof bank.exp === 'number' && (bank.exp - Date.now()) > BANK_GRANT_MIN_TTL_MS);
+  }
+  // In order: the grant in memory, the one examiner.html already paid for, then
+  // one request of our own.
+  function ensureGrant() {
+    if (!examinerCreds) return Promise.reject(new Error('no examiner login'));
+    if (grantUsable(examinerBank)) return Promise.resolve(examinerBank);
+    try {
+      var stored = JSON.parse(localStorage.getItem('ext_examiner_bank') || 'null');
+      if (grantUsable(stored)) { examinerBank = stored; return Promise.resolve(stored); }
+    } catch (e) {}
+    if (grantPromise) return grantPromise;
+    grantPromise = api.get({ action: 'bankGrant' }).then(function(data) {
+      grantPromise = null;
+      if (!data || data.status !== 'ok' || !data.bank || !data.bank.url || !data.bank.grant) {
+        throw new Error((data && data.message) || 'no grant');
+      }
+      examinerBank = data.bank;
+      try { localStorage.setItem('ext_examiner_bank', JSON.stringify(examinerBank)); } catch (e) {}
+      return examinerBank;
+    }, function(err) { grantPromise = null; throw err; });
+    return grantPromise;
+  }
+  // Search needs every question of a language, not the handful an exam grant
+  // would carry - so this is the full-bank endpoint, once per language.
+  function ensureBank(lang) {
+    if (QuestionBank.has(lang)) return Promise.resolve();
+    return ensureGrant().then(function(bank) { return QuestionBank.loadFull(bank, lang); });
+  }
 
   function escHtml(s) {
     return String(s == null ? '' : s)
@@ -371,8 +449,8 @@
     });
   }
 
-  // Search runs against the bank of the CHOSEN language, loaded once and kept
-  // in memory (and in the service-worker cache for the next visit).
+  // Search runs against the bank of the CHOSEN language, pulled once from the
+  // gateway and kept in memory for the rest of the visit.
   function runSearch(value) {
     lastQuery = value;
     var q = String(value || '').trim();
@@ -387,7 +465,7 @@
       return;
     }
     setLoading(true, 'טוען את בנק השאלות ב' + (LANG_LABELS[currentLang] || currentLang) + '…');
-    QuestionBank.load(currentLang).then(function() {
+    ensureBank(currentLang).then(function() {
       setLoading(false);
       setStatus('בנק מקומי — ' + (LANG_LABELS[currentLang] || currentLang));
       if (lastQuery === value) showResults(QuestionBank.search(currentLang, q, 50));
@@ -399,12 +477,28 @@
   }
 
   (function initUI() {
+    // Hard gate: no stored examiner login = no grant = nothing to search, and
+    // the server would refuse the request anyway. Swap the whole search UI for
+    // the blocker, exactly as this page did before r30.
+    if (!examinerCreds) {
+      var blocker = el('authBlocker');
+      if (blocker) blocker.style.display = 'block';
+      var mainEl = document.querySelector('main');
+      if (mainEl) mainEl.style.display = 'none';
+      return;
+    }
     setLoading(false);
     el('empty').style.display = '';
     el('meta').style.display = '';
     el('countBadge').textContent = '0 תוצאות';
-    setStatus('בנק מקומי — עברית');
-    QuestionBank.load('he').catch(function() {});
+    setStatus('טוען את המאגר…');
+    // Hebrew is what the examiner searches in nine times out of ten: fetch it
+    // while he is still reading the screen, so the first query is instant.
+    ensureBank('he').then(function() {
+      setStatus('בנק מקומי — ' + LANG_LABELS.he);
+    }).catch(function() {
+      setStatus('הבנק לא נטען');
+    });
   })();
 
   var debounceTimer = null;
@@ -420,7 +514,10 @@
     for (var i = 0; i < btns.length; i++) btns[i].classList.remove('active');
     e.target.classList.add('active');
     currentLang = e.target.getAttribute('data-lang');
-    setStatus('בנק מקומי — ' + (LANG_LABELS[currentLang] || currentLang));
+    // Don't claim the bank is here before it is: runSearch fetches it.
+    setStatus(QuestionBank.has(currentLang)
+      ? 'בנק מקומי — ' + (LANG_LABELS[currentLang] || currentLang)
+      : 'טוען את המאגר…');
     var val = el('searchInput').value;
     if (val.length >= 3) runSearch(val);
   });
@@ -430,7 +527,9 @@
   });
 
   // Deep link from the commander dashboard's top-wrong table: ?q=<question text>.
+  // Skipped behind the auth gate - there is no search UI to fill in.
   try {
+    if (!examinerCreds) throw new Error('gated');
     var params = new URLSearchParams(window.location.search);
     var qVal = params.get('q');
     if (qVal) {

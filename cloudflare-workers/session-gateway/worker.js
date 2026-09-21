@@ -1,22 +1,38 @@
 /**
- * session-gateway — one upstream call per session per 3 seconds, however many
- * examinees are polling. ES module worker; deploy with `npx wrangler deploy`.
+ * session-gateway — the exam system's edge. Two jobs, one Worker:
  *
- * WHY: every approval/status poll used to be its own Apps Script execution
+ *   1. It coalesces the examinee poll: ONE upstream call per session per
+ *      2 seconds, however many examinees are polling.
+ *   2. It serves the question texts, which are PRIVATE Worker assets, handing
+ *      each device only the ids its signed grant names.
+ *
+ * ES module worker; deploy with `npx wrangler deploy` (that also uploads
+ * assets/, built by `node tools/build_bank.js`).
+ *
+ * WHY (1): every approval/status poll used to be its own Apps Script execution
  * (1.5-2.5 s of cold start, one of ~30 slots). 40 waiting examinees = ~480
  * executions per minute for data that is identical for all of them. This
  * gateway asks the server once per session (`action=sessionSnapshot`) and
  * answers every examinee from that snapshot — the poll cost stops scaling with
  * the number of examinees. (DESIGN_2026-09-21 §3.4.)
  *
- * The answers are byte-compatible with the server's own checkApproval /
+ * WHY (2): the bank must not be public (decision 19), and it must not cost an
+ * Apps Script execution either. The texts ship as Workers Static Assets with
+ * `run_worker_first`, so nothing reaches them except this code, and a device
+ * gets them only against an HMAC grant that startExam/startPractice/bankGrant
+ * issued. The Worker never signs and never trusts the client. (§11.)
+ *
+ * The poll answers are byte-compatible with the server's own checkApproval /
  * getExamStatus so the client only swaps the URL, never the logic. The
  * examinee token never leaves Apps Script: the snapshot carries a SHA-256 hash
  * and the gateway hashes what the client sent to compare.
  *
  * Endpoints:
- *   GET /                 — health: {status:'ok', service, build}
- *   GET /v1/poll?kind=approval|status&sessionCode&idNumber&examineeToken
+ *   GET  /                — health: {status:'ok', service, build, bank}
+ *   GET  /v1/poll?kind=approval|status&sessionCode&idNumber&examineeToken
+ *   GET  /v1/bank?grant=…[&ids=1,2&langs=he,en]   — texts for the granted ids
+ *   GET  /v1/bank/full?grant=…&lang=he            — a whole language (examiner)
+ *   POST /v1/invalidate?sessionCode=X             — drop the session snapshot
  *   OPTIONS *             — CORS preflight
  *
  * Failure policy: a snapshot up to 60 s old is served with `stale:true` rather
@@ -33,11 +49,21 @@ const ALLOWED_ORIGINS = [
   'http://127.0.0.1'
 ];
 
-const FRESH_MS = 3000;            // a snapshot this young answers without asking
+const FRESH_MS = 2000;            // a snapshot this young answers without asking
 const STALE_MS = 60000;           // older than this and we would rather error
-const FORCE_GAP_MS = 10000;       // re-read-on-miss, at most once per session
+const REREAD_GAP_MS = 2000;       // forced upstream re-read: once per session per gap
 const UPSTREAM_TIMEOUT_MS = 25000;
 const SESSION_RE = /^[A-Z0-9]{6,8}$/;
+
+// The assets binding is addressed by URL; the host is arbitrary and never
+// leaves the isolate. Paths are built from validated numbers only.
+const ASSET_ORIGIN = 'https://assets.local';
+const ASSET_BATCH = 6;            // parallel asset reads, so 30 ids are ~5 rounds
+const EXAMINER_MAX_IDS = 60;      // the wrong-question table never needs more
+const LANGS = ['he', 'ru', 'en', 'ar', 'fr', 'es', 'am'];
+
+const GRANT_INVALID = { status: 'error', code: 'grant_invalid' };
+const BANK_UNAVAILABLE = { status: 'error', code: 'bank_unavailable', retryable: true };
 
 // handleCheckApproval skips these and keeps looking for an active row; see the
 // long comment there about the shared-ID incident that put 'rejected' on it.
@@ -58,27 +84,55 @@ async function sha256Hex(text) {
   return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+/** Throws on anything that is not base64url — the caller reads that as "invalid". */
+function b64urlBytes(text) {
+  const b64 = String(text).replace(/-/g, '+').replace(/_/g, '/');
+  const binary = atob(b64 + '==='.slice((b64.length + 3) % 4));
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+  return out;
+}
+
+/** Only whole positive numbers survive: an id is never concatenated into a path raw. */
+function toIds(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const raw of list) {
+    const n = Number(raw);
+    if (Number.isInteger(n) && n > 0 && n < 1e7) out.push(n);
+  }
+  return out;
+}
+
 function corsHeaders(request) {
   const origin = (request.headers && request.headers.get('Origin')) || '';
   const allowed = ALLOWED_ORIGINS.find(a => origin === a || origin.indexOf(a + ':') === 0);
   return {
     'Access-Control-Allow-Origin': allowed ? origin : ALLOWED_ORIGINS[0],
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
     'Access-Control-Max-Age': '86400',
     'Vary': 'Origin'
   };
 }
 
-function jsonResponse(request, body, status) {
-  return new Response(JSON.stringify(body), {
-    status: status || 200,
-    headers: Object.assign({
-      'Content-Type': 'application/json; charset=utf-8',
-      'Cache-Control': 'no-store'
-    }, corsHeaders(request))
-  });
+function jsonHeaders(request) {
+  return Object.assign({
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store'
+  }, corsHeaders(request));
 }
+
+/** For a body that is already JSON text — the bank never re-serialises assets. */
+function rawJsonResponse(request, body, status) {
+  return new Response(body, { status: status || 200, headers: jsonHeaders(request) });
+}
+
+function jsonResponse(request, body, status) {
+  return rawJsonResponse(request, JSON.stringify(body), status);
+}
+
+const badRequest = (request, message) => jsonResponse(request, { status: 'error', message }, 400);
 
 // --- answers (mirror scanApprovalRows / scanExamStatusRows) ----------------
 
@@ -135,16 +189,17 @@ const NOT_FOUND = {
 // --- the gateway -----------------------------------------------------------
 
 /**
- * Dependency-injected so tests can drive it with a fake clock and a counting
- * fetch. The state (in-flight map, memory snapshots) lives in the closure, so
- * the module-level singleton below coalesces across requests of one isolate
- * while each test gets its own clean instance.
+ * Dependency-injected so tests can drive it with a fake clock, a counting
+ * fetch and an in-memory ASSETS binding. The state (in-flight map, memory
+ * snapshots, imported HMAC key) lives in the closure, so the module-level
+ * singleton below coalesces across requests of one isolate while each test
+ * gets its own clean instance.
  */
 export function createGateway({ fetch, caches, now, env }) {
   const clock = now || (() => Date.now());
   const memory = new Map();   // session -> { at, snapshot }
   const inflight = new Map(); // session -> Promise<snapshot|null>
-  const lastForced = new Map(); // session -> ms of the last re-read-on-miss
+  const lastForced = new Map(); // session -> ms of the last forced re-read
 
   const cacheKey = (kind, session) =>
     'https://session-gateway.internal/' + kind + '/' + encodeURIComponent(session);
@@ -240,12 +295,212 @@ export function createGateway({ fetch, caches, now, env }) {
     return { ok: false };
   }
 
-  /** Mirrors the server's own re-read before it says "no registration". */
+  /**
+   * One extra upstream read per session per gap, whatever asked for it: the
+   * server's own re-read before it says "no registration", and the examiner's
+   * /v1/invalidate after a decision. They share the budget on purpose — both
+   * mean "the snapshot is behind", and together they must still not cost more
+   * than one additional Apps Script execution per session per REREAD_GAP_MS.
+   */
   function mayForceReread(session) {
     const last = lastForced.get(session);
-    if (last != null && clock() - last < FORCE_GAP_MS) return false;
+    if (last != null && clock() - last < REREAD_GAP_MS) return false;
     lastForced.set(session, clock());
     return true;
+  }
+
+  /** The next poll of this session reads upstream instead of a stale snapshot. */
+  async function dropSnapshot(session) {
+    memory.delete(session);
+    if (!caches || !caches.default) return;
+    try {
+      await Promise.all(['snap', 'stale'].map(kind =>
+        caches.default.delete(new Request(cacheKey(kind, session)))));
+    } catch (e) { /* cache is best effort */ }
+  }
+
+  // --- the private question bank (assets) ----------------------------------
+
+  const hasAssets = () => Boolean(env.ASSETS && typeof env.ASSETS.fetch === 'function');
+
+  /** null = no binding, or the read threw. A 404 comes back as a real Response. */
+  async function assetFetch(pathname) {
+    if (!hasAssets()) return null;
+    try {
+      return await env.ASSETS.fetch(ASSET_ORIGIN + pathname);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // The build id of the deployed bank, read once per isolate. A failed read is
+  // not remembered: a blip must not pin '' for the life of the isolate.
+  let buildPromise = null;
+  function bankBuild() {
+    if (!buildPromise) {
+      buildPromise = (async () => {
+        const res = await assetFetch('/manifest.json');
+        if (!res || res.status !== 200) return '';
+        try {
+          return String((JSON.parse(await res.text()) || {}).build || '');
+        } catch (e) {
+          return '';
+        }
+      })().then(build => {
+        if (!build) buildPromise = null;
+        return build;
+      });
+    }
+    return buildPromise;
+  }
+
+  // Imported once per isolate: importKey on every request would be pure waste
+  // on the hot path. An empty secret is kept out of importKey, which rejects it.
+  let keyPromise = null;
+  function hmacKey() {
+    if (!keyPromise) {
+      keyPromise = crypto.subtle.importKey(
+        'raw', new TextEncoder().encode(String(env.GATEWAY_KEY || '')),
+        { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']
+      ).catch(() => null);
+    }
+    return keyPromise;
+  }
+
+  /**
+   * `<payload>.<sig>` — payload is base64url JSON, sig is base64url
+   * HMAC-SHA256(GATEWAY_KEY, payload). Only Apps Script ever signs one
+   * (§11.2). Returns the payload, or null for anything at all wrong: a bad
+   * signature, a stale `exp`, a scope this route does not serve.
+   */
+  async function verifyGrant(raw, scopes) {
+    if (!env.GATEWAY_KEY) return null;
+    const parts = String(raw || '').split('.');
+    if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+    try {
+      const key = await hmacKey();
+      if (!key) return null;
+      // crypto.subtle.verify compares the MACs in constant time.
+      const ok = await crypto.subtle.verify(
+        'HMAC', key, b64urlBytes(parts[1]), new TextEncoder().encode(parts[0]));
+      if (!ok) return null;
+      const payload = JSON.parse(new TextDecoder().decode(b64urlBytes(parts[0])));
+      if (!payload || payload.v !== 1) return null;
+      if (!(Number(payload.exp) > clock())) return null;
+      if (scopes.indexOf(payload.s) < 0) return null;
+      return payload;
+    } catch (e) {
+      return null; // malformed base64url or JSON is just an invalid grant
+    }
+  }
+
+  /** { text } served · {} no such asset · { failed } the read itself broke. */
+  async function readQuestion(id) {
+    const res = await assetFetch('/q/' + id + '.json');
+    if (!res) return { failed: true };
+    if (res.status !== 200) return {};
+    try {
+      return { text: await res.text() };
+    } catch (e) {
+      return { failed: true };
+    }
+  }
+
+  /** ASSET_BATCH connections at a time, so 30 ids are five short rounds. */
+  async function readQuestions(ids) {
+    const texts = [];
+    const missing = [];
+    let failed = 0;
+    for (let i = 0; i < ids.length; i += ASSET_BATCH) {
+      const batch = ids.slice(i, i + ASSET_BATCH);
+      const results = await Promise.all(batch.map(readQuestion));
+      results.forEach((result, n) => {
+        if (result.text !== undefined) return texts.push(result.text);
+        missing.push(batch[n]);
+        if (result.failed) failed++;
+      });
+    }
+    return { texts, missing, failed };
+  }
+
+  /**
+   * Examiner tooling only: a handful of ids, so one parse each is affordable.
+   * The exam path never does this — it concatenates the asset text untouched.
+   */
+  function filterLangs(text, langs) {
+    try {
+      const question = JSON.parse(text);
+      const kept = {};
+      for (const lang of langs) if (question.l && question.l[lang]) kept[lang] = question.l[lang];
+      return JSON.stringify({ id: question.id, l: kept });
+    } catch (e) {
+      return text; // an unparsable asset of ours: serve it whole rather than 500
+    }
+  }
+
+  async function bank(request, url) {
+    const grant = await verifyGrant(url.searchParams.get('grant'), ['exam', 'practice', 'examiner']);
+    if (!grant) return jsonResponse(request, GRANT_INVALID, 403);
+
+    let ids;
+    let langs = null;
+    if (grant.s === 'examiner') {
+      ids = toIds(String(url.searchParams.get('ids') || '').split(','));
+      if (!ids.length) return badRequest(request, 'ids is required for an examiner grant');
+      if (ids.length > EXAMINER_MAX_IDS) return badRequest(request, 'at most ' + EXAMINER_MAX_IDS + ' ids');
+      const rawLangs = url.searchParams.get('langs');
+      if (rawLangs != null) {
+        langs = String(rawLangs).split(',').map(l => l.trim()).filter(l => LANGS.indexOf(l) >= 0);
+        if (!langs.length) return badRequest(request, 'langs names no known language');
+      }
+    } else {
+      // The grant IS the authorisation: an exam device gets its 30 ids, nothing
+      // else, whatever it puts in the query string.
+      ids = toIds(grant.ids);
+      if (!ids.length) return jsonResponse(request, GRANT_INVALID, 403);
+    }
+
+    if (!hasAssets()) return jsonResponse(request, BANK_UNAVAILABLE, 503);
+    const build = bankBuild(); // in flight beside the questions, not after them
+    const { texts, missing, failed } = await readQuestions(ids);
+    // Every single read broke — that is the binding or the deploy, not the ids.
+    if (failed === ids.length) return jsonResponse(request, BANK_UNAVAILABLE, 503);
+
+    const questions = langs ? texts.map(text => filterLangs(text, langs)) : texts;
+    return rawJsonResponse(request,
+      '{"status":"ok","build":' + JSON.stringify(await build) +
+      ',"questions":[' + questions.join(',') +
+      '],"missing":' + JSON.stringify(missing) + '}');
+  }
+
+  async function bankFull(request, url) {
+    const grant = await verifyGrant(url.searchParams.get('grant'), ['examiner']);
+    if (!grant) return jsonResponse(request, GRANT_INVALID, 403);
+    const lang = String(url.searchParams.get('lang') || '').trim();
+    if (LANGS.indexOf(lang) < 0) return badRequest(request, 'lang must be one of ' + LANGS.join(','));
+
+    if (!hasAssets()) return jsonResponse(request, BANK_UNAVAILABLE, 503);
+    const res = await assetFetch('/bank/' + lang + '.json');
+    if (!res) return jsonResponse(request, BANK_UNAVAILABLE, 503);
+    if (res.status !== 200) {
+      return jsonResponse(request, { status: 'error', code: 'bank_missing', message: 'no bank for ' + lang }, 404);
+    }
+    // Streamed, not buffered: 0.6-1.1 MB per language, and nothing here needs
+    // to look inside it. The asset response's own headers are kept as the base
+    // so that whatever content encoding came with that body stays with it; only
+    // ours are overwritten on top.
+    const out = new Response(res.body, res);
+    for (const [name, value] of Object.entries(jsonHeaders(request))) out.headers.set(name, value);
+    return out;
+  }
+
+  async function invalidate(request, url) {
+    const session = String(url.searchParams.get('sessionCode') || '').trim();
+    if (!SESSION_RE.test(session)) return badRequest(request, 'קוד סשן לא תקין');
+    // Always 'ok': the examiner fires this and forgets it. Whether it actually
+    // dropped anything is the throttle's business, not the caller's.
+    if (mayForceReread(session)) await dropSnapshot(session);
+    return jsonResponse(request, { status: 'ok' });
   }
 
   async function poll(request, url) {
@@ -296,14 +551,22 @@ export function createGateway({ fetch, caches, now, env }) {
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders(request) });
     }
+    const url = new URL(request.url);
+    if (request.method === 'POST') {
+      if (url.pathname === '/v1/invalidate') return invalidate(request, url);
+      return jsonResponse(request, { status: 'error', message: 'method not allowed' }, 405);
+    }
     if (request.method !== 'GET') {
       return jsonResponse(request, { status: 'error', message: 'method not allowed' }, 405);
     }
-    const url = new URL(request.url);
     if (url.pathname === '/' || url.pathname === '') {
-      return jsonResponse(request, { status: 'ok', service: 'session-gateway', build: BUILD });
+      return jsonResponse(request, {
+        status: 'ok', service: 'session-gateway', build: BUILD, bank: await bankBuild()
+      });
     }
     if (url.pathname === '/v1/poll') return poll(request, url);
+    if (url.pathname === '/v1/bank') return bank(request, url);
+    if (url.pathname === '/v1/bank/full') return bankFull(request, url);
     return jsonResponse(request, { status: 'error', message: 'not found' }, 404);
   };
 }

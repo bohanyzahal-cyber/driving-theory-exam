@@ -1241,6 +1241,87 @@
     });
   }
 
+  // ========== Question-bank grant + gateway nudge ==========
+  // The question TEXTS are not in this repo any more (21/09 decision, message
+  // 19): the session gateway holds them as private assets and answers only a
+  // signed grant. The examiner tools that need texts - the commander's
+  // "top wrong" table here, and find_image.html - carry an examiner-scoped
+  // grant fetched once at login. Losing it is never fatal: every feature that
+  // needs texts asks again, and until then the stored text is shown.
+  var BANK_GRANT_MIN_TTL_MS = 10 * 60 * 1000;   // refetch while there is still time to USE the answer
+  var examinerBank = null;      // { url, grant, exp }
+  var bankGrantPromise = null;  // one request in flight, never a stampede
+
+  function bankGrantUsable(bank) {
+    return !!(bank && bank.url && bank.grant &&
+              typeof bank.exp === 'number' && (bank.exp - Date.now()) > BANK_GRANT_MIN_TTL_MS);
+  }
+  function storedBankGrant() {
+    try {
+      var raw = localStorage.getItem('ext_examiner_bank');
+      if (!raw) return null;
+      var bank = JSON.parse(raw);
+      return bankGrantUsable(bank) ? bank : null;
+    } catch (e) { return null; }
+  }
+  // force=true at a fresh login: the stored grant may belong to the examiner who
+  // used this device before. A reload of the same session reuses it instead of
+  // paying for a request that would return the same thing.
+  function fetchBankGrant(force) {
+    if (bankGrantUsable(examinerBank)) return Promise.resolve(examinerBank);
+    if (!force) {
+      var stored = storedBankGrant();
+      if (stored) { examinerBank = stored; return Promise.resolve(stored); }
+    }
+    if (bankGrantPromise) return bankGrantPromise;
+    bankGrantPromise = apiGet({ action: 'bankGrant' }).then(function(data) {
+      bankGrantPromise = null;
+      if (!data || data.status !== 'ok' || !data.bank || !data.bank.url || !data.bank.grant) return null;
+      examinerBank = data.bank;
+      try { localStorage.setItem('ext_examiner_bank', JSON.stringify(examinerBank)); } catch (e) {}
+      return examinerBank;
+    }, function() { bankGrantPromise = null; return null; });
+    return bankGrantPromise;
+  }
+  // What a feature calls when it actually needs texts: whatever we already hold,
+  // otherwise one lazy request. Resolves to null when there is no grant to be had.
+  function ensureBankGrant() { return fetchBankGrant(false); }
+
+  // Fire-and-forget. The gateway answers the examinee polls from a snapshot it
+  // refreshes at most once every 2 s, so without this the next poll can still be
+  // served from the copy taken BEFORE this decision. keepalive, because the list
+  // re-render that follows must not be able to cancel it; failures are ignored -
+  // the snapshot expires by itself a moment later.
+  function nudgeGateway() {
+    if (!examinerBank || !examinerBank.url || !sessionCode) return;
+    var url = String(examinerBank.url).replace(/\/+$/, '') +
+              '/v1/invalidate?sessionCode=' + encodeURIComponent(sessionCode);
+    try {
+      fetch(url, { method: 'POST', mode: 'cors', keepalive: true, cache: 'no-store' })
+        .catch(function() {});
+    } catch (e) {}
+  }
+
+  // Every examiner decision about an examinee goes through here: approve,
+  // reject, reset, confirm/overturn a DQ, force-complete, disqualify, add time,
+  // close the session. Two things happen around the plain apiGet:
+  //   1. it is counted while in flight, so the self-reload below can never fire
+  //      on top of a decision the server has not answered yet;
+  //   2. a SUCCESSFUL decision nudges the gateway, so the examinee sees it on
+  //      the next poll instead of waiting out a stale snapshot.
+  var decisionsInFlight = 0;
+  function examinerDecision(params, timeoutMs) {
+    decisionsInFlight++;
+    return apiGet(params, timeoutMs).then(function(data) {
+      decisionsInFlight--;
+      if (data && data.status === 'ok') nudgeGateway();
+      return data;
+    }, function(err) {
+      decisionsInFlight--;
+      throw err;
+    });
+  }
+
   // ========== Login ==========
   document.getElementById('loginBtn').addEventListener('click', function() {
     var id = document.getElementById('loginId').value.trim();
@@ -1261,6 +1342,10 @@
         examinerToken = examinerData.token || '';
         userRole = examinerData.role || 'בוחן';
         resetTokenExpiry();
+        // A fresh login must not inherit the grant of whoever used this device
+        // before, so this one is forced. It runs in the background: nothing on
+        // this screen waits for it.
+        fetchBankGrant(true);
         var reauthOld = document.getElementById('reauthBanner');
         if (reauthOld && reauthOld.parentNode) reauthOld.parentNode.removeChild(reauthOld);
         // Save token for "remember me" (not password)
@@ -1312,6 +1397,10 @@
     if (reauth && reauth.parentNode) reauth.parentNode.removeChild(reauth);
     clearState();
     try { localStorage.removeItem('ext_examiner_remember'); } catch(e) {}
+    // The grant is this examiner's permission to read question texts - it leaves
+    // with him, so the next person on this device fetches his own.
+    try { localStorage.removeItem('ext_examiner_bank'); } catch(e) {}
+    examinerBank = null; bankGrantPromise = null;
     examinerData = null; examinerToken = ''; sessionCode = ''; userRole = 'בוחן'; cmdData = null;
     document.getElementById('logoutBtn').style.display = 'none';
     document.getElementById('topbarInfo').textContent = '';
@@ -2138,6 +2227,10 @@
   // within one poll (~6s) and a badge shows on the dashboard.
   function openAddTimeModal(item) {
     var ov = document.createElement('div');
+    // Marker class, not decoration: isSafeToReload() looks for it. An overlay
+    // built at click time has no id in the markup, so this is how the
+    // self-reload below knows somebody is in the middle of typing a reason.
+    ov.className = 'examiner-modal';
     ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100000;display:flex;align-items:center;justify-content:center;direction:rtl;padding:12px;';
     ov.innerHTML =
       '<div style="background:#fff;border-radius:14px;padding:22px;max-width:430px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,.3);max-height:92vh;overflow:auto;">' +
@@ -2211,7 +2304,7 @@
       }
       var confirmBtn = this;
       confirmBtn.disabled = true; confirmBtn.textContent = 'מוסיף…';
-      apiGet({ action: 'addExamTime', sessionCode: sessionCode, idNumber: item.idNumber, minutes: minutes, reason: reason }).then(function(data) {
+      examinerDecision({ action: 'addExamTime', sessionCode: sessionCode, idNumber: item.idNumber, minutes: minutes, reason: reason }).then(function(data) {
         if (data && data.status === 'ok') {
           close();
           showToast('נוספו ' + data.addedMinutes + ' דקות ל' + item.name + '.\nסך תוספת הזמן: ' + data.totalExtraMinutes + ' דקות.');
@@ -2394,7 +2487,7 @@
             var params = { action: 'approveExaminee', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id };
             if (timeSelect.value) params.timeExtension = timeSelect.value;
             params.audioMode = audioCb.checked ? 'on' : 'off';
-            apiGet(params).then(function(data) {
+            examinerDecision(params).then(function(data) {
               if (data.status === 'ok') {
                 approveBtn.textContent = '✓ אושר';
                 // Choice is now persisted in column J — drop the local override so
@@ -2426,7 +2519,7 @@
           rejectBtn.addEventListener('click', function() {
             rejectBtn.disabled = true;
             rejectBtn.textContent = 'דוחה...';
-            apiGet({ action: 'rejectExaminee', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
+            examinerDecision({ action: 'rejectExaminee', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
               if (data.status === 'ok') {
                 rejectBtn.textContent = '✗ נדחה';
                 pollDashboard();
@@ -2452,7 +2545,7 @@
           if (confirm('לאפס את ' + item.name + '?\nהנבחן יוכל להירשם מחדש.')) {
             resetPendingBtn.disabled = true;
             resetPendingBtn.textContent = 'מאפס...';
-            apiGet({ action: 'resetExaminee', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
+            examinerDecision({ action: 'resetExaminee', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
               if (data.status === 'ok') {
                 pollDashboard();
               } else {
@@ -2676,7 +2769,7 @@
             if (!confirm('לאשר פסילה של ' + item.name + '?\nהנבחן יסומן סופית כפסול.')) return;
             confirmDqBtn.disabled = true;
             confirmDqBtn.textContent = 'מאשר...';
-            apiGet({ action: 'confirmDQ', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
+            examinerDecision({ action: 'confirmDQ', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
               if (data.status === 'ok') pollDashboard();
               else toastError('שגיאה: ' + (data.message || 'לא ידוע'));
             }).catch(function() { toastError('שגיאת תקשורת'); });
@@ -2691,7 +2784,7 @@
             if (!confirm('לבטל פסילה של ' + item.name + '?\nהנבחן יחזור למבחן.')) return;
             overturnDqBtn.disabled = true;
             overturnDqBtn.textContent = 'מבטל...';
-            apiGet({ action: 'overturnDQ', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
+            examinerDecision({ action: 'overturnDQ', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
               if (data.status === 'ok') pollDashboard();
               else toastError('שגיאה: ' + (data.message || 'לא ידוע'));
             }).catch(function() { toastError('שגיאת תקשורת'); });
@@ -2709,7 +2802,7 @@
             if (confirm('לסמן את ' + item.name + ' כנכשל (ניתוק/תקלה)?\nהנבחן יועבר לרשימת הושלמו כנכשל.')) {
               forceBtn.disabled = true;
               forceBtn.textContent = 'מסיים...';
-              apiGet({ action: 'forceComplete', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
+              examinerDecision({ action: 'forceComplete', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
                 if (data.status === 'ok') {
                   showToast(item.name + ' סומן כנכשל (ניתוק).');
                   pollDashboard();
@@ -2742,7 +2835,7 @@
           if (confirm('האם לפסול את ' + item.name + '?')) {
             dqBtn.disabled = true;
             dqBtn.textContent = 'מפסול...';
-            apiGet({ action: 'disqualify', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
+            examinerDecision({ action: 'disqualify', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
               if (data.status === 'ok') {
                 showToast(item.name + ' נפסל.');
                 pollDashboard();
@@ -2772,7 +2865,7 @@
           if (confirm(resetConfirmText(item))) {
             resetBtn.disabled = true;
             resetBtn.textContent = 'מאפס...';
-            apiGet({ action: 'resetExaminee', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
+            examinerDecision({ action: 'resetExaminee', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
               if (data.status === 'ok') {
                 showToast(item.name + ' אופס — יכול להירשם מחדש.');
                 pollDashboard();
@@ -5769,7 +5862,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     var r = completedResults[idx];
     if (!r) return;
     if (confirm('\u05D4\u05D0\u05DD \u05DC\u05E4\u05E1\u05D5\u05DC \u05D0\u05EA \u05D4\u05DE\u05D1\u05D7\u05DF \u05E9\u05DC ' + r.name + '?')) {
-      apiGet({ action: 'disqualify', sessionCode: sessionCode, idNumber: r.idNumber, examinerId: examinerData.id }).then(function(data) {
+      examinerDecision({ action: 'disqualify', sessionCode: sessionCode, idNumber: r.idNumber, examinerId: examinerData.id }).then(function(data) {
         if (data.status === 'ok') {
           showToast(r.name + ' \u05E0\u05E4\u05E1\u05DC.');
           pollDashboard();
@@ -5784,7 +5877,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     var r = completedResults[idx];
     if (!r) return;
     if (confirm('ביטול פסילה של ' + r.name + '?\nהתוצאה תשתנה ל"נכשל" והנבחן יוכל להיבחן מחדש.')) {
-      apiGet({ action: 'overturnDQ', sessionCode: sessionCode, idNumber: r.idNumber, examinerId: examinerData.id }).then(function(data) {
+      examinerDecision({ action: 'overturnDQ', sessionCode: sessionCode, idNumber: r.idNumber, examinerId: examinerData.id }).then(function(data) {
         if (data.status === 'ok') {
           showToast(r.name + ' — הפסילה בוטלה.');
           pollDashboard();
@@ -5799,7 +5892,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     var r = completedResults[idx];
     if (!r) return;
     if (confirm('אישור פסילה של ' + r.name + '?\nהנבחן יקבל הודעה סופית שהמבחן נפסל.')) {
-      apiGet({ action: 'confirmDQ', sessionCode: sessionCode, idNumber: r.idNumber, examinerId: examinerData.id }).then(function(data) {
+      examinerDecision({ action: 'confirmDQ', sessionCode: sessionCode, idNumber: r.idNumber, examinerId: examinerData.id }).then(function(data) {
         if (data.status === 'ok') {
           showToast(r.name + ' — הפסילה אושרה.');
           pollDashboard();
@@ -5903,7 +5996,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       ? 'לסגור את הסשן? נבחנים חדשים לא יוכלו להיכנס.'
       : 'אין תוצאות בסשן זה.\n\nלסגור ללא שליחת דו"ח?';
     if (!confirm(confirmMsg)) return;
-    apiGet({ action: 'closeSession', sessionCode: sessionCode, examinerId: examinerData.id }).then(function() {
+    examinerDecision({ action: 'closeSession', sessionCode: sessionCode, examinerId: examinerData.id }).then(function() {
       stopDashboardPolling();
       clearState();
       showToast('הסשן נסגר.');
@@ -6510,8 +6603,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
         renderWaitTimes(cmdData.waitTimes);
         renderTimeline(cmdData.timeline);
         renderHeatmap(cmdData.heatmap);
-        QuestionBank.load('he').catch(function() {});   // texts/images for the top-wrong table
-        renderTopWrong(cmdData.topWrong);
+        renderTopWrong(cmdData.topWrong);   // asks the gateway for the texts of the ids it is about to show
         renderPracticeImpact(cmdData.practiceImpact);
         renderBreakdownTable(cmdData, cmdCurrentTab);
         renderExaminerComparison(cmdData.byExaminer);
@@ -7130,8 +7222,22 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
   // The server sends { questionId, count, category, text } and nothing else -
   // no imageUrl, no answers: resolving a question used to cost it 14 Drive reads
   // per request (r12/r13). The canonical Hebrew text and the image come from the
-  // static bank in this repo; the stored text is the fallback for an id the bank
-  // does not carry (a question retired since the result was written).
+  // question bank, which lives behind the session gateway now and is fetched for
+  // exactly the ids in this table; the stored text is the fallback for an id the
+  // bank does not carry (a question retired since the result was written) and for
+  // an examiner whose grant never arrived.
+  var topWrongAsked = {};        // ids already requested - a retired id must not re-ask on every repaint
+  var topWrongFetching = false;  // one request at a time, whatever re-renders in between
+  function topWrongIdsToFetch(topWrong) {
+    var ids = [];
+    for (var i = 0; i < topWrong.length; i++) {
+      var qid = topWrong[i] && topWrong[i].questionId;
+      if (typeof qid !== 'number' || topWrongAsked[qid]) continue;
+      if (QuestionBank.get(qid, 'he')) continue;
+      if (ids.indexOf(qid) === -1) ids.push(qid);
+    }
+    return ids;
+  }
   function topWrongEntry(item) {
     var e = (item && typeof item.questionId === 'number') ? QuestionBank.get(item.questionId, 'he') : null;
     return {
@@ -7149,12 +7255,23 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       host.innerHTML = '<p style="color:#94a3b8;">\u05d0\u05d9\u05df \u05e0\u05ea\u05d5\u05e0\u05d9 \u05e9\u05d0\u05dc\u05d5\u05ea \u05e9\u05d2\u05d5\u05d9\u05d5\u05ea \u05dc\u05d8\u05d5\u05d5\u05d7 \u05e9\u05e0\u05d1\u05d7\u05e8</p>';
       return;
     }
-    // The bank may not be in memory yet on the first commander load; paint what
-    // we have, then repaint once it arrives (a single fetch, cached afterwards).
-    if (!QuestionBank.has('he')) {
-      QuestionBank.load('he').then(function() {
-        if (cmdData && cmdData.topWrong === topWrong) renderTopWrong(topWrong);
-      }).catch(function() {});
+    // The texts are not in memory on the first commander load; paint what we
+    // have (the text stored with the result), ask the gateway for exactly the
+    // ids in this table, and repaint once they arrive. No grant, no answer, a
+    // retired id - all three just leave the stored text on screen.
+    var wanted = topWrongIdsToFetch(topWrong);
+    if (wanted.length && !topWrongFetching) {
+      topWrongFetching = true;
+      ensureBankGrant().then(function(bank) {
+        if (!bank) return null;
+        // Marked only once we really ask: an examiner whose grant has not
+        // arrived yet must be able to try again on his next report.
+        for (var i = 0; i < wanted.length; i++) topWrongAsked[wanted[i]] = true;
+        return QuestionBank.loadIds(bank, wanted, ['he']);
+      }).then(function(loaded) {
+        topWrongFetching = false;
+        if (loaded && cmdData && cmdData.topWrong === topWrong) renderTopWrong(topWrong);
+      }).catch(function() { topWrongFetching = false; });
     }
     var maxCount = topWrong[0].count || 1;
     var html = '<table style="width:100%;border-collapse:collapse;font-size:13px;">';
@@ -7802,6 +7919,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     examinerData = data.examiner;
     examinerToken = creds.token;
     userRole = examinerData.role || 'בוחן';
+    fetchBankGrant();   // same examiner, same device: a stored grant that is still valid is reused
     document.getElementById('topbarInfo').textContent = examinerData.name;
     document.getElementById('logoutBtn').style.display = 'inline-block';
     if (userRole === 'מפקד מרכז') {
@@ -7825,6 +7943,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
   // ========== Auto-restore on page load ==========
   if (loadState() && examinerToken) {
     userRole = (examinerData && examinerData.role) || 'בוחן';
+    fetchBankGrant();   // a reload mid-session reuses the stored grant; only an expired one costs a request
     // We have a saved session — check if it's still valid
     if (sessionValidUntil && new Date() < sessionValidUntil) {
       document.getElementById('topbarInfo').textContent = examinerData.name + ' | ' + currentSite + ' | \u05DB\u05D9\u05EA\u05D4 ' + currentClassroom;
@@ -8001,16 +8120,70 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     navigator.serviceWorker.register('./sw-examiner.js').catch(function() {});
   }
 
-  // ===== Auto-update: BANNER ONLY, never a reload we did not ask for =====
-  // 16/09/2026: this block took every examiner down. From ~09:30 they were
+  // ===== Auto-update: a banner, a button, and a self-reload ONLY when it is safe =====
+  // 16/09/2026 this block took every examiner down: from ~09:30 they were
   // bounced to the login screen and the pages reloaded themselves without end
-  // under "\u05d2\u05e8\u05e1\u05d4 \u05d7\u05d3\u05e9\u05d4 \u05d6\u05de\u05d9\u05e0\u05d4" - with NO deploy since 07:57. Two causes
-  // in this block: one build is served with two ETag spellings ("x" and W/"x"),
-  // and every Pages push re-stamps every file's ETag whether or not it changed.
-  // Both are gone: version.json carries a sha1 PER PAGE, produced by the build.
-  // And decision 4 of the 21/09 design: examiner and teacher never reload
-  // themselves. A banner, a button, nothing else - not even for an idle page,
-  // because "idle" is a guess about a person in an exam room.
+  // under "\u05d2\u05e8\u05e1\u05d4 \u05d7\u05d3\u05e9\u05d4 \u05d6\u05de\u05d9\u05e0\u05d4" - with NO deploy since 07:57. What broke
+  // was the DETECTION, not the reload: one build was served with two ETag
+  // spellings ("x" and W/"x") compared as strings, and every Pages push
+  // re-stamps every file's ETag whether or not the file changed. version.json
+  // carries a sha1 PER PAGE now, produced by the build, so a reload can only
+  // follow a change to THIS page - and it has to be seen twice.
+  //
+  // 21/09 message 20 reverses decision 4 (banner only): Yossi wants the pages
+  // to update themselves, because a banner nobody presses leaves a whole room
+  // on yesterday's build. So the banner and its button stay exactly as they
+  // were, and 60 s later the page reloads BY ITSELF - but only at a safe
+  // moment: no dialog open, no decision waiting for the server, nobody typing
+  // the login form. The check runs when the timer fires and again every 15 s
+  // until it passes (the D4 bug was a guard evaluated once, before the timer,
+  // so a dialog opened during the grace period was wiped anyway). saveState()
+  // runs first, so the examiner comes back to the same screen and session.
+  var UPDATE_RELOAD_DELAY_MS = 60000;
+  var UPDATE_RELOAD_RECHECK_MS = 15000;
+  // Static modals get .show; the share dialog is toggled with an inline display;
+  // the add-time overlay is built at click time and carries .examiner-modal.
+  var RELOAD_BLOCKING_MODALS = ['settingsModal', 'allSessionsModal', 'bulkSendModal',
+                                'correctResultModal', 'correctMetaModal', 'manualResultModal'];
+  function anyDialogOpen() {
+    var i, el;
+    for (i = 0; i < RELOAD_BLOCKING_MODALS.length; i++) {
+      el = document.getElementById(RELOAD_BLOCKING_MODALS[i]);
+      if (el && el.classList && el.classList.contains('show')) return true;
+    }
+    el = document.getElementById('shareDialog');
+    if (el && el.style && el.style.display && el.style.display !== 'none') return true;
+    if (document.querySelector && document.querySelector('.examiner-modal')) return true;
+    return false;
+  }
+  // An examiner half-way through typing his id or password must not lose it -
+  // but ONLY while the login screen is the one he is looking at. Nothing clears
+  // those two fields on a successful login (logout does, the remembered path
+  // even pre-fills the id), so once he is inside the dashboard their values are
+  // stale text in a hidden section. Reading them there would have made
+  // isSafeToReload() false for the rest of the day, which is exactly the
+  // opposite of what message 20 asked for.
+  function loginBeingTyped() {
+    var screen = document.getElementById('screenLogin');
+    if (!screen || !screen.classList || !screen.classList.contains('active')) return false;
+    var active = document.activeElement;
+    if (active && (active.id === 'loginId' || active.id === 'loginPass')) return true;
+    var idEl = document.getElementById('loginId'), passEl = document.getElementById('loginPass');
+    if (idEl && idEl.value) return true;
+    if (passEl && passEl.value) return true;
+    return false;
+  }
+  function isSafeToReload() {
+    if (anyDialogOpen()) return false;
+    if (decisionsInFlight > 0) return false;   // an approval the server has not answered yet
+    if (loginBeingTyped()) return false;
+    return true;
+  }
+  function reloadWhenSafe() {
+    if (!isSafeToReload()) { setTimeout(reloadWhenSafe, UPDATE_RELOAD_RECHECK_MS); return; }
+    saveState();
+    location.reload();
+  }
   (function() {
     if (!window.fetch) return;
     ExamTransport.createUpdateCheck({
@@ -8022,7 +8195,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
         b.id = 'examinerUpdateBanner';
         b.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99998;background:#1a73e8;color:#fff;padding:12px 16px;text-align:center;font-size:15px;font-weight:700;box-shadow:0 -2px 10px rgba(0,0,0,.2);';
         var msg = document.createElement('span');
-        msg.textContent = '\ud83d\udd04 \u05d2\u05e8\u05e1\u05d4 \u05d7\u05d3\u05e9\u05d4 \u05d6\u05de\u05d9\u05e0\u05d4 \u2014 \u05e8\u05e2\u05e0\u05df \u05db\u05e9\u05e0\u05d5\u05d7 \u05dc\u05da (\u05dc\u05d0 \u05d1\u05d0\u05de\u05e6\u05e2 \u05d1\u05d7\u05d9\u05e0\u05d4)';
+        msg.textContent = '\ud83d\udd04 \u05d2\u05e8\u05e1\u05d4 \u05d7\u05d3\u05e9\u05d4 \u05d6\u05de\u05d9\u05e0\u05d4 \u2014 \u05d4\u05d3\u05e3 \u05d9\u05ea\u05e8\u05e2\u05e0\u05df \u05d1\u05e2\u05d5\u05d3 \u05db\u05d3\u05e7\u05d4';
         b.appendChild(msg);
         var btn = document.createElement('button');
         btn.id = 'swUpdNow';
@@ -8031,6 +8204,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
         btn.addEventListener('click', function() { location.reload(); });
         b.appendChild(btn);
         document.body.appendChild(b);
+        setTimeout(reloadWhenSafe, UPDATE_RELOAD_DELAY_MS);
       }
     }).start();
   })();

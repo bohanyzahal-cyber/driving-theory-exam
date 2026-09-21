@@ -66,7 +66,10 @@ function env(spec) {
       'ממתינים': [PENDING_HEADER, ...(s.pending || [pendingRow()])],
       'מבחנים': [EXAMS_HEADER, ...(s.exams || [examRow()])],
       'תוצאות': [RESULTS_HEADER, ...(s.results || [])]
-    }
+    },
+    // startExam refuses to write anything when the Worker that serves the
+    // question texts is unset (DESIGN §11.2), so the fixture is configured.
+    properties: { GATEWAY_KEY: 'gateway-secret', GATEWAY_URL: 'https://gw.example.workers.dev' }
   });
   e.ctx.ANSWER_KEY_BY_LANG = KEY;
   // The 30 fixture questions have a hand-written key per language; every other

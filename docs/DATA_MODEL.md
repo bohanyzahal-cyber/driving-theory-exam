@@ -152,15 +152,16 @@ waiting ──approve──> approved ──start──> in_exam ──submit─
 
 | מה | איפה | תוקף |
 |---|---|---|
-| בנק השאלות (טקסטים) | `bank/<lang>.json` ב-Pages, מיוצר מ-`deployment/generated/` | סטטי; הלקוח טוען לפי sha מ-`manifest.json` |
+| בנק השאלות (טקסטים) | `assets/` של ה-Worker `session-gateway` (`q/<id>.json` לכל שאלה בכל השפות + `bank/<lang>.json` מלא), מיוצר מ-`deployment/generated/`; לא בגיט ולא ב-Pages | מוגש רק לפי אישור חתום (HMAC, `GATEWAY_KEY`): מבחן 4 שעות ל-30 מזהים, תרגול 2 שעות, בוחן 8 שעות; הלקוח מחזיק בזיכרון בלבד |
 | מפתח התשובות + אינדקס מזהים | `answer_key.gs` + `QUESTION_INDEX` בתוך קובץ השרת | אין Drive, אין מטמון, אין חימום |
 | מפת המבחן של נבחן (`qmap_<session>_<id>`) | CacheService | 3 שעות; נפילה: סריקת `מבחנים` A–B + שורה אחת |
 | snapshot של `ממתינים` לסשן (`pendsnap_`) | CacheService | 4 שניות; כל כותב סטטוס מבטל דרך `setPendingStatus` |
 | הגבלות קצב, אימות טוקן בוחן (60 שנ'), הארכות (30 שנ') | CacheService | לפי חלון |
-| snapshot לסשן עבור ה-Worker | Cloudflare Cache API (`session-gateway`) | 3 שניות טרי, 60 שניות ישן |
+| snapshot לסשן עבור ה-Worker | Cloudflare Cache API (`session-gateway`) | 2 שניות טרי, 60 שניות ישן; לוח הבוחן מבטל דרך `POST /v1/invalidate` אחרי כל החלטה |
+| אישור בוחן לבנק (`ext_examiner_bank`) | localStorage של דף הבוחן / חיפוש התמונה | 8 שעות; מתחדש ב-`bankGrant` |
 | דו"חות שהועלו | Cloudflare KV | קבוע |
 
-(היסטורי: עד 22/09/2026 הבנק נקרא מ-Drive למטמון CacheService עם חימום; המטמון היה ניתן להרעלה. הכול הוסר.)
+(היסטורי: עד r30 הבנק נקרא מ-Drive למטמון CacheService עם חימום; המטמון היה ניתן להרעלה. הכול הוסר. ב-21/09/2026 בבוקר תוכנן בנק ציבורי ב-Pages; באותו ערב, לפי החלטת יוסי, הוחלף בבנק פרטי ב-Worker לפני שנפרס.)
 
 ---
 

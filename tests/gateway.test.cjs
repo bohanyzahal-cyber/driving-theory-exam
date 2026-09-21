@@ -17,13 +17,53 @@ test.before(async () => { ({ createGateway } = await import(WORKER_URL)); });
 const ENV = { API_URL: 'https://script.example/macros/s/AKtest/exec', GATEWAY_KEY: 'test-secret' };
 const SESSION = 'ABC12345';
 const PAGES_ORIGIN = 'https://bohanyzahal-cyber.github.io';
+const CLOCK0 = 1000000;
 const sha256Hex = text => crypto.createHash('sha256').update(text).digest('hex');
 const row = over => Object.assign(
   { id: '900000001', status: 'waiting', tokenHash: '', audio: 'off', examMinutes: 40, extraMinutes: 0 }, over);
 
+// --- the private bank (Workers Static Assets) ------------------------------
+
+const BANK_BUILD = 'bank0001deadbeef';
+const Q14 = '{"id":14,"l":{"he":{"t":"שאלה 14","a":["א","ב"],"i":""},"ru":{"t":"RU 14","a":["A","B"],"i":""},' +
+  '"en":{"t":"EN 14","a":["A","B"],"i":"TQ_PIC_14.jpg"}}}';
+const Q120 = '{"id":120,"l":{"he":{"t":"שאלה 120","a":["א","ב"],"i":""},"en":{"t":"EN 120","a":["A","B"],"i":""}}}';
+const HE_BANK = '[{"id":14,"t":"שאלה 14","a":["א","ב"],"i":""},{"id":120,"t":"שאלה 120","a":["א","ב"],"i":""}]';
+const ASSETS = {
+  '/manifest.json': JSON.stringify({ build: BANK_BUILD, questions: 2, langs: {} }),
+  '/q/14.json': Q14,
+  '/q/120.json': Q120,
+  '/bank/he.json': HE_BANK
+};
+
+/** An in-memory Workers Static Assets binding: published path -> file text. */
+function assetsBinding(files) {
+  return {
+    fetch: async reqOrUrl => {
+      const url = new URL(typeof reqOrUrl === 'string' ? reqOrUrl : reqOrUrl.url);
+      const body = files[url.pathname];
+      if (body === undefined) return new Response('not found', { status: 404 });
+      return new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  };
+}
+
+/** base64url, exactly what Utilities.base64EncodeWebSafe produces server-side. */
+const b64url = buf => Buffer.from(buf).toString('base64url');
+
+/** Signs a grant the way Apps Script does — the Worker must never sign one. */
+function grant(payload, key) {
+  const claims = Object.assign({ v: 1, exp: CLOCK0 + 3600000 }, payload);
+  const body = b64url(Buffer.from(JSON.stringify(claims), 'utf8'));
+  const sig = b64url(crypto.createHmac('sha256', key || ENV.GATEWAY_KEY).update(body).digest());
+  return body + '.' + sig;
+}
+const examGrant = (ids, over) => grant(Object.assign({ s: 'exam', ids, sub: SESSION + ':012345678' }, over));
+const examinerGrant = over => grant(Object.assign({ s: 'examiner', sub: 'ex:7' }, over));
+
 /** Fake upstream + fake clock; `state.calls` is the Apps Script execution count. */
-function harness(snapshots) {
-  const state = { calls: [], clock: 1000000, mode: 'ok', snapshots: snapshots || {} };
+function harness(snapshots, assets) {
+  const state = { calls: [], clock: CLOCK0, mode: 'ok', snapshots: snapshots || {} };
   const fetchFn = async url => {
     state.calls.push(String(url));
     if (state.mode === 'error500') return new Response('<html>Google internal error</html>', { status: 500 });
@@ -33,8 +73,18 @@ function harness(snapshots) {
     const rows = state.snapshots[session] || [];
     return new Response(JSON.stringify({ status: 'ok', at: state.clock, rows }), { status: 200 });
   };
-  const gateway = createGateway({ fetch: fetchFn, caches: undefined, now: () => state.clock, env: ENV });
+  const env = assets ? Object.assign({}, ENV, { ASSETS: assets.fetch ? assets : assetsBinding(assets) }) : ENV;
+  const gateway = createGateway({ fetch: fetchFn, caches: undefined, now: () => state.clock, env });
   return { state, gateway };
+}
+
+/** Any route: the raw text matters for the bank, which never re-serialises. */
+async function call(gateway, pathAndQuery, init) {
+  const res = await gateway(new Request('https://session-gateway.test' + pathAndQuery, init));
+  const text = await res.text();
+  let body = null;
+  try { body = JSON.parse(text); } catch (e) { /* the test asserts on text */ }
+  return { res, text, body };
 }
 
 function pollRequest(params, origin) {
@@ -65,17 +115,17 @@ test('40 examinees polling one session cost exactly one upstream execution', asy
   }
 });
 
-test('a poll inside the 3s window is free; past it costs one more execution', async () => {
+test('a poll inside the 2 s window is free; past it costs one more execution', async () => {
   const { state, gateway } = harness({ [SESSION]: [row({ status: 'approved' })] });
 
   await poll(gateway, approvalPoll('900000001'));
   assert.equal(state.calls.length, 1);
 
-  state.clock += 2000;
+  state.clock += 1500;
   await poll(gateway, approvalPoll('900000001'));
   assert.equal(state.calls.length, 1, 'still inside the freshness window');
 
-  state.clock += 1500; // 3.5s after the first read
+  state.clock += 1000; // 2.5s after the first read
   await poll(gateway, approvalPoll('900000001'));
   assert.equal(state.calls.length, 2, 'snapshot expired, one new read');
 });
@@ -149,7 +199,7 @@ test('a token whose hash differs from the stored one is rejected', async () => {
   assert.deepEqual(statusWrong.body, { status: 'error', examineeTokenError: 'mismatch' });
 });
 
-test('a row missing from a cached snapshot forces one re-read, at most once per 10s', async () => {
+test('a row missing from a cached snapshot forces one re-read, at most once per 2 s', async () => {
   const { state, gateway } = harness({ [SESSION]: [row({ id: '900000001', status: 'approved' })] });
 
   await poll(gateway, approvalPoll('900000001'));
@@ -161,12 +211,12 @@ test('a row missing from a cached snapshot forces one re-read, at most once per 
   assert.equal(state.calls.length, 2, 'one forced re-read before answering "not registered"');
   assert.equal(late.body.approval, 'waiting');
 
-  state.clock += 1000;
+  state.clock += 500;
   const again = await poll(gateway, approvalPoll('900000003'));
-  assert.equal(state.calls.length, 2, 'no second forced re-read inside the 10s window');
+  assert.equal(state.calls.length, 2, 'no second forced re-read inside the 2 s window');
   assert.deepEqual(again.body, { status: 'error', message: 'לא נמצא רישום' });
 
-  state.clock += 1000;
+  state.clock += 500;
   await poll(gateway, statusPoll('900000003'));
   assert.equal(state.calls.length, 2, 'the throttle is per session, not per kind');
 });
@@ -276,17 +326,20 @@ test('OPTIONS preflight is answered without touching the upstream', async () => 
   }));
   assert.equal(res.status, 204);
   assert.equal(res.headers.get('Access-Control-Allow-Origin'), PAGES_ORIGIN);
-  assert.equal(res.headers.get('Access-Control-Allow-Methods'), 'GET, OPTIONS');
+  assert.equal(res.headers.get('Access-Control-Allow-Methods'), 'GET, POST, OPTIONS');
   assert.equal(state.calls.length, 0);
 });
 
-test('the health route names the service and its build', async () => {
-  const { gateway } = harness({});
-  const res = await gateway(new Request('https://session-gateway.test/'));
-  const body = await res.json();
+test('the health route names the service, its build and the deployed bank', async () => {
+  const { gateway } = harness({}, ASSETS);
+  const { body } = await call(gateway, '/');
   assert.equal(body.status, 'ok');
   assert.equal(body.service, 'session-gateway');
   assert.match(body.build, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(body.bank, BANK_BUILD, 'which bank is deployed is the first thing to check after a deploy');
+
+  const bare = await call(harness({}).gateway, '/');
+  assert.equal(bare.body.bank, '', 'no assets is an empty build id, not a crash');
 });
 
 test('bad parameters are refused with 400 before any upstream read', async () => {
@@ -313,4 +366,166 @@ test('bad parameters are refused with 400 before any upstream read', async () =>
   assert.equal(unknownPath.status, 404);
   const posted = await gateway(new Request('https://session-gateway.test/v1/poll', { method: 'POST' }));
   assert.equal(posted.status, 405);
+});
+
+// --- the private bank ------------------------------------------------------
+// The whole point of §11: the texts are not public, and what a device gets is
+// decided by a signature it cannot produce.
+
+test('bank: an exam grant is served exactly its own ids, as raw asset text, in order', async () => {
+  const { gateway } = harness({}, ASSETS);
+  const { res, text, body } = await call(gateway, '/v1/bank?grant=' + examGrant([120, 999, 14]));
+
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('Cache-Control'), 'no-store');
+  assert.equal(res.headers.get('Access-Control-Allow-Origin'), PAGES_ORIGIN);
+  assert.equal(body.status, 'ok');
+  assert.equal(body.build, BANK_BUILD);
+  assert.deepEqual(body.missing, [999], 'an id with no asset file is named, not silently dropped');
+  // Raw text, in grant order: the hot path must never JSON.parse the assets.
+  assert.equal(text, '{"status":"ok","build":"' + BANK_BUILD + '","questions":[' + Q120 + ',' + Q14 +
+    '],"missing":[999]}');
+  assert.deepEqual(body.questions.map(q => q.id), [120, 14]);
+  assert.deepEqual(Object.keys(body.questions[1].l), ['he', 'ru', 'en'], 'every language of the id');
+});
+
+test('bank: a practice grant is served the same way', async () => {
+  const { gateway } = harness({}, ASSETS);
+  const practice = grant({ s: 'practice', ids: [14], sub: 'CLASS1:student7' });
+  const { res, body } = await call(gateway, '/v1/bank?grant=' + practice);
+  assert.equal(res.status, 200);
+  assert.deepEqual(body.questions.map(q => q.id), [14]);
+  assert.deepEqual(body.missing, []);
+});
+
+test('bank: the grant decides the ids — a query string cannot widen an exam grant', async () => {
+  const { gateway } = harness({}, ASSETS);
+  const { body } = await call(gateway, '/v1/bank?ids=14,120&langs=he&grant=' + examGrant([14]));
+  assert.deepEqual(body.questions.map(q => q.id), [14]);
+  assert.deepEqual(Object.keys(body.questions[0].l), ['he', 'ru', 'en'], 'langs is examiner-only');
+});
+
+test('bank: an expired grant is refused with 403 grant_invalid', async () => {
+  const { gateway } = harness({}, ASSETS);
+  const expired = examGrant([14], { exp: CLOCK0 - 1 });
+  const { res, body } = await call(gateway, '/v1/bank?grant=' + expired);
+  assert.equal(res.status, 403);
+  assert.deepEqual(body, { status: 'error', code: 'grant_invalid' });
+});
+
+test('bank: a tampered payload, a foreign key and rubbish are all grant_invalid', async () => {
+  const { gateway } = harness({}, ASSETS);
+  const honest = examGrant([14]);
+  const [payload, sig] = honest.split('.');
+  const forged = Buffer.from(JSON.stringify(
+    { v: 1, s: 'exam', ids: [14, 120, 777], sub: 'x', exp: CLOCK0 + 3600000 }), 'utf8').toString('base64url');
+
+  for (const bad of [
+    forged + '.' + sig,                                        // payload swapped, old signature
+    payload + '.' + b64url(Buffer.alloc(32)),                  // signature swapped
+    grant({ s: 'exam', ids: [14], sub: 'x' }, 'another-secret'), // signed with the wrong key
+    grant({ s: 'exam', ids: [14], v: 2 }),                     // unknown grant version
+    payload,                                                   // no signature at all
+    'bogus', '', '.', 'a.b'
+  ]) {
+    const { res, body } = await call(gateway, '/v1/bank?grant=' + encodeURIComponent(bad));
+    assert.equal(res.status, 403, JSON.stringify(bad).slice(0, 40));
+    assert.deepEqual(body, { status: 'error', code: 'grant_invalid' });
+  }
+
+  const still = await call(gateway, '/v1/bank?grant=' + honest);
+  assert.equal(still.res.status, 200, 'the honest grant still works');
+});
+
+test('bank: an examiner grant asks for its own ids, and langs narrows the languages', async () => {
+  const { gateway } = harness({}, ASSETS);
+  const g = examinerGrant();
+
+  const all = await call(gateway, '/v1/bank?grant=' + g + '&ids=14,120');
+  assert.deepEqual(all.body.questions.map(q => q.id), [14, 120]);
+
+  const narrow = await call(gateway, '/v1/bank?grant=' + g + '&ids=14,120&langs=he,en');
+  assert.deepEqual(narrow.body.questions.map(q => Object.keys(q.l)), [['he', 'en'], ['he', 'en']]);
+  assert.equal(narrow.body.questions[0].l.he.t, 'שאלה 14');
+
+  const noIds = await call(gateway, '/v1/bank?grant=' + g);
+  assert.equal(noIds.res.status, 400);
+
+  const tooMany = await call(gateway,
+    '/v1/bank?grant=' + g + '&ids=' + Array.from({ length: 61 }, (_, i) => i + 1).join(','));
+  assert.equal(tooMany.res.status, 400, 'the cap keeps one request inside the subrequest budget');
+
+  const unknownLang = await call(gateway, '/v1/bank?grant=' + g + '&ids=14&langs=klingon');
+  assert.equal(unknownLang.res.status, 400);
+});
+
+test('bank/full: only an examiner grant streams a whole language', async () => {
+  const { gateway } = harness({}, ASSETS);
+
+  const forbidden = await call(gateway, '/v1/bank/full?lang=he&grant=' + examGrant([14]));
+  assert.equal(forbidden.res.status, 403, 'an exam device must never get the whole bank');
+  assert.deepEqual(forbidden.body, { status: 'error', code: 'grant_invalid' });
+
+  const g = examinerGrant();
+  const full = await call(gateway, '/v1/bank/full?lang=he&grant=' + g);
+  assert.equal(full.res.status, 200);
+  assert.equal(full.res.headers.get('Cache-Control'), 'no-store');
+  assert.equal(full.text, HE_BANK, 'the asset body is passed through untouched');
+
+  const undeployed = await call(gateway, '/v1/bank/full?lang=ru&grant=' + g);
+  assert.equal(undeployed.res.status, 404);
+  assert.equal(undeployed.body.code, 'bank_missing');
+
+  const nonsense = await call(gateway, '/v1/bank/full?lang=klingon&grant=' + g);
+  assert.equal(nonsense.res.status, 400);
+});
+
+test('bank: no assets binding, or reads that all throw, is a retryable 503', async () => {
+  const unbound = await call(harness({}).gateway, '/v1/bank?grant=' + examGrant([14]));
+  assert.equal(unbound.res.status, 503);
+  assert.deepEqual(unbound.body, { status: 'error', code: 'bank_unavailable', retryable: true });
+
+  const broken = harness({}, { fetch: async () => { throw new Error('asset server down'); } });
+  const thrown = await call(broken.gateway, '/v1/bank?grant=' + examGrant([14, 120]));
+  assert.equal(thrown.res.status, 503, 'a broken binding is not 30 "missing" questions');
+  assert.equal(thrown.body.code, 'bank_unavailable');
+
+  const full = await call(broken.gateway, '/v1/bank/full?lang=he&grant=' + examinerGrant());
+  assert.equal(full.res.status, 503);
+});
+
+test('/v1/invalidate drops the snapshot, at most once per 2 s', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
+  const push = () => call(gateway, '/v1/invalidate?sessionCode=' + SESSION, { method: 'POST' });
+
+  await poll(gateway, approvalPoll('900000001'));
+  assert.equal(state.calls.length, 1);
+
+  // The examiner approves and pushes. The examinee is still inside the 2 s
+  // freshness window, and must see the decision on its very next poll.
+  state.snapshots[SESSION] = [row({ status: 'approved', examMinutes: 40 })];
+  const pushed = await push();
+  assert.equal(pushed.res.status, 200);
+  assert.deepEqual(pushed.body, { status: 'ok' });
+
+  const after = await poll(gateway, approvalPoll('900000001'));
+  assert.equal(state.calls.length, 2, 'the dropped snapshot forced a fresh read inside the window');
+  assert.equal(after.body.approval, 'approved');
+
+  // A burst of pushes must not buy a burst of Apps Script executions.
+  state.snapshots[SESSION] = [row({ status: 'in_exam' })];
+  const throttled = await push();
+  assert.deepEqual(throttled.body, { status: 'ok' }, 'still ok — the caller fires and forgets');
+  const again = await poll(gateway, approvalPoll('900000001'));
+  assert.equal(state.calls.length, 2, 'the second push inside 2 s bought nothing');
+  assert.equal(again.body.approval, 'approved');
+
+  state.clock += 2000;
+  await push();
+  await poll(gateway, approvalPoll('900000001'));
+  assert.equal(state.calls.length, 3, 'past the gap the next push works again');
+
+  const junk = await call(gateway, '/v1/invalidate?sessionCode=nope', { method: 'POST' });
+  assert.equal(junk.res.status, 400);
+  assert.equal(state.calls.length, 3);
 });

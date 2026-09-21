@@ -116,6 +116,29 @@ test('transport health: a network error never degrades, and it resets the timeou
   assert.equal(T.isBackendDegraded(), false, 'the run was broken by this device losing the network');
 });
 
+test('transport health: fetchJsonQuiet never degrades the backend — it is not the backend', async () => {
+  // The question-bank Worker and the version.json probe on Pages both answer on
+  // this path. A 503 from Cloudflare says nothing about Apps Script, and letting
+  // it degrade would floor every poll in the page at 30-60 s for nothing.
+  for (const fetchImpl of [reply('{}', { ok: false, status: 503 }), reply('<html>cf error</html>')]) {
+    const { T } = load(fetchImpl);
+    const { error } = await settle(T.fetchJsonQuiet('https://gw.test/v1/bank?grant=g', { cache: 'no-store' }, 20000));
+    assert.ok(error, 'the caller still learns it failed');
+    assert.equal(T.isBackendDegraded(), false);
+    assert.equal(T.degradedSince(), 0);
+  }
+});
+
+test('transport health: fetchJsonQuiet timeouts do not count towards the S10 run either', async () => {
+  const { T, timer } = load(() => new Promise(() => {}));
+  for (let i = 0; i < 3; i++) { settle(T.fetchJsonQuiet('https://gw.test/v1/bank', {}, 1000)); await drain(); await timer.advance(1000); }
+  assert.equal(T.isBackendDegraded(), false, 'a slow Worker is not two consecutive Apps Script timeouts');
+  // and a real backend timeout run still degrades, unaffected by the quiet ones
+  settle(T.fetchJsonWithTimeout('a', {}, 1000)); await drain(); await timer.advance(1000);
+  settle(T.fetchJsonWithTimeout('b', {}, 1000)); await drain(); await timer.advance(1000);
+  assert.equal(T.isBackendDegraded(), true);
+});
+
 test('transport health: a good JSON answer clears a degraded state', async () => {
   const { T } = load(reply('<html>busy</html>'));
   await settle(T.fetchJsonWithTimeout('synthetic', {}, 1000));

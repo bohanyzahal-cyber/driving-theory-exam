@@ -12,6 +12,12 @@ const { createEnv } = require('./helpers/server_env.cjs');
 
 const PENDING_HEADER = Array(19).fill('h');
 const SESSION = 'ROUTER01';
+const GATEWAY_URL = 'https://gw.example.workers.dev';
+// startExam/startPractice refuse to write anything when the Worker that serves
+// the question texts is not configured, so every environment here is a
+// configured one unless a test is specifically about the unconfigured case.
+const GATEWAY_PROPS = { GATEWAY_KEY: 'secret-key', GATEWAY_URL };
+const NOW = Date.parse('2026-09-22T06:30:00Z');
 function pendingRow(id, overrides) {
   const row = Array(19).fill('');
   row[0] = SESSION; row[1] = id; row[4] = '2026-09-22T06:00:00Z'; row[5] = 'approved';
@@ -28,7 +34,7 @@ function runtime(options) {
       'בוחנים': [Array(11).fill('h')],
       'מורים': [Array(10).fill('h')]
     }, opts.sheets || {}),
-    properties: opts.properties || {},
+    properties: opts.properties || Object.assign({}, GATEWAY_PROPS),
     sources: ['deployment/answer_key.gs']
   });
 }
@@ -99,9 +105,76 @@ test('every auth rule is enforced by the router', () => {
 });
 
 test('an unset gateway key denies every gateway request', () => {
-  const e = runtime();
+  const e = runtime({ properties: {} });
   e.ctx.defineAction('routerGatewayProbe2', { methods: ['GET'], auth: 'gateway', handler: () => e.ctx.jsonResponse({ status: 'ok' }) });
   assert.equal(get(e, { action: 'routerGatewayProbe2', gatewayKey: '' }).code, 'gateway_denied');
+});
+
+// ---- the bank grant (DESIGN §11.2) -----------------------------------------
+// The question texts stopped being public: without a signed grant a device can
+// never load a question, so a server that cannot issue one must say so BEFORE
+// it spends the examinee's attempt.
+test('startExam refuses, and writes nothing, when the question Worker is not configured', () => {
+  for (const properties of [{}, { GATEWAY_KEY: 'secret-key' }, { GATEWAY_URL }]) {
+    const e = runtime({ ids: [idOf(1)], properties });
+    e.resetCounters();
+    const reply = startExam(e, 1);
+    const counters = e.counters();
+    const named = JSON.stringify(Object.keys(properties));
+    assert.equal(reply.status, 'error', named);
+    assert.equal(reply.code, 'bank_not_configured', named);
+    assert.equal(reply.message, 'מאגר השאלות אינו מוגדר בשרת — פנה למנהל המערכת');
+    assert.equal(counters.perSheet['מבחנים'].appends, 0, 'no registration written ' + named);
+    assert.equal(counters.perSheet['ממתינים'].setValues, 0, 'the row was not flipped to in_exam ' + named);
+    assert.equal(e.rows('ממתינים')[1][5], 'approved', 'the attempt is still available ' + named);
+    // startPractice refuses on the same rule, for the same reason.
+    assert.equal(get(e, { action: 'startPractice', license: 'B' }).code, 'bank_not_configured', named);
+  }
+});
+
+test('a configured server hands startExam a four-hour grant for the Worker', () => {
+  const e = runtime({ ids: [idOf(1)] });
+  const reply = startExam(e, 1);
+  assert.equal(reply.status, 'ok');
+  assert.equal(reply.bank.url, GATEWAY_URL);
+  assert.match(reply.bank.grant, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/, 'payload.signature, base64url, no padding');
+  assert.equal(reply.bank.exp, NOW + 4 * 3600 * 1000);
+  const payload = JSON.parse(Buffer.from(reply.bank.grant.split('.')[0], 'base64url').toString('utf8'));
+  assert.deepEqual(payload.ids, reply.questions.map(q => q.id), 'the granted ids are the drawn ids, in order');
+  assert.equal(payload.s, 'exam');
+  assert.equal(payload.sub, SESSION + ':' + idOf(1));
+  assert.equal(payload.exp, reply.bank.exp);
+  // A retry is idempotent in its ids and fresh in its signature.
+  const again = startExam(e, 1);
+  assert.deepEqual(again.questions.map(q => q.id), reply.questions.map(q => q.id));
+  assert.equal(again.bank.exp, reply.bank.exp);
+});
+
+test('bankGrant is examiner-only, rate limited per examiner, and never leaks the key', () => {
+  const expiry = new Date(NOW + 86400000).toISOString();
+  const e = runtime({ sheets: { 'בוחנים': [Array(11).fill('h'),
+    ['בוחן', '123456789', 'pw', 'כן', '7', 'בוחן', 'tokE', expiry, 0, '', '']] } });
+  assert.equal(get(e, { action: 'bankGrant', examinerId: '123456789' }).tokenExpired, true);
+  assert.equal(get(e, { action: 'bankGrant', examinerId: '123456789', token: 'nope' }).tokenExpired, true);
+  assert.equal(e.json(e.ctx.doPost({ postData: { contents: JSON.stringify({
+    action: 'bankGrant', origin: 'examiner-app', examinerId: '123456789', token: 'tokE' }) } })).message, 'פעולה זו דורשת GET');
+
+  const ok = get(e, { action: 'bankGrant', examinerId: '123456789', token: 'tokE' });
+  assert.equal(ok.status, 'ok');
+  assert.equal(ok.bank.exp, NOW + 8 * 3600 * 1000);
+  const payload = JSON.parse(Buffer.from(ok.bank.grant.split('.')[0], 'base64url').toString('utf8'));
+  assert.deepEqual(Object.keys(payload), ['v', 's', 'sub', 'exp'], 'an examiner grant carries no id list');
+  assert.equal(payload.sub, 'ex:123456789');
+  assert.ok(!JSON.stringify(ok).includes('secret-key'), 'the signing key never reaches the client');
+
+  const spec = e.ctx.apiRegistry().bankGrant;
+  assert.equal(spec.methods.join(','), 'GET');   // the registry array is born in the vm realm
+  assert.equal(spec.auth, 'examiner');
+  assert.equal(spec.rateLimit.max, 30);
+  assert.equal(spec.rateLimit.id({ examinerId: '123456789' }), spec.rateLimit.id({ examinerId: '123-456-789' }));
+  assert.notEqual(spec.rateLimit.id({ examinerId: '123456789' }), spec.rateLimit.id({ examinerId: '987654321' }));
+  for (let i = 1; i < 30; i++) assert.equal(get(e, { action: 'bankGrant', examinerId: '123456789', token: 'tokE' }).status, 'ok', 'grant ' + i);
+  assert.equal(get(e, { action: 'bankGrant', examinerId: '123456789', token: 'tokE' }).rateLimited, true);
 });
 
 test('an unknown action is refused instead of answering "running"', () => {
