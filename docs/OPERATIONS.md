@@ -104,7 +104,11 @@ curl -s -L --max-time 45 "<EXEC_URL>?action=getSessionInfo&sessionCode=ZZZZZZ&or
 
 ה-`EXEC_URL` נמצא בתוך כל דף לקוח כ-`API_URL`.
 
-### ⚠️ שתי כתובות API
+### שתי כתובות API (מכוון מאז r31, 22/09/2026)
+
+`API_URL` בדפים = פרויקט המבחנים (`…AKfycbzOI0zrDEngP…/exec`, הקיים); `REPORTS_API_URL` = פרויקט הדו"חות/מורים/תרגול (`…AKfycbw7FwTioHoEM…/exec`, עצמאי). `ExamTransport.REPORTS_ACTIONS` קובע מה הולך לאן; `health` בכל אחד מחזיר `deployment`. שינוי כתובת = עדכון הקבוע בחמשת הדפים (examiner, teacher, student, exam, find_image) + push; הבדיקות (`client_examiner`, `client_teacher_student`) מצמידות כתובת אחת לכל האתר.
+
+### ⚠️ הכתובת השלישית (ישנה)
 
 ששת הדפים (`examiner`, `examinee`, `teacher`, `student`, `admin`, `exam`) מצביעים על deployment אחד. **`report.html` מצביע על deployment אחר.** אם אתה מחליף כתובת API — בדוק את שניהם. לא אומת אם ההפרדה מכוונת או שריד היסטורי; **לברר לפני נגיעה**.
 
