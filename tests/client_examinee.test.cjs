@@ -178,7 +178,7 @@ const ISSUED_IDS = SERVER_QUESTIONS.map(q => q.id);
 // gateway: the Worker every session names. It is the page's ONLY poll route, so
 // a session without one is a misconfigured deployment — pass gateway: '' to test
 // exactly that, and nothing else.
-function completePage({ local = memoryStore(), session = memoryStore(), reply, gateway = 'https://gw.example/', onReload, userAgent = 'Synthetic desktop', touchPoints = 0 } = {}) {
+function completePage({ local = memoryStore(), session = memoryStore(), reply, gateway = 'https://gw.example/', onReload, userAgent = 'Synthetic desktop', touchPoints = 0, search = '' } = {}) {
   const ui = makeDom();
   const timer = new Timers();
   const requests = [], beacons = [];
@@ -214,7 +214,7 @@ function completePage({ local = memoryStore(), session = memoryStore(), reply, g
     navigator: { userAgent: userAgent, platform: 'Synthetic', maxTouchPoints: touchPoints, onLine: true,
       sendBeacon(url, blob) { beacons.push(JSON.parse(blob.parts[0])); return true; } },
     history: { pushState() {} },
-    location: { search: '', pathname: '/examinee.html', reload() { reloads++; if (onReload) onReload(); } },
+    location: { search: search, pathname: '/examinee.html', reload() { reloads++; if (onReload) onReload(); } },
     fetch(url, opts = {}) {
       const isPost = opts && opts.method === 'POST';
       // A POST with NO body is a real shape on this page since r31: the nudge to
@@ -1965,4 +1965,44 @@ test('r31.2: the registration request waits the unattended deadline, not the 30 
   const call = section(src, "      action: 'registerExaminee',", '.then(function(data) {');
   assert.match(call, /regKey: registrationKeyFor\(examineeData\.idNumber\)/);
   assert.match(call, /\}, POLL_TIMEOUT_MS\)\s*$/, 'a registration is a write Google may answer in 30-75 s');
+});
+
+// ---- r31.3 (22/09/2026): a link naming another session beats a saved state --
+// Seen live: the examiner's link carried today's session, the phone still held
+// this morning's (closed) session in its saved state, and the restore won —
+// the examinee kept registering into the old code whatever link they opened.
+const savedWait = (code, over) => JSON.stringify(Object.assign({
+  sessionCode: code, sessionData: { site: 'בדיקת נתונים', license: 'B', language: 'he', gateway: { url: 'https://gw.example/' } },
+  examineeData: { idNumber: '123456789', fullName: 'ישראל ישראלי', license: 'B', language: 'he' },
+  examineeToken: 'tok-old', screen: 'screenInstructions', savedAt: 1
+}, over || {}));
+
+test('r31.3: a link with ANOTHER session code drops a saved pre-exam state and enters the linked session', async () => {
+  const session = memoryStore(), local = memoryStore();
+  session.setItem('ext_examinee_state', savedWait('OLDCODE1'));
+  local.setItem('ext_examinee_state_123456789', savedWait('OLDCODE1'));
+  const page = completePage({ session, local, search: '?code=NEWCODE2' });
+  await drain(); await page.timer.advance(400); await drain();
+  assert.ok(!page.el('restoreConfirm'), 'no restore prompt: the link decided');
+  const info = page.sent('getSessionInfo');
+  assert.equal(info.length, 1, 'the linked code was submitted');
+  assert.equal(info[0].sessionCode, 'NEWCODE2');
+  assert.equal(JSON.parse(session.getItem('ext_examinee_state')).sessionCode, 'NEWCODE2', 'the tab now saves the LINKED session, not the stale one');
+  assert.equal(local.getItem('ext_examinee_state_123456789'), null, '...and from the per-examinee copy');
+});
+
+test('r31.3: a link with the SAME code restores as before, and a link never drops an exam in progress', async () => {
+  const same = memoryStore();
+  same.setItem('ext_examinee_state', savedWait('ABC12345'));
+  const pageSame = completePage({ session: same, search: '?code=ABC12345',
+    reply: r => r.kind === 'approval' ? { status: 'ok', approval: 'waiting', audioMode: 'off' } : undefined });
+  await drain(); await pageSame.timer.advance(400); await drain();
+  assert.equal(pageSame.t.state().id, '123456789', 'same code: the saved wait is restored');
+  assert.equal(pageSame.sent('getSessionInfo').length, 0, 'and the code was not re-submitted');
+
+  const { local, session } = await examInProgressStores();
+  const pageExam = completePage({ local, session, search: '?code=OTHERCD9' });
+  await drain(); await pageExam.timer.advance(400); await drain();
+  assert.equal(pageExam.t.state().inProgress, true, 'the running exam is restored');
+  assert.equal(pageExam.sent('getSessionInfo').length, 0, 'the stale link in the address bar is ignored');
 });

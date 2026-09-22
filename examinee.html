@@ -5242,11 +5242,39 @@
   // localStorage when B opens the page. Each saved payload carries its own baked
   // examineeToken, so it self-authenticates regardless of the current session.
   try { resendAllPendingResults(); } catch(e) {}
+  // The session code a link brought us (?code=XXXXXX), or ''.
+  function sessionCodeFromUrl() {
+    try {
+      var raw = String(new URLSearchParams(window.location.search).get('code') || '').trim().toUpperCase();
+      return /^[A-Z0-9]{6,8}$/.test(raw) ? raw : '';
+    } catch (e) { return ''; }
+  }
+  // Forgets one saved state wherever it was written (this tab, and the
+  // per-examinee copy another tab left), without touching an exam in progress.
+  function discardSavedState(saved) {
+    try { sessionStorage.removeItem(EXAMINEE_STATE_KEY); } catch (e) {}
+    try { localStorage.removeItem(EXAMINEE_STATE_KEY); } catch (e) {}
+    try { if (saved && saved.examineeData) localStorage.removeItem(examineeStateKey(saved.examineeData.idNumber)); } catch (e) {}
+  }
+
   var hasRestoredSession = false;
   (function() {
     var found = loadExamineeState();
     if (!found || !found.state || !found.state.sessionCode || !found.state.sessionData) return;
     var saved = found.state;
+    // r31.3 (22/09/2026, seen live): the examiner sends the link of TODAY's
+    // session, the phone still holds this morning's saved state (a closed
+    // session), and the restore used to win — the examinee kept registering
+    // into the old code whatever link they opened. A link that names ANOTHER
+    // session is explicit intent, so it beats a saved state that is not in the
+    // middle of an exam. An exam in progress is never dropped: it is local, the
+    // clock is running, and a stale link in the address bar must not erase it.
+    var linked = sessionCodeFromUrl();
+    if (linked && linked !== String(saved.sessionCode || '').toUpperCase()) {
+      var live = loadActiveExam();
+      var midExam = !!(live && live.examDeadline && live.examDeadline > Date.now());
+      if (!midExam) { discardSavedState(saved); logEvent('saved_state_dropped_for_link', linked); return; }
+    }
     hasRestoredSession = true;
     // D20: a state written by THIS tab is unambiguous. One found in localStorage
     // was written by another tab or another day — on a shared classroom device
