@@ -260,7 +260,11 @@ function completePage({ local = memoryStore(), session = memoryStore(), reply, g
     goTo: function(i) { currentIndex = i; renderQuestion(); },
     images: imageSources, setDegraded: function() { ExamTransport.noteTransport({ transport: 'http' }); },
     retryDelay: submitRetryDelayMs, hasPending: hasAnyPendingResult,
-    nudge: nudgeGatewayAfterWrite, degraded: function() { return ExamTransport.isBackendDegraded(); }
+    nudge: nudgeGatewayAfterWrite, degraded: function() { return ExamTransport.isBackendDegraded(); },
+    // sendCancelDQToServer has no live caller in the page today (the "returned
+    // within the grace" path clears the timer locally); it is still the one
+    // place that sends cancelDisqualify, so its push is tested from here.
+    cancelDQ: sendCancelDQToServer
   };
 `;
   const scripts = [...examinee.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)].map(m => m[1]).filter(code => code.trim());
@@ -1282,31 +1286,181 @@ test('re-arm: a STALE answer does not re-arm — the Worker never holds a stale 
 });
 
 // ===================== 6d. pushing our own writes (r31, DESIGN §13.5) =====================
-// A submitted result and a "finished on device" ping are writes the EXAMINEE
-// makes. Until r31 the examiner's dashboard learned of them only when the Worker
-// next re-read Google (<= 2 s) and then only on its own next tick. Now the
-// device says so itself — with a POST that carries no decision at all, only
-// proof of who is speaking.
+// Every write the EXAMINEE makes announces itself to the Worker. Until r31 the
+// examiner's dashboard learned of them only when the Worker next re-read Google
+// and then only on its own next tick; since the Worker stopped reading on a 2 s
+// clock (it reads when something announces a change, plus a 45 s safety read —
+// KNOWN_ISSUES #35) an unannounced write can sit unseen for the whole 45 s.
+// The push carries no decision at all, only proof of who is speaking: the
+// examinee's own token, which the Worker matches against the row it holds.
+//
+// Confirmed writes (registerExaminee, startExam, submitResult) push at once.
+// Fire-and-forget writes (the markFinished beacon, disqualify, cancelDisqualify,
+// reportWarning) push 2 s later, because a Worker that re-read the sheet before
+// the write landed would cache the row exactly as it was.
 const nudges = page => page.requests.filter(r => String(r.__url).includes('/v1/invalidate'));
+const NUDGE_DELAY = 2000;
+
+/** Every push has the same shape, whatever produced it. */
+function assertNudgeShape(push, { token = 'tok-1', id = '123456789', session = 'ABC12345' } = {}) {
+  assert.ok(push, 'a push was sent');
+  assert.equal(String(push.__url).split('?')[0], 'https://gw.example/v1/invalidate');
+  assert.equal(push.__method, 'POST');
+  assert.equal(push.__keepalive, true, 'it has to survive the examinee closing the tab behind it');
+  assert.equal(push.sessionCode, session);
+  assert.equal(push.idNumber, id);
+  assert.equal(push.examineeToken, token);
+  assert.equal(push.grant, undefined, 'an examinee holds no examiner grant and must never need one');
+  assert.equal(push.status, undefined, 'and pushes no decision: only the examiner writes into what examinees read');
+  assert.equal(push.extraMinutes, undefined);
+}
+
+test('nudge: a registration the server confirmed is pushed at once', async () => {
+  // The row exists in ממתינים the moment the answer came back, so the examiner's
+  // watch can wake on it immediately — the first poll's own forced read of
+  // Google coalesces with the one this drop causes.
+  const page = completePage({ gateway: 'https://gw.example/' });
+  await register(page);
+  assert.equal(page.sent('registerExaminee').length, 1);
+  assert.equal(nudges(page).length, 1, 'exactly one push for one registration');
+  assertNudgeShape(nudges(page)[0]);
+  assert.equal(page.t.state().screen, 'screenInstructions');
+});
+
+test('nudge: a registration RESUMED on a retry is pushed with the token the row already had', async () => {
+  let tries = 0;
+  const page = completePage({ gateway: 'https://gw.example/', reply(r) {
+    if (r.action !== 'registerExaminee') return undefined;
+    return ++tries === 1 ? { __network: true } : { status: 'ok', examineeToken: 'tok-resumed', resumed: true };
+  } });
+  await register(page);
+  assert.equal(nudges(page).length, 0, 'a registration that never reached the server announces nothing');
+  page.el('registerBtn').click();
+  await drain(); await page.timer.advance(100); await drain();
+  assert.equal(nudges(page).length, 1);
+  assertNudgeShape(nudges(page)[0], { token: 'tok-resumed' });
+});
+
+test('nudge: a registration the server refused pushes nothing', async () => {
+  const page = completePage({ gateway: 'https://gw.example/',
+    reply: r => r.action === 'registerExaminee' ? { status: 'error', message: 'הסשן נסגר' } : undefined });
+  await register(page);
+  await page.timer.advance(10000);
+  assert.equal(nudges(page).length, 0, 'nothing was written, so there is nothing to announce');
+  assert.equal(page.el('registerError').style.display, 'block');
+});
+
+test('nudge: a started exam is pushed at once — the row is in_exam the moment the server answered', async () => {
+  const page = completePage({ gateway: 'https://gw.example/' });
+  await register(page);
+  const afterRegistration = nudges(page).length;
+  await startExam(page);
+  assert.equal(page.t.state().inProgress, true);
+  const pushed = nudges(page).slice(afterRegistration);
+  assert.equal(pushed.length, 1, 'one startExam, one push');
+  assertNudgeShape(pushed[0]);
+  const bank = page.requests.filter(r => String(r.__url).includes('/v1/bank'))[0];
+  assert.ok(pushed[0].__at <= bank.__at, 'and it goes out before the texts are even fetched');
+});
+
+test('nudge: an exam start the server did not complete pushes nothing', async () => {
+  for (const failure of [{ __raw: '<html>Google is having trouble</html>' }, { status: 'error', message: 'טוקן נבחן לא תקין' }]) {
+    const page = completePage({ gateway: 'https://gw.example/',
+      reply: r => r.action === 'startExam' ? failure : undefined });
+    await register(page);
+    const afterRegistration = nudges(page).length;
+    await startExam(page);
+    await page.timer.advance(10000);
+    assert.equal(page.t.state().inProgress, false);
+    assert.equal(nudges(page).length, afterRegistration, 'no exam, no announcement');
+  }
+});
+
+test('nudge: a disqualification is pushed 2 s after it is sent — the examiner must see "needs decision"', async () => {
+  const page = completePage({ gateway: 'https://gw.example/' });
+  await register(page);
+  await startExam(page);
+  const before = nudges(page).length;
+  page.setVisibility('hidden');
+  await page.timer.advance(2000);                // the desktop grace expires: the DQ beacon goes out
+  assert.equal(page.beacons.filter(b => b.action === 'disqualify').length, 1);
+  assert.equal(nudges(page).length, before, 'nothing is pushed while the beacon is still in the air');
+  await page.timer.advance(NUDGE_DELAY - 1);
+  assert.equal(nudges(page).length, before, 'still not');
+  await page.timer.advance(1);
+  const pushed = nudges(page).slice(before);
+  assert.equal(pushed.length, 1);
+  assertNudgeShape(pushed[0]);
+});
+
+test('nudge: a disqualification sent while the page is UNLOADING pushes nothing', async () => {
+  // The beacon is all that can still leave; a fetch would be killed with the
+  // document and a timer 2 s out would never fire. That DQ reaches the examiner
+  // on the Worker's safety read.
+  const page = completePage({ gateway: 'https://gw.example/' });
+  await register(page);
+  await startExam(page);
+  page.setVisibility('hidden');
+  await page.timer.advance(2000);                // a DQ is now confirmed on this device
+  await page.timer.advance(NUDGE_DELAY);
+  const before = nudges(page).length;
+  const beaconsBefore = page.beacons.filter(b => b.action === 'disqualify').length;
+  page.dispatch('beforeunload', { preventDefault() {}, returnValue: '' });
+  await page.timer.advance(30000);
+  assert.equal(page.beacons.filter(b => b.action === 'disqualify').length, beaconsBefore + 1,
+    'the same beacon as always still goes out');
+  assert.equal(nudges(page).length, before, 'and nothing is scheduled behind a page that is gone');
+});
+
+test('nudge: a cancelled disqualification is pushed too, so "needs decision" stops being shown', async () => {
+  // sendCancelDQToServer is a beacon like the disqualification it undoes and
+  // nothing reads an answer from it, so the push waits the same 2 s: a Worker
+  // that re-read before the write landed would cache the row still פסול, and
+  // that copy would stand until the safety read — the opposite of the point.
+  const page = completePage({ gateway: 'https://gw.example/' });
+  await register(page);
+  await startExam(page);
+  const before = nudges(page).length;
+  page.t.cancelDQ();
+  await drain();
+  assert.equal(page.beacons.filter(b => b.action === 'cancelDisqualify').length, 1);
+  assert.equal(nudges(page).length, before);
+  await page.timer.advance(NUDGE_DELAY);
+  const pushed = nudges(page).slice(before);
+  assert.equal(pushed.length, 1);
+  assertNudgeShape(pushed[0]);
+});
+
+test('nudge: a reported warning is pushed 2 s later — the counter is a column on the dashboard', async () => {
+  const page = completePage({ gateway: 'https://gw.example/' });
+  await register(page);
+  await startExam(page);
+  const before = nudges(page).length;
+  page.setVisibility('hidden');
+  await page.timer.advance(1000);                // back inside the desktop grace: a warning, not a DQ
+  page.setVisibility('visible');
+  await drain();
+  assert.equal(page.t.state().dq, false);
+  assert.equal(page.t.state().warnings, 1);
+  assert.equal(page.sent('reportWarning').length, 1);
+  assert.equal(nudges(page).length, before, 'the report is fire-and-forget: the push waits for it to land');
+  await page.timer.advance(NUDGE_DELAY);
+  const pushed = nudges(page).slice(before);
+  assert.equal(pushed.length, 1);
+  assertNudgeShape(pushed[0]);
+});
 
 test('nudge: a confirmed result is pushed at once — with the token, and with nothing else', async () => {
   const page = completePage({ gateway: 'https://gw.example/' });
   await register(page);
   await startExam(page);
+  const before = nudges(page).length;
   page.t.finish();
   await drain();
   assert.equal(page.sent('submitResult').length, 1);
-  const sent = nudges(page);
-  assert.equal(sent.length, 1, 'exactly one push, the moment the server confirmed the result');
-  assert.equal(String(sent[0].__url).split('?')[0], 'https://gw.example/v1/invalidate');
-  assert.equal(sent[0].__method, 'POST');
-  assert.equal(sent[0].__keepalive, true, 'it has to survive the examinee closing the tab behind it');
-  assert.equal(sent[0].sessionCode, 'ABC12345');
-  assert.equal(sent[0].idNumber, '123456789');
-  assert.equal(sent[0].examineeToken, 'tok-1');
-  assert.equal(sent[0].grant, undefined, 'an examinee holds no examiner grant and must never need one');
-  assert.equal(sent[0].status, undefined, 'and pushes no decision: only the examiner writes into what examinees read');
-  assert.equal(sent[0].extraMinutes, undefined);
+  const pushed = nudges(page).slice(before);
+  assert.equal(pushed.length, 1, 'exactly one push, the moment the server confirmed the result');
+  assertNudgeShape(pushed[0]);
   assert.equal(page.sent('markFinished').length, 0, 'the finished ping is a beacon, not a POST');
   assert.ok(page.beacons.some(b => b.action === 'markFinished'));
 });
@@ -1319,20 +1473,17 @@ test('nudge: "finished on device" is pushed 2 s later, so the beacon lands in Go
     reply: r => r.action === 'submitResult' ? { __hang: true } : undefined });
   await register(page);
   await startExam(page);
+  const before = nudges(page).length;
   page.t.finish();
   await drain();
   assert.ok(page.beacons.some(b => b.action === 'markFinished'));
-  assert.equal(nudges(page).length, 0, 'nothing is pushed while the beacon is still in the air');
-  await page.timer.advance(1999);
-  assert.equal(nudges(page).length, 0);
+  assert.equal(nudges(page).length, before, 'nothing is pushed while the beacon is still in the air');
+  await page.timer.advance(NUDGE_DELAY - 1);
+  assert.equal(nudges(page).length, before);
   await page.timer.advance(1);
-  const [push] = nudges(page);
-  assert.ok(push, 'and then the Worker is told to drop its copy of the session');
-  assert.equal(push.__method, 'POST');
-  assert.equal(push.__keepalive, true);
-  assert.equal(push.examineeToken, 'tok-1');
-  assert.equal(push.grant, undefined);
-  assert.equal(push.status, undefined);
+  const pushed = nudges(page).slice(before);
+  assert.equal(pushed.length, 1, 'and then the Worker is told to drop its copy of the session');
+  assertNudgeShape(pushed[0]);
 });
 
 test('nudge: a result the server did NOT confirm pushes nothing', async () => {
@@ -1341,12 +1492,41 @@ test('nudge: a result the server did NOT confirm pushes nothing', async () => {
       reply: r => r.action === 'submitResult' ? failure : undefined });
     await register(page);
     await startExam(page);
+    const before = nudges(page).length;
     page.t.finish();
     await drain();
-    await page.timer.advance(1999);              // before the markFinished push, which is a different write
+    await page.timer.advance(NUDGE_DELAY - 1);   // before the markFinished push, which is a different write
     assert.equal(page.sent('submitResult').length, 1);
-    assert.equal(nudges(page).length, 0, 'the Worker is told about a write only once the server owns it');
+    assert.equal(nudges(page).length, before, 'the Worker is told about a write only once the server owns it');
   }
+});
+
+test('nudge: a whole happy path announces itself exactly four times, in order', async () => {
+  // register → start → submit → "finished on device". Four writes, four pushes:
+  // no write goes unannounced, and none is announced twice.
+  const page = completePage({ gateway: 'https://gw.example/' });
+  await register(page);
+  const registeredAt = page.timer.now;
+  assert.equal(nudges(page).length, 1);
+  await startExam(page);
+  assert.equal(nudges(page).length, 2);
+  const startedAt = page.timer.now;
+  page.t.finish();
+  await drain();
+  assert.equal(nudges(page).length, 3, 'the result is confirmed synchronously here, so its push is immediate');
+  const finishedAt = page.timer.now;
+  await page.timer.advance(NUDGE_DELAY - 1);
+  assert.equal(nudges(page).length, 3, 'the markFinished push is still waiting for its beacon to land');
+  await page.timer.advance(1);
+  const all = nudges(page);
+  assert.equal(all.length, 4, 'exactly four');
+  for (const push of all) assertNudgeShape(push);
+  assert.ok(all[0].__at <= registeredAt, 'registration: at once');
+  assert.ok(all[1].__at <= startedAt && all[1].__at >= registeredAt, 'startExam: at once');
+  assert.equal(all[2].__at, finishedAt, 'submitResult: at once');
+  assert.equal(all[3].__at, finishedAt + NUDGE_DELAY, 'markFinished: exactly 2 s behind its beacon');
+  await page.timer.advance(10 * 60 * 1000);
+  assert.equal(nudges(page).length, 4, 'and nothing keeps pushing afterwards');
 });
 
 test('nudge: its own failure changes nothing on screen and is counted nowhere', async () => {
@@ -1709,8 +1889,22 @@ test('source: the re-arm and the device push are wired exactly where §13.4/§13
   // the stored attempt was stamped with, never with whatever the page holds now.
   assert.match(src, /nudgeGatewayAfterWrite\(payload\.sessionCode, payload\.idNumber, payload\.examineeToken\);/,
     'the submit push carries the payload\'s own identity');
-  assert.match(src, /setTimeout\(nudgeGatewayAfterWrite, 2000\);/, 'and the finished ping is pushed 2 s later');
-  assert.equal((src.match(/\bnudgeGatewayAfterWrite\b/g) || []).length, 3, 'declared once, reached from the two writes');
+  assert.match(src, /nudgeGatewayAfterWrite\(attempt\.sessionCode, attempt\.idNumber, attempt\.examineeToken\);/,
+    'and the startExam push carries the attempt\'s');
+  // Every write this page makes is announced: three confirmed ones push at once,
+  // four fire-and-forget ones push NUDGE_AFTER_BEACON_MS later. One declaration,
+  // seven call sites, and no bare millisecond anywhere.
+  assert.equal((src.match(/\bnudgeGatewayAfterWrite\b/g) || []).length, 8, 'declared once, reached from seven writes');
+  assert.equal((src.match(/setTimeout\(nudgeGatewayAfterWrite, NUDGE_AFTER_BEACON_MS\)/g) || []).length, 4,
+    'markFinished, disqualify, cancelDisqualify, reportWarning');
+  assert.ok(!/nudgeGatewayAfterWrite,\s*\d/.test(src), 'the delay is the named constant, never a number');
+  // ONE helper sends every disqualification, so a path cannot be added without
+  // its push — and the unload path opts out explicitly, because nothing it
+  // schedules would ever run.
+  assert.equal((src.match(/action: 'disqualify'/g) || []).length, 1, 'one payload builder, one literal');
+  assert.match(src, /function sendDQToServer\(unloading\)/);
+  assert.match(src, /if \(!unloading\) setTimeout\(nudgeGatewayAfterWrite, NUDGE_AFTER_BEACON_MS\);/);
+  assert.match(src, /sendDQToServer\(true\);/, 'and onBeforeUnload is the only caller that opts out');
   // never a decision, and never an examiner's grant, from this page
   const fn = section(src, 'function nudgeGatewayAfterWrite(', '\n  }\n');
   assert.ok(!/grant|&status=|examinerId/.test(fn), 'an examinee pushes no decision and holds no grant');

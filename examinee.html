@@ -1357,6 +1357,15 @@
   // The three identifiers may be passed in: a result resent after the examinee
   // re-registered must announce itself with the token THAT ATTEMPT was stamped
   // with (submitAttemptKey), not with whatever token the page holds now.
+  // Most of this page's writes are fire-and-forget (a beacon, a no-cors POST):
+  // there is no answer telling us Google has them. For those the push waits
+  // NUDGE_AFTER_BEACON_MS — a Worker that re-read the sheet before the write
+  // landed would cache the row exactly as it was, and since the Worker stopped
+  // reading Google on a 2 s clock (it now reads when something announces a
+  // change, plus a 45 s safety read — KNOWN_ISSUES #35) that stale row would sit
+  // on the examiner's dashboard until the safety read. Two seconds is one Apps
+  // Script write plus slack. Nobody is looking at this timer.
+  var NUDGE_AFTER_BEACON_MS = 2000;
   function nudgeGatewayAfterWrite(forSession, forId, forToken) {
     try {
       var base = gatewayUrl();
@@ -1395,6 +1404,10 @@
         examineeToken: examineeToken,
         reason: reason || ''
       });
+      // The warning counter is a column on the dashboard, so the examiner has
+      // to be told there is something new to read (r31 §13.5). Fire-and-forget
+      // like the report itself.
+      setTimeout(nudgeGatewayAfterWrite, NUDGE_AFTER_BEACON_MS);
     } catch(e) {}
   }
 
@@ -1712,6 +1725,12 @@
         // Capture the server-issued examinee token; all subsequent API calls
         // for this examinee must echo it.
         if (data.examineeToken) examineeToken = data.examineeToken;
+        // The row exists in ממתינים the moment this answer came back (a
+        // 'resumed' answer means it was already there), so announce it at once:
+        // the Worker drops the session snapshot, the examiner's watch wakes and
+        // the new examinee appears on the dashboard without waiting for a clock.
+        // No delay here — unlike the beacons, this write IS confirmed.
+        nudgeGatewayAfterWrite();
         saveExamineeState('screenInstructions');
         showScreen('screenInstructions');
         applyUITranslations();
@@ -2357,6 +2376,12 @@
         fail(resp);
         return;
       }
+      // The server flipped the row to in_exam inside the execution that just
+      // answered, so the write is already in Google: announce it now, before the
+      // texts are fetched, and the dashboard says "במבחן" while this device is
+      // still drawing the first question. This attempt's own identity goes on
+      // the wire (examStartIsCurrent already proved it is still the live one).
+      nudgeGatewayAfterWrite(attempt.sessionCode, attempt.idNumber, attempt.examineeToken);
       if (Number(resp.examMinutes) > 0) examTimeMinutes = Number(resp.examMinutes);
       // No grant means the server has no GATEWAY_URL/GATEWAY_KEY: nothing the
       // examinee can retry their way out of, so say so instead of a cooldown.
@@ -2503,14 +2528,7 @@
         // If a DQ was already sent/confirmed or provisional DQ is pending, send DQ (not fail)
         if (tabSwitchDQConfirmed || provisionalDQSent || tabSwitchGraceTimer || splitScreenBlurTimer) {
           try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
-          beaconToApi({
-            action: 'disqualify',
-            sessionCode: sessionCode,
-            idNumber: examineeData.idNumber,
-            dqEventId: currentDQEventId,
-            origin: API_ORIGIN,
-            examineeToken: examineeToken
-          });
+          sendDQToServer(true);   // the same beacon as always; no fetch and no push — the page is gone
         } else {
           // Normal close — send fail as safety net
           // If just a refresh, the resume logic will cancel this
@@ -2578,9 +2596,12 @@
     document.addEventListener('visibilitychange', onTabSwitch);
   }
 
-  // Build disqualify URL for fire-and-forget requests
-  function buildDisqualifyUrl() {
-    var params = {
+  // ONE payload, ONE sender (sendDQToServer below): every disqualification this
+  // page reports — the anti-cheat paths, the unload path and the retries after a
+  // reload — is built here, so the push to the Worker cannot be forgotten at one
+  // of them. There is exactly one 'disqualify' literal in this file.
+  function dqPayload() {
+    return {
       action: 'disqualify',
       sessionCode: sessionCode,
       idNumber: examineeData.idNumber,
@@ -2588,6 +2609,10 @@
       origin: API_ORIGIN,
       examineeToken: examineeToken
     };
+  }
+  // Build disqualify URL for fire-and-forget requests
+  function buildDisqualifyUrl() {
+    var params = dqPayload();
     var qs = [];
     for (var k in params) {
       if (params.hasOwnProperty(k)) qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
@@ -2618,18 +2643,21 @@
     } catch (ex) { return false; }
   }
 
-  function sendDQToServer() {
-    var payload = {
-      action: 'disqualify',
-      sessionCode: sessionCode,
-      idNumber: examineeData.idNumber,
-      dqEventId: currentDQEventId,
-      origin: API_ORIGIN,
-      examineeToken: examineeToken
-    };
+  // unloading = the page is going away (onBeforeUnload). Then the beacon is all
+  // there is: a fetch would be killed with the document, and a timer 2 s out will
+  // never fire, so no push is even attempted — the examiner sees that
+  // disqualification on the Worker's safety read. Every other caller stays on
+  // screen (the DQ screen waits for the examiner's decision), so the push is
+  // scheduled and the examiner is told "needs decision" a couple of seconds after
+  // the device decided it.
+  function sendDQToServer(unloading) {
+    var payload = dqPayload();
     logEvent('dq_sent', currentDQEventId);
-    if (beaconToApi(payload)) return;
-    try { fetch(buildDisqualifyUrl() + '&_m=fetch1').catch(function() {}); } catch(ex) {}
+    var beaconed = beaconToApi(payload);
+    if (!beaconed && !unloading) {
+      try { fetch(buildDisqualifyUrl() + '&_m=fetch1').catch(function() {}); } catch(ex) {}
+    }
+    if (!unloading) setTimeout(nudgeGatewayAfterWrite, NUDGE_AFTER_BEACON_MS);
   }
 
   // Cancel a provisional DQ — called when examinee returns within grace period
@@ -2643,11 +2671,19 @@
       origin: API_ORIGIN,
       examineeToken: examineeToken
     };
-    if (beaconToApi(payload)) return;
-    try {
-      var params = 'action=cancelDisqualify&origin=' + encodeURIComponent(API_ORIGIN) + '&sessionCode=' + encodeURIComponent(sessionCode) + '&idNumber=' + encodeURIComponent(examineeData.idNumber) + '&dqEventId=' + encodeURIComponent(eid) + '&examineeToken=' + encodeURIComponent(examineeToken);
-      fetch(API_URL + '?' + params).catch(function() {});
-    } catch(ex) {}
+    if (!beaconToApi(payload)) {
+      try {
+        var params = 'action=cancelDisqualify&origin=' + encodeURIComponent(API_ORIGIN) + '&sessionCode=' + encodeURIComponent(sessionCode) + '&idNumber=' + encodeURIComponent(examineeData.idNumber) + '&dqEventId=' + encodeURIComponent(eid) + '&examineeToken=' + encodeURIComponent(examineeToken);
+        fetch(API_URL + '?' + params).catch(function() {});
+      } catch(ex) {}
+    }
+    // A cancel puts the row back to in_exam, and an examiner looking at "needs
+    // decision" must stop seeing it. Nothing here reads an answer (it is a
+    // beacon, like the disqualification it undoes), so the push waits the same
+    // NUDGE_AFTER_BEACON_MS: pushing before the write lands would make the
+    // Worker cache the row still disqualified, and that copy would stand until
+    // the safety read — the exact opposite of what this call is for.
+    setTimeout(nudgeGatewayAfterWrite, NUDGE_AFTER_BEACON_MS);
   }
 
   function onTabSwitch() {
@@ -4719,7 +4755,7 @@
     // ping above is a beacon on its way to Google, and a Worker that re-read the
     // sheet BEFORE it landed would cache the row exactly as it was and show
     // nothing new. Two seconds is one Apps Script write plus slack.
-    setTimeout(nudgeGatewayAfterWrite, 2000);
+    setTimeout(nudgeGatewayAfterWrite, NUDGE_AFTER_BEACON_MS);
 
     showSubmitStatus('sending');
     submitWithRetry(payload, 3);
