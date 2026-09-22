@@ -76,12 +76,24 @@ function pendingRow(id, status, over) {
   row[4] = '2026-09-22T06:00:00Z'; row[5] = status; row[6] = 'he'; row[8] = 'B'; row[9] = 'off'; row[12] = 'tok-' + id;
   return Object.assign(row, over || {});
 }
-function serverEnv(pending, extensions) {
+// A finished result, so the snapshot the Worker reads is a REAL v2 one
+// (DESIGN §14.1: `v`, `results`, names on the rows). The examinee answers the
+// Worker builds from it must not move by a byte — that is the whole point of
+// the first test below.
+function resultRow(id, over) {
+  const row = Array(30).fill('');
+  row[0] = '22/09/2026 09:10'; row[1] = id; row[2] = 'נבחן ' + id; row[3] = '0501234567';
+  row[4] = 'B'; row[5] = '27/30'; row[6] = '90%'; row[7] = 'עבר'; row[8] = "28 דק' 10 שנ'";
+  row[9] = 'בוחן'; row[10] = 'בדיקת נתונים'; row[11] = '1'; row[12] = 'he'; row[13] = SESSION;
+  row[14] = 1; row[15] = 'מזהה שאלה: 12'; row[19] = 'צבא'; row[21] = 'off'; row[22] = 'מאומת'; row[29] = 'desktop';
+  return Object.assign(row, over || {});
+}
+function serverEnv(pending, extensions, results) {
   return createEnv({
     sheets: {
       'ממתינים': [PENDING_HEADER, ...pending],
       'מבחנים': [EXAMS_HEADER],
-      'תוצאות': [RESULTS_HEADER],
+      'תוצאות': [RESULTS_HEADER, ...(results || [])],
       'הארכות זמן': [['זמן', 'קוד סשן', 'ת.ז.', 'שם', 'דקות', 'סיבה', 'בוחן'], ...(extensions || [])]
     },
     properties: Object.assign({}, GATEWAY_PROPS),
@@ -148,7 +160,10 @@ test('the gateway answers exactly what the server answers, for every row state',
     pendingRow('900000011', 'rejected'),
     pendingRow('900000011', 'waiting')
   ];
-  const env = serverEnv(pending, [['2026-09-22T06:20:00Z', SESSION, '900000003', 'x', 7, 'evacuation', 'examiner']]);
+  const env = serverEnv(pending, [['2026-09-22T06:20:00Z', SESSION, '900000003', 'x', 7, 'evacuation', 'examiner']],
+    [resultRow('900000004'), resultRow('900000006', { 7: 'פסול' })]);
+  assert.equal(get(env, { action: 'sessionSnapshot', sessionCode: SESSION, gatewayKey: GATEWAY_KEY, origin: 'gateway' }).v, 2,
+    'the snapshot under test is a v2 one — otherwise this proves nothing about r32');
   const gw = gatewayOver(env);
   for (const row of pending) {
     const id = row[1], token = row[12];
@@ -209,10 +224,10 @@ test('a wrong token and an unknown examinee get the same answer from both routes
   assert.equal(stolenGateway.examineeTokenError, 'mismatch');
 });
 
-test('the snapshot never leaks names, phones or tokens, and refuses a wrong key', () => {
+test('the snapshot carries the board but never the examinee token, and refuses a wrong key', () => {
   // The row carries every counter and flag the examiner board displays (r31,
   // DESIGN §13.6: the board waits on the Worker's fingerprint of these), so the
-  // "nothing identifying" rule is asserted on a row where they are all set.
+  // shape is asserted on a row where they are all set.
   const loaded = pendingRow('900000001', 'in_exam');
   loaded[13] = 2;        // N: ספירת DQ
   loaded[14] = 'כן';     // O: מסך נוסף
@@ -222,15 +237,47 @@ test('the snapshot never leaks names, phones or tokens, and refuses a wrong key'
   const env = serverEnv([loaded]);
   const snap = get(env, { action: 'sessionSnapshot', sessionCode: SESSION, gatewayKey: GATEWAY_KEY, origin: 'gateway' });
   assert.equal(snap.status, 'ok');
+  assert.equal(snap.v, 2);
+  // r32 (DESIGN §14.1) ENDED the "no names, no phones" property of this answer
+  // on purpose: the examiner board is drawn from it, so it carries the columns
+  // the board displays — including the warning reason, which the board has
+  // always shown. What still never leaves the script is the examinee TOKEN: the
+  // Worker only ever compares SHA-256 hashes, so a leaked snapshot cannot be
+  // replayed as an examinee. And the only route that forwards these fields
+  // (/v1/session/watch) answers an examiner grant.
   const text = JSON.stringify(snap);
-  assert.ok(!text.includes('נבחן 900000001') && !text.includes('0501234567') && !text.includes('tok-900000001'));
-  assert.ok(!text.includes('החלפת חלון'), 'the warning REASON is free text an examinee typed into — it stays on the sheet');
+  assert.ok(!text.includes('tok-900000001'), 'the token itself is never sent');
   assert.equal(snap.rows[0].tokenHash, crypto.createHash('sha256').update('tok-900000001').digest('hex'));
   assert.deepEqual(Object.keys(snap.rows[0]).sort(),
-    ['audio', 'dq', 'examMinutes', 'ext', 'extraMinutes', 'fin', 'id', 'status', 'tokenHash', 'warn']);
+    ['attemptsToday', 'audio', 'dq', 'examMinutes', 'ext', 'extraMinutes', 'fin', 'id', 'lang', 'lastWarn',
+      'lic', 'name', 'phone', 'pop', 'site', 'start', 'status', 'time', 'timeExt', 'tokenHash', 'warn']);
   assert.deepEqual([snap.rows[0].warn, snap.rows[0].fin, snap.rows[0].ext, snap.rows[0].dq], [3, 1, 1, 2]);
+  assert.equal(snap.rows[0].name, 'נבחן 900000001');
+  assert.equal(snap.rows[0].lastWarn, 'החלפת חלון');
+  assert.deepEqual(snap.results, [], 'no results yet is an empty array, not a missing field');
   const denied = get(env, { action: 'sessionSnapshot', sessionCode: SESSION, gatewayKey: 'nope', origin: 'gateway' });
   assert.equal(denied.code, 'gateway_denied');
+});
+
+// The compatibility direction the deploy order depends on (DESIGN §14.5): the
+// Worker goes out BEFORE the server, so for a while a v1 Worker reads a v2
+// snapshot. It takes `at` and `rows` and ignores everything else — a v2 answer
+// must therefore be indistinguishable to it, and the examinee answers it builds
+// must not move by a byte. The loop in the first test proves that for every row
+// state; this one pins the reason it holds.
+test('the extra v2 fields never reach an examinee answer', async () => {
+  const env = serverEnv([pendingRow('900000001', 'approved'), pendingRow('900000002', 'in_exam')],
+    null, [resultRow('900000002')]);
+  const gw = gatewayOver(env);
+  for (const id of ['900000001', '900000002']) {
+    for (const kind of ['approval', 'status']) {
+      const answer = await gw.poll({ kind, sessionCode: SESSION, idNumber: id, examineeToken: 'tok-' + id });
+      const text = JSON.stringify(answer);
+      for (const leaked of ['נבחן ', '0501234567', 'attemptsToday', 'lastWarn', 'results', 'name', 'phone']) {
+        assert.equal(text.includes(leaked), false, kind + ' answer for ' + id + ' leaked ' + leaked);
+      }
+    }
+  }
 });
 
 function sessionEnv(properties) {

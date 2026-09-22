@@ -18,6 +18,16 @@ const GATEWAY_URL = 'https://gw.example.workers.dev';
 // configured one unless a test is specifically about the unconfigured case.
 const GATEWAY_PROPS = { GATEWAY_KEY: 'secret-key', GATEWAY_URL };
 const NOW = Date.parse('2026-09-22T06:30:00Z');
+const SESSIONS_HEADER = ['קוד', 'בוחן ת.ז.', 'שם בוחן', 'אתר', 'כיתה', 'דרגה', 'שפה', 'מצב שמע', 'זמן יצירה',
+  'תקף עד', 'פעיל', 'כמויות JSON', 'מאושרים JSON', 'בוחן אחראי', 'אוכלוסיה'];
+// A live session: column K (10) TRUE, column J (9) still in the future. Since
+// r32 registerExaminee refuses to write into anything else (TODO 1.5), so every
+// environment that registers needs this row.
+function sessionRow(overrides) {
+  const row = [SESSION, '111111111', 'בוחן א', 'בדיקת נתונים', '1', 'B', 'he', 'off',
+    '2026-09-22T05:00:00Z', '2026-09-23T05:00:00Z', true, '', '', '', ''];
+  return Object.assign(row, overrides || {});
+}
 function pendingRow(id, overrides) {
   const row = Array(19).fill('');
   row[0] = SESSION; row[1] = id; row[4] = '2026-09-22T06:00:00Z'; row[5] = 'approved';
@@ -30,6 +40,7 @@ function runtime(options) {
   return createEnv({
     sheets: Object.assign({
       'ממתינים': [PENDING_HEADER, ...pending],
+      'סשנים': [SESSIONS_HEADER, sessionRow()],
       'מבחנים': [Array(6).fill('h')],
       'בוחנים': [Array(11).fill('h')],
       'מורים': [Array(10).fill('h')]
@@ -250,7 +261,7 @@ test('health&deep=1 times one cell of our own document and reports a failure ins
   const e = runtime();
   const ok = get(e, { action: 'health', deep: '1' });
   assert.equal(ok.status, 'ok');
-  assert.equal(ok.build, '2026-09-22-r31');
+  assert.equal(ok.build, '2026-09-23-r32');
   assert.equal(ok.deep, true);
   assert.equal(ok.indexIds, 1700);
   assert.ok(typeof ok.sheetMs === 'number' && ok.sheetMs >= 0);
@@ -268,7 +279,7 @@ test('health identifies build without Sheets, Drive or private parameters', () =
   e.ctx.getSheet = () => { throw new Error('health must not access Sheets'); };
   const result = get(e, { action: 'health', token: 'DO_NOT_LOG_ME' });
   assert.equal(result.status, 'ok');
-  assert.equal(result.build, '2026-09-22-r31');
+  assert.equal(result.build, '2026-09-23-r32');
   assert.equal(e.logs.length, 2);
   assert.ok(e.logs[0].includes('"phase":"start"'));
   assert.ok(e.logs[1].includes('"phase":"end"'));
@@ -437,4 +448,265 @@ test('r31.2: a malformed regKey is ignored, and a cancelled row lets the same ke
   assert.equal(again.status, 'ok');
   assert.equal(again.resumed, undefined);
   assert.equal(e.rows('ממתינים').length, 3, 'a new row, because the old one is not live');
+});
+
+// ---- TODO 1.5 (r32, 22/09/2026): the session is checked BEFORE anything is
+// written. registerExaminee was the last live action that never looked at
+// 'סשנים': a stale page, or a code typed from yesterday's whiteboard, appended
+// a ממתינים row to a session that had ended, and the examinee then waited for an
+// examiner who was not there. Same three messages as getSessionInfo (the page
+// shows them as they are) — and READ-ONLY: getSessionInfo also deactivates an
+// expired session, a registration must not.
+const sessionsOf = overrides => ({ 'סשנים': [SESSIONS_HEADER, sessionRow(overrides)] });
+
+test('r32 (TODO 1.5): an unknown, a closed and an expired session are refused with no row written', () => {
+  const cases = [
+    ['קוד סשן לא תקין', { 'סשנים': [SESSIONS_HEADER] }],                     // no such code
+    ['הסשן הסתיים', sessionsOf({ 10: false })],                              // column K not TRUE
+    ['תוקף הסשן פג', sessionsOf({ 9: '2026-09-22T05:00:00Z' })]              // column J in the past
+  ];
+  for (const [message, sheets] of cases) {
+    const e = runtime({ sheets });
+    e.resetCounters();
+    const reply = registerAs(e, '900000600', { regKey: 'facefeed00112233' });
+    assert.equal(reply.status, 'error', message);
+    assert.equal(reply.message, message);
+    assert.equal(reply.examineeToken, undefined, message + ': no token');
+    assert.equal(e.rows('ממתינים').length, 1, message + ': nothing was appended');
+    assert.equal(e.counters().perSheet['ממתינים'].appends, 0, message);
+    assert.equal(e.counters().perSheet['סשנים'].setValues, 0,
+      message + ': the check is READ-ONLY — getSessionInfo deactivates, a registration does not');
+  }
+});
+
+test('r32 (TODO 1.5): a live session still registers, and the check costs one סשנים read', () => {
+  const e = runtime({});
+  e.resetCounters();
+  const ok = registerAs(e, '900000601', { regKey: 'facefeed44556677' });
+  assert.equal(ok.status, 'ok');
+  assert.ok(ok.examineeToken);
+  assert.equal(e.rows('ממתינים').length, 2);
+  // 'סשנים' is served from the per-execution memo (12_reads.js), so the check is
+  // one read — never one per registration path.
+  assert.equal(e.counters().perSheet['סשנים'].fullReads, 1);
+});
+
+// ---- r32 (DESIGN §14.2): claim before write -------------------------------
+// The phone now gives up at 30 s and retries the SAME regKey, so the two
+// executions genuinely OVERLAP — Google's delivery hop is what is slow, and the
+// first execution may still be queued (KNOWN_ISSUES #35). The memo is written
+// as 'pending' BEFORE the sheet is read, and a second execution that finds it
+// waits for the token instead of appending a second row.
+test('r32: two overlapping executions of one regKey produce one row and one token', () => {
+  const e = runtime({});
+  const id = '900000510', key = 'aaaabbbbccccdddd';
+  const params = { origin: 'examinee-app', sessionCode: SESSION, idNumber: id, fullName: 'ישראל ישראלי',
+    phone: '0501234567', language: 'he', license: 'B', regKey: key };
+  // Execution 1 has claimed the key and is still inside Google, before its append.
+  e.ctx.claimRegistration(SESSION, id, key);
+  let slept = 0;
+  const realSleep = e.ctx.Utilities.sleep;
+  e.ctx.Utilities.sleep = ms => {
+    realSleep(ms);
+    if (++slept === 3) e.ctx.registerExamineeLocked(params, key);   // execution 1 finally appends
+  };
+  const second = registerAs(e, id, { regKey: key });
+  e.ctx.Utilities.sleep = realSleep;
+  assert.equal(slept, 3, 'the retry waited for the claim instead of racing it');
+  assert.equal(second.status, 'ok');
+  assert.equal(second.resumed, true, 'it resumed the row execution 1 wrote');
+  assert.equal(e.rows('ממתינים').length, 2, 'ONE row for the two executions');
+  assert.equal(second.examineeToken, e.rows('ממתינים')[1][12], "the row's own token");
+});
+
+test('r32: a claim nobody redeems expires into a normal registration', () => {
+  const e = runtime({});
+  const id = '900000511', key = 'bbbbccccddddeeee';
+  e.ctx.claimRegistration(SESSION, id, key);    // execution 1 claimed and then died
+  const reply = registerAs(e, id, { regKey: key });
+  assert.equal(reply.status, 'ok');
+  assert.equal(reply.resumed, undefined, 'there was nothing to resume');
+  assert.ok(reply.examineeToken);
+  assert.equal(e.rows('ממתינים').length, 2, 'the waiter registered normally');
+  assert.equal(e.rows('ממתינים')[1][12], reply.examineeToken);
+});
+
+test("r32: 'pending' is never answered as a token", () => {
+  const e = runtime({});
+  const id = '900000512', key = 'ccccddddeeeeffff';
+  e.ctx.claimRegistration(SESSION, id, key);
+  // The claim is in the memo...
+  assert.equal(e.cache.get(e.ctx.regKeyMemoKey(SESSION, id, key)), 'pending');
+  // ...and the recall refuses to call it a token. Answering 'pending' as an
+  // examineeToken would write it into column M and every later call would be
+  // refused with 'טוקן נבחן לא תקין' — the exact shape of KNOWN_ISSUES #34.
+  assert.equal(e.ctx.recallRegistrationToken(SESSION, id, key), '');
+  const reply = registerAs(e, id, { regKey: key });
+  assert.notEqual(reply.examineeToken, 'pending');
+  assert.notEqual(e.rows('ממתינים')[1][12], 'pending');
+});
+
+test('r32: a refusal drops the claim, so the next attempt is not made to wait', () => {
+  const e = runtime({});
+  const id = '900000513';
+  assert.equal(registerAs(e, id, { regKey: 'ddddeeeeffff0000' }).status, 'ok');
+  // Another device (another regKey) is still told 'כבר רשום' — and the claim it
+  // wrote before reading the sheet is gone, because it appended nothing.
+  const other = registerAs(e, id, { regKey: 'eeeeffff00001111' });
+  assert.match(other.message, /כבר רשום/);
+  assert.equal(e.cache.get(e.ctx.regKeyMemoKey(SESSION, id, 'eeeeffff00001111')), null);
+  let slept = 0;
+  const realSleep = e.ctx.Utilities.sleep;
+  e.ctx.Utilities.sleep = ms => { slept++; realSleep(ms); };
+  assert.match(registerAs(e, id, { regKey: 'eeeeffff00001111' }).message, /כבר רשום/);
+  e.ctx.Utilities.sleep = realSleep;
+  assert.equal(slept, 0, 'the second attempt was answered at once, not after 25 s');
+  assert.equal(e.rows('ממתינים').length, 2);
+});
+
+// ---- r32 (DESIGN §14.1): sessionSnapshot version 2 -------------------------
+// The examiner board is drawn from the Worker's watch now — one Google round
+// trip per change instead of two (KNOWN_ISSUES #35) — so this answer has to
+// carry everything the board shows. It must carry it by EXACTLY the rules
+// handleExaminerDashboard uses, or the two screens drift apart the day one of
+// them changes. So the assertions below compare against the dashboard itself,
+// on the same sheets, rather than against a hand-written expectation.
+const SNAP_SESSION = 'SNAP0001';
+const OTHER_SESSION = 'OTHER001';
+const SNAP_RES_HEADER = ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר',
+  'כיתה', 'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ', 'אוכלוסיה', 'תוקן?', 'שמע',
+  'מאומת', 'חשוד', 'dqEventId', 'תוקן ע"י', 'סיבת תיקון', 'תאריך תיקון', 'מסלול שפות', 'מכשיר'];
+// Every one of the 19 ממתינים columns carries a DIFFERENT value, so a field
+// read from the neighbouring column cannot pass.
+function snapPendingRow(id, status, overrides) {
+  const row = Array(19).fill('');
+  row[0] = SNAP_SESSION; row[1] = id; row[2] = 'שם ' + id; row[3] = '05011' + id.slice(-5);
+  row[4] = new Date(NOW - 1800000); row[5] = status; row[6] = 'ru'; row[7] = 'אזרחים'; row[8] = 'C1';
+  row[9] = 'on'; row[10] = '1.25'; row[11] = ''; row[12] = 'tok-' + id; row[13] = 2; row[14] = 'כן';
+  row[15] = 3; row[16] = 'החלפת חלון'; row[17] = 'בסיס 80'; row[18] = '';
+  return Object.assign(row, overrides || {});
+}
+function snapResultRow(id, overrides) {
+  const row = Array(30).fill('');
+  row[0] = new Date(NOW - 3600000); row[1] = id; row[2] = 'שם ' + id; row[3] = '0509999999';
+  row[4] = 'B'; row[5] = '27/30'; row[6] = '90%'; row[7] = 'עבר'; row[8] = "30 דק' 00 שנ'";
+  row[9] = 'בוחן א'; row[10] = 'בסיס 80'; row[11] = 'כיתה 1'; row[12] = 'ru'; row[13] = SNAP_SESSION;
+  row[14] = 1; row[15] = ''; row[16] = false; row[17] = false; row[18] = 'https://wa.me/x';
+  row[19] = 'אזרחים'; row[20] = false; row[21] = 'on'; row[22] = 'מאומת'; row[23] = ''; row[29] = 'desktop';
+  return Object.assign(row, overrides || {});
+}
+// waiting + in_exam + two finished examinees, one of whose results was
+// superseded (latest wins) and one whose only result is a fabricated timeout
+// fail; plus a SHORT row (13 columns, as an old sheet has) and a result written
+// today in ANOTHER session, which is what attemptsToday/todayExams count.
+const SNAP_PENDING = [
+  snapPendingRow('900001001', 'waiting'),
+  snapPendingRow('900001002', 'in_exam', { 11: new Date(NOW - 300000), 18: '2026-09-22T06:28:00Z' }),
+  snapPendingRow('900001003', 'completed'),
+  snapPendingRow('900001005', 'completed'),
+  snapPendingRow('900001004', 'waiting').slice(0, 13)   // an old, narrow row
+];
+const SNAP_RESULTS = [
+  snapResultRow('900001003', { 7: 'בוטל', 5: '10/30' }),                              // overturned: invisible
+  snapResultRow('900001003', { 7: 'נכשל', 5: '20/30', 15: 'ניתוק/טיימאאוט — הנבחן לא סיים את המבחן' }),
+  snapResultRow('900001003', { 14: 2, 15: 'מזהה שאלה: 17' }),                          // the LATEST row wins
+  snapResultRow('900001005', { 7: 'נכשל', 5: '0/30', 15: 'סגירת דפדפן — המבחן נסגר' }),  // a fabricated fail
+  snapResultRow('900001004', { 13: OTHER_SESSION, 4: 'C', 5: '29/30' }),                // today, another session
+  snapResultRow('900001001', { 13: OTHER_SESSION, 0: new Date(NOW - 30 * 3600000) })    // yesterday
+];
+function snapshotEnv() {
+  return createEnv({
+    now: NOW,
+    sheets: {
+      'ממתינים': [PENDING_HEADER, ...SNAP_PENDING],
+      'תוצאות': [SNAP_RES_HEADER, ...SNAP_RESULTS],
+      'סשנים': [SESSIONS_HEADER, sessionRow({ 0: SNAP_SESSION })],
+      'הארכות זמן': [['תאריך', 'קוד סשן', 'ת.ז.', 'שם', 'דקות', 'סיבה', 'בוחן']]
+    },
+    properties: Object.assign({}, GATEWAY_PROPS)
+  });
+}
+const snapshotOf = e => e.json(e.ctx.handleSessionSnapshot({ sessionCode: SNAP_SESSION }));
+const dashboardOf = e => e.json(e.ctx.handleExaminerDashboard({ sessionCode: SNAP_SESSION }));
+const rowById = (rows, id) => rows.filter(r => r.id === id)[0];
+
+test('r32: snapshot v2 reads every new row field from its own column', () => {
+  const snap = snapshotOf(snapshotEnv());
+  assert.equal(snap.status, 'ok');
+  assert.equal(snap.v, 2, 'the Worker only forwards a v2 snapshot');
+  assert.equal(snap.rows.length, 5);
+  const waiting = rowById(snap.rows, '900001001');
+  assert.deepEqual(waiting, {
+    id: '900001001', status: 'waiting',
+    tokenHash: require('node:crypto').createHash('sha256').update('tok-900001001').digest('hex'),
+    audio: 'on', examMinutes: 50, extraMinutes: 0, warn: 3, fin: 0, ext: 1, dq: 2,
+    name: 'שם 900001001', phone: '0501101001', time: new Date(NOW - 1800000).toISOString(), start: '',
+    lang: 'ru', pop: 'אזרחים', site: 'בסיס 80', lic: 'C1', timeExt: '1.25', lastWarn: 'החלפת חלון',
+    attemptsToday: 0
+  });
+  // The exam row: column L (start) and column S (finished on device) are set.
+  const inExam = rowById(snap.rows, '900001002');
+  assert.equal(inExam.start, new Date(NOW - 300000).toISOString());
+  assert.equal(inExam.fin, 1);
+  // The narrow row: the length guards answer '' instead of undefined, which
+  // would vanish from the JSON and leave the board with a hole.
+  const narrow = rowById(snap.rows, '900001004');
+  assert.equal(narrow.site, '');
+  assert.equal(narrow.lastWarn, '');
+  assert.equal(narrow.start, '');
+  assert.equal(narrow.warn, 0);
+  // The token itself never leaves the script — only its SHA-256.
+  assert.equal(JSON.stringify(snap).indexOf('tok-'), -1);
+});
+
+test('r32: attemptsToday and todayExams are the dashboard\'s own tallies', () => {
+  const e = snapshotEnv();
+  const snap = snapshotOf(e);
+  const dash = dashboardOf(e);
+  const boardItem = id => dash.pending.concat(dash.active).filter(x => String(x.idNumber) === id)[0];
+  for (const row of snap.rows) {
+    const item = boardItem(row.id);
+    if (!item) continue;            // a finished row is not on either board list
+    assert.equal(row.attemptsToday, item.attemptsToday, 'attemptsToday for ' + row.id);
+    assert.deepEqual(row.todayExams, item.todayExams, 'todayExams for ' + row.id);
+  }
+  // ...and it is not vacuously zero: 900001004 sat an exam today in ANOTHER
+  // session, which is exactly what the "second attempt today" flag is for.
+  const repeat = rowById(snap.rows, '900001004');
+  assert.equal(repeat.attemptsToday, 1);
+  assert.deepEqual(repeat.todayExams, [{ license: 'C', score: '29/30', passed: 'עבר', language: 'ru' }]);
+  // A row with nothing today carries no empty array at all.
+  assert.equal(Object.prototype.hasOwnProperty.call(rowById(snap.rows, '900001001'), 'todayExams'), false,
+    'yesterday\'s result is not today\'s');
+});
+
+test('r32: snapshot results are the dashboard\'s completed list, minus the blob plus `fabricated`', () => {
+  const e = snapshotEnv();
+  const snap = snapshotOf(e);
+  const dash = dashboardOf(e);
+  const FABRICATED = /סגירת דפדפן|טיימאאוט|סיום ידני/;
+  // registrationTime is the one field the snapshot deliberately omits: the page
+  // computes it from `rows` (the last ממתינים row of that id).
+  const expected = dash.completed.map(item => {
+    const copy = Object.assign({}, item);
+    const wrong = String(copy.wrongDetails || '');
+    delete copy.wrongDetails;
+    delete copy.registrationTime;
+    if (FABRICATED.test(wrong)) copy.fabricated = 1;
+    return copy;
+  });
+  assert.deepEqual(snap.results, expected);
+  assert.equal(snap.results.length, 2, 'two finished examinees, one row each');
+  // The dedup rule the board uses: the LATEST non-בוטל row per examinee.
+  const latest = snap.results.filter(r => String(r.idNumber) === '900001003')[0];
+  assert.equal(latest.attempt, 2);
+  assert.equal(latest.passed, 'עבר');
+  assert.equal(latest.fabricated, undefined, 'a real result is not flagged');
+  const fabricated = snap.results.filter(r => String(r.idNumber) === '900001005')[0];
+  assert.equal(fabricated.fabricated, 1, 'a browser-close fail still says so without the blob');
+  // The 2 KB blob is what this saves — it must not be in the answer under any name.
+  const text = JSON.stringify(snap);
+  assert.equal(text.indexOf('wrongDetails'), -1);
+  assert.equal(text.indexOf('מזהה שאלה'), -1);
+  assert.equal(text.indexOf('סגירת דפדפן'), -1);
 });

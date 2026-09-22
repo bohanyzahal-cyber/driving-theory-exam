@@ -15,7 +15,23 @@
 // the memo lives in CacheService, which is exactly as long-lived as a retry.
 // A best-effort script lock closes the remaining window where two executions
 // of the same registration read the sheet before either appended.
+//
+// r32 (22/09/2026 evening, DESIGN §14.2) — CLAIM BEFORE WRITE. The lock alone
+// was not enough once the phone stopped waiting: Google's delivery hop stalls
+// 25-60 s for our projects (KNOWN_ISSUES #35), so the examinee page now gives
+// up at 30 s and retries the SAME regKey while the first execution may still be
+// queued — the two executions genuinely OVERLAP, and the script lock is only
+// held for 5 s of tryLock. So the memo is written BEFORE the sheet is read,
+// with the value 'pending' = "an execution is appending this registration right
+// now". A second execution that finds 'pending' waits for the token instead of
+// reading the sheet and appending a second row. Two executions of one regKey =
+// one row, one token. A claim never survives its execution: it expires in
+// REG_CLAIM_SEC and is dropped when the registration is refused.
 var REG_KEY_MEMO_SEC = 1800;
+var REG_CLAIM_PENDING = 'pending';   // never a token — see recallRegistrationToken
+var REG_CLAIM_SEC = 60;              // an execution that has not appended by then is dead
+var REG_CLAIM_WAIT_MS = 25000;       // under the page's 30 s deadline, so the waiter still answers
+var REG_CLAIM_POLL_MS = 500;
 function regKeyMemoKey(sessionCode, idNumber, regKey) {
   return CACHE_KEY_PREFIX + 'reg_' + String(sessionCode || '').trim() + '_' + normalizeId(idNumber) + '_' + String(regKey || '').trim();
 }
@@ -23,21 +39,80 @@ function rememberRegistrationToken(sessionCode, idNumber, regKey, token) {
   if (!regKey || !token) return;
   try { CacheService.getScriptCache().put(regKeyMemoKey(sessionCode, idNumber, regKey), String(token), REG_KEY_MEMO_SEC); } catch (e) {}
 }
-function recallRegistrationToken(sessionCode, idNumber, regKey) {
+// The raw memo: a token, REG_CLAIM_PENDING, or '' when nothing is remembered.
+function readRegistrationMemo(sessionCode, idNumber, regKey) {
   if (!regKey) return '';
   try { return String(CacheService.getScriptCache().get(regKeyMemoKey(sessionCode, idNumber, regKey)) || ''); } catch (e) { return ''; }
+}
+// The memo as a TOKEN. A claim is not a token: answering 'pending' as an
+// examineeToken would write it into the sheet and every later call would be
+// refused with 'טוקן נבחן לא תקין' — the exact shape of #34.
+function recallRegistrationToken(sessionCode, idNumber, regKey) {
+  var memo = readRegistrationMemo(sessionCode, idNumber, regKey);
+  return memo === REG_CLAIM_PENDING ? '' : memo;
 }
 function validRegKey(raw) {
   var key = String(raw || '').trim();
   return /^[A-Za-z0-9_-]{8,64}$/.test(key) ? key : '';
 }
+function claimRegistration(sessionCode, idNumber, regKey) {
+  if (!regKey) return;
+  try { CacheService.getScriptCache().put(regKeyMemoKey(sessionCode, idNumber, regKey), REG_CLAIM_PENDING, REG_CLAIM_SEC); } catch (e) {}
+}
+// Drop our own claim when we are answering without having appended. The value
+// is checked first so this can never eat a token another execution just wrote.
+function releaseRegistrationClaim(sessionCode, idNumber, regKey) {
+  if (!regKey) return;
+  try {
+    var cache = CacheService.getScriptCache(), key = regKeyMemoKey(sessionCode, idNumber, regKey);
+    if (String(cache.get(key) || '') === REG_CLAIM_PENDING) cache.remove(key);
+  } catch (e) {}
+}
+// Wait for the execution that claimed this regKey to publish its token.
+// Returns the token, or '' when the claim expired (that execution died) or the
+// wait ran out — in both cases the caller registers normally.
+function awaitRegistrationToken(sessionCode, idNumber, regKey) {
+  for (var waited = 0; waited < REG_CLAIM_WAIT_MS; waited += REG_CLAIM_POLL_MS) {
+    try { Utilities.sleep(REG_CLAIM_POLL_MS); } catch (eSleep) { return ''; }
+    var memo = readRegistrationMemo(sessionCode, idNumber, regKey);
+    if (!memo) return '';                                  // claim gone: the first execution died
+    if (memo !== REG_CLAIM_PENDING) return memo;           // the token landed
+  }
+  return '';
+}
 
 function handleRegisterExaminee(p) {
-  // Rate limit: max 30 registrations per minute per session. Prevents an
-  // attacker with the session code from spamming hundreds of fake registrations.
-  var rlErr = requireRateLimit('registerExaminee', String(p.sessionCode || ''), 30, 60);
+  // Rate limit: max 120 registrations per minute per session. Prevents an
+  // attacker with the session code from spamming hundreds of fake registrations
+  // (the session itself is capped at MAX_PENDING_PER_SESSION live rows below).
+  // 30 until r32; raised because the examinee page now retries a stalled
+  // registration by itself (30 s attempts, sequential, DESIGN §14.2), so a
+  // class of 40-50 phones on a stalling Google morning can legitimately send
+  // ~2 per phone per minute - and a rate-limited answer there would only add
+  // another round of retries.
+  var rlErr = requireRateLimit('registerExaminee', String(p.sessionCode || ''), 120, 60);
   if (rlErr) return rlErr;
+  // TODO 1.5 (r32): the session is validated BEFORE anything is written. Until
+  // now registerExaminee was the only live action that never looked at 'סשנים',
+  // so a stale page (or a code typed by hand) could append a row to a session
+  // that had ended or expired — the examinee then waited forever for an
+  // examiner who was not there. Same three messages as getSessionInfo, which
+  // the page shows as they are. READ-ONLY on purpose: getSessionInfo also
+  // deactivates an expired session, and a registration must not write to
+  // 'סשנים' behind the examiner's back.
+  var sessionErr = registrationSessionError(p.sessionCode);
+  if (sessionErr) return sessionErr;
   var regKey = validRegKey(p.regKey);
+  // Claim before write. A retry that overlaps the first execution waits for its
+  // token instead of racing it to the append.
+  if (regKey) {
+    var memo = readRegistrationMemo(p.sessionCode, p.idNumber, regKey);
+    if (memo === REG_CLAIM_PENDING) memo = awaitRegistrationToken(p.sessionCode, p.idNumber, regKey);
+    // No token to resume from → this execution is the one that appends, and it
+    // says so before it reads the sheet. (A token memo is left alone: the
+    // locked path below verifies it against the live row, exactly as in r31.2.)
+    if (!memo) claimRegistration(p.sessionCode, p.idNumber, regKey);
+  }
   var lock = null, held = false;
   try { lock = LockService.getScriptLock(); held = lock.tryLock(5000); } catch (eLock) { held = false; }
   try {
@@ -45,6 +120,23 @@ function handleRegisterExaminee(p) {
   } finally {
     if (held) { try { lock.releaseLock(); } catch (eRel) {} }
   }
+}
+
+// TODO 1.5: the three refusals of handleGetSessionInfo (44_sessions_misc.js),
+// read-only. Served from the per-execution 'סשנים' memo (12_reads.js), so this
+// costs one sheet read at most and nothing at all when the request already read
+// the session for another reason.
+function registrationSessionError(sessionCode) {
+  var row = sessionRowByCode(sessionCode);
+  if (!row) return jsonResponse({ status: 'error', message: 'קוד סשן לא תקין' });
+  var active = row[10];                                    // K (11): פעיל
+  if (active !== true && active !== 'TRUE' && String(active).toUpperCase() !== 'TRUE') {
+    return jsonResponse({ status: 'error', message: 'הסשן הסתיים' });
+  }
+  if (new Date() > new Date(row[9])) {                     // J (10): תקף עד
+    return jsonResponse({ status: 'error', message: 'תוקף הסשן פג' });
+  }
+  return null;
 }
 
 function registerExamineeLocked(p, regKey) {
@@ -63,6 +155,9 @@ function registerExamineeLocked(p, regKey) {
           if (regKey && remembered && rowToken && remembered === rowToken) {
             return jsonResponse({ status: 'ok', examineeToken: rowToken, resumed: true });
           }
+          // Nothing was appended, so nothing is "pending" any more: a retry of
+          // this same key must be answered at once, not made to wait 25 s.
+          releaseRegistrationClaim(p.sessionCode, p.idNumber, regKey);
           return jsonResponse({ status: 'error', message: 'כבר רשום בסשן זה' });
         }
         // A PENDING disqualification (anti-cheat fired, examiner hasn't decided)
@@ -74,6 +169,7 @@ function registerExamineeLocked(p, regKey) {
         // they're final (a legitimate retake may re-register) and don't surface
         // in "במבחן כרגע".
         if (status === 'disqualified') {
+          releaseRegistrationClaim(p.sessionCode, p.idNumber, regKey);
           return jsonResponse({ status: 'error', message: 'יש פסילה הממתינה להחלטת הבוחן — פנה לבוחן לפני רישום מחדש' });
         }
       }
@@ -83,6 +179,7 @@ function registerExamineeLocked(p, regKey) {
     }
   }
   if (activeCount >= MAX_PENDING_PER_SESSION) {
+    releaseRegistrationClaim(p.sessionCode, p.idNumber, regKey);
     return jsonResponse({ status: 'error', message: 'הסשן מלא — לא ניתן לרשום נבחנים נוספים' });
   }
   var examineeToken = generateExamineeToken();

@@ -162,8 +162,21 @@ function handleMarkFinished(p) {
 // r31 (22/09/2026, DESIGN §13.6) added warn/fin/ext/dq: the examiner board no
 // longer polls on a timer — it waits on the Worker's fingerprint of these rows
 // (/v1/session/watch), so every field the board DISPLAYS has to be in the
-// fingerprint or a change to it would never wake anybody. They are counters and
-// flags, so the no-names/no-phones/no-tokens rule is unchanged.
+// fingerprint or a change to it would never wake anybody.
+//
+// r32 (22/09/2026 evening, DESIGN §14.1) — version 2. Until now a change cost
+// the board TWO Google round trips: the Worker read this snapshot (which moved
+// the fingerprint) and the page then called examinerDashboard to see WHAT
+// changed. Google's delivery hop stalls 25-60 s at random for our projects
+// (KNOWN_ISSUES #35), so every round trip is a lottery ticket; the second one
+// buys nothing this one could not carry. So the snapshot now carries the whole
+// board: the ממתינים columns the lists display, and the session's results.
+// That deliberately ENDS the "no names, no phones" property of this response —
+// the board displays names, and the only consumer of the extra fields is the
+// Worker's /v1/session/watch, which answers an examiner grant. The examinee
+// answers the Worker builds (approval/status) are unchanged and still carry
+// none of it (tests/contracts.test.cjs pins them byte for byte). The examinee
+// TOKEN is still never sent — only its SHA-256.
 defineAction('sessionSnapshot', { methods: ['GET'], auth: 'gateway', handler: handleSessionSnapshot,
   rateLimit: { max: 60, windowSec: 60, id: function(p) { return String(p.sessionCode || ''); } } });
 function handleSessionSnapshot(p) {
@@ -172,10 +185,19 @@ function handleSessionSnapshot(p) {
   var snap = pendingRowsForSession(code);         // the same 4-second snapshot the pollers use
   var extraMin = {};
   try { extraMin = extraMinutesBySession(code); } catch (eExt) { extraMin = {}; }
+  // The ONE read r32 adds: the same 'תוצאות' tail the board itself reads. No
+  // cache — this handler only runs after a write announced itself or on the
+  // Worker's 20 s safety re-read of a held session (r31.3), so it is ~3-4 a
+  // minute per live session, and a result the examiner cannot see is worse
+  // than a read.
+  diagMark('sheet:results-snapshot');
+  var resData = readResultsTail().rows;
+  var attemptsToday = attemptsTodayFromResults(resData);   // 55_dashboard.js — the board's own rules
+  var todayExams = todayExamsFromResults(resData);
   var rows = [];
   for (var i = 1; i < snap.rows.length; i++) {
     var r = snap.rows[i], id = normalizeId(r[1]);
-    rows.push({
+    var row = {
       id: id,
       status: String(r[5] || '').trim(),
       tokenHash: hashExamineeToken(r.length > 12 ? r[12] : ''),
@@ -185,10 +207,51 @@ function handleSessionSnapshot(p) {
       warn: Number(r[15]) || 0,                                  // P (16): ספירת אזהרות
       fin: r.length > 18 && r[18] ? 1 : 0,                       // S (19): סיים במכשיר
       ext: String(r[14] || '').trim() === 'כן' ? 1 : 0,             // O (15): מסך נוסף
-      dq: Number(r[13]) || 0                                     // N (14): ספירת DQ
-    });
+      dq: Number(r[13]) || 0,                                    // N (14): ספירת DQ
+      // r32: what the board's pending/active rows display. Same columns, same
+      // defaults as the items handleExaminerDashboard builds, so the page can
+      // render either source without a second rule.
+      name: r[2] === undefined ? '' : r[2],                      // C (3)
+      phone: r[3] === undefined ? '' : r[3],                     // D (4)
+      time: r[4] === undefined ? '' : r[4],                      // E (5): זמן הרשמה — a Date serialises to ISO
+      start: r[11] || '',                                        // L (12): התחלת מבחן
+      lang: r[6] || '',                                          // G (7)
+      pop: r[7] || '',                                           // H (8)
+      site: (r.length > 17) ? (r[17] || '') : '',                // R (18)
+      lic: r[8] || '',                                           // I (9)
+      timeExt: String(r[10] || ''),                              // K (11)
+      lastWarn: (r.length > 16) ? String(r[16] || '') : '',      // Q (17)
+      attemptsToday: attemptsToday[id] || 0
+    };
+    // Sent only when there is something to say — an empty array on every row
+    // would be pure weight in the Worker's fingerprint and in the cache.
+    var te = todayExams[id];
+    if (te && te.length > 0) row.todayExams = te;
+    rows.push(row);
   }
-  return jsonResponse({ status: 'ok', at: Date.now(), rows: rows });
+  return jsonResponse({ status: 'ok', v: 2, at: Date.now(), rows: rows, results: snapshotResultsForSession(resData, code) });
+}
+
+// The board's completed list WITHOUT column P (פירוט שגויות). That blob is
+// ~2 KB per result and the board's own row only ever asked one question of it —
+// "is this a fabricated fail?" (a browser-close / timeout / manual-finish row,
+// which is shown differently). So the question is answered here, as
+// `fabricated: 1`, and the blob stays on the sheet; the page fetches it from
+// examinerDashboard on the click that actually needs it (a report, the wrong-
+// answers table). Every other field keeps the board's name, so one renderer
+// serves both routes.
+function snapshotResultsForSession(resData, code) {
+  var items = completedResultsForSession(resData, code), out = [];
+  for (var i = 0; i < items.length; i++) {
+    var item = items[i], slim = {};
+    for (var key in item) {
+      if (!Object.prototype.hasOwnProperty.call(item, key) || key === 'wrongDetails') continue;
+      slim[key] = item[key];
+    }
+    if (isFabricatedFailNote(String(item.wrongDetails || ''))) slim.fabricated = 1;
+    out.push(slim);
+  }
+  return out;
 }
 
 function hashExamineeToken(token) {

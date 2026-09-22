@@ -939,7 +939,13 @@ test('gateway: both polls go to the Worker — it is the only route there is', a
   assert.ok(polls.length >= 2, 'the approval and the status poll both went through the gateway');
   assert.ok(polls.some(p => p.kind === 'approval'));
   assert.ok(polls.some(p => p.kind === 'status'));
-  assert.ok(polls.every(p => p.sessionCode === 'ABC12345' && p.idNumber === '123456789' && p.examineeToken === 'tok-1'));
+  assert.ok(polls.every(p => p.sessionCode === 'ABC12345' && p.idNumber === '123456789'));
+  // Since r32 the chain starts before the registration answers, so the FIRST
+  // approval poll is the one request on this page that carries no token — the
+  // Worker holds "no row yet" for it (§13.2) and it is what makes the row
+  // appear on the phone the moment it is written. Every later poll has one.
+  assert.equal(polls[0].examineeToken, '', 'the opening poll leaves before the token exists');
+  assert.ok(polls.slice(1).every(p => p.examineeToken === 'tok-1'));
   assert.equal(page.sent('checkApproval').length, 0, 'nothing reached Apps Script');
 });
 
@@ -1335,8 +1341,8 @@ test('nudge: a registration RESUMED on a retry is pushed with the token the row 
   } });
   await register(page);
   assert.equal(nudges(page).length, 0, 'a registration that never reached the server announces nothing');
-  page.el('registerBtn').click();
-  await drain(); await page.timer.advance(100); await drain();
+  // r32: the retry is the page's own, three seconds later — nobody presses anything.
+  await page.timer.advance(3000); await drain();
   assert.equal(nudges(page).length, 1);
   assertNudgeShape(nudges(page)[0], { token: 'tok-resumed' });
 });
@@ -1938,6 +1944,9 @@ test('source: the service worker precaches the shared layers and never the quest
 test('r31.2: every registration carries the same regKey across a retry, and a resumed answer restores the token', async () => {
   let registrations = 0;
   const page = completePage({ reply(request) {
+    // Until an execution has written the row, the Worker's honest answer is
+    // that there is none — which is what the phone polls through.
+    if (request.kind === 'approval') return registrations < 2 ? { status: 'error', message: 'לא נמצא רישום' } : undefined;
     if (request.action !== 'registerExaminee') return undefined;
     registrations++;
     if (registrations === 1) return { __raw: '<html>Google is having trouble</html>' };   // the phone gave up; the row was written
@@ -1947,9 +1956,11 @@ test('r31.2: every registration carries the same regKey across a retry, and a re
   const first = page.sent('registerExaminee');
   assert.equal(first.length, 1);
   assert.match(String(first[0].regKey || ''), /^[A-Za-z0-9_-]{16,64}$/, 'a random key rides along');
-  assert.equal(page.el('registerError').style.display, 'block', 'the lost answer is shown as a communication error');
-  page.el('registerBtn').click();
-  await drain(); await page.timer.advance(100); await drain();
+  // r32: the examinee is already on the waiting screen, so a lost answer is not
+  // a question put to them — the page answers it itself, three seconds later.
+  assert.equal(page.el('registerError').style.display, 'none');
+  assert.match(page.el('regStatus').textContent, /ממשיכים לנסות אוטומטית/);
+  await page.timer.advance(3000); await drain();
   const sent = page.sent('registerExaminee');
   assert.equal(sent.length, 2);
   assert.equal(sent[1].regKey, sent[0].regKey, 'the retry names the SAME attempt');
@@ -1960,11 +1971,22 @@ test('r31.2: every registration carries the same regKey across a retry, and a re
   assert.equal(page.t.state().inProgress, true);
 });
 
-test('r31.2: the registration request waits the unattended deadline, not the 30 s default', () => {
+// r31.2 gave the registration the 60 s unattended deadline so a slow answer was
+// not thrown away. r32 takes that back: nobody is looking at the request any
+// more, an attempt to the same regKey is idempotent, and a fresh attempt is a
+// fresh ticket in Google's delivery lottery (#35). 30 s, then the ladder.
+test('r32: a registration attempt takes the 30 s deadline, and the page retries it by itself', () => {
   const src = examinee.replace(/\r/g, '');
   const call = section(src, "      action: 'registerExaminee',", '.then(function(data) {');
   assert.match(call, /regKey: registrationKeyFor\(examineeData\.idNumber\)/);
-  assert.match(call, /\}, POLL_TIMEOUT_MS\)\s*$/, 'a registration is a write Google may answer in 30-75 s');
+  assert.match(call, /\}, API_TIMEOUT_MS\)\s*$/, 'the on-screen deadline, because nothing is on screen waiting for it');
+  assert.match(src, /var API_TIMEOUT_MS = ExamTransport\.API_TIMEOUT_MS;/, 'the named constant, never a number');
+  assert.match(src, /var REGISTRATION_RETRY_MS = \[3000, 6000, 12000, 20000\];/);
+  assert.match(src, /registrationTimer = setTimeout\(/, 'the retry is a timer, not a button');
+  assert.equal((src.match(/registerBtn\.addEventListener/g) || []).length, 1, 'and there is exactly one press to make');
+  // Exactly one place sends a registration, so a caller cannot be added without
+  // the regKey and the sequencing that make a blind retry safe.
+  assert.equal((src.match(/action: 'registerExaminee'/g) || []).length, 1);
 });
 
 // ---- r31.3 (22/09/2026): a link naming another session beats a saved state --
@@ -2005,4 +2027,204 @@ test('r31.3: a link with the SAME code restores as before, and a link never drop
   await drain(); await pageExam.timer.advance(400); await drain();
   assert.equal(pageExam.t.state().inProgress, true, 'the running exam is restored');
   assert.equal(pageExam.sent('getSessionInfo').length, 0, 'the stale link in the address bar is ignored');
+});
+
+
+// ---- r32 (22/09/2026): the registration runs in the background --------------
+// KNOWN_ISSUES #35, measured on the morning of 22/09: our executions take
+// 0.6-4 s, but Google's delivery step answers in 25-60 s or 404s. The examiner
+// saw the examinee on the dashboard while the phone was still stuck on
+// "נרשם..." ("לבוחן זה כבר הגיע ואצל הנבחן עדיין בנרשם תקוע"), and a second
+// press produced the tokenless 'כבר רשום' waiting screen of #34. DESIGN §14.2:
+// the screen changes first, the registration chases its own answer, every
+// attempt carries the same regKey, and nothing on screen asks the examinee to
+// press anything again.
+const approvalWaits = r => r.kind === 'approval' ? { status: 'ok', approval: 'waiting', audioMode: 'off' } : undefined;
+const approvalPolls = page => page.requests.filter(r => r.kind === 'approval');
+// What the Worker answers while this examinee has no row in the session yet —
+// it HOLDS it (§13.2), so it is also what the phone polls through between the
+// press and the moment an execution reaches the sheet.
+const noRowYet = r => r.kind === 'approval' ? { status: 'error', message: 'לא נמצא רישום' } : undefined;
+
+test('r32: הירשם puts the waiting screen up and the poll on the wire before the server has answered', async () => {
+  const page = completePage({ reply: r => r.action === 'registerExaminee' ? { __hang: true } : noRowYet(r) });
+  await register(page);
+  const state = page.t.state();
+  assert.equal(state.screen, 'screenInstructions', 'the examinee waits for the EXAMINER, not for Google');
+  assert.equal(state.token, '', 'and does it without a token yet');
+  const polls = approvalPolls(page);
+  assert.equal(polls.length, 1, 'the approval poll left at once — the Worker holds it until the row appears');
+  assert.equal(polls[0].examineeToken, '');
+  const reg = page.sent('registerExaminee');
+  assert.equal(reg.length, 1, 'one registration, still in flight');
+  assert.match(String(reg[0].regKey || ''), /^[A-Za-z0-9_-]{16,64}$/);
+  assert.match(page.el('regStatus').textContent, /שולח את ההרשמה לשרת/);
+  assert.equal(page.el('regStatus').style.display, 'block');
+  const saved = JSON.parse(page.session.getItem('ext_examinee_state'));
+  assert.equal(saved.screen, 'screenInstructions');
+  assert.equal(saved.examineeData.registrationPending, true, 'and the state says so before anything can go wrong');
+  assert.equal(saved.examineeData.regKey, reg[0].regKey, 'with the key a reload has to continue');
+  // 'לא נמצא רישום' while the registration is still on its way to the sheet is
+  // the expected answer, not an outage: no red banner, whatever the wait.
+  await page.timer.advance(120000);
+  assert.notEqual(page.el('approvalError').style.display, 'block', 'the waiting screen never accuses a server that answered honestly');
+  assert.match(page.el('regStatus').textContent, /ממשיכים לנסות אוטומטית/, 'the status line carries the whole story instead');
+});
+
+test('r32: a lost registration retries itself — same key, 3 → 6 → 12 → 20 → 20 s, never two at once', async () => {
+  let tries = 0;
+  const page = completePage({ reply(r) {
+    if (r.kind === 'approval') return approvalWaits(r);
+    if (r.action !== 'registerExaminee') return undefined;
+    tries++;
+    if (tries === 1) return { __hang: true };                                   // Google never answers: our own 30 s deadline ends it
+    if (tries <= 5) return { __raw: '<html>Google is having trouble</html>' };  // then its error page where JSON belongs
+    return { status: 'ok', examineeToken: 'tok-resumed', resumed: true };       // the same key gets the row's token back
+  } });
+  await register(page);
+  assert.equal(page.sent('registerExaminee').length, 1);
+  await page.timer.advance(200000);
+  const sent = page.sent('registerExaminee');
+  assert.equal(sent.length, 6, 'it never gave up, and it never asked');
+  assert.ok(sent.every(r => r.regKey === sent[0].regKey), 'every attempt names the SAME registration');
+  const gaps = sent.slice(1).map((r, i) => r.__at - sent[i].__at);
+  assert.deepEqual(gaps, [33000, 6000, 12000, 20000, 20000],
+    'the first attempt waits out its 30 s deadline, then the failure ladder — and the last step repeats');
+  assert.equal(page.t.state().token, 'tok-resumed', 'the resumed answer is this device\'s row');
+  assert.equal(page.requests.filter(r => String(r.__url).includes('/v1/invalidate')).length, 1,
+    'one push, for the one row that exists, whatever the number of attempts');
+  assert.match(page.el('regStatus').textContent, /נרשמת/);
+  page.el('airplaneCheckbox').checked = true;
+  page.el('airplaneCheckbox').fire('change');
+  assert.equal(page.el('startExamBtn').disabled, false, 'and the start button is free the moment the token is there');
+});
+
+test('r32: approved before the token — the button stays locked and doStartExam refuses, then the token unlocks it', async () => {
+  const page = completePage({ reply: r =>
+    r.action === 'registerExaminee' ? { status: 'ok', examineeToken: 'tok-late', __delay: 9000 } : undefined });
+  await register(page);   // the poll answers 'approved' at once; the registration is still out
+  assert.equal(page.el('instructionsPhase').style.display, 'block', 'the examiner approved: the instructions are up');
+  page.el('airplaneCheckbox').checked = true;
+  page.el('airplaneCheckbox').fire('change');
+  assert.equal(page.el('startExamBtn').disabled, true, 'but there is nothing to start the exam with');
+  assert.equal(page.el('startWaitToken').style.display, 'block');
+  assert.match(page.el('startWaitToken').textContent, /ממתין לאישור ההרשמה מהשרת/);
+  page.el('startExamBtn').disabled = false;    // and even if something else lit it up,
+  page.el('startExamBtn').click();
+  await drain();
+  assert.equal(page.sent('startExam').length, 0, 'doStartExam refuses without a token — no server error to read');
+  assert.equal(page.t.state().screen, 'screenInstructions');
+
+  await page.timer.advance(9000); await drain();
+  assert.equal(page.t.state().token, 'tok-late');
+  assert.equal(page.el('startExamBtn').disabled, false, 'the token unlocks the button by itself');
+  assert.equal(page.el('startWaitToken').style.display, 'none');
+  page.el('startExamBtn').click();
+  await drain(); await page.timer.advance(50); await drain();
+  assert.equal(page.sent('startExam').length, 1);
+  assert.equal(page.sent('startExam')[0].examineeToken, 'tok-late', 'and the exam carries it');
+  assert.equal(page.t.state().inProgress, true);
+});
+
+test('r32: כבר רשום is a warning that names the way out, never a silent pass (#34)', async () => {
+  const page = completePage({ reply: r =>
+    r.action === 'registerExaminee' ? { status: 'error', message: 'הנבחן כבר רשום בסשן זה' } : approvalWaits(r) });
+  await register(page);
+  assert.equal(page.t.state().screen, 'screenInstructions', 'the examinee stays where the examiner can reach them');
+  assert.equal(page.t.state().token, '', 'and there is no token — which is the whole point');
+  assert.match(page.el('regStatus').textContent, /כבר קיים רישום/);
+  assert.match(page.el('regStatus').textContent, /אפס/, 'and it says what the examiner has to press');
+  const polled = approvalPolls(page).length;
+  await page.timer.advance(120000);
+  assert.equal(page.sent('registerExaminee').length, 1, 'the loop stopped: another attempt answers the same thing');
+  assert.ok(approvalPolls(page).length > polled, 'the poll goes on — the examiner may still decide about them');
+  assert.match(page.el('regStatus').textContent, /כבר קיים רישום/, 'and nothing paints over the warning');
+  page.el('airplaneCheckbox').checked = true;
+  page.el('airplaneCheckbox').fire('change');
+  assert.equal(page.el('startExamBtn').disabled, true, 'no token, no exam — the 08:35 loop cannot happen');
+  assert.equal(page.el('startWaitToken').style.display, 'block');
+});
+
+test('r32: a refusal the server meant sends the examinee back to the form, with its words', async () => {
+  const page = completePage({ reply: r =>
+    r.action === 'registerExaminee' ? { status: 'error', message: 'הסשן מלא' } : undefined });
+  await register(page);
+  assert.equal(page.t.state().screen, 'screenIdForm');
+  assert.equal(page.el('registerError').textContent, 'הסשן מלא');
+  assert.equal(page.el('registerError').style.display, 'block');
+  const polled = approvalPolls(page).length;
+  await page.timer.advance(120000);
+  assert.equal(approvalPolls(page).length, polled, 'the poll stopped with it');
+  assert.equal(page.sent('registerExaminee').length, 1, 'and nothing retries a refusal');
+  const saved = JSON.parse(page.session.getItem('ext_examinee_state'));
+  assert.equal(saved.screen, 'screenIdForm');
+  assert.equal(saved.examineeData.registrationPending, false, 'a reload comes back to the form too');
+});
+
+test('r32: an old server behind a new page says the system is updating, on the form', async () => {
+  const page = completePage({ reply: r =>
+    r.action === 'registerExaminee' ? { status: 'error', message: 'Unknown action: registerExaminee' } : undefined });
+  await register(page);
+  assert.equal(page.t.state().screen, 'screenIdForm');
+  assert.match(page.el('registerError').textContent, /המערכת מתעדכנת/);
+});
+
+const savedPending = JSON.stringify({
+  sessionCode: 'ABC12345',
+  sessionData: { site: 'בדיקת נתונים', license: 'B', language: 'he', gateway: { url: 'https://gw.example/' } },
+  examineeData: { idNumber: '123456789', fullName: 'ישראל ישראלי', phone: '0501234567', license: 'B', language: 'he',
+    population: 'צבא', regKey: 'rksaved1234567890', regKeyFor: 'ABC12345:123456789', registrationPending: true },
+  examineeToken: '', screen: 'screenInstructions', savedAt: 1
+});
+
+test('r32: a reload during a pending registration continues the SAME key instead of starting the examinee over', async () => {
+  const session = memoryStore();
+  session.setItem('ext_examinee_state', savedPending);
+  const page = completePage({ session, reply: approvalWaits });
+  await drain(); await page.timer.advance(400); await drain();
+  assert.equal(page.t.state().screen, 'screenInstructions', 'not back to the code screen: the row may simply not be written yet');
+  const reg = page.sent('registerExaminee');
+  assert.equal(reg.length, 1);
+  assert.equal(reg[0].regKey, 'rksaved1234567890', 'the same registration, continued — never a second row');
+  const polls = approvalPolls(page);
+  assert.ok(polls.length >= 1, 'and the poll is running');
+  assert.ok(polls.every(p => /[?&]wait=/.test(String(p.__url))), 'no one-off verification: "no row yet" is not a dead state here');
+  assert.equal(page.sent('getSessionInfo').length, 0, 'the saved session is used as it is');
+  assert.equal(page.t.state().token, 'tok-1', 'and the answer lands on the restored screen');
+});
+
+test('r32: a saved state that already has its token still verifies before it restores', async () => {
+  const session = memoryStore();
+  session.setItem('ext_examinee_state', savedWait('ABC12345'));
+  const page = completePage({ session, reply: approvalWaits });
+  await drain(); await page.timer.advance(400); await drain();
+  assert.equal(page.sent('registerExaminee').length, 0, 'a registration that already has its token is never sent again');
+  assert.ok(approvalPolls(page).some(p => !/[?&]wait=/.test(String(p.__url))), 'the one-off verification is still made');
+  assert.equal(page.t.state().screen, 'screenInstructions');
+  assert.equal(page.t.state().token, 'tok-old');
+});
+
+test('r32: a rate-limited registration waits what the server asked and tries again - it is not a refusal', async () => {
+  // The per-session ceiling (120/min since r32) can be brushed by a class of
+  // phones retrying on a stalling morning. The server's answer names a wait;
+  // the loop honours it with the SAME key, and the examinee never sees a form.
+  let tries = 0;
+  const page = completePage({ reply(r) {
+    if (r.kind === 'approval') return approvalWaits(r);
+    if (r.action !== 'registerExaminee') return undefined;
+    tries++;
+    if (tries === 1) return { status: 'error', message: 'יותר מדי בקשות. נסה שוב בעוד 45 שניות.', rateLimited: true, waitSec: 45 };
+    return { status: 'ok', examineeToken: 'tok-after-limit' };
+  } });
+  await register(page);
+  assert.equal(page.t.state().screen, 'screenInstructions', 'a ceiling is not a refusal: the examinee stays on the waiting screen');
+  assert.notEqual(page.el('registerError').style.display, 'block', 'and no error is shown on the form');
+  await page.timer.advance(44000);
+  assert.equal(page.sent('registerExaminee').length, 1, 'nothing leaves before the wait the server named');
+  await page.timer.advance(2000);
+  const sent = page.sent('registerExaminee');
+  assert.equal(sent.length, 2, 'the next attempt leaves once that wait is over');
+  assert.equal(sent[1].regKey, sent[0].regKey, 'with the same registration key');
+  assert.equal(page.t.state().token, 'tok-after-limit', 'and the row is this device\'s');
+  assert.match(page.el('regStatus').textContent, /נרשמת/);
 });

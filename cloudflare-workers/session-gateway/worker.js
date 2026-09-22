@@ -33,7 +33,9 @@
  *                         [&wait=<1-25>&fp=<the last fingerprint>] — long poll
  *   GET  /v1/session/watch?grant=<examiner>&sessionCode=X[&wait=1-25&fp=…]
  *                         — the examiner dashboard's long poll: it answers
- *                           when the session's ROWS change (r31, §13.2)
+ *                           when the session's ROWS or RESULTS change, and
+ *                           (against an r32 server) carries the data itself
+ *                           in `session` (r31 §13.2, r32 §14.1)
  *   GET  /v1/bank?grant=…[&ids=1,2&langs=he,en]   — texts for the granted ids
  *   GET  /v1/bank/full?grant=…&lang=he            — a whole language (examiner)
  *   POST /v1/invalidate?grant=<examiner>&sessionCode=X[&idNumber&status&…]
@@ -59,9 +61,20 @@
  * whether or not anything had happened, and still showed a registration ~20 s
  * late. It now holds ONE request here and asks "did this session change?". The
  * answer costs Google nothing extra: the snapshot being fingerprinted is the
- * same one the examinees' own polls keep fresh. The dashboard reads Apps
- * Script only when the fingerprint moves — i.e. only when there is something
- * to see. Both holds are the SAME loop (`holdUntilChanged`), never a copy.
+ * same one the examinees' own polls keep fresh. Both holds are the SAME loop
+ * (`holdUntilChanged`), never a copy.
+ *
+ * WHY (5) — the watch CARRIES THE DATA (r32, 22/09/2026, §14.1): until r32 a
+ * change still cost the dashboard a second round trip to Google
+ * (`examinerDashboard`) just to see WHAT changed, and every round trip to
+ * Google is a lottery ticket — its delivery hop stalls 25-60 s for our
+ * projects (KNOWN_ISSUES #35). An r32 server answers `sessionSnapshot` with
+ * `v:2`, the full rows and the session's `results`, so the watch answer now
+ * carries `session:{rows,results}` and the dashboard paints from it: ONE round
+ * trip per change instead of two. Nothing else about the Worker changes — the
+ * examinee's poll answers stay byte-identical (contracts.test.cjs), an r31
+ * server (no `v`, no `results`) simply produces no `session`, and an r31 page
+ * ignores the field it does not know.
  *
  * Failure policy: a snapshot up to 60 s old is served with `stale:true` rather
  * than an error; with nothing cached the answer is a RETRYABLE error (HTTP
@@ -70,7 +83,7 @@
  * a client that must pace itself has to be told so at once.
  */
 
-const BUILD = '2026-09-22';
+const BUILD = '2026-09-23';
 
 const ALLOWED_ORIGINS = [
   'https://bohanyzahal-cyber.github.io',
@@ -414,8 +427,14 @@ const UNAVAILABLE_VIEW = {
  * the dashboard DISPLAYS changes, and for nothing else:
  *
  *   s:<12 hex of SHA-256 over the rows, in snapshot order>
- *   s:none    a session with no rows at all — HELD, because the very next
- *             registration creates one and wakes the watch
+ *   s:<12 hex of SHA-256 over `<rows>#<results>`>   …once the server sends
+ *             results (r32, v2). With no results the input is the rows alone,
+ *             BYTE-IDENTICAL to r31: deploying this Worker ahead of the server
+ *             paste (§14.5) must not move a single fingerprint, or two Worker
+ *             versions would hash one unchanged session two ways and the
+ *             dashboard would flip-flop for ever — the 22/09 lesson below.
+ *   s:none    a session with no rows and no results at all — HELD, because the
+ *             very next registration creates one and wakes the watch
  *
  * Deliberately NOT in it: `snapshot.at` (every upstream read moves it, and the
  * dashboard would re-read Apps Script every 2 s for nothing — that is the 5 s
@@ -431,6 +450,21 @@ const UNAVAILABLE_VIEW = {
  */
 const SESSION_FP_FIELDS = ['id', 'status', 'audio', 'examMinutes', 'extraMinutes', 'warn', 'fin', 'ext', 'dq'];
 
+/**
+ * ...and, since r32 (§14.1), the session's RESULTS — every field of them, in
+ * this fixed order. The dashboard now draws the "completed" table from the
+ * watch answer, so anything the examiner can see there has to wake the watch:
+ * a corrected score, a "sent" tick, a reinstated result. `wrongDetails` is
+ * deliberately not in the snapshot at all (the heavy block; the page fetches
+ * it on the click that needs it), and `fabricated` is the one bit of it the
+ * result row itself shows.
+ */
+const RESULT_FP_FIELDS = [
+  'date', 'idNumber', 'name', 'phone', 'license', 'score', 'percent', 'passed', 'time',
+  'examiner', 'site', 'classroom', 'language', 'attempt', 'sent', 'disqualified', 'waLink',
+  'population', 'corrected', 'audioMode', 'verified', 'suspicious', 'device', 'fabricated'
+];
+
 // The four r31 fields, where "absent" and "zero" are the SAME state and must
 // hash the same. WHY (22/09, from `wrangler tail`): one examiner page saw its
 // answer alternate between two fingerprints for the same unchanged session,
@@ -443,11 +477,27 @@ const SESSION_FP_FIELDS = ['id', 'status', 'audio', 'examMinutes', 'extraMinutes
 // `status` / `audio` / `examMinutes` have no "absent" state.
 const SESSION_FP_ZEROABLE = { warn: 1, fin: 1, ext: 1, dq: 1 };
 
+/**
+ * One cell of the fingerprint's input, for a pending row or for a result.
+ * Absent, null and '' are the same empty cell; everything else is its own
+ * `String()` — `true`/`false` included, which is how a result's booleans
+ * (`passed`, `sent`, `corrected`, `verified`, `suspicious`, `fabricated`)
+ * hash. Deterministic is the whole requirement: the same snapshot must hash
+ * the same in every isolate, for ever.
+ */
 function fpCell(row, field) {
   const value = row[field];
   if (value == null || value === '') return '';
   if (SESSION_FP_ZEROABLE[field] && (value === 0 || value === '0' || value === false)) return '';
   return String(value);
+}
+
+/** `<rows>` or `<rows>#<results>` — the exact text the session hash is taken over. */
+function fingerprintInput(rows, results) {
+  const rowsPart = rows.map(row => SESSION_FP_FIELDS.map(field => fpCell(row, field)).join('|')).join(';');
+  if (!results.length) return rowsPart;   // r31's input, to the byte
+  return rowsPart + '#' +
+    results.map(res => RESULT_FP_FIELDS.map(field => fpCell(res, field)).join('|')).join(';');
 }
 
 // Per snapshot OBJECT, so a request held for 25 s hashes each copy once:
@@ -471,9 +521,9 @@ function sessionFingerprint(snapshot) {
   const known = sessionFpCache.get(snapshot);
   if (known) return known;
   const rows = Array.isArray(snapshot.rows) ? snapshot.rows : [];
-  const pending = rows.length
-    ? sha256Hex(rows.map(row => SESSION_FP_FIELDS.map(field => fpCell(row, field)).join('|')).join(';'))
-        .then(hex => 's:' + hex.slice(0, 12))
+  const results = Array.isArray(snapshot.results) ? snapshot.results : [];
+  const pending = (rows.length || results.length)
+    ? sha256Hex(fingerprintInput(rows, results)).then(hex => 's:' + hex.slice(0, 12))
     : Promise.resolve('s:none');
   sessionFpCache.set(snapshot, pending);
   return pending;
@@ -481,8 +531,10 @@ function sessionFingerprint(snapshot) {
 
 /**
  * One evaluation of one snapshot for the examiner: how many rows the session
- * has and when it was read — a change detector, not the data itself, which the
- * dashboard reads from Apps Script the moment `fp` moves.
+ * has and when it was read — the change detector. The DATA is attached later,
+ * in `watch`, and only when it is worth sending (see `sessionPayload`): the
+ * view is computed once per tick of a hold, so building the payload here would
+ * copy every row 25 times for an answer that carries it at most once.
  *
  * A stale copy answers at once with `stale:true` and is NEVER held, exactly
  * like a stale poll answer: while we cannot refresh, the dashboard has to fall
@@ -492,7 +544,51 @@ async function sessionView(snapshot, stale) {
   const rows = Array.isArray(snapshot.rows) ? snapshot.rows : [];
   const answer = { status: 'ok', rows: rows.length, at: Number(snapshot.at) || 0 };
   if (stale) answer.stale = true;
-  return { answer: answer, fp: await sessionFingerprint(snapshot), holdable: !stale };
+  return {
+    answer: answer, fp: await sessionFingerprint(snapshot), holdable: !stale,
+    // The copy this view was computed from, and whether it was servable only
+    // as stale — `watch` needs both to decide about `session`.
+    snapshot: snapshot, stale: Boolean(stale)
+  };
+}
+
+/** The results of the copy a view was computed from — for the log, sent or not. */
+function sessionResults(view) {
+  const results = view && view.snapshot && view.snapshot.results;
+  return Array.isArray(results) ? results : [];
+}
+
+/** A row as the examiner may see it: everything the server sent, minus the hash. */
+function publicRow(row) {
+  const copy = Object.assign({}, row);
+  delete copy.tokenHash;   // the token never leaves Apps Script, and its hash never leaves here
+  return copy;
+}
+
+/**
+ * `session:{rows,results}` — the dashboard's data, or null when it must not be
+ * sent. Three gates, all from §14.1:
+ *
+ *   1. `v >= 2`: an r31 server sends neither the extra row fields nor the
+ *      results, and half a dashboard is worse than none — the page falls back
+ *      to its `examinerDashboard` read, exactly as in r31.3.
+ *   2. not `stale`: a stale view is one we could not refresh, and the page
+ *      must not paint a class from a copy that may be a minute behind. It
+ *      falls back to its own safety net instead (§13.2).
+ *   3. the fingerprint actually MOVED (or the client sent none, i.e. this is
+ *      the first answer of a chain and the page has nothing yet). A hold that
+ *      runs out unchanged answers the same `fp` and must stay small — that is
+ *      one answer per 25 s per open dashboard, with nothing to say.
+ */
+function sessionPayload(view, clientFp) {
+  const snapshot = view && view.snapshot;
+  if (!snapshot || view.stale) return null;
+  if (!(Number(snapshot.v) >= 2)) return null;
+  if (clientFp && view.fp === clientFp) return null;
+  return {
+    rows: (Array.isArray(snapshot.rows) ? snapshot.rows : []).map(publicRow),
+    results: Array.isArray(snapshot.results) ? snapshot.results : []
+  };
 }
 
 // --- the gateway -----------------------------------------------------------
@@ -551,13 +647,28 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
     }
   }
 
+  /**
+   * The stored Response carries the fingerprint and the read time in HEADERS
+   * as well as in the body (r32, TODO 0א.6). WHY: a held request re-reads
+   * `caches.default` every second — that is the channel a patch from another
+   * isolate arrives through — and `JSON.parse` of a 5-40 KB snapshot every
+   * second is most of what a held request costs, against a free-plan ceiling
+   * of 10 ms of CPU. With these two headers the usual tick is `match` plus a
+   * string compare, and the body is parsed only when the fingerprint says the
+   * copy really is a different one. See `cacheFingerprint`.
+   */
   async function cacheWrite(session, snapshot) {
     if (!caches || !caches.default) return;
     const body = JSON.stringify(snapshot);
     const store = (kind, maxAge) => caches.default.put(
       new Request(cacheKey(kind, session)),
       new Response(body, {
-        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'max-age=' + maxAge }
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'max-age=' + maxAge,
+          'X-SFP': String(snapshot.sfp || ''),
+          'X-RAT': String(Number(snapshot.rat) || 0)
+        }
       })
     );
     try {
@@ -565,10 +676,48 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
     } catch (e) { /* cache is best effort */ }
   }
 
+  /**
+   * The cached copy's fingerprint and read time from its HEADERS ALONE — never
+   * `json()`, which is the whole point (see `cacheWrite`). `null` means "not
+   * known": no entry, an entry past `maxAgeMs`, or one written before r32 and
+   * therefore carrying no headers. Every caller falls back to the full read on
+   * `null`, so a Worker rolled back mid-deploy behaves exactly as r31 did.
+   */
+  async function cacheFingerprint(kind, session, maxAgeMs) {
+    if (!caches || !caches.default) return null;
+    try {
+      const hit = await caches.default.match(new Request(cacheKey(kind, session)));
+      if (!hit || !hit.headers) return null;
+      const sfp = hit.headers.get('X-SFP') || '';
+      const rat = Number(hit.headers.get('X-RAT'));
+      if (!sfp || !Number.isFinite(rat) || rat <= 0) return null;
+      if (maxAgeMs != null && clock() - rat > maxAgeMs) return null;
+      return { sfp: sfp, rat: rat };
+    } catch (e) {
+      return null;
+    }
+  }
+
   function memoryRead(session, maxAgeMs) {
     const hit = memory.get(session);
     if (!hit || clock() - hit.at > maxAgeMs) return null;
     return hit.snapshot;
+  }
+
+  /**
+   * A copy that came out of `caches.default` while this isolate held nothing
+   * is kept in memory too (r32). WHY: without it every tick of a held request
+   * in a cold isolate re-read and re-parsed the same cached body; with it the
+   * next tick finds the copy in memory and only compares `cacheFingerprint`'s
+   * header against it. Its age is the age it already had (`rat`, OUR clock
+   * when the copy was made current), never `now` — adopting a copy must not
+   * make it look younger than it is, or the safety cadence would never fire.
+   */
+  function adopt(session, snapshot) {
+    if (!snapshot) return snapshot;   // "nothing in the cache either" passes straight through
+    const rat = Number(snapshot.rat);
+    memory.set(session, { at: Number.isFinite(rat) && rat > 0 ? rat : clock(), snapshot: snapshot });
+    return snapshot;
   }
 
   /** How old the copy we are about to answer from is — for the log, only. */
@@ -666,7 +815,16 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
       // throws on it and we fall through to the stale copy.
       const data = JSON.parse(await res.text());
       if (!data || data.status !== 'ok' || !Array.isArray(data.rows)) return null;
-      return { at: Number(data.at) || clock(), rows: data.rows };
+      // `v` and `results` arrive with r32's sessionSnapshot (§14.1). An r31
+      // server sends neither: v = 1 and no results, which is exactly what
+      // keeps this Worker's fingerprints identical to r31's (see
+      // sessionFingerprint) and its watch answers free of `session`.
+      return {
+        at: Number(data.at) || clock(),
+        rows: data.rows,
+        v: Number(data.v) || 1,
+        results: Array.isArray(data.results) ? data.results : []
+      };
     } catch (e) {
       return null;
     } finally {
@@ -720,7 +878,11 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
       const fresh = memoryRead(session, maxAgeMs);
       if (fresh) { trace.src = 'memory'; trace.age = snapshotAge(fresh); return { ok: true, snapshot: fresh, fromCache: true, stale: false }; }
       const cached = await cacheRead('snap', session, maxAgeMs);
-      if (cached) { trace.src = 'cache'; trace.age = snapshotAge(cached); return { ok: true, snapshot: cached, fromCache: true, stale: false }; }
+      if (cached) {
+        adopt(session, cached);   // so the next tick of this request compares a header, not a body
+        trace.src = 'cache'; trace.age = snapshotAge(cached);
+        return { ok: true, snapshot: cached, fromCache: true, stale: false };
+      }
     }
     const pending = fetchCoalesced(session);
     const fetched = await within(Math.max(0, until - clock()) + HOLD_GRACE_MS, pending);
@@ -732,7 +894,7 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
       trace.age = snapshotAge(fetched);
       return { ok: true, snapshot: fetched, fromCache: false, stale: false };
     }
-    const old = memoryRead(session, STALE_MS) || await cacheRead('stale', session);
+    const old = memoryRead(session, STALE_MS) || adopt(session, await cacheRead('stale', session));
     if (old) { trace.src = 'stale'; trace.age = snapshotAge(old); return { ok: true, snapshot: old, fromCache: true, stale: true }; }
     trace.src = 'none';
     trace.age = -1;
@@ -778,7 +940,15 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
     if (index < 0) return false;
     const rows = current.rows.slice();
     rows[index] = Object.assign({}, rows[index], fields);  // only the named row
-    const snapshot = { at: current.at, rows: rows };       // `at` stays the read time
+    // `at` stays the read time; `v` and `results` travel with the copy (r32) —
+    // a patch touches ONE pending row and knows nothing about the results, so
+    // dropping them would blank the dashboard's completed table on every
+    // decision and move the fingerprint for a change nobody made.
+    const snapshot = {
+      at: current.at, rows: rows,
+      v: Number(current.v) || 1,
+      results: Array.isArray(current.results) ? current.results : []
+    };
     // Re-stamped, never inherited: the whole point of a patch is that the
     // session's fingerprint moves, and the copy in caches.default must carry
     // the NEW one (see sessionFingerprint).
@@ -1156,6 +1326,15 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
       trace.src = 'memory';
       trace.age = snapshotAge(mine);
       if (fromMemory.fp !== clientFp) return fromMemory;
+      // The cheap question first (r32, TODO 0א.6): is the cached copy even a
+      // DIFFERENT snapshot? Its fingerprint travels in a header, so a quiet
+      // tick costs a `match` and a string compare — not `JSON.parse` of 5-40
+      // KB, every second, for a copy that turns out to be the same one. A
+      // `null` here means the header could not answer (a copy written before
+      // r32, or one past the window), and then the body is read exactly as
+      // r31 read it. Only a DIFFERING fingerprint opens the body.
+      const header = await cacheFingerprint('snap', session, maxAgeMs);
+      if (header && mine.sfp && header.sfp === mine.sfp) return fromMemory;
       const cached = await cacheRead('snap', session, maxAgeMs);
       if (cached) {
         const patched = await view(cached, false);
@@ -1163,13 +1342,13 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
       }
       return fromMemory;
     }
-    const cached = await cacheRead('snap', session, maxAgeMs);
+    const cached = adopt(session, await cacheRead('snap', session, maxAgeMs));
     if (cached) { trace.src = 'cache'; trace.age = snapshotAge(cached); return view(cached, false); }
     // The hold's own grace timer is what bounds this join of the coalesced
     // read (see `within`), so this await is never a bare one.
     const fetched = await fetchCoalesced(session);
     if (fetched) { trace.src = 'fetch'; trace.age = snapshotAge(fetched); return view(fetched, false); }
-    const old = memoryRead(session, STALE_MS) || await cacheRead('stale', session);
+    const old = memoryRead(session, STALE_MS) || adopt(session, await cacheRead('stale', session));
     if (old) { trace.src = 'stale'; trace.age = snapshotAge(old); return view(old, true); }
     trace.src = 'none';
     trace.age = -1;
@@ -1270,11 +1449,22 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
       look: fp => holdLookSession(session, fp, trace)
     });
     trace.fl = firstLookMs;
-    logAnswer('watch', session, trace, held.view.fp, held.held, { rows: held.view.answer.rows });
+    // The data itself, when there is a reason to send it (r32, §14.1). Built
+    // ONCE, here, after the hold has picked the view that will be answered.
+    const payload = sessionPayload(held.view, clientFp);
+    // `nr` is in the line whether or not the payload went out: an `nr` stuck at
+    // 0 in a session that HAS finished exams is how a tail says "the server is
+    // still r31" (§14.5's verification), and `sess` is how it says "the
+    // dashboard was painted from here".
+    const line = { rows: held.view.answer.rows, nr: sessionResults(held.view).length };
+    if (payload) line.sess = 1;
+    logAnswer('watch', session, trace, held.view.fp, held.held, line);
     // `status` leads, then the two long-poll fields, then the view's own body
-    // (whose `status` re-states the same value and keeps that first place).
-    return jsonResponse(request,
-      Object.assign({ status: 'ok', fp: held.view.fp, held: held.held | 0 }, held.view.answer));
+    // (whose `status` re-states the same value and keeps that first place),
+    // and `session` last — the dashboard reads the small fields either way.
+    const answer = Object.assign({ status: 'ok', fp: held.view.fp, held: held.held | 0 }, held.view.answer);
+    if (payload) answer.session = payload;
+    return jsonResponse(request, answer);
   }
 
   /**

@@ -62,20 +62,51 @@ const examGrant = (ids, over) => grant(Object.assign({ s: 'exam', ids, sub: SESS
 const examinerGrant = over => grant(Object.assign({ s: 'examiner', sub: 'ex:7' }, over));
 
 /**
+ * What a cached Response answers to the gateway. Since r32 that is TWO things:
+ * `headers.get('X-SFP'/'X-RAT')`, which is all a quiet tick of a held request
+ * may read, and `json()`, which parses 5-40 KB and is therefore COUNTED — the
+ * CPU gate of TODO 0א.6. `get` is case-insensitive like the real Headers, and
+ * an entry written before r32 (a test that seeds `store` by hand) has no
+ * headers at all and answers null, which is the compatibility path.
+ */
+const cachedResponse = (text, headers, counts) => ({
+  status: 200,
+  headers: {
+    get(name) {
+      const wanted = String(name).toLowerCase();
+      for (const key of Object.keys(headers || {})) {
+        if (key.toLowerCase() === wanted) return headers[key];
+      }
+      return null;
+    }
+  },
+  text: async () => text,
+  json: async () => { counts.json++; return JSON.parse(text); }
+});
+
+/**
  * `caches.default` in memory: max-age is honoured against the same fake clock
  * the gateway reads, so an expiring `snap` copy behaves as it does at the edge.
+ * `counts` is what the CPU tests assert on — `match` is cheap, `json` is not.
  */
 function cacheDouble(now) {
   const store = new Map();
-  return { store, caches: { default: {
+  const counts = { match: 0, json: 0 };
+  return { store, counts, caches: { default: {
     async match(request) {
+      counts.match++;
       const hit = store.get(request.url);
       if (!hit || now() - hit.at > hit.maxAge * 1000) return undefined;
-      return body(hit.body, 200);   // `.json()`, and nothing else the gateway uses
+      return cachedResponse(hit.body, hit.headers, counts);
     },
     async put(request, response) {
       const maxAge = Number(/max-age=(\d+)/.exec(response.headers.get('Cache-Control') || '')[1]);
-      store.set(request.url, { body: await response.text(), maxAge, at: now() });
+      const headers = {};
+      for (const name of ['X-SFP', 'X-RAT']) {
+        const value = response.headers.get(name);
+        if (value != null) headers[name] = value;
+      }
+      store.set(request.url, { body: await response.text(), maxAge, at: now(), headers });
     },
     async delete(request) { return store.delete(request.url); }
   } } };
@@ -243,7 +274,13 @@ async function advance(state, ms) {
  * isolate: new memory, same cache, same clock, same upstream counter.
  */
 function harness(snapshots, assets, withCache) {
-  const state = { calls: [], clock: CLOCK0, mode: 'ok', snapshots: snapshots || {}, upstreamDelayMs: 0 };
+  // `serverV` is which sessionSnapshot the fake Apps Script speaks: 1 = r31
+  // (no `v`, no `results` — the shape the Worker must still hash exactly as
+  // r31 did), 2 = r32 (§14.1), which also answers `results[session]`.
+  const state = {
+    calls: [], clock: CLOCK0, mode: 'ok', snapshots: snapshots || {},
+    upstreamDelayMs: 0, serverV: 1, results: {}
+  };
   state.timers = timerQueue(state);
   const fetchFn = async url => {
     state.calls.push(String(url));
@@ -255,11 +292,17 @@ function harness(snapshots, assets, withCache) {
     if (state.mode === 'html200') return body('<!DOCTYPE html><html>Drive error</html>', 200);
     const session = new URL(url).searchParams.get('sessionCode');
     const rows = state.snapshots[session] || [];
-    return body(JSON.stringify({ status: 'ok', at: state.clock, rows }), 200);
+    const answer = { status: 'ok', at: state.clock, rows };
+    if (state.serverV >= 2) {
+      answer.v = 2;
+      answer.results = state.results[session] || [];
+    }
+    return body(JSON.stringify(answer), 200);
   };
   const env = assets ? Object.assign({}, ENV, { ASSETS: assets.fetch ? assets : assetsBinding(assets) }) : ENV;
   const double = withCache ? cacheDouble(() => state.clock) : null;
   state.store = double ? double.store : null;
+  state.cacheCounts = double ? double.counts : null;
   // One structured line per answered watch/poll. Collected instead of printed:
   // the suite stays readable, and a test can assert what `wrangler tail` will
   // show (`state.logs.at(-1)`).
@@ -1889,8 +1932,10 @@ test('every answered watch and poll leaves one structured line naming where the 
   const first = await watch(gateway, watchParams());
   assert.deepEqual(state.logs.at(-1), {
     r: 'watch', s: SESSION, src: 'fetch', fp: first.body.fp, held: 0, fl: 0, age: 0, late: 0,
-    up: 0, usfp: first.body.fp, rows: 1
+    up: 0, usfp: first.body.fp, rows: 1, nr: 0
   }, 'src says which copy answered, age how old it was, usfp what Google last gave us');
+  assert.equal(state.logs.at(-1).sess, undefined,
+    'an r31 server sends no results and no `v`, so there is no session payload to announce');
 
   await poll(gateway, approvalPoll('900000001', { wait: 0 }));
   const line = state.logs.at(-1);
@@ -2026,4 +2071,308 @@ test('a nudge is what makes the Worker read: the drop, not the clock', async () 
   assert.notEqual(dash.body.fp, seen.body.fp);
   assert.equal(device.body.examStatus, 'completed');
   assert.equal(state.clock - CLOCK0, 15000, 'and both saw it without waiting out a tick');
+});
+
+// --- r32: the watch answer CARRIES the dashboard (DESIGN §14.1) ------------
+// Until r32 a change still cost the dashboard a second round trip to Google
+// just to see WHAT changed — and every round trip is a lottery ticket while
+// Google's delivery hop stalls 25-60 s for our projects (KNOWN_ISSUES #35).
+// An r32 server answers sessionSnapshot with `v:2`, the full rows and the
+// session's results; the watch now hands them to the page in `session`.
+
+/** An r32 snapshot row: every r31 field, plus what the dashboard paints with. */
+const fullRow = over => row(Object.assign({
+  name: 'ישראל ישראלי', phone: '0500000001', time: '2026-09-22T06:30:00.000Z', start: '',
+  lang: 'he', pop: 'חוגר', site: 'דימונה', lic: 'B', timeExt: '', lastWarn: '', attemptsToday: 1
+}, over));
+
+/** The same rows an r32 server would send: same watched fields, more payload. */
+const fullRowsOf = rows => rows.map(r => fullRow(Object.assign({}, r)));
+
+/** One item of `results[]` — the fields §14.1 names, in the order it names them. */
+const result = over => Object.assign({
+  date: '22/09/2026 09:41', idNumber: '900000001', name: 'ישראל ישראלי', phone: '0500000001',
+  license: 'B', score: 27, percent: 90, passed: true, time: '18:42', examiner: 'בוחן א',
+  site: 'דימונה', classroom: 'כיתה 1', language: 'he', attempt: 1, sent: '', disqualified: '',
+  waLink: 'https://wa.me/972500000001', population: 'חוגר', corrected: '', audioMode: 'off',
+  verified: '', suspicious: '', device: 'Windows'
+}, over);
+
+/** A harness whose fake Apps Script speaks snapshot v2. */
+function v2Harness(rows, results, withCache) {
+  const made = harness({ [SESSION]: rows }, null, withCache);
+  made.state.serverV = 2;
+  made.state.results[SESSION] = results || [];
+  return made;
+}
+
+const SNAP_KEY = 'https://session-gateway.internal/snap/' + SESSION;
+
+/** The fingerprint a v2 session of exactly these rows and results produces. */
+async function sessionFpV2(rows, results) {
+  const { gateway } = v2Harness(rows, results);
+  return (await watch(gateway, watchParams())).body.fp;
+}
+
+test('watch: `session` carries the rows and the results, and never a token hash', async () => {
+  const rows = [
+    fullRow({ id: '900000001', status: 'in_exam', tokenHash: sha256Hex(TOKEN), start: '09:12',
+              attemptsToday: 2, todayExams: [{ license: 'B', score: 24, passed: false, language: 'he' }] }),
+    fullRow({ id: '900000002', status: 'waiting', name: 'דנה כהן' })
+  ];
+  const results = [result(), result({ idNumber: '900000003', attempt: 2, passed: false, score: 21 })];
+  const { state, gateway } = v2Harness(rows, results);
+
+  const { body } = await watch(gateway, watchParams());
+  assert.equal(state.calls.length, 1, 'one snapshot read — and the dashboard needs nothing else');
+  assert.equal(body.rows, 2, '`rows` is still the COUNT: an old page reads exactly what it read in r31');
+  assert.equal(body.session.rows.length, 2);
+  const withoutHash = Object.assign({}, rows[1]);
+  delete withoutHash.tokenHash;
+  assert.deepEqual(body.session.rows[1], withoutHash, 'every other field of the row travels whole');
+  assert.deepEqual(body.session.results, results, 'and the results exactly as the server sent them');
+  assert.deepEqual(body.session.rows[0].todayExams, rows[0].todayExams,
+    "today's other attempts come through too");
+
+  // The one field that must never leave this Worker.
+  assert.equal('tokenHash' in body.session.rows[0], false, 'the hash is stripped, not emptied');
+  assert.equal(JSON.stringify(body).includes(sha256Hex(TOKEN)), false,
+    'and nothing else in the answer carries it either');
+
+  assert.equal(state.logs.at(-1).sess, 1, 'the tail says a payload went out');
+  assert.equal(state.logs.at(-1).nr, 2, '...and how many results it carried');
+});
+
+test('watch: an r31 server answers no `session` at all, and the page falls back', async () => {
+  // The deploy order of §14.5 is Worker first, server second: for those hours
+  // the Worker talks to an r31 server and must behave exactly like r31.3c.
+  const { state, gateway } = harness({ [SESSION]: [fullRow({ status: 'waiting' })] });
+  const { body } = await watch(gateway, watchParams());
+  assert.equal(body.session, undefined, 'no `v` in the snapshot means no payload');
+  assert.equal(body.rows, 1);
+  assert.equal(state.logs.at(-1).nr, 0);
+  assert.equal(state.logs.at(-1).sess, undefined);
+});
+
+test('watch: `session` is attached only when the fingerprint moved, and never on a stale view', async () => {
+  const rows = [fullRow({ status: 'waiting' })];
+  const { state, gateway } = v2Harness(rows, [result()]);
+
+  const first = await watch(gateway, watchParams());
+  assert.ok(first.body.session, 'the first answer of a chain has no `fp` to compare, so it carries the data');
+
+  // Re-arming with the fingerprint it already holds: nothing changed, so the
+  // answer stays the small one. 25 s x every open dashboard is why.
+  const rearm = await watch(gateway, watchParams({ fp: first.body.fp }));
+  assert.equal(rearm.body.fp, first.body.fp);
+  assert.equal(rearm.body.session, undefined, 'the page already has exactly this');
+
+  const ranOut = await settle(state, watch(gateway, watchParams({ wait: 5, fp: first.body.fp })));
+  assert.equal(ranOut.body.held, 5000, 'a hold that expires unchanged...');
+  assert.equal(ranOut.body.session, undefined, '...carries nothing either');
+  assert.equal(state.logs.at(-1).sess, undefined);
+  assert.equal(gateway._debug().waiting, 0);
+
+  // A change: the data comes with the news, in one round trip.
+  state.snapshots[SESSION] = [fullRow({ status: 'approved', examMinutes: 50 })];
+  await nudge(gateway, '');
+  const changed = await watch(gateway, watchParams({ fp: first.body.fp }));
+  assert.notEqual(changed.body.fp, first.body.fp);
+  assert.equal(changed.body.session.rows[0].status, 'approved');
+
+  // ...and a copy we could not refresh is never painted from: the dashboard
+  // falls back to its own safety net instead of showing a minute-old class.
+  state.mode = 'error500';
+  await advance(state, 50000);
+  const onStale = await watch(gateway, watchParams({ wait: 25, fp: 's:something-else' }));
+  assert.equal(onStale.body.stale, true);
+  assert.equal(onStale.body.session, undefined, 'stale never paints');
+  assert.equal(onStale.body.held, 0);
+});
+
+test('watch: the fingerprint moves on every result field, and on a new result', async () => {
+  const rows = [fullRow({ status: 'completed' })];
+  const baseline = await sessionFpV2(rows, [result()]);
+  assert.match(baseline, /^s:[0-9a-f]{12}$/);
+
+  // Every field of `results[]`, including the `fabricated` flag that is only
+  // there when it is 1. A corrected score or a "sent" tick that did not move
+  // the fingerprint would simply never reach the examiner's screen.
+  const changed = {
+    date: '22/09/2026 10:02', idNumber: '900000009', name: 'שם אחר', phone: '0500000002',
+    license: 'C1', score: 28, percent: 93, passed: false, time: '19:00', examiner: 'בוחן ב',
+    site: 'באר שבע', classroom: 'כיתה 2', language: 'ru', attempt: 2, sent: 'נשלח',
+    disqualified: 'פסול', waLink: 'https://wa.me/972500000002', population: 'קבע',
+    corrected: 'תוקן', audioMode: 'on', verified: 'מאומת', suspicious: 'חשוד',
+    device: 'Android', fabricated: 1
+  };
+  for (const field of Object.keys(changed)) {
+    assert.notEqual(await sessionFpV2(rows, [result({ [field]: changed[field] })]), baseline,
+      field + ' must move the fingerprint');
+  }
+
+  assert.notEqual(await sessionFpV2(rows, [result(), result({ idNumber: '900000002' })]), baseline,
+    'a second result must move it');
+  assert.notEqual(await sessionFpV2(rows, []), baseline, 'and so must losing one');
+  assert.equal(await sessionFpV2(rows, [result()]), baseline, 'the same session hashes the same, always');
+});
+
+// The r31 formula, computed here from first principles: if these two ever
+// disagree, deploying this Worker ahead of the server paste (§14.5) would move
+// every fingerprint in the fleet and two Worker versions would hash one
+// unchanged session two ways — the flip-flop of 22/09, all over again.
+const R31_FP_FIELDS = ['id', 'status', 'audio', 'examMinutes', 'extraMinutes', 'warn', 'fin', 'ext', 'dq'];
+const R31_ZEROABLE = { warn: 1, fin: 1, ext: 1, dq: 1 };
+function r31SessionFp(rows) {
+  if (!rows.length) return 's:none';
+  const cell = (r, f) => {
+    const value = r[f];
+    if (value == null || value === '') return '';
+    if (R31_ZEROABLE[f] && (value === 0 || value === '0' || value === false)) return '';
+    return String(value);
+  };
+  const text = rows.map(r => R31_FP_FIELDS.map(f => cell(r, f)).join('|')).join(';');
+  return 's:' + crypto.createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 12);
+}
+
+test('watch: with no results the fingerprint is byte-for-byte the one r31 computed', async () => {
+  const rows = [
+    row({ id: '900000001', status: 'in_exam', audio: 'on', examMinutes: 50, extraMinutes: 5,
+          warn: 1, fin: 0, ext: 0, dq: '' }),
+    row({ id: '900000002', status: 'waiting' })
+  ];
+  const r31 = r31SessionFp(rows);
+  assert.match(r31, /^s:[0-9a-f]{12}$/);
+
+  assert.equal(await sessionFp(rows), r31, 'an r31 server: unchanged, to the byte');
+  assert.equal(await sessionFpV2(rows, []), r31,
+    'and an r32 server with no results yet hashes the very same text');
+  assert.equal(await sessionFpV2(fullRowsOf(rows), []), r31,
+    "the row fields r32 added are not watched — they cannot change without one that is");
+
+  // ...and the empty session keeps its own name, whatever the server speaks.
+  assert.equal(await sessionFp([]), 's:none');
+  assert.equal(await sessionFpV2([], []), 's:none');
+  assert.notEqual(await sessionFpV2([], [result()]), 's:none',
+    'a session whose pending rows were archived still wakes on its results');
+});
+
+test('the examinee poll never sees a v2 row — not one extra field', async () => {
+  const { gateway } = v2Harness([fullRow({ status: 'approved', examMinutes: 50 })], [result()]);
+
+  const approval = await poll(gateway, approvalPoll('900000001'));
+  assert.deepEqual(approval.body, { status: 'ok', approval: 'approved', audioMode: 'off', examMinutes: 50 },
+    'byte for byte the server\'s own checkApproval, exactly as contracts.test.cjs pins it');
+  const status = await poll(gateway, statusPoll('900000001'));
+  assert.deepEqual(status.body, { status: 'ok', examStatus: 'approved', extraMinutes: 0 });
+
+  const longPoll = await poll(gateway, approvalPoll('900000001', { fp: '' }));
+  assert.deepEqual(longPoll.body, {
+    status: 'ok', approval: 'approved', audioMode: 'off', examMinutes: 50,
+    fp: 'a:approved:off:50', held: 0
+  }, 'and a long-polling client still gets only fp/held on top');
+
+  // The names, phones and results the dashboard needs are none of a device's
+  // business — and an examinee's phone is the least trusted thing we serve.
+  for (const answer of [approval.body, status.body, longPoll.body]) {
+    const text = JSON.stringify(answer);
+    assert.equal(text.includes('ישראל'), false, 'no name reaches a device');
+    assert.equal(text.includes('0500000001'), false, 'no phone either');
+    assert.equal(text.includes('results'), false);
+    assert.equal(text.includes('session'), false);
+  }
+});
+
+test('a patch keeps `v` and the results, and the held watch is answered with them', async () => {
+  const { state, gateway } = v2Harness([fullRow({ status: 'waiting' })], [result()]);
+  const seen = await watch(gateway, watchParams());
+  assert.ok(seen.body.session, 'v2 from the start');
+
+  const holding = watch(gateway, watchParams({ wait: 25, fp: seen.body.fp }));
+  assert.equal(await parked(gateway, 1), 1);
+
+  // The examiner approved in another tab: the decision-carrying nudge patches
+  // ONE pending row and must not lose the rest of the snapshot with it.
+  assert.equal((await nudge(gateway, '&idNumber=900000001&status=approved&examMinutes=50&audio=on')).body.patched, true);
+
+  const { body } = await settle(state, holding);
+  assert.notEqual(body.fp, seen.body.fp);
+  assert.ok(body.session, 'the patched copy is still a v2 copy');
+  assert.equal(body.session.rows[0].status, 'approved');
+  assert.equal(body.session.rows[0].examMinutes, 50);
+  assert.equal(body.session.rows[0].name, 'ישראל ישראלי', 'the row the server sent, with the decision written in');
+  assert.deepEqual(body.session.results, seen.body.session.results, 'and the results the patch never touched');
+  assert.equal(state.calls.length, 1, 'all of it for zero Apps Script executions');
+  assert.equal(gateway._debug().waiting, 0);
+});
+
+// --- CPU: a quiet tick reads HEADERS, not a 5-40 KB body (TODO 0א.6) -------
+// A held request re-reads caches.default every second — that is the channel a
+// patch from another isolate arrives through — and `JSON.parse` of a whole
+// session, every second, is most of what the request costs against a free-plan
+// ceiling of 10 ms. `cacheWrite` now stamps `X-SFP`/`X-RAT` on the stored
+// Response, so the usual tick is a `match` and a string compare.
+
+test('a quiet 25 s watch looks at the cache every tick and parses it at most once', async () => {
+  const { state, spawn } = v2Harness([fullRow({ status: 'waiting' })], [result()], true);
+  const gateway = spawn();
+  const first = await watch(gateway, watchParams());
+  assert.equal(state.store.get(SNAP_KEY).headers['X-SFP'], first.body.fp,
+    'the stored Response names its fingerprint in a header');
+  assert.equal(state.store.get(SNAP_KEY).headers['X-RAT'], String(CLOCK0));
+
+  await advance(state, 19000);   // so a safety read falls inside the hold
+  const matchesBefore = state.cacheCounts.match;
+  const parsesBefore = state.cacheCounts.json;
+  const { body } = await settle(state, watch(gateway, watchParams({ wait: 25, fp: first.body.fp })));
+  const matches = state.cacheCounts.match - matchesBefore;
+  const parses = state.cacheCounts.json - parsesBefore;
+
+  assert.equal(body.held, 25000, 'it really held the whole time');
+  assert.equal(body.session, undefined, 'and nothing changed');
+  assert.ok(matches >= 20, 'it looked at the cache on every tick — got ' + matches);
+  assert.ok(parses <= 1, 'but parsed the body at most once in 25 seconds — got ' + parses +
+    ' (r31 parsed it on every tick a memory copy answered: 23 of them)');
+  assert.equal(gateway._debug().waiting, 0);
+});
+
+test('a cache copy written before r32 carries no headers, and its body is read as before', async () => {
+  const { state, spawn } = harness({ [SESSION]: [row({ status: 'waiting' })] }, null, true);
+  const gateway = spawn();
+  const first = await watch(gateway, watchParams());
+
+  // Exactly what the previous deploy left behind: a body, and no headers of
+  // ours at all. "Not known" must fall back to the full read, never to a
+  // wrong answer.
+  const stored = state.store.get(SNAP_KEY);
+  state.store.set(SNAP_KEY, { body: stored.body, maxAge: stored.maxAge, at: stored.at });
+
+  const parsesBefore = state.cacheCounts.json;
+  const held = await settle(state, watch(gateway, watchParams({ wait: 3, fp: first.body.fp })));
+  assert.equal(held.body.fp, first.body.fp, 'the same answer r31 gave');
+  assert.equal(held.body.held, 3000);
+  assert.ok(state.cacheCounts.json - parsesBefore >= 1,
+    'and it did read the body — the header check only ever skips work it can prove is redundant');
+});
+
+test('a snapshot another isolate wrote into the cache still reaches a held watch in one tick', async () => {
+  const { state, spawn } = v2Harness([fullRow({ status: 'waiting' })], [result()], true);
+  const first = spawn(), second = spawn();
+  const seen = await watch(first, watchParams());
+
+  const holding = watch(first, watchParams({ wait: 25, fp: seen.body.fp }));
+  assert.equal(await parked(first, 1), 1);
+
+  // A DIFFERENT isolate takes the examiner's nudge: it cannot wake anything in
+  // the first one, so the only channel left is caches.default — which is the
+  // very thing the header check must not be allowed to hide.
+  assert.equal((await nudge(second, '&idNumber=900000001&status=approved&examMinutes=50')).body.patched, true);
+  assert.equal(first._debug().waiting, 1, 'nothing woke it — it is still parked');
+
+  const { body } = await settle(state, holding);
+  assert.equal(body.held, 1000, 'seen on the very next tick');
+  assert.notEqual(body.fp, seen.body.fp);
+  assert.equal(body.session.rows[0].status, 'approved', 'with the data, from the cached copy');
+  assert.deepEqual(body.session.results, seen.body.session.results);
+  assert.equal(state.calls.length, 1, 'and still no upstream read');
 });

@@ -19,6 +19,12 @@
 //       gateway that is not there puts the page back on its pre-r31 5 s retry
 //   r31 the cold actions (reports, commander, forecast) are routed to the second
 //       Apps Script deployment by name (DESIGN §13.3)
+//   r32 the watch brings the DATA (DESIGN §14.1): an answer carrying the session
+//       paints the three lists with no Google read at all, by the server's own
+//       dedup rules; examinerDashboard is left for the wrong-answer blocks the
+//       snapshot cannot carry (one read, on a click) and as the fallback for an
+//       old Worker, an old server and a stale copy. Plus: a write to תוצאות that
+//       skips examinerDecision still announces itself to the gateway
 //   plus: the examiner bank grant and the gateway nudge after every decision
 //         (which carries the decision itself, so the examinee sees it in <=2 s),
 //         top-wrong rendering with and without a grant, and both SWs.
@@ -740,13 +746,22 @@ function dashboardContext(dashboardAnswer, opts = {}) {
   ui.element('offlineBanner');
   const listeners = {};
   ui.document.addEventListener = (type, cb) => { (listeners[type] = listeners[type] || []).push(cb); };
-  const apiCalls = [], watches = [];
+  const apiCalls = [], watches = [], alerts = [];
+  // r32: what each renderer was handed, in order - the two painting paths
+  // (examinerDashboard and the Worker snapshot) are compared through this.
+  // updateCompletedList also does what the page's own does: it is what makes
+  // completedResults the list the wrong-answer cache is measured against.
+  const renders = { pending: [], active: [], completed: [] };
   const setup = baseContext({
     ...ui,
     sessionCode: 'TEST00', examinerToken: 'synthetic', failedPolls: 0,
     dashboardInterval: null, countdownInterval: null,
     POLL_TIMEOUT_MS: 60000,
-    updatePendingList() {}, updateActiveList() {}, updateCompletedList() {}
+    completedResults: [],
+    alert(msg) { alerts.push(msg); },
+    updatePendingList(p) { renders.pending.push(p); },
+    updateActiveList(a) { renders.active.push(a); },
+    updateCompletedList(c) { renders.completed.push(c); setup.ctx.completedResults = c; }
   });
   const answerGrant = opts.grant || (() => ({ status: 'ok', bank: GRANT }));
   const answerWatch = opts.watch || (() => Promise.resolve(gwOk({ status: 'ok', fp: 's:quiet', held: 0, rows: 0 })));
@@ -767,7 +782,8 @@ function dashboardContext(dashboardAnswer, opts = {}) {
   load(setup.ctx, section(examiner, '  var OFFLINE_BANNER_TEXT', '  // Text of the "'));
   setup.ctx.ExamTransport._setJitter(ms => ms);          // exact fake clock
   return {
-    ...setup, ...ui, apiCalls, watches, listeners,
+    ...setup, ...ui, apiCalls, watches, listeners, renders, alerts,
+    last: which => renders[which][renders[which].length - 1],
     reads: () => apiCalls.filter(a => a === 'examinerDashboard').length,
     grantRequests: () => apiCalls.filter(a => a === 'bankGrant').length,
     visibility(state) {
@@ -780,6 +796,9 @@ function dashboardContext(dashboardAnswer, opts = {}) {
 test('dashboard: read once at the start, then ONLY when the fingerprint changes', async () => {
   // The Worker answers the first request (it carries no fp) at once; a request
   // that carries one it holds until something changes, or for the full 25 s.
+  // No answer here carries a session: this is the r31 Worker (or an r31 server),
+  // and the fallback it leaves behind has to keep behaving exactly like this.
+  // What an r32 answer does instead is the "paints the board" test below.
   const script = [
     { fp: 's:a' },                 // the base
     { fp: 's:a', held: 25000 },    // 25 s in which nothing happened
@@ -1085,6 +1104,330 @@ test('dashboard: a decision still reads the dashboard itself instead of waiting 
   }
 });
 
+// ------------------------------------------------------------- r32 §14.1
+// The watch now brings the DATA, not only the news. KNOWN_ISSUES #35: Google's
+// delivery step takes 25-60 s (or 404s) for our projects at random, so every
+// round trip is a raffle ticket - one change must cost ONE, not two. A watch
+// answer that carries the session paints the board; examinerDashboard is left
+// for what the snapshot cannot carry (פירוט שגויות) and as the fallback for an
+// old Worker, an old server and a stale copy.
+
+// A row of ממתינים as sessionSnapshot v2 hands it over - no token, no tokenHash.
+const srow = o => Object.assign({
+  id: '', status: 'waiting', audio: 'off', examMinutes: 40, extraMinutes: 0,
+  warn: 0, fin: 0, ext: 0, dq: 0, name: '', phone: '', time: '', start: '',
+  lang: 'he', pop: '', site: '', lic: '', timeExt: '', lastWarn: '', attemptsToday: 0
+}, o);
+
+// One session with every case the server's dedup has a rule for:
+//   012345678  registered twice                 -> the LATEST row wins
+//   100000002  disqualified, then in_exam again -> the DQ still wins
+//   900000001  plain in_exam - and an id that sorts AFTER the one above
+//   200000003  finished: in neither list, but it is where registrationTime comes from
+const fixtureRows = () => [
+  srow({ id: '012345678', status: 'waiting', name: 'דנה כהן', phone: '0501234567',
+         time: '2026-09-22T06:05:00.000Z', pop: 'חוגרים', site: 'בח"א 6', lic: 'B' }),
+  srow({ id: '012345678', status: 'approved', audio: 'on', examMinutes: 50, name: 'דנה כהן',
+         phone: '0501234567', time: '2026-09-22T06:40:00.000Z', pop: 'חוגרים', site: 'בח"א 6',
+         lic: 'B', timeExt: '1.25', attemptsToday: 1,
+         todayExams: [{ license: 'B', score: '20/30', passed: 'נכשל', language: 'he' }] }),
+  srow({ id: '900000001', status: 'in_exam', extraMinutes: 10, warn: 2, fin: 1, ext: 1,
+         name: 'רון לוי', phone: '0521111111', time: '2026-09-22T06:10:00.000Z',
+         start: '2026-09-22T07:00:00.000Z', lang: 'ru', pop: 'קבע', site: 'בח"א 6', lic: 'C',
+         lastWarn: 'יצא מהמסך',
+         // the snapshot carries this on every row; the board shows it on the
+         // pending list only, so an active item must NOT come out with it
+         todayExams: [{ license: 'C', score: '19/30', passed: 'נכשל', language: 'ru' }] }),
+  srow({ id: '100000002', status: 'disqualified', dq: 1, warn: 1, name: 'יוסי בר',
+         phone: '0533333333', time: '2026-09-22T06:12:00.000Z',
+         start: '2026-09-22T06:50:00.000Z', site: 'בח"א 6', lic: 'B' }),
+  srow({ id: '100000002', status: 'in_exam', dq: 1, warn: 5, name: 'יוסי בר',
+         phone: '0533333333', time: '2026-09-22T06:12:00.000Z',
+         start: '2026-09-22T06:50:00.000Z', site: 'בח"א 6', lic: 'B' }),
+  srow({ id: '200000003', status: 'completed', name: 'מאיה גל', phone: '0544444444',
+         time: '2026-09-22T05:30:00.000Z', start: '2026-09-22T06:00:00.000Z', site: 'בח"א 6', lic: 'B' })
+];
+const FABRICATED_TEXT = 'ניתוק/טיימאאוט — הנבחן לא סיים את המבחן';
+const WRONG_TEXT = 'שאלה: מה המרחק?\nתשובת הנבחן: 10\nתשובה נכונה: 20';
+// The session's results, exactly as the snapshot sends them: the latest non-בוטל
+// row per id, in sheet order, WITHOUT wrongDetails - and with the server's own
+// fabricated verdict where the block it replaces held one of its markers.
+const fixtureResults = () => [
+  { date: '22/09/2026', idNumber: 200000003, name: 'מאיה גל', phone: '0544444444', license: 'B',
+    score: '27/30', percent: '90%', passed: 'עבר', time: '18:12', examiner: 'בוחן א', site: 'בח"א 6',
+    classroom: 'כיתה 2', language: 'he', attempt: 1, sent: false, disqualified: false, waLink: '',
+    population: 'חוגרים', corrected: false, audioMode: 'off', verified: 'מאומת', suspicious: '', device: 'Windows' },
+  { date: '22/09/2026', idNumber: 300000004, name: 'שיר דוד', phone: '0555555555', license: 'B',
+    score: '0/30', percent: '0%', passed: 'נכשל', time: '', examiner: 'בוחן א', site: 'בח"א 6',
+    classroom: 'כיתה 2', language: 'he', attempt: 2, sent: false, disqualified: false, waLink: '',
+    population: '', corrected: false, audioMode: 'off', verified: '', suspicious: '', device: '',
+    fabricated: 1 }
+];
+const fixtureSession = () => ({ rows: fixtureRows(), results: fixtureResults() });
+// The page builds its lists inside the vm, so its arrays and objects belong to
+// that realm and deepStrictEqual would reject them on the prototype alone. Copy
+// both sides into this one before comparing (a key whose value is undefined is
+// dropped on the way, so those are asserted on their own).
+const host = v => JSON.parse(JSON.stringify(v));
+
+// What handleExaminerDashboard would have returned for exactly those rows. The
+// ids are the RAW cells: Sheets keeps "012345678" as the number 12345678, which
+// is why both paths normalise before the renderers ever see an item.
+const fixtureDashboard = () => ({
+  status: 'ok',
+  pending: [{
+    idNumber: 12345678, name: 'דנה כהן', phone: '0501234567', time: '2026-09-22T06:40:00.000Z',
+    examStartTime: '', status: 'approved', language: 'he', population: 'חוגרים', site: 'בח"א 6',
+    license: 'B', audioMode: 'on', timeExtension: '1.25', dqCount: 0, warnings: 0, lastWarning: '',
+    attemptsToday: 1, hasExtendedScreen: false, extraMinutes: 0, finishedOnDevice: false,
+    todayExams: [{ license: 'B', score: '20/30', passed: 'נכשל', language: 'he' }]
+  }],
+  active: [{
+    idNumber: 100000002, name: 'יוסי בר', phone: '0533333333', time: '2026-09-22T06:12:00.000Z',
+    examStartTime: '2026-09-22T06:50:00.000Z', status: 'disqualified', language: 'he', population: '',
+    site: 'בח"א 6', license: 'B', audioMode: 'off', timeExtension: '', dqCount: 1, warnings: 1,
+    lastWarning: '', attemptsToday: 0, hasExtendedScreen: false, extraMinutes: 0,
+    finishedOnDevice: false, dqPending: true
+  }, {
+    idNumber: 900000001, name: 'רון לוי', phone: '0521111111', time: '2026-09-22T06:10:00.000Z',
+    examStartTime: '2026-09-22T07:00:00.000Z', status: 'in_exam', language: 'ru', population: 'קבע',
+    site: 'בח"א 6', license: 'C', audioMode: 'off', timeExtension: '', dqCount: 0, warnings: 2,
+    lastWarning: 'יצא מהמסך', attemptsToday: 0, hasExtendedScreen: true, extraMinutes: 10,
+    finishedOnDevice: true
+  }],
+  completed: [
+    Object.assign(fixtureResults()[0], { wrongDetails: WRONG_TEXT, registrationTime: '2026-09-22T05:30:00.000Z' }),
+    (r => { delete r.fabricated; r.wrongDetails = FABRICATED_TEXT; return r; })(fixtureResults()[1])
+  ]
+});
+
+test('r32: a watch answer that carries the session paints the board, and asks Google nothing', async () => {
+  const h = dashboardContext(undefined, {
+    watch: (url, n, clock) => n === 1
+      ? Promise.resolve(gwOk({ status: 'ok', fp: 's:a', held: 0, rows: 6, at: EPOCH, session: fixtureSession() }))
+      : gwHeld(clock, 25000, { status: 'ok', fp: 's:a', held: 25000, rows: 6 })
+  });
+  h.ctx.startDashboardPolling();
+  await drain();
+  assert.equal(h.reads(), 1,
+    'the opening read - and NOT a second one on the very answer that brought the data');
+  assert.equal(h.renders.pending.length, 2, 'the opening answer, then the snapshot');
+
+  const pending = h.last('pending'), active = h.last('active'), completed = h.last('completed');
+  assert.equal(pending.length, 1, 'he registered twice; the board shows him once');
+  assert.equal(pending[0].idNumber, '012345678');
+  assert.equal(pending[0].status, 'approved', 'the latest of the two rows wins');
+  assert.equal(pending[0].name, 'דנה כהן');
+  assert.equal(pending[0].time, '2026-09-22T06:40:00.000Z', 'and its registration time, not the first one');
+  assert.equal(pending[0].audioMode, 'on');
+  assert.equal(pending[0].timeExtension, '1.25');
+  assert.equal(pending[0].attemptsToday, 1);
+  assert.equal(pending[0].examStartTime, '');
+  assert.deepStrictEqual(host(pending[0].todayExams), [{ license: 'B', score: '20/30', passed: 'נכשל', language: 'he' }]);
+
+  assert.deepStrictEqual(host(active.map(a => a.idNumber)), ['100000002', '900000001'],
+    'the server enumerates its own dedup object the same way - numeric keys ascending, not insertion order');
+  assert.equal(active[0].status, 'disqualified');
+  assert.equal(active[0].dqPending, true, 'a DQ the examiner has to decide on');
+  assert.equal(active[0].warnings, 1, 'the DQ row itself, not the in_exam row that followed it');
+  assert.equal(active[1].dqPending, undefined);
+  assert.equal(active[1].todayExams, undefined,
+    'the badge is on the pending list; the server never attaches it to an active item');
+  assert.equal(active[1].hasExtendedScreen, true);
+  assert.equal(active[1].finishedOnDevice, true);
+  assert.equal(active[1].extraMinutes, 10);
+  assert.equal(active[1].warnings, 2);
+  assert.equal(active[1].lastWarning, 'יצא מהמסך');
+  assert.equal(active[1].examStartTime, '2026-09-22T07:00:00.000Z');
+  assert.equal(active[1].language, 'ru');
+  assert.equal(active[1].license, 'C');
+
+  assert.equal(completed.length, 2);
+  assert.equal(completed[0].idNumber, '200000003');
+  assert.equal(completed[0].registrationTime, '2026-09-22T05:30:00.000Z',
+    'from his row in ממתינים, whatever status that row ended in');
+  assert.equal(completed[0].wrongDetails, undefined,
+    'unknown - and undefined is NOT "" (a result with no wrong answers)');
+  assert.equal('registrationTime' in completed[1], false, 'nobody registered under that id in this session');
+  assert.equal(completed[1].fabricated, 1, 'the badge rule needs it when there is no block to test');
+  assert.equal(h.ctx.window.__lastPending, pending, 'the search box re-renders from the same list');
+
+  await h.timer.advance(60000);
+  assert.equal(h.reads(), 2, 'a minute of watching costs one read: the safety net, which is not a cadence');
+  h.ctx.stopDashboardPolling();
+});
+
+test('r32: the snapshot and examinerDashboard build the SAME items', async () => {
+  const h = dashboardContext(() => fixtureDashboard(), { watch: () => Promise.reject(new Error('no gateway')) });
+  await h.ctx.pollDashboard();
+  const dash = { pending: h.last('pending'), active: h.last('active'), completed: h.last('completed') };
+  assert.equal(h.reads(), 1);
+
+  h.ctx.renderFromSession(fixtureSession());
+  const snap = { pending: h.last('pending'), active: h.last('active'), completed: h.last('completed') };
+  assert.equal(h.reads(), 1, 'painting from the snapshot asks Google nothing at all');
+
+  assert.deepStrictEqual(host(snap.pending), host(dash.pending));
+  assert.deepStrictEqual(host(snap.active), host(dash.active));
+  // The one difference a result is allowed: the snapshot carries the server's
+  // own fabricated verdict instead of the text it was computed from.
+  const noFlag = r => { const c = Object.assign({}, r); delete c.fabricated; return c; };
+  assert.deepStrictEqual(host(snap.completed).map(noFlag), host(dash.completed),
+    'the wrong-answer blocks come back out of the cache the dashboard read filled');
+  assert.equal(snap.completed[1].fabricated, 1);
+});
+
+test('r32: no session in the answer still reads the dashboard, and a stale copy is never painted', async () => {
+  const script = [
+    { fp: 's:a' },                                           // the base - an old Worker: no session
+    { fp: 's:b' },                                           // a change, still without one
+    { fp: 's:c', stale: true, session: fixtureSession() }    // a copy too old to paint from
+  ];
+  const h = dashboardContext(undefined, {
+    watch: (url, n, clock) => {
+      const step = script[Math.min(n, script.length) - 1];
+      const body = Object.assign({ status: 'ok', held: 0, rows: 1 }, step);
+      return n > script.length ? gwHeld(clock, 25000, body) : Promise.resolve(gwOk(body));
+    }
+  });
+  h.ctx.startDashboardPolling();
+  await drain();
+  assert.equal(h.reads(), 1);
+  const painted = h.renders.pending.length;
+
+  await h.timer.advance(250);
+  assert.equal(h.reads(), 2, 'an old Worker: a changed fingerprint still reads the dashboard');
+  await h.timer.advance(250);
+  assert.equal(h.reads(), 3, 'a stale copy is read for, not painted from');
+  assert.equal(h.renders.pending.length, painted + 2,
+    'two dashboard answers - and nothing at all out of the stale session');
+  h.ctx.stopDashboardPolling();
+});
+
+test('r32: an examinerDashboard answer fills the wrong-answer cache the snapshot cannot carry', async () => {
+  const h = dashboardContext(() => ({
+    status: 'ok', pending: [], active: [], completed: [
+      { idNumber: 12345678, attempt: 1, wrongDetails: 'שאלה: א' },
+      { idNumber: '987654321', attempt: 2, wrongDetails: '' }
+    ]
+  }), { watch: () => Promise.reject(new Error('no gateway')) });
+  await h.ctx.pollDashboard();
+  assert.deepStrictEqual(Object.assign({}, h.ctx.resultDetails),
+    { '012345678:1': 'שאלה: א', '987654321:2': '' },
+    "keyed by the normalised id, and '' is cached like any other value");
+
+  // ...and it belongs to the session that filled it: opening another one (a
+  // commander loading a colleague's session) starts from nothing, and the
+  // opening read refills it.
+  h.ctx.sessionCode = 'TEST01';
+  h.ctx.startDashboardPolling();
+  assert.deepStrictEqual(host(h.ctx.resultDetails), {});
+  h.ctx.stopDashboardPolling();
+});
+
+test('r32: ensureResultDetails reads once when a block is missing, and not at all when it is not', async () => {
+  let answer = { status: 'ok', pending: [], active: [], completed: [{ idNumber: '000000003', attempt: 2, wrongDetails: 'שאלה: ב' }] };
+  const h = dashboardContext(() => answer, { watch: () => Promise.reject(new Error('no gateway')) });
+
+  h.ctx.completedResults = [{ idNumber: '000000001', attempt: 1, wrongDetails: '' }];
+  await h.ctx.ensureResultDetails();
+  assert.equal(h.reads(), 0, "'' is a result with no wrong answers - a known value, not a miss");
+
+  h.ctx.completedResults = [{ idNumber: '000000002', attempt: 1, fabricated: 1 }];
+  await h.ctx.ensureResultDetails();
+  assert.equal(h.reads(), 0, 'a fabricated fail never had a block worth reading');
+
+  h.ctx.completedResults = [{ idNumber: '000000001', attempt: 1, wrongDetails: '' },
+                            { idNumber: '000000003', attempt: 2 }];
+  const at = await h.ctx.ensureResultDetailsAt(1);
+  assert.equal(h.reads(), 1, 'one Google run, on the examiner\'s click - never on a clock');
+  assert.equal(at, 0, 'and the index is re-resolved: that read REPLACED the list');
+  assert.deepEqual(h.alerts, []);
+
+  // A read that did not answer leaves the block unknown. Say so, instead of
+  // handing the examinee a certificate whose "questions you got wrong" is empty.
+  answer = { status: 'error', message: 'busy' };
+  h.ctx.completedResults = [{ idNumber: '000000009', attempt: 1 }];
+  assert.equal(await h.ctx.ensureResultDetailsAt(0), -1);
+  assert.equal(h.alerts.length, 1);
+  assert.equal(await h.ctx.ensureAllResultDetails(), false);
+  assert.equal(h.alerts.length, 2);
+});
+
+// Writes to תוצאות that do NOT go through examinerDecision (they are not
+// decisions about an examinee) still have to reach the Worker's snapshot, or the
+// next watch render paints the old row back over them until the 20 s safety read.
+function resultWriterContext(src) {
+  const ui = dom();
+  const calls = [], posts = [];
+  let answer = params => (params.action === 'bankGrant' ? { status: 'ok', bank: GRANT } : { status: 'ok' });
+  const setup = baseContext({
+    ...ui,
+    sessionCode: 'ABC12345', examinerToken: 't', examinerData: { id: '111', name: 'בוחן' },
+    completedResults: [{ idNumber: '012345678', name: 'דנה', score: '25/30', attempt: 1,
+                         wrongDetails: 'שאלה: א\nתשובת הנבחן: 1\nתשובה נכונה: 2' }],
+    resultDetailsMissing: () => false,
+    ensureResultDetailsAt: () => Promise.resolve(0),
+    pollDashboard() {}, showToast() {}, alert() {}, confirm: () => true,
+    apiGet(params) { calls.push(params.action); return Promise.resolve(answer(params)); },
+    fetch(url, opts) { posts.push({ url, opts }); return Promise.resolve({ ok: true, text: () => Promise.resolve('{}') }); }
+  });
+  load(setup.ctx, grantSection(examiner));
+  load(setup.ctx, src);
+  return { ...setup, calls, posts, setAnswer(fn) { answer = fn; } };
+}
+
+test('r32: markSent announces itself to the gateway, and only when the write went through', async () => {
+  const h = resultWriterContext(section(examiner,
+    '  // Mark as sent when WA link is clicked.', '  // Parse wrongDetails text into table rows'));
+  await h.ctx.fetchBankGrant(true);
+  h.ctx.window.markSentWA(0);
+  await drain();
+  assert.deepEqual(h.calls, ['bankGrant', 'markSent']);
+  assert.equal(h.posts.length, 1);
+  assert.equal(h.posts[0].url, DROP, 'a PLAIN drop: there is no ממתינים row to patch a "sent" flag into');
+  assert.equal(h.posts[0].opts.method, 'POST');
+
+  h.setAnswer(() => ({ status: 'error', message: 'busy' }));
+  h.ctx.window.markSentWA(0);
+  await drain();
+  assert.equal(h.posts.length, 1, 'nothing was written, so there is nothing to announce');
+});
+
+test('r32: correctToPass announces itself too, so the correction is not painted back off', async () => {
+  const h = resultWriterContext(section(examiner,
+    '  window.correctToPass = function(idx, ready) {', '  // ========== Settings Modal =========='));
+  await h.ctx.fetchBankGrant(true);
+  h.ctx.window.correctToPass(0);
+  await drain();
+  assert.deepEqual(h.calls, ['bankGrant', 'correctToPass']);
+  assert.equal(h.posts.length, 1);
+  assert.equal(h.posts[0].url, DROP);
+
+  h.setAnswer(params => (params.action === 'bankGrant' ? { status: 'ok', bank: GRANT } : { status: 'error', message: 'busy' }));
+  h.ctx.window.correctToPass(0);
+  await drain();
+  assert.equal(h.posts.length, 1, 'a refusal changed nothing in תוצאות');
+});
+
+test('r32: every consumer of the wrong-answer block asks for it first', () => {
+  const perRow = ['window.openExamineePDF', 'window.shareResult', 'window.correctToPass'];
+  const perList = ['window.sendToAllExaminees', 'window.generateSiteManagerReport', 'window.shareSiteManagerReport'];
+  for (const fn of perRow.concat(perList)) {
+    const body = section(examiner, '  ' + fn + ' = function(', '\r\n  };');
+    assert.match(body, /resultDetailsMissing\(\)/, fn + ': pays for a read only when something is missing');
+    assert.match(body, perRow.indexOf(fn) >= 0 ? /ensureResultDetailsAt\(idx\)/ : /ensureAllResultDetails\(\)/,
+      fn + ': waits for פירוט שגויות before it runs');
+  }
+  // The two that open a tab must claim it INSIDE the click - Safari will not
+  // honour a window.open that runs after the round trip.
+  for (const fn of ['window.openExamineePDF', 'window.generateSiteManagerReport']) {
+    const body = section(examiner, '  ' + fn + ' = function(', '\r\n  };');
+    assert.match(body, /openReportWindow\(\);[\s\S]*ensure/, fn + ': the tab is opened before the wait, not after it');
+    assert.match(body, /writeReportWindow\(pre, html\)/, fn + ': and the HTML goes into the tab that was claimed');
+  }
+});
+
 // ---------------------------------------------------------------- S3
 test('S3: the "not verified" badge keys on the stored marker, not on a 0/ score', () => {
   const ui = dom();
@@ -1095,7 +1438,11 @@ test('S3: the "not verified" badge keys on the stored marker, not on a 0/ score'
     const isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === 'פסול';
     const verifiedKnown = (typeof r.verified !== 'undefined');
     const vstate = String(r.verified || '');
-    const isFabricatedFail = ctx.FABRICATED_FAIL_MARKERS.test(String(r.wrongDetails || ''));
+    // r32: a board painted from the Worker snapshot has no block to test, so the
+    // server's own verdict (fabricated) stands in for it.
+    const isFabricatedFail = (typeof r.wrongDetails === 'undefined')
+      ? !!r.fabricated
+      : ctx.FABRICATED_FAIL_MARKERS.test(String(r.wrongDetails || ''));
     return !!(verifiedKnown && !isDQ && !isFabricatedFail && vstate !== 'מאומת' && vstate !== 'ידני');
   };
   const rows = [
@@ -1107,7 +1454,11 @@ test('S3: the "not verified" badge keys on the stored marker, not on a 0/ score'
     ['a paper entry', { score: '27/30', verified: 'ידני', wrongDetails: '' }, false],
     ['a disqualification', { score: '0/30', verified: '', disqualified: true, wrongDetails: '' }, false],
     ['a verified pass', { score: '28/30', verified: 'מאומת', wrongDetails: '' }, false],
-    ['an old payload without the column', { score: '24/30', wrongDetails: '' }, false]
+    ['an old payload without the column', { score: '24/30', wrongDetails: '' }, false],
+    // r32: the same two rows as they arrive from the Worker snapshot - no block
+    // at all, only the verdict the server computed from it
+    ['a snapshot row the server called fabricated', { score: '0/30', verified: '', fabricated: 1 }, false],
+    ['a snapshot row it did not', { score: '24/30', verified: '' }, true]
   ];
   for (const [name, row, expected] of rows) {
     assert.equal(ctx.shows(row), expected, name);

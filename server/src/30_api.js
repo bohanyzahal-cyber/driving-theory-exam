@@ -6,7 +6,7 @@
 // @@API_DEPLOYMENT@@
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-22-r31';
+var THEORY_API_BUILD = '2026-09-23-r32';
 // When the current request entered the script — health&deep=1 reports the whole
 // request against it, so a watchdog can separate our time from Google's.
 var API_STARTED_AT = 0;

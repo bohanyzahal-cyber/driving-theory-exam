@@ -2223,6 +2223,27 @@
   // dashSyncSince - the 2 s "a result is seconds away" window. Since §13.5 the
   // examinee's own device nudges the Worker after submitResult and after
   // markFinished, so that change wakes this watch like any other one.
+  // r32 (22/09/2026, DESIGN §14.1): the watch now brings the DATA, not only the
+  // news. KNOWN_ISSUES #35 measured Google's DELIVERY step at 25-60 s, or a 404,
+  // for our projects alone and at random - so every round trip to Apps Script is
+  // a raffle ticket. Until now one change cost TWO of them: the Worker read
+  // sessionSnapshot (which is what moved the fingerprint) and then this page read
+  // examinerDashboard to find out what had changed. The snapshot already holds
+  // every row of the session and, since r32, the session's results as well, so
+  // the Worker hands them over inside the watch answer itself (a "session"
+  // object) and the board is painted from that: ONE Google run per change
+  // instead of two, and the change is on screen the moment the Worker sees it.
+  //
+  // What this does NOT change: the opening read, the safety net, the direct read
+  // after every decision, and the nudges. The read on a changed fingerprint
+  // survives as the FALLBACK - an old Worker or an old server (no session in the
+  // answer) and a stale copy, which is never painted.
+  //
+  // The one thing the snapshot cannot carry is פירוט שגויות: it is the heaviest
+  // column in תוצאות and nothing on the board shows it. It is cached here per
+  // result (resultDetails) out of every examinerDashboard answer, and whatever
+  // needs it - a certificate, the site-manager report, the correction dialog -
+  // asks for it first: one Google run, on the examiner's click, never on a clock.
   var DASH_SAFETY_MS = 60000;        // watch healthy: how stale the dashboard may get
   var DASH_FALLBACK_MS = 5000;       // no watch: the pre-r31 cadence, unchanged
   var DASH_SAFETY_CHECK_MS = 2500;   // how often the net looks at the clock
@@ -2307,10 +2328,17 @@
           // second Google run every time the dashboard opens. (Same rule as the
           // update check: the first good probe is the base.) Anything that
           // changed inside that sub-second window is caught by the safety net.
+          // r32 (§14.1): an answer that CARRIES the session paints the board right
+          // here - the first answer of a chain included, because data is data.
+          // watchPrimed only decides whether a fingerprint CHANGE may spend a
+          // Google run. A stale copy is never painted: its rows can be 45 s
+          // behind what the opening read already put on the screen.
+          var painted = false;
+          if (data.session && data.stale !== true) { renderFromSession(data.session); painted = true; }
           if (!watchPrimed) { watchPrimed = true; lastWatchFp = data.fp; }
           else if (data.fp !== lastWatchFp) {
             lastWatchFp = data.fp;
-            refreshDashboardSoon();
+            if (!painted) refreshDashboardSoon();   // old Worker, old server, or a stale copy
           }
           return data;   // held / fp -> info.rearm, so the next hold starts in 250 ms
         }
@@ -2384,12 +2412,179 @@
     if ((Date.now() - lastDashboardAt) >= due) pollDashboard();
   }
 
+  // ---- Painting the board ---------------------------------------------------
+
+  // The server's normalizeId, client-side. Sheets stores "012345678" as the
+  // NUMBER 12345678, so one person reaches this page as 12345678 from
+  // examinerDashboard (the raw cell) and as "012345678" from the Worker snapshot
+  // (sessionSnapshot normalises before it hands the rows out). Two spellings of
+  // one id is not cosmetic here: prevPendingIds, prevDqCounts, timeExtOverrides
+  // and audioOverrides are all keyed by idNumber, so alternating renders would
+  // ring the "new registration" chime every time and silently drop the time
+  // extension the examiner had just picked. Every item that reaches the
+  // renderers carries the normalised id, whichever path built it.
+  function normalizeDashId(val) {
+    var s = String(val === null || typeof val === 'undefined' ? '' : val).replace(/[^0-9]/g, '');
+    while (s.length < 9) s = '0' + s;
+    return s;
+  }
+
+  // פירוט שגויות per result: '<id>:<attempt>' -> text. Filled from every
+  // examinerDashboard answer - and '' is a KNOWN value (a result with no wrong
+  // answers), not a miss.
+  var resultDetails = {};
+  function resultDetailsKey(r) {
+    return normalizeDashId(r && r.idNumber) + ':' +
+           String(r && r.attempt !== null && typeof r.attempt !== 'undefined' ? r.attempt : '');
+  }
+
+  // THE place the three lists reach the screen. Both paths end here - the
+  // examinerDashboard answer and a watch answer that carried the session - so
+  // the two can never drift apart.
+  function applyDashboardLists(pending, active, completed) {
+    var i;
+    for (i = 0; i < pending.length; i++) pending[i].idNumber = normalizeDashId(pending[i].idNumber);
+    for (i = 0; i < active.length; i++) active[i].idNumber = normalizeDashId(active[i].idNumber);
+    for (i = 0; i < completed.length; i++) {
+      completed[i].idNumber = normalizeDashId(completed[i].idNumber);
+      // Only a real answer fills the cache; a snapshot item carries undefined
+      // there and must never overwrite a block we already read.
+      if (typeof completed[i].wrongDetails !== 'undefined') resultDetails[resultDetailsKey(completed[i])] = completed[i].wrongDetails;
+    }
+    failedPolls = 0;
+    document.getElementById('offlineBanner').classList.remove('show');
+    console.log('[DASHBOARD] pending=' + pending.length + ' active=' + active.length + ' completed=' + completed.length);
+    // Cache pending so the search-input handler can re-render between reads
+    // without asking the server again.
+    window.__lastPending = pending;
+    updatePendingList(pending);
+    updateActiveList(active);
+    updateCompletedList(completed);
+  }
+
+  // Build the three lists out of the Worker's copy of the session, by EXACTLY
+  // the rules handleExaminerDashboard applies to the sheet itself: a soldier
+  // must appear ONCE per list even when ממתינים holds several rows for him (the
+  // duplicate-rows incident @בוחן יניר). pending: waiting|approved, latest row
+  // wins. active: in_exam|disqualified, a 'disqualified' row (the DQ the
+  // examiner must decide on) beats an 'in_exam' one, same status -> latest wins.
+  // The dedup objects are enumerated exactly as the server enumerates its own,
+  // so the ORDER of the lists is the server's order too.
+  function renderFromSession(session) {
+    var rows = (session && session.rows) || [];
+    var results = (session && session.results) || [];
+    var pendingById = {}, activeById = {}, regTimeById = {};
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i] || {};
+      var idNorm = normalizeDashId(row.id);
+      // Every row of the session, whatever its status: this is where a completed
+      // examinee's registration time comes from (latest row wins, as on the server).
+      regTimeById[idNorm] = row.time;
+      var s = String(row.status || '').trim();
+      if (s !== 'waiting' && s !== 'approved' && s !== 'in_exam' && s !== 'disqualified') continue;
+      var item = {
+        idNumber: row.id, name: row.name, phone: row.phone, time: row.time,
+        examStartTime: row.start || '', status: s,
+        language: row.lang || '', population: row.pop || '', site: row.site || '',
+        license: row.lic || '', audioMode: row.audio || 'off',
+        timeExtension: String(row.timeExt || ''),
+        dqCount: Number(row.dq) || 0, warnings: Number(row.warn) || 0,
+        lastWarning: String(row.lastWarn || ''),
+        attemptsToday: Number(row.attemptsToday) || 0,
+        hasExtendedScreen: !!row.ext,
+        extraMinutes: Number(row.extraMinutes) || 0,
+        finishedOnDevice: !!row.fin
+      };
+      if (s === 'waiting' || s === 'approved') {
+        // todayExams rides on the pending item alone - that is where the
+        // "attempt N today" badge is, and it is exactly what the server attaches.
+        if (row.todayExams && row.todayExams.length > 0) item.todayExams = row.todayExams;
+        pendingById[idNorm] = item;                 // ascending loop -> latest row wins
+      } else {
+        if (s === 'disqualified') item.dqPending = true;
+        var prevA = activeById[idNorm];
+        if (!prevA || s === 'disqualified' || prevA.status !== 'disqualified') activeById[idNorm] = item;
+      }
+    }
+    var pending = [], active = [], completed = [], k;
+    for (k in pendingById) if (Object.prototype.hasOwnProperty.call(pendingById, k)) pending.push(pendingById[k]);
+    for (k in activeById) if (Object.prototype.hasOwnProperty.call(activeById, k)) active.push(activeById[k]);
+    // results: the latest non-בוטל row per id, already in sheet order - the
+    // server did that dedup (its own latestResRowById), so there is none to do here.
+    for (var j = 0; j < results.length; j++) {
+      var res = results[j] || {}, out = {};
+      for (var f in res) if (Object.prototype.hasOwnProperty.call(res, f)) out[f] = res[f];
+      var rk = normalizeDashId(out.idNumber);
+      if (Object.prototype.hasOwnProperty.call(regTimeById, rk)) out.registrationTime = regTimeById[rk];
+      // undefined, NEVER '': '' is a result with no wrong answers, and
+      // ensureResultDetails has to be able to tell the two apart.
+      out.wrongDetails = resultDetails[resultDetailsKey(out)];
+      completed.push(out);
+    }
+    applyDashboardLists(pending, active, completed);
+  }
+
+  // ---- The wrong-answer block, on demand ------------------------------------
+  // A board painted from the snapshot has no פירוט שגויות. Everything that
+  // needs it goes through here first: ONE examinerDashboard read, on the
+  // examiner's click, and only when something is actually missing. A
+  // 'fabricated' row (the server's own browser-close / timeout / manual-end
+  // fail) never had a wrong list worth reading, and the snapshot already says
+  // which rows those are.
+  var DETAILS_UNAVAILABLE_TEXT = 'לא הצלחתי לטעון את פירוט השגויות מהשרת. נסה שוב בעוד רגע.';
+  function resultDetailsMissing() {
+    for (var i = 0; i < completedResults.length; i++) {
+      var r = completedResults[i];
+      if (r && typeof r.wrongDetails === 'undefined' && !r.fabricated) return true;
+    }
+    return false;
+  }
+  function ensureResultDetails() {
+    if (!resultDetailsMissing()) return Promise.resolve();
+    // pollDashboard never rejects, and it shares an in-flight read instead of
+    // starting a second one.
+    return pollDashboard().then(function() {}, function() {});
+  }
+  // For a single row. The read REPLACES completedResults (a new result for an id
+  // that is already listed moves that id to the end of the sheet order), so the
+  // index captured at click time can point at a different person by the time the
+  // answer lands - re-find the row by its identity. -1 = do not go on: the row is
+  // gone, or its block never arrived (better to say so than to hand the examinee
+  // a certificate whose "questions you got wrong" table is empty because Google
+  // did not answer).
+  function ensureResultDetailsAt(idx) {
+    var key = completedResults[idx] ? resultDetailsKey(completedResults[idx]) : '';
+    return ensureResultDetails().then(function() {
+      var at = -1;
+      if (key) {
+        if (completedResults[idx] && resultDetailsKey(completedResults[idx]) === key) at = idx;
+        else for (var i = 0; i < completedResults.length; i++) {
+          if (resultDetailsKey(completedResults[i]) === key) { at = i; break; }
+        }
+      }
+      var row = at >= 0 ? completedResults[at] : null;
+      if (row && typeof row.wrongDetails === 'undefined' && !row.fabricated) { alert(DETAILS_UNAVAILABLE_TEXT); return -1; }
+      return at;
+    });
+  }
+  // For whatever walks the WHOLE list (the send queue, the site-manager report).
+  function ensureAllResultDetails() {
+    return ensureResultDetails().then(function() {
+      if (resultDetailsMissing()) { alert(DETAILS_UNAVAILABLE_TEXT); return false; }
+      return true;
+    });
+  }
+
   function startDashboardPolling() {
     dashPollGen++;
     dashboardInterval = -1;          // "polling is on" for the legacy checks below
     lastWatchFp = null;              // a fresh chain asks without a fingerprint: answered at once
     watchPrimed = false;             // ...and that answer is the base, not a change to re-read
     watchHealthy = false;            // ...and the net runs at 5 s until the Worker proves otherwise
+    // The wrong-answer cache belongs to the session that filled it (a commander
+    // opening another examiner's session gets a different תוצאות tail), and the
+    // opening read below refills it for this one.
+    resultDetails = {};
     pollDashboard();                 // the first read is immediate, exactly as before
     watchLoop.start();
     if (dashSafetyTimer) clearInterval(dashSafetyTimer);
@@ -2476,15 +2671,10 @@
     request.promise = apiGet({ action: 'examinerDashboard', sessionCode: requestedSession }, POLL_TIMEOUT_MS).then(function(data) {
       if (!isCurrent()) return;
       if (data && data.status === 'ok') {
-        failedPolls = 0;
-        document.getElementById('offlineBanner').classList.remove('show');
-        console.log('[DASHBOARD] pending=' + (data.pending||[]).length + ' active=' + (data.active||[]).length + ' completed=' + (data.completed||[]).length);
-        // Cache pending so the search-input handler can re-render between reads
-        // without asking the server again.
-        window.__lastPending = data.pending || [];
-        updatePendingList(window.__lastPending);
-        updateActiveList(data.active || []);
-        updateCompletedList(data.completed || []);
+        // The very same painting the watch does from a snapshot (§14.1) - one
+        // function, two callers. This is also the only answer that carries
+        // פירוט שגויות, so it is what fills the cache.
+        applyDashboardLists(data.pending || [], data.active || [], data.completed || []);
       } else {
         recordFailure();
         console.log('[DASHBOARD] Server error:', data && data.message);
@@ -3260,7 +3450,11 @@
       // \u05de\u05d1\u05d7\u05e0\u05d9\u05dd row - the 03/06 pattern) also lands as 0/30, and that is exactly
       // the row that must be looked at. A fabricated fail is recognisable by the
       // marker the SERVER wrote into \u05e4\u05d9\u05e8\u05d5\u05d8 \u05e9\u05d2\u05d5\u05d9\u05d5\u05ea, not by the score.
-      var isFabricatedFail = FABRICATED_FAIL_MARKERS.test(String(r.wrongDetails || ''));
+      // r32: a board painted from the Worker snapshot has no wrongDetails at all,
+      // so the server sends the verdict itself (fabricated) alongside the row.
+      var isFabricatedFail = (typeof r.wrongDetails === 'undefined')
+        ? !!r.fabricated
+        : FABRICATED_FAIL_MARKERS.test(String(r.wrongDetails || ''));
       var flagHtml = '';
       // Show "\u26a0 \u05dc\u05d0 \u05d0\u05d5\u05de\u05ea" ONLY for a genuine DIGITAL exam the server did NOT
       // re-score against the answer key. SKIP: manual paper entries ('\u05d9\u05d3\u05e0\u05d9'),
@@ -3893,6 +4087,7 @@
     }).then(function(data) {
       if (data.status === 'ok') {
         closeCorrectMetaModal();
+        nudgeGateway(null);    // r32 (§14.1): the corrected id/phone, into the snapshot
         if (typeof pollDashboard === 'function') pollDashboard();
       } else {
         errEl.textContent = data.message || 'שגיאה בתיקון';
@@ -3933,6 +4128,7 @@
     }).then(function(data) {
       if (data.status === 'ok') {
         closeCorrectResultModal();
+        nudgeGateway(null);    // r32 (§14.1): the corrected row, into the snapshot
         // Force immediate refresh so the corrected row appears with new values
         if (typeof pollDashboard === 'function') pollDashboard();
       } else {
@@ -4022,6 +4218,7 @@
     }).then(function(data) {
       if (data && data.status === 'ok') {
         closeManualResultModal();
+        nudgeGateway(null);    // r32 (§14.1): a new row in תוצאות - tell the Worker
         if (typeof pollDashboard === 'function') pollDashboard();
       } else {
         btn.disabled = false;
@@ -4173,10 +4370,15 @@
     return s;
   }
 
-  // Mark as sent when WA link is clicked
+  // Mark as sent when WA link is clicked.
+  // r32 (§14.1): a write to תוצאות that does not go through examinerDecision
+  // announces itself to the gateway as well - a PLAIN DROP (there is nothing to
+  // patch in a waiting-list row), so the flag is in the snapshot at once instead
+  // of at the Worker's 20 s safety read.
   window.markSentWA = function(idx) {
     var r = completedResults[idx];
-    if (r) apiGet({ action: 'markSent', sessionCode: sessionCode, idNumber: r.idNumber });
+    if (r) apiGet({ action: 'markSent', sessionCode: sessionCode, idNumber: r.idNumber })
+      .then(function(data) { if (data && data.status === 'ok') nudgeGateway(null); }, function() {});
   };
 
   // Parse wrongDetails text into table rows
@@ -4643,11 +4845,40 @@
     return html;
   }
 
+  // r32 (§14.1): a report that has to wait for פירוט שגויות is written into its
+  // tab a Google round trip later, and Safari only honours a window.open that
+  // ran INSIDE the click. So the tab is claimed now, holds a loading line, and is
+  // filled (or closed) once the HTML is ready - the pattern
+  // generateSiteCombinedReport already uses for its 18-81 s report.
+  var REPORT_LOADING_HTML = '<p dir="rtl" style="font-family:sans-serif;padding:24px;font-size:16px;">\u23F3 \u05D8\u05D5\u05E2\u05DF...</p>';
+  var POPUP_BLOCKED_TEXT = '\u05D7\u05E1\u05D5\u05DD popup \u05E0\u05D7\u05E1\u05DD. \u05D0\u05E4\u05E9\u05E8 \u05D7\u05DC\u05D5\u05DF popup \u05DC\u05D0\u05EA\u05E8 \u05D6\u05D4.';
+  function openReportWindow() {
+    var w = null;
+    try { w = window.open('', '_blank'); } catch (e) { w = null; }
+    if (!w) { alert(POPUP_BLOCKED_TEXT); return null; }
+    try { w.document.write(REPORT_LOADING_HTML); } catch (e2) {}
+    return w;
+  }
+  function writeReportWindow(w, html) {
+    var win = w || openReportWindow();     // nothing was waited for: open it now
+    if (!win) return;
+    try { win.document.open(); win.document.write(html); win.document.close(); } catch (e) {}
+  }
+  function closeReportWindow(w) { if (w) { try { w.close(); } catch (e) {} } }
+
   // Open PDF report for a specific examinee
-  window.openExamineePDF = function(idx) {
+  window.openExamineePDF = function(idx, pre) {
+    if (!pre && resultDetailsMissing()) {
+      var claimed = openReportWindow();
+      if (!claimed) return;
+      ensureResultDetailsAt(idx).then(function(i) {
+        if (i >= 0) window.openExamineePDF(i, claimed); else closeReportWindow(claimed);
+      });
+      return;
+    }
     var r = completedResults[idx];
     var html = buildResultHtml(idx);
-    if (!html) return;
+    if (!html) { closeReportWindow(pre); return; }
 
     var pdfLang = (r && r.language) || 'he';
     // Add print button for popup version
@@ -4657,13 +4888,15 @@
       '<p style="font-size:13px;color:#94a3b8;margin-top:8px;">' + escHtml(getPdfString('printHint', pdfLang)) + '</p></div>' +
       '</body></html>');
 
-    var w = window.open('', '_blank');
-    if (w) { w.document.write(html); w.document.close(); }
-    else { alert('\u05D7\u05E1\u05D5\u05DD popup \u05E0\u05D7\u05E1\u05DD. \u05D0\u05E4\u05E9\u05E8 \u05D7\u05DC\u05D5\u05DF popup \u05DC\u05D0\u05EA\u05E8 \u05D6\u05D4.'); }
+    writeReportWindow(pre, html);
   };
 
   // ========== Share result via Cloudflare Worker ==========
-  window.shareResult = function(idx) {
+  // r32 (§14.1): the certificate lists the wrong answers, which a board painted
+  // from the Worker snapshot does not carry - so one examinerDashboard read is
+  // paid for here, on the click. The dialog opens BEFORE it, so the click is
+  // never silent while Google takes its seconds.
+  window.shareResult = function(idx, ready) {
     var r = completedResults[idx];
     if (!r) return;
 
@@ -4672,6 +4905,14 @@
     document.getElementById('shareDialogTitle').textContent = '\u05E9\u05D9\u05EA\u05D5\u05E3 \u05EA\u05D5\u05E6\u05D0\u05D4 \u2014 ' + r.name;
     document.getElementById('shareDialogContent').innerHTML = '<div style="font-size:14px;color:#64748b;padding:20px 0;">\u23F3 \u05DE\u05E2\u05DC\u05D4...</div>';
     dlg.style.display = 'flex';
+
+    if (!ready && resultDetailsMissing()) {
+      ensureResultDetailsAt(idx).then(function(i) {
+        if (i >= 0) window.shareResult(i, true);
+        else dlg.style.display = 'none';   // it already told him why
+      });
+      return;
+    }
 
     var html = buildResultHtml(idx);
     if (!html) {
@@ -4753,9 +4994,16 @@
   // message still requires the examiner to click Send in the WA tab.
   var bulkSendState = null; // { queue: [resultIdx,...], pos, sent, skipped }
 
-  window.sendToAllExaminees = function() {
+  window.sendToAllExaminees = function(ready) {
     if (!completedResults || completedResults.length === 0) {
       alert('אין תוצאות לשליחה'); return;
+    }
+    // r32 (§14.1): every certificate in the queue lists the wrong answers, so
+    // they are fetched ONCE before the queue is built - the indexes in it point
+    // into completedResults, which that read replaces.
+    if (!ready && resultDetailsMissing()) {
+      ensureAllResultDetails().then(function(ok) { if (ok) window.sendToAllExaminees(true); });
+      return;
     }
     var queue = [];
     var alreadySentCount = 0;
@@ -4902,7 +5150,11 @@
         window.open(waUrl, '_blank');
       }
       if (!r.sent) {
-        apiGet({ action: 'markSent', sessionCode: r.sessionCode || sessionCode, idNumber: r.idNumber });
+        // r32 (§14.1): announce the write, or "נשלח" reaches the Worker's
+        // snapshot only at its 20 s safety read and the next watch render paints
+        // the flag back off in the meantime.
+        apiGet({ action: 'markSent', sessionCode: r.sessionCode || sessionCode, idNumber: r.idNumber })
+          .then(function(data) { if (data && data.status === 'ok') nudgeGateway(null); }, function() {});
         r.sent = true;
         state.sent++;
       }
@@ -6010,17 +6262,26 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     return H.join('');
   }
 
-  window.generateSiteManagerReport = function() {
+  window.generateSiteManagerReport = function(pre) {
     if (!completedResults || completedResults.length === 0) {
       alert('\u05D0\u05D9\u05DF \u05EA\u05D5\u05E6\u05D0\u05D5\u05EA \u05DC\u05D4\u05E6\u05D2\u05D4 \u05D1\u05D3\u05D5"\u05D7'); return;
     }
+    // r32 (§14.1): the weak-topics and most-failed-questions tables are built
+    // out of פירוט שגויות, which a snapshot-painted board does not carry.
+    if (!pre && resultDetailsMissing()) {
+      var claimed = openReportWindow();
+      if (!claimed) return;
+      ensureAllResultDetails().then(function(ok) {
+        if (ok) window.generateSiteManagerReport(claimed); else closeReportWindow(claimed);
+      });
+      return;
+    }
     try {
       var html = buildSiteManagerReportHtml();
-      if (!html) { alert('\u05E9\u05D2\u05D9\u05D0\u05D4 \u05D1\u05D9\u05E6\u05D9\u05E8\u05EA \u05D3\u05D5"\u05D7'); return; }
-      var w = window.open('', '_blank');
-      if (w) { w.document.write(html); w.document.close(); }
-      else { alert('\u05D7\u05E1\u05D5\u05DD popup'); }
+      if (!html) { closeReportWindow(pre); alert('\u05E9\u05D2\u05D9\u05D0\u05D4 \u05D1\u05D9\u05E6\u05D9\u05E8\u05EA \u05D3\u05D5"\u05D7'); return; }
+      writeReportWindow(pre, html);
     } catch(e) {
+      closeReportWindow(pre);
       alert('\u05E9\u05D2\u05D9\u05D0\u05D4: ' + e.message);
       console.error('[SITE_MANAGER_REPORT]', e);
     }
@@ -6097,12 +6358,17 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     saveState();
   }
 
-  window.shareSiteManagerReport = function() {
+  window.shareSiteManagerReport = function(ready) {
     if (!completedResults || completedResults.length === 0) {
       alert('\u05D0\u05D9\u05DF \u05EA\u05D5\u05E6\u05D0\u05D5\u05EA \u05DC\u05E9\u05D9\u05EA\u05D5\u05E3'); return;
     }
     if (!currentSiteManagerPhone) {
       alert('\u05DC\u05D0 \u05D4\u05D5\u05D2\u05D3\u05E8 \u05DE\u05E1\u05E4\u05E8 \u05DE\u05E0\u05D4\u05DC \u05D0\u05EA\u05E8'); return;
+    }
+    // r32 (§14.1): same report, same wrong-answer blocks - fetched first.
+    if (!ready && resultDetailsMissing()) {
+      ensureAllResultDetails().then(function(ok) { if (ok) window.shareSiteManagerReport(true); });
+      return;
     }
     try {
       var html = buildSiteManagerReportHtml();
@@ -6201,9 +6467,15 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
     }
   };
 
-  window.correctToPass = function(idx) {
+  window.correctToPass = function(idx, ready) {
     var r = completedResults[idx];
     if (!r) return;
+    // r32 (§14.1): the confirmation box lists the questions he got wrong, so the
+    // block has to be in hand before it is shown.
+    if (!ready && resultDetailsMissing()) {
+      ensureResultDetailsAt(idx).then(function(i) { if (i >= 0) window.correctToPass(i, true); });
+      return;
+    }
     // Parse wrong details for display
     var wrongText = String(r.wrongDetails || '');
     var wrongItems = [];
@@ -6232,6 +6504,10 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       apiGet({ action: 'correctToPass', sessionCode: sessionCode, idNumber: r.idNumber, examinerId: examinerData.id }).then(function(data) {
         if (data.status === 'ok') {
           showToast(r.name + ' \u05EA\u05D5\u05E7\u05DF \u05DC"\u05E2\u05D1\u05E8".');
+          // r32 (§14.1): a write to תוצאות outside examinerDecision still has to
+          // reach the Worker's snapshot, or the next watch render paints the old
+          // score back over the correction until the 20 s safety read.
+          nudgeGateway(null);
           pollDashboard();
         } else {
           alert('\u05E9\u05D2\u05D9\u05D0\u05D4: ' + (data.message || ''));

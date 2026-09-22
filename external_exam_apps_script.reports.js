@@ -1246,7 +1246,7 @@ function handleBankGrant(p) {
 }
 var API_DEPLOYMENT = "reports";
 
-var THEORY_API_BUILD = '2026-09-22-r31';
+var THEORY_API_BUILD = '2026-09-23-r32';
 var API_STARTED_AT = 0;
 
 function apiActionList() {

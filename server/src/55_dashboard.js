@@ -1,3 +1,119 @@
+// ---- The board's own rules over 'תוצאות', as functions (r32, 22/09/2026) ----
+// Until r32 the examiner board was the only reader of these three rules, so
+// they lived inside handleExaminerDashboard as loops. DESIGN §14.1 makes the
+// board draw itself from sessionSnapshot v2 (one Google round trip per change
+// instead of two — KNOWN_ISSUES #35), which means handleSessionSnapshot has to
+// produce the SAME lists from the same sheet. Two copies of a dedup rule is how
+// the two screens drift apart, so the rules live here once and both handlers
+// call them. Behaviour is unchanged, line for line — including the quirks: the
+// attempts tally parses the date cell with the Date constructor while the
+// today-exams list compares the formatted DD/MM/YYYY prefix.
+// Both callers are `exam` modules (server/BUILD_TARGETS.json), so the reports
+// deployment carries neither.
+
+// "Already tested today" tally: non-בוטל result rows written today, by
+// examinee id, in ANY session — someone who tried earlier today elsewhere must
+// still raise the flag.
+function attemptsTodayFromResults(resData) {
+  var now = new Date();
+  var todayDateStr = now.getFullYear() + '-' + (now.getMonth() + 1) + '-' + now.getDate();
+  function isToday(val) {
+    if (!val) return false;
+    try {
+      var d = (val instanceof Date) ? val : new Date(val);
+      if (isNaN(d.getTime())) return false;
+      return (d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate()) === todayDateStr;
+    } catch(_) { return false; }
+  }
+  var byId = {};
+  for (var i = 1; i < resData.length; i++) {
+    if (!isToday(resData[i][0])) continue;
+    if (String(resData[i][7] || '').trim() === 'בוטל') continue;   // overturned, not a real attempt
+    var k = normalizeId(resData[i][1]);
+    byId[k] = (byId[k] || 0) + 1;
+  }
+  return byId;
+}
+
+// Today's non-בוטל results by examinee id, any session — what the board shows
+// under a repeat examinee. The date cell is either a Date or the DD/MM/YYYY
+// string todayStr() writes, so the match is on the formatted prefix.
+function todayExamsFromResults(resData) {
+  var now = new Date();
+  var todayDate = ('0' + now.getDate()).slice(-2) + '/' + ('0' + (now.getMonth() + 1)).slice(-2) + '/' + now.getFullYear();
+  var byId = {};
+  for (var ti = 1; ti < resData.length; ti++) {
+    if (String(resData[ti][7] || '') === 'בוטל') continue;
+    var _cd = resData[ti][0], _ds = '';
+    if (_cd instanceof Date) {
+      _ds = ('0' + _cd.getDate()).slice(-2) + '/' + ('0' + (_cd.getMonth() + 1)).slice(-2) + '/' + _cd.getFullYear();
+    } else {
+      _ds = String(_cd);
+    }
+    if (_ds.indexOf(todayDate) !== 0) continue;
+    var _tk = normalizeId(resData[ti][1]);
+    (byId[_tk] = byId[_tk] || []).push({ license: String(resData[ti][4]), score: String(resData[ti][5]), passed: String(resData[ti][7]), language: String(resData[ti][12] || '') });
+  }
+  return byId;
+}
+
+// The 'completed' list of one session, in sheet order. DEDUP per examinee: the
+// תוצאות sheet can end up with several non-בוטל rows for one (session, id) when
+// recovery paths (timeout-fail, manual force-complete, disqualify) appended
+// rows that weren't superseded. The examiner must see each soldier ONCE — keep
+// only the LATEST row, which matches the system's own canonical rule (every
+// supersede appends the newest and marks older ones בוטל; latest-wins is the
+// safety net when that didn't run).
+// `registrationTime` is NOT added here: it comes from ממתינים and only the
+// board has that table (the snapshot's reader computes it from its own rows).
+function completedResultsForSession(resData, code) {
+  var latestResRowById = {};
+  for (var jd = 1; jd < resData.length; jd++) {
+    if (String(resData[jd][13]) !== code) continue;
+    if (String(resData[jd][7] || '') === 'בוטל') continue;
+    latestResRowById[normalizeId(resData[jd][1])] = jd; // ascending → ends as latest
+  }
+  var completed = [];
+  for (var j = 1; j < resData.length; j++) {
+    if (String(resData[j][13]) !== code) continue;
+    if (String(resData[j][7] || '') === 'בוטל') continue;
+    if (latestResRowById[normalizeId(resData[j][1])] !== j) continue; // keep latest only
+    completed.push({
+      date: resData[j][0],
+      idNumber: resData[j][1],
+      name: resData[j][2],
+      phone: resData[j][3],
+      license: resData[j][4],
+      score: resData[j][5],
+      percent: resData[j][6],
+      passed: resData[j][7],
+      time: resData[j][8],
+      examiner: resData[j][9],
+      site: resData[j][10],
+      classroom: resData[j][11],
+      language: resData[j][12],
+      attempt: resData[j][14],
+      wrongDetails: resData[j][15],
+      sent: resData[j][16],
+      disqualified: resData[j][17],
+      waLink: resData[j][18],
+      population: resData[j][19] || '',
+      corrected: resData[j][20] || false,
+      audioMode: resData[j][21] || 'off',
+      // Integrity flags the server already computes & stores but the dashboard
+      // never showed: verified='מאומת' when the score was re-computed against the
+      // trusted answer key; suspicious='חשוד' when the exam took <3 min. Surfacing
+      // these lets the examiner spot any result that was NOT server-verified
+      // (missing answer key, missing exam-registration, or a tampered/forged
+      // submit) instead of it looking identical to a clean pass.
+      verified: (resData[j].length > 22) ? (resData[j][22] || '') : '',
+      suspicious: (resData[j].length > 23) ? (resData[j][23] || '') : '',
+      device: (resData[j].length > 29) ? (resData[j][29] || '') : ''
+    });
+  }
+  return completed;
+}
+
 function handleExaminerDashboard(p) {
   var code = String(p.sessionCode);
   var pendSheet = getSheet('ממתינים');
@@ -163,30 +279,9 @@ function handleExaminerDashboard(p) {
     }
   }
 
-  // Pre-compute attempts-today by examinee id (for "second attempt today" warning).
-  // Counts non-disqualified terminal entries (real attempts) made today regardless
-  // of which session — so an examinee who tried earlier today in another session
-  // also triggers the warning.
-  var attemptsTodayById = {};
-  var todayDateStr = (function() {
-    var d = new Date();
-    return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
-  })();
-  function isToday(val) {
-    if (!val) return false;
-    try {
-      var d = (val instanceof Date) ? val : new Date(val);
-      if (isNaN(d.getTime())) return false;
-      return (d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate()) === todayDateStr;
-    } catch(_) { return false; }
-  }
-  for (var ai2 = 1; ai2 < resData.length; ai2++) {
-    if (!isToday(resData[ai2][0])) continue;
-    var aiPassed = String(resData[ai2][7] || '').trim();
-    if (aiPassed === 'בוטל') continue; // overturned, not a real attempt
-    var aiId = normalizeId(resData[ai2][1]);
-    attemptsTodayById[aiId] = (attemptsTodayById[aiId] || 0) + 1;
-  }
+  // Pre-compute attempts-today by examinee id (for "second attempt today"
+  // warning) — the rule itself is above, shared with sessionSnapshot v2.
+  var attemptsTodayById = attemptsTodayFromResults(resData);
 
   // Build pending (waiting/approved) and active (in_exam/disqualified) lists,
   // DEDUPED per examinee. A soldier must appear ONCE in each list even when the
@@ -233,79 +328,12 @@ function handleExaminerDashboard(p) {
   // examiner); its only other effect was picking up a result another execution
   // appended during this request, and that arrives one poll later anyway — the
   // dashboard polls every 2 s while a result is syncing.
-  // DEDUP results per examinee: the תוצאות sheet can end up with several
-  // non-בוטל rows for one (session, id) when recovery paths (timeout-fail,
-  // manual force-complete, disqualify) appended rows that weren't superseded.
-  // The examiner must see each soldier ONCE — keep only the LATEST row, which
-  // matches the system's own canonical rule (every supersede appends the newest
-  // and marks older ones בוטל; latest-wins is the safety net when that didn't run).
-  var latestResRowById = {};
-  for (var jd = 1; jd < resData.length; jd++) {
-    if (String(resData[jd][13]) !== code) continue;
-    if (String(resData[jd][7] || '') === 'בוטל') continue;
-    latestResRowById[normalizeId(resData[jd][1])] = jd; // ascending → ends as latest
-  }
-  var completed = [];
-  for (var j = 1; j < resData.length; j++) {
-    if (String(resData[j][13]) !== code) continue;
-    if (String(resData[j][7] || '') === 'בוטל') continue;
-    if (latestResRowById[normalizeId(resData[j][1])] !== j) continue; // keep latest only
-    completed.push({
-      date: resData[j][0],
-      idNumber: resData[j][1],
-      name: resData[j][2],
-      phone: resData[j][3],
-      license: resData[j][4],
-      score: resData[j][5],
-      percent: resData[j][6],
-      passed: resData[j][7],
-      time: resData[j][8],
-      examiner: resData[j][9],
-      site: resData[j][10],
-      classroom: resData[j][11],
-      language: resData[j][12],
-      attempt: resData[j][14],
-      wrongDetails: resData[j][15],
-      sent: resData[j][16],
-      disqualified: resData[j][17],
-      waLink: resData[j][18],
-      population: resData[j][19] || '',
-      corrected: resData[j][20] || false,
-      audioMode: resData[j][21] || 'off',
-      // Integrity flags the server already computes & stores but the dashboard
-      // never showed: verified='מאומת' when the score was re-computed against the
-      // trusted answer key; suspicious='חשוד' when the exam took <3 min. Surfacing
-      // these lets the examiner spot any result that was NOT server-verified
-      // (missing answer key, missing exam-registration, or a tampered/forged
-      // submit) instead of it looking identical to a clean pass.
-      verified: (resData[j].length > 22) ? (resData[j][22] || '') : '',
-      suspicious: (resData[j].length > 23) ? (resData[j][23] || '') : '',
-      device: (resData[j].length > 29) ? (resData[j][29] || '') : ''
-    });
-  }
+  // The dedup-per-examinee rule is above, shared with sessionSnapshot v2.
+  var completed = completedResultsForSession(resData, code);
 
-  // Flag repeat examinees: check if any pending examinee already tested today (any session)
-  var todayDD = ('0' + now.getDate()).slice(-2);
-  var todayMM = ('0' + (now.getMonth() + 1)).slice(-2);
-  var todayYYYY = now.getFullYear();
-  var todayDate = todayDD + '/' + todayMM + '/' + todayYYYY; // "DD/MM/YYYY"
-  // Index today's non-בוטל results by examinee id (any session), then attach —
-  // was a full scan of תוצאות per pending examinee.
-  var todayExamsById = {};
-  for (var ti = 1; ti < resData.length; ti++) {
-    if (String(resData[ti][7] || '') === 'בוטל') continue;
-    // Handle both Date objects and string dates from Sheets
-    var _cd = resData[ti][0];
-    var _ds = '';
-    if (_cd instanceof Date) {
-      _ds = ('0' + _cd.getDate()).slice(-2) + '/' + ('0' + (_cd.getMonth() + 1)).slice(-2) + '/' + _cd.getFullYear();
-    } else {
-      _ds = String(_cd);
-    }
-    if (_ds.indexOf(todayDate) !== 0) continue;
-    var _tk = normalizeId(resData[ti][1]);
-    (todayExamsById[_tk] = todayExamsById[_tk] || []).push({ license: String(resData[ti][4]), score: String(resData[ti][5]), passed: String(resData[ti][7]), language: String(resData[ti][12] || '') });
-  }
+  // Flag repeat examinees: check if any pending examinee already tested today
+  // (any session) — the rule itself is above, shared with sessionSnapshot v2.
+  var todayExamsById = todayExamsFromResults(resData);
   for (var pi = 0; pi < pending.length; pi++) {
     var _te = todayExamsById[normalizeId(pending[pi].idNumber)];
     if (_te && _te.length > 0) pending[pi].todayExams = _te;

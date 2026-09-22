@@ -960,7 +960,7 @@ function handleBankGrant(p) {
 }
 var API_DEPLOYMENT = "exam";
 
-var THEORY_API_BUILD = '2026-09-22-r31';
+var THEORY_API_BUILD = '2026-09-23-r32';
 var API_STARTED_AT = 0;
 
 function apiActionList() {
@@ -1634,6 +1634,10 @@ function handleGetSessionInfo(p) {
 }
 
 var REG_KEY_MEMO_SEC = 1800;
+var REG_CLAIM_PENDING = 'pending';
+var REG_CLAIM_SEC = 60;
+var REG_CLAIM_WAIT_MS = 25000;
+var REG_CLAIM_POLL_MS = 500;
 function regKeyMemoKey(sessionCode, idNumber, regKey) {
   return CACHE_KEY_PREFIX + 'reg_' + String(sessionCode || '').trim() + '_' + normalizeId(idNumber) + '_' + String(regKey || '').trim();
 }
@@ -1641,19 +1645,50 @@ function rememberRegistrationToken(sessionCode, idNumber, regKey, token) {
   if (!regKey || !token) return;
   try { CacheService.getScriptCache().put(regKeyMemoKey(sessionCode, idNumber, regKey), String(token), REG_KEY_MEMO_SEC); } catch (e) {}
 }
-function recallRegistrationToken(sessionCode, idNumber, regKey) {
+function readRegistrationMemo(sessionCode, idNumber, regKey) {
   if (!regKey) return '';
   try { return String(CacheService.getScriptCache().get(regKeyMemoKey(sessionCode, idNumber, regKey)) || ''); } catch (e) { return ''; }
+}
+function recallRegistrationToken(sessionCode, idNumber, regKey) {
+  var memo = readRegistrationMemo(sessionCode, idNumber, regKey);
+  return memo === REG_CLAIM_PENDING ? '' : memo;
 }
 function validRegKey(raw) {
   var key = String(raw || '').trim();
   return /^[A-Za-z0-9_-]{8,64}$/.test(key) ? key : '';
 }
+function claimRegistration(sessionCode, idNumber, regKey) {
+  if (!regKey) return;
+  try { CacheService.getScriptCache().put(regKeyMemoKey(sessionCode, idNumber, regKey), REG_CLAIM_PENDING, REG_CLAIM_SEC); } catch (e) {}
+}
+function releaseRegistrationClaim(sessionCode, idNumber, regKey) {
+  if (!regKey) return;
+  try {
+    var cache = CacheService.getScriptCache(), key = regKeyMemoKey(sessionCode, idNumber, regKey);
+    if (String(cache.get(key) || '') === REG_CLAIM_PENDING) cache.remove(key);
+  } catch (e) {}
+}
+function awaitRegistrationToken(sessionCode, idNumber, regKey) {
+  for (var waited = 0; waited < REG_CLAIM_WAIT_MS; waited += REG_CLAIM_POLL_MS) {
+    try { Utilities.sleep(REG_CLAIM_POLL_MS); } catch (eSleep) { return ''; }
+    var memo = readRegistrationMemo(sessionCode, idNumber, regKey);
+    if (!memo) return '';
+    if (memo !== REG_CLAIM_PENDING) return memo;
+  }
+  return '';
+}
 
 function handleRegisterExaminee(p) {
-  var rlErr = requireRateLimit('registerExaminee', String(p.sessionCode || ''), 30, 60);
+  var rlErr = requireRateLimit('registerExaminee', String(p.sessionCode || ''), 120, 60);
   if (rlErr) return rlErr;
+  var sessionErr = registrationSessionError(p.sessionCode);
+  if (sessionErr) return sessionErr;
   var regKey = validRegKey(p.regKey);
+  if (regKey) {
+    var memo = readRegistrationMemo(p.sessionCode, p.idNumber, regKey);
+    if (memo === REG_CLAIM_PENDING) memo = awaitRegistrationToken(p.sessionCode, p.idNumber, regKey);
+    if (!memo) claimRegistration(p.sessionCode, p.idNumber, regKey);
+  }
   var lock = null, held = false;
   try { lock = LockService.getScriptLock(); held = lock.tryLock(5000); } catch (eLock) { held = false; }
   try {
@@ -1661,6 +1696,19 @@ function handleRegisterExaminee(p) {
   } finally {
     if (held) { try { lock.releaseLock(); } catch (eRel) {} }
   }
+}
+
+function registrationSessionError(sessionCode) {
+  var row = sessionRowByCode(sessionCode);
+  if (!row) return jsonResponse({ status: 'error', message: 'קוד סשן לא תקין' });
+  var active = row[10];
+  if (active !== true && active !== 'TRUE' && String(active).toUpperCase() !== 'TRUE') {
+    return jsonResponse({ status: 'error', message: 'הסשן הסתיים' });
+  }
+  if (new Date() > new Date(row[9])) {
+    return jsonResponse({ status: 'error', message: 'תוקף הסשן פג' });
+  }
+  return null;
 }
 
 function registerExamineeLocked(p, regKey) {
@@ -1678,9 +1726,11 @@ function registerExamineeLocked(p, regKey) {
           if (regKey && remembered && rowToken && remembered === rowToken) {
             return jsonResponse({ status: 'ok', examineeToken: rowToken, resumed: true });
           }
+          releaseRegistrationClaim(p.sessionCode, p.idNumber, regKey);
           return jsonResponse({ status: 'error', message: 'כבר רשום בסשן זה' });
         }
         if (status === 'disqualified') {
+          releaseRegistrationClaim(p.sessionCode, p.idNumber, regKey);
           return jsonResponse({ status: 'error', message: 'יש פסילה הממתינה להחלטת הבוחן — פנה לבוחן לפני רישום מחדש' });
         }
       }
@@ -1690,6 +1740,7 @@ function registerExamineeLocked(p, regKey) {
     }
   }
   if (activeCount >= MAX_PENDING_PER_SESSION) {
+    releaseRegistrationClaim(p.sessionCode, p.idNumber, regKey);
     return jsonResponse({ status: 'error', message: 'הסשן מלא — לא ניתן לרשום נבחנים נוספים' });
   }
   var examineeToken = generateExamineeToken();
@@ -1830,6 +1881,89 @@ function handleRejectExaminee(p) {
 }
 
 
+
+function attemptsTodayFromResults(resData) {
+  var now = new Date();
+  var todayDateStr = now.getFullYear() + '-' + (now.getMonth() + 1) + '-' + now.getDate();
+  function isToday(val) {
+    if (!val) return false;
+    try {
+      var d = (val instanceof Date) ? val : new Date(val);
+      if (isNaN(d.getTime())) return false;
+      return (d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate()) === todayDateStr;
+    } catch(_) { return false; }
+  }
+  var byId = {};
+  for (var i = 1; i < resData.length; i++) {
+    if (!isToday(resData[i][0])) continue;
+    if (String(resData[i][7] || '').trim() === 'בוטל') continue;
+    var k = normalizeId(resData[i][1]);
+    byId[k] = (byId[k] || 0) + 1;
+  }
+  return byId;
+}
+
+function todayExamsFromResults(resData) {
+  var now = new Date();
+  var todayDate = ('0' + now.getDate()).slice(-2) + '/' + ('0' + (now.getMonth() + 1)).slice(-2) + '/' + now.getFullYear();
+  var byId = {};
+  for (var ti = 1; ti < resData.length; ti++) {
+    if (String(resData[ti][7] || '') === 'בוטל') continue;
+    var _cd = resData[ti][0], _ds = '';
+    if (_cd instanceof Date) {
+      _ds = ('0' + _cd.getDate()).slice(-2) + '/' + ('0' + (_cd.getMonth() + 1)).slice(-2) + '/' + _cd.getFullYear();
+    } else {
+      _ds = String(_cd);
+    }
+    if (_ds.indexOf(todayDate) !== 0) continue;
+    var _tk = normalizeId(resData[ti][1]);
+    (byId[_tk] = byId[_tk] || []).push({ license: String(resData[ti][4]), score: String(resData[ti][5]), passed: String(resData[ti][7]), language: String(resData[ti][12] || '') });
+  }
+  return byId;
+}
+
+function completedResultsForSession(resData, code) {
+  var latestResRowById = {};
+  for (var jd = 1; jd < resData.length; jd++) {
+    if (String(resData[jd][13]) !== code) continue;
+    if (String(resData[jd][7] || '') === 'בוטל') continue;
+    latestResRowById[normalizeId(resData[jd][1])] = jd;
+  }
+  var completed = [];
+  for (var j = 1; j < resData.length; j++) {
+    if (String(resData[j][13]) !== code) continue;
+    if (String(resData[j][7] || '') === 'בוטל') continue;
+    if (latestResRowById[normalizeId(resData[j][1])] !== j) continue;
+    completed.push({
+      date: resData[j][0],
+      idNumber: resData[j][1],
+      name: resData[j][2],
+      phone: resData[j][3],
+      license: resData[j][4],
+      score: resData[j][5],
+      percent: resData[j][6],
+      passed: resData[j][7],
+      time: resData[j][8],
+      examiner: resData[j][9],
+      site: resData[j][10],
+      classroom: resData[j][11],
+      language: resData[j][12],
+      attempt: resData[j][14],
+      wrongDetails: resData[j][15],
+      sent: resData[j][16],
+      disqualified: resData[j][17],
+      waLink: resData[j][18],
+      population: resData[j][19] || '',
+      corrected: resData[j][20] || false,
+      audioMode: resData[j][21] || 'off',
+      verified: (resData[j].length > 22) ? (resData[j][22] || '') : '',
+      suspicious: (resData[j].length > 23) ? (resData[j][23] || '') : '',
+      device: (resData[j].length > 29) ? (resData[j][29] || '') : ''
+    });
+  }
+  return completed;
+}
+
 function handleExaminerDashboard(p) {
   var code = String(p.sessionCode);
   var pendSheet = getSheet('ממתינים');
@@ -1945,26 +2079,7 @@ function handleExaminerDashboard(p) {
     }
   }
 
-  var attemptsTodayById = {};
-  var todayDateStr = (function() {
-    var d = new Date();
-    return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
-  })();
-  function isToday(val) {
-    if (!val) return false;
-    try {
-      var d = (val instanceof Date) ? val : new Date(val);
-      if (isNaN(d.getTime())) return false;
-      return (d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate()) === todayDateStr;
-    } catch(_) { return false; }
-  }
-  for (var ai2 = 1; ai2 < resData.length; ai2++) {
-    if (!isToday(resData[ai2][0])) continue;
-    var aiPassed = String(resData[ai2][7] || '').trim();
-    if (aiPassed === 'בוטל') continue;
-    var aiId = normalizeId(resData[ai2][1]);
-    attemptsTodayById[aiId] = (attemptsTodayById[aiId] || 0) + 1;
-  }
+  var attemptsTodayById = attemptsTodayFromResults(resData);
 
   var pendingById = {};
   var activeById = {};
@@ -1995,63 +2110,9 @@ function handleExaminerDashboard(p) {
   for (var pkA in pendingById) pending.push(pendingById[pkA]);
   for (var akA in activeById) active.push(activeById[akA]);
 
-  var latestResRowById = {};
-  for (var jd = 1; jd < resData.length; jd++) {
-    if (String(resData[jd][13]) !== code) continue;
-    if (String(resData[jd][7] || '') === 'בוטל') continue;
-    latestResRowById[normalizeId(resData[jd][1])] = jd;
-  }
-  var completed = [];
-  for (var j = 1; j < resData.length; j++) {
-    if (String(resData[j][13]) !== code) continue;
-    if (String(resData[j][7] || '') === 'בוטל') continue;
-    if (latestResRowById[normalizeId(resData[j][1])] !== j) continue;
-    completed.push({
-      date: resData[j][0],
-      idNumber: resData[j][1],
-      name: resData[j][2],
-      phone: resData[j][3],
-      license: resData[j][4],
-      score: resData[j][5],
-      percent: resData[j][6],
-      passed: resData[j][7],
-      time: resData[j][8],
-      examiner: resData[j][9],
-      site: resData[j][10],
-      classroom: resData[j][11],
-      language: resData[j][12],
-      attempt: resData[j][14],
-      wrongDetails: resData[j][15],
-      sent: resData[j][16],
-      disqualified: resData[j][17],
-      waLink: resData[j][18],
-      population: resData[j][19] || '',
-      corrected: resData[j][20] || false,
-      audioMode: resData[j][21] || 'off',
-      verified: (resData[j].length > 22) ? (resData[j][22] || '') : '',
-      suspicious: (resData[j].length > 23) ? (resData[j][23] || '') : '',
-      device: (resData[j].length > 29) ? (resData[j][29] || '') : ''
-    });
-  }
+  var completed = completedResultsForSession(resData, code);
 
-  var todayDD = ('0' + now.getDate()).slice(-2);
-  var todayMM = ('0' + (now.getMonth() + 1)).slice(-2);
-  var todayYYYY = now.getFullYear();
-  var todayDate = todayDD + '/' + todayMM + '/' + todayYYYY;
-  var todayExamsById = {};
-  for (var ti = 1; ti < resData.length; ti++) {
-    if (String(resData[ti][7] || '') === 'בוטל') continue;
-    var _cd = resData[ti][0];
-    var _ds = '';
-    if (_cd instanceof Date) {
-      _ds = ('0' + _cd.getDate()).slice(-2) + '/' + ('0' + (_cd.getMonth() + 1)).slice(-2) + '/' + _cd.getFullYear();
-    } else {
-      _ds = String(_cd);
-    }
-    if (_ds.indexOf(todayDate) !== 0) continue;
-    var _tk = normalizeId(resData[ti][1]);
-    (todayExamsById[_tk] = todayExamsById[_tk] || []).push({ license: String(resData[ti][4]), score: String(resData[ti][5]), passed: String(resData[ti][7]), language: String(resData[ti][12] || '') });
-  }
+  var todayExamsById = todayExamsFromResults(resData);
   for (var pi = 0; pi < pending.length; pi++) {
     var _te = todayExamsById[normalizeId(pending[pi].idNumber)];
     if (_te && _te.length > 0) pending[pi].todayExams = _te;
@@ -2194,10 +2255,14 @@ function handleSessionSnapshot(p) {
   var snap = pendingRowsForSession(code);
   var extraMin = {};
   try { extraMin = extraMinutesBySession(code); } catch (eExt) { extraMin = {}; }
+  diagMark('sheet:results-snapshot');
+  var resData = readResultsTail().rows;
+  var attemptsToday = attemptsTodayFromResults(resData);
+  var todayExams = todayExamsFromResults(resData);
   var rows = [];
   for (var i = 1; i < snap.rows.length; i++) {
     var r = snap.rows[i], id = normalizeId(r[1]);
-    rows.push({
+    var row = {
       id: id,
       status: String(r[5] || '').trim(),
       tokenHash: hashExamineeToken(r.length > 12 ? r[12] : ''),
@@ -2207,10 +2272,38 @@ function handleSessionSnapshot(p) {
       warn: Number(r[15]) || 0,
       fin: r.length > 18 && r[18] ? 1 : 0,
       ext: String(r[14] || '').trim() === 'כן' ? 1 : 0,
-      dq: Number(r[13]) || 0
-    });
+      dq: Number(r[13]) || 0,
+      name: r[2] === undefined ? '' : r[2],
+      phone: r[3] === undefined ? '' : r[3],
+      time: r[4] === undefined ? '' : r[4],
+      start: r[11] || '',
+      lang: r[6] || '',
+      pop: r[7] || '',
+      site: (r.length > 17) ? (r[17] || '') : '',
+      lic: r[8] || '',
+      timeExt: String(r[10] || ''),
+      lastWarn: (r.length > 16) ? String(r[16] || '') : '',
+      attemptsToday: attemptsToday[id] || 0
+    };
+    var te = todayExams[id];
+    if (te && te.length > 0) row.todayExams = te;
+    rows.push(row);
   }
-  return jsonResponse({ status: 'ok', at: Date.now(), rows: rows });
+  return jsonResponse({ status: 'ok', v: 2, at: Date.now(), rows: rows, results: snapshotResultsForSession(resData, code) });
+}
+
+function snapshotResultsForSession(resData, code) {
+  var items = completedResultsForSession(resData, code), out = [];
+  for (var i = 0; i < items.length; i++) {
+    var item = items[i], slim = {};
+    for (var key in item) {
+      if (!Object.prototype.hasOwnProperty.call(item, key) || key === 'wrongDetails') continue;
+      slim[key] = item[key];
+    }
+    if (isFabricatedFailNote(String(item.wrongDetails || ''))) slim.fabricated = 1;
+    out.push(slim);
+  }
+  return out;
 }
 
 function hashExamineeToken(token) {

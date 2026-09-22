@@ -246,12 +246,36 @@ function envWith(extra, properties) {
 }
 
 // ---- 4. sessionSnapshot: one upstream call for the whole session ------------
+// r32 (DESIGN §14.1): the board is drawn from THIS answer, so it costs one more
+// tail read — 'תוצאות', the same one the board itself pays. That is the whole
+// price of the change, and it replaces a SECOND round trip to Google
+// (examinerDashboard) per change, whose delivery hop is what stalls 25-60 s
+// (KNOWN_ISSUES #35). The budget below is what must never grow again.
 {
   const env = envWith({ waiting: 2, inExam: 2 });
-  env.json(env.ctx.handleSessionSnapshot({ sessionCode: SESSION }));   // warms the 4 s snapshot
+  env.resetCounters();
+  const cold = env.json(env.ctx.handleSessionSnapshot({ sessionCode: SESSION }));
+  const coldC = env.counters();
+  check('sessionSnapshot cold: two tail reads (ממתינים, תוצאות) + the extensions read, and no write', () => {
+    assert.equal(cold.status, 'ok');
+    assert.equal(cold.v, 2);
+    assert.equal(coldC.perSheet['ממתינים'].rangeReads, 2, 'ממתינים: one tail read = header + tail');
+    assert.equal(coldC.perSheet['תוצאות'].rangeReads, 2, 'תוצאות: one tail read, no cache');
+    assert.equal(coldC.perSheet['ממתינים'].fullReads + coldC.perSheet['תוצאות'].fullReads, 0,
+      'never a full read of a sheet that grows all day');
+    assert.equal(coldC.perSheet['הארכות זמן'].fullReads, 1, 'the 30 s extensions map');
+    assert.equal(coldC.reads, 5, 'reads=' + coldC.reads + ' ' + JSON.stringify(coldC.perSheet));
+    assert.equal(coldC.appends + coldC.setValues, 0, 'the snapshot is read-only');
+  });
   env.resetCounters();
   const snap = env.json(env.ctx.handleSessionSnapshot({ sessionCode: SESSION }));
-  check('sessionSnapshot warm: at most one read', () => assert.ok(env.counters().reads <= 1, 'reads=' + env.counters().reads));
+  const warmC = env.counters();
+  check('sessionSnapshot warm: ממתינים comes from the 4 s snapshot, only תוצאות is re-read', () => {
+    assert.equal(warmC.perSheet['ממתינים'].fullReads + warmC.perSheet['ממתינים'].rangeReads, 0,
+      'the r23 per-session snapshot still serves the rows');
+    assert.equal(warmC.perSheet['הארכות זמן'].fullReads, 0, 'the extensions map is cached for 30 s');
+    assert.equal(warmC.reads, 2, 'reads=' + warmC.reads + ' — the results tail, nothing else');
+  });
   check('sessionSnapshot returns every row of the session, oldest first', () => {
     assert.equal(snap.status, 'ok');
     assert.equal(snap.rows.length, 6);   // 2 waiting + 2 in_exam + 2 completed
@@ -259,19 +283,22 @@ function envWith(extra, properties) {
     assert.equal(snap.rows[0].status, 'waiting');
     assert.equal(typeof snap.at, 'number');
   });
-  check('sessionSnapshot never leaks a token, a name or a phone', () => {
+  check('sessionSnapshot never leaks the examinee token, and its row shape is pinned', () => {
     const text = JSON.stringify(snap);
-    assert.equal(text.indexOf('tok-'), -1);
-    assert.equal(text.indexOf('נבחן '), -1);
-    assert.equal(text.indexOf('0500000000'), -1);
+    assert.equal(text.indexOf('tok-'), -1, 'the token itself is still never sent — only its SHA-256');
     for (const row of snap.rows) {
       assert.match(row.tokenHash, /^[0-9a-f]{64}$/);
       // r31 (DESIGN §13.6) added warn/fin/ext/dq — counters and flags the
       // examiner board shows, so the Worker's fingerprint can wake it on them.
-      // The list stays exhaustive: it is the guard against a name or a phone
-      // being added to the row some day without anybody noticing.
+      // r32 (§14.1) added the board's own columns: the answer now DOES carry
+      // names and phones, on purpose, because the board is drawn from it and
+      // the only route that forwards them (/v1/session/watch) answers an
+      // examiner grant. The list stays exhaustive: it is the guard against a
+      // field being added some day without anybody deciding to.
       assert.deepEqual(Object.keys(row).sort(),
-        ['audio', 'dq', 'examMinutes', 'ext', 'extraMinutes', 'fin', 'id', 'status', 'tokenHash', 'warn']);
+        ['attemptsToday', 'audio', 'dq', 'examMinutes', 'ext', 'extraMinutes', 'fin', 'id', 'lang', 'lastWarn',
+          'lic', 'name', 'phone', 'pop', 'site', 'start', 'status', 'time', 'timeExt', 'tokenHash', 'warn']
+          .concat(row.todayExams ? ['todayExams'] : []).sort());
     }
   });
   check('sessionSnapshot hashes the token the way the Worker does (SHA-256 hex)', () => {
@@ -282,6 +309,12 @@ function envWith(extra, properties) {
     assert.equal(snap.rows[0].examMinutes, 40);
     assert.equal(snap.rows[0].extraMinutes, 0);
     assert.equal(snap.rows[0].audio, 'off');
+  });
+  check('sessionSnapshot carries the session results, without the wrong-answers blob', () => {
+    assert.equal(snap.results.length, 2, 'the two examinees who finished');
+    assert.deepEqual(snap.results.map(r => r.idNumber).sort(), ['700000000', '700000001']);
+    assert.equal(snap.results[0].score, '27/30');
+    assert.equal(JSON.stringify(snap).indexOf('wrongDetails'), -1);
   });
 }
 

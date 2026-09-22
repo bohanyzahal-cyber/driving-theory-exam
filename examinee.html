@@ -352,6 +352,7 @@
         <div class="spinner"></div>
         <h2>ממתין לאישור הבוחן...</h2>
         <p class="muted">הבוחן יאשר את הכניסה שלך. אנא המתן.</p>
+        <p id="regStatus" style="display:none; margin:10px auto 0; max-width:500px; padding:10px 14px; background:#eff6ff; border:1px solid #93c5fd; border-radius:10px; color:#1e3a5f; font-size:14px; font-weight:600; line-height:1.5;"></p>
         <div style="margin:18px auto 0; max-width:500px; padding:14px 18px; background:#fef3c7; border:2px solid #f59e0b; border-radius:12px; color:#92400e; font-size:14px; font-weight:600; line-height:1.5;">
           ⚠️ <strong>חשוב:</strong> אל תסגור את הדף הזה ואל תעבור לטאב אחר.<br>
           <span style="font-weight:400; font-size:13px;">המתן כאן עד שהבוחן יאשר. תקבל צליל והודעה ברגע האישור.</span>
@@ -389,6 +390,7 @@
         <span>&#x1F515; השתקתי את הטלפון</span>
       </label>
       <button class="btn-start-exam" id="startExamBtn" disabled style="opacity:0.5;">התחל מבחן</button>
+      <p id="startWaitToken" style="display:none; margin:10px 0 0; font-size:14px; font-weight:600; color:#92400e; text-align:center; line-height:1.5;"></p>
       <div style="text-align:center; margin-top:12px;">
         <a href="#" id="changeSelectionInstructions" style="font-size:13px; color:#64748b; text-decoration:underline; cursor:pointer;">טעיתי? לחזרה ולתיקון הפרטים</a>
       </div>
@@ -798,6 +800,57 @@
   UI_STRINGS['am'].waitingTitle = '\u12E8\u1348\u1273\u129D \u1348\u1243\u12F5 \u1260\u1218\u1320\u1260\u1245 \u120B\u12ED...';
   UI_STRINGS['am'].waitingSub = '\u1348\u1273\u129D \u12E8\u12A5\u122D\u1235\u12CE\u1295 \u1218\u130D\u1262\u12EB \u12EB\u1228\u130B\u130D\u1323\u120D\u1362 \u12A5\u1263\u12AD\u12CE \u12ED\u1320\u1265\u1241\u1362';
 
+  // The r32 background-registration lines (22/09/2026, DESIGN §14.2). Short
+  // enough for a phone held by a soldier who is already nervous, and every one
+  // of them says who is being waited for. {n} is the attempt number.
+  UI_STRINGS['he'].regSending  = 'שולח את ההרשמה לשרת…';
+  UI_STRINGS['ru'].regSending  = 'Отправляем регистрацию на сервер…';
+  UI_STRINGS['en'].regSending  = 'Sending your registration to the server…';
+  UI_STRINGS['ar'].regSending  = 'جارٍ إرسال التسجيل إلى الخادم…';
+  UI_STRINGS['fr'].regSending  = "Envoi de votre inscription au serveur…";
+  UI_STRINGS['es'].regSending  = 'Enviando tu registro al servidor…';
+  UI_STRINGS['am'].regSending  = 'ምዝገባህ ወደ አገልጋዩ እየተላከ ነው…';
+
+  UI_STRINGS['he'].regDone     = 'נרשמת ✔ ממתין לאישור הבוחן';
+  UI_STRINGS['ru'].regDone     = 'Регистрация принята ✔ Ожидание одобрения экзаменатора';
+  UI_STRINGS['en'].regDone     = "Registered ✔ Waiting for the examiner's approval";
+  UI_STRINGS['ar'].regDone     = 'تم التسجيل ✔ في انتظار موافقة الفاحص';
+  UI_STRINGS['fr'].regDone     = "Inscription enregistrée ✔ En attente de l'approbation de l'examinateur";
+  UI_STRINGS['es'].regDone     = 'Registro completado ✔ Esperando la aprobación del examinador';
+  UI_STRINGS['am'].regDone     = 'ተመዝግበሃል ✔ የፈታኙን ፈቃድ በመጠበቅ ላይ';
+
+  UI_STRINGS['he'].regLanded   = 'ההרשמה הגיעה לבוחן ✔ מחכים לאישור ההרשמה מהשרת…';
+  UI_STRINGS['ru'].regLanded   = 'Экзаменатор уже видит вашу регистрацию ✔ Ждём подтверждения сервера…';
+  UI_STRINGS['en'].regLanded   = 'The examiner can see your registration ✔ Waiting for the server to confirm it…';
+  UI_STRINGS['ar'].regLanded   = 'الفاحص يرى تسجيلك ✔ في انتظار تأكيد الخادم…';
+  UI_STRINGS['fr'].regLanded   = "L'examinateur voit votre inscription ✔ En attente de la confirmation du serveur…";
+  UI_STRINGS['es'].regLanded   = 'El examinador ya ve tu registro ✔ Esperando la confirmación del servidor…';
+  UI_STRINGS['am'].regLanded   = 'ፈታኙ ምዝገባህን አይቷል ✔ ከአገልጋዩ ማረጋገጫ በመጠበቅ ላይ…';
+
+  UI_STRINGS['he'].regSlow     = 'השרת של גוגל מגיב לאט — ממשיכים לנסות אוטומטית (ניסיון {n})';
+  UI_STRINGS['ru'].regSlow     = 'Сервер Google отвечает медленно — продолжаем автоматически (попытка {n})';
+  UI_STRINGS['en'].regSlow     = "Google's server is answering slowly — we keep trying automatically (attempt {n})";
+  UI_STRINGS['ar'].regSlow     = 'خادم Google بطيء — نواصل المحاولة تلقائيًا (محاولة {n})';
+  UI_STRINGS['fr'].regSlow     = 'Le serveur Google répond lentement — nous réessayons automatiquement (tentative {n})';
+  UI_STRINGS['es'].regSlow     = 'El servidor de Google responde lento — seguimos intentando automáticamente (intento {n})';
+  UI_STRINGS['am'].regSlow     = 'የGoogle አገልጋይ ዘግይቶ እየመለሰ ነው — በራስ-ሰር መሞከራችንን እንቀጥላለን (ሙከራ {n})';
+
+  UI_STRINGS['he'].regAlready  = 'כבר קיים רישום לת.ז. זו בסשן הזה. אם המבחן לא יתחיל — בקש מהבוחן ללחוץ "אפס" ולהירשם שוב.';
+  UI_STRINGS['ru'].regAlready  = 'Для этого удостоверения личности в этой сессии уже есть регистрация. Если экзамен не начнётся — попросите экзаменатора нажать «אפס» (сброс) и зарегистрируйтесь заново.';
+  UI_STRINGS['en'].regAlready  = 'This ID is already registered in this session. If the exam does not start, ask the examiner to press "אפס" (reset) and register again.';
+  UI_STRINGS['ar'].regAlready  = 'هذا الرقم الشخصي مسجَّل بالفعل في هذه الجلسة. إذا لم يبدأ الامتحان، اطلب من الفاحص الضغط على "אפס" (إعادة تعيين) وسجِّل من جديد.';
+  UI_STRINGS['fr'].regAlready  = "Ce numéro d'identité est déjà inscrit dans cette session. Si l'examen ne démarre pas, demandez à l'examinateur d'appuyer sur « אפס » (réinitialiser) et inscrivez-vous à nouveau.";
+  UI_STRINGS['es'].regAlready  = 'Este número de identidad ya está registrado en esta sesión. Si el examen no comienza, pide al examinador que pulse "אפס" (restablecer) y regístrate de nuevo.';
+  UI_STRINGS['am'].regAlready  = 'ይህ የማንነት ቁጥር በዚህ ክፍለ ጊዜ አስቀድሞ ተመዝግቧል። ፈተናው ካልጀመረ፣ ፈታኙ "אפס" (ዳግም አስጀምር) እንዲጫን ጠይቅና እንደገና ተመዝገብ።';
+
+  UI_STRINGS['he'].startWaitToken = 'ממתין לאישור ההרשמה מהשרת… (המבחן ייפתח אוטומטית כשיגיע)';
+  UI_STRINGS['ru'].startWaitToken = 'Ожидаем подтверждения регистрации от сервера… (экзамен откроется автоматически)';
+  UI_STRINGS['en'].startWaitToken = 'Waiting for the server to confirm your registration… (the exam opens by itself)';
+  UI_STRINGS['ar'].startWaitToken = 'في انتظار تأكيد التسجيل من الخادم… (سيفتح الامتحان تلقائيًا)';
+  UI_STRINGS['fr'].startWaitToken = "En attente de la confirmation du serveur… (l'examen s'ouvrira automatiquement)";
+  UI_STRINGS['es'].startWaitToken = 'Esperando la confirmación del servidor… (el examen se abrirá automáticamente)';
+  UI_STRINGS['am'].startWaitToken = 'ከአገልጋዩ የምዝገባ ማረጋገጫ በመጠበቅ ላይ… (ፈተናው በራሱ ይከፈታል)';
+
   function applyUITranslations() {
     var lang = getExamLang();
     var isRTL = (lang === 'he' || lang === 'ar');
@@ -876,6 +929,11 @@
     // Start button
     var startBtn = document.getElementById('startExamBtn');
     if (startBtn) startBtn.textContent = getUIString('startExam');
+
+    // The two r32 background-registration lines are redrawn from their CURRENT
+    // state (a key, not text), so switching language never freezes them.
+    renderRegStatus();
+    renderStartWaitNote();
 
     // Change selection link (instructions)
     var changeInstr = document.getElementById('changeSelectionInstructions');
@@ -1123,6 +1181,7 @@
     timeRemaining = examTimeMinutes * 60;
     stopTimer(); // clears interval, removes visibilitychange listener, resets examDeadline
     stopApprovalPolling();
+    abandonPendingRegistration();
     reanswerAt = {};
     examineeData = { idNumber: '', fullName: '', phone: '', population: '', license: '', language: '' };
     examineeToken = '';
@@ -1205,6 +1264,12 @@
   // every measured stall) and abandon a hung one; what a person is waiting for
   // on screen gets the shorter default inside createApi.
   var POLL_TIMEOUT_MS = ExamTransport.POLL_TIMEOUT_MS;
+  // A registration attempt is nobody's on-screen wait any more (r32: the phone
+  // is already on the waiting screen), and every attempt to the same regKey is
+  // idempotent — so it takes the 30 s deadline and a retry buys a fresh ticket
+  // in Google's delivery lottery (KNOWN_ISSUES #35) instead of holding one
+  // request open for a minute.
+  var API_TIMEOUT_MS = ExamTransport.API_TIMEOUT_MS;
   // startExam / submitResult on a cold Apps Script container can run long; at
   // the old 30 s cap a slow-but-successful write aborted and the retry wrote a
   // SECOND row.
@@ -1682,23 +1747,102 @@
     return key;
   }
 
-  registerBtn.addEventListener('click', function() {
-    registerError.style.display = 'none';
-    if (!validateIdForm()) return;
+  // ----- The registration runs in the BACKGROUND (r32, 22/09/2026, §14.2) -----
+  // WHY (KNOWN_ISSUES #35, measured 22/09): our executions take 0.6-4 s, but
+  // Google's DELIVERY step (script.googleusercontent.com/macros/echo) answers in
+  // 25-60 s or 404s. So the phone sat on "נרשם..." for a minute while the
+  // examiner was already looking at the examinee on the dashboard ("לבוחן זה כבר
+  // הגיע ואצל הנבחן עדיין בנרשם תקוע"). A registration is a WRITE: once one
+  // execution reached the sheet the row is there, whatever the delivery step
+  // does with the answer. So the screen stops waiting for it — the phone goes to
+  // the waiting screen at once, the approval poll starts at once (the Worker
+  // HOLDS "no row yet", §13.2, and answers the moment the row appears), and this
+  // loop chases the answer in the background.
+  //
+  // Every attempt carries the SAME regKey: since r31.2 the server hands the same
+  // row's token back to the same key ('resumed'), and since r32 it CLAIMS the
+  // key before it writes — so even an overlapping retry can only ever produce
+  // one row and one token. That is what makes a blind retry safe, and it is why
+  // there is no "נסה שוב" button: the second press of 22/09 08:35 is exactly
+  // what left an examinee on a waiting screen with no token (#34).
+  var REGISTRATION_RETRY_MS = [3000, 6000, 12000, 20000];   // then 20 s, as long as this screen is open
+  var registrationGen = 0;        // a cancel / reset / decision kills the running series
+  var registrationTimer = null;
+  var registrationTries = 0;
+  var regStatusKey = '', regStatusAttempt = 0;
 
-    registerBtn.disabled = true;
-    registerBtn.textContent = 'נרשם...';
+  function registrationIsPending() { return !!(examineeData && examineeData.registrationPending); }
 
-    // Override session language/license with examinee's choice
-    sessionData.language = examineeData.language;
-    sessionData.license = String(examineeData.license || sessionData.license || 'B');
-    // Update topbar to reflect chosen license
-    document.getElementById('topbarSub').textContent = sessionData.site + ' | ' + (LICENSE_LABELS[sessionData.license] || sessionData.license);
+  // The status line under "ממתין לאישור הבוחן…". Held as a KEY, never as text,
+  // so applyUITranslations can redraw it in the examinee's own language.
+  function setRegStatus(key, attempt) {
+    regStatusKey = key || '';
+    regStatusAttempt = attempt || 0;
+    renderRegStatus();
+  }
+  function renderRegStatus() {
+    var el = document.getElementById('regStatus');
+    if (!el) return;
+    var text = regStatusKey ? getUIString(regStatusKey).replace('{n}', String(regStatusAttempt)) : '';
+    el.textContent = text;
+    el.style.display = text ? 'block' : 'none';
+  }
+
+  // "התחל מבחן" needs the silent-phone confirmation AND a token. An approval
+  // with no token used to light the button up and every press then died on
+  // 'טוקן נבחן לא תקין' (#34); now the button waits, the note under it says what
+  // for, and it lights up by itself the moment the token lands.
+  function refreshStartButtonState() {
+    var cb = document.getElementById('airplaneCheckbox');
+    var btn = document.getElementById('startExamBtn');
+    var ready = !!(cb && cb.checked) && !!examineeToken;
+    if (btn) {
+      btn.disabled = !ready;
+      btn.style.opacity = ready ? '1' : '0.5';
+    }
+    renderStartWaitNote();
+  }
+  function renderStartWaitNote() {
+    var note = document.getElementById('startWaitToken');
+    if (!note) return;
+    // It lives inside #instructionsPhase, so it is on screen only once the
+    // examiner has approved — which is exactly when a missing token matters.
+    note.textContent = examineeToken ? '' : getUIString('startWaitToken');
+    note.style.display = examineeToken ? 'none' : 'block';
+  }
+
+  function stopRegistrationLoop() {
+    registrationGen++;
+    if (registrationTimer !== null) { clearTimeout(registrationTimer); registrationTimer = null; }
+  }
+
+  // A decision, an exam already running elsewhere, a cancel or a reset ends the
+  // series: the row is no longer something this device waits for.
+  function abandonPendingRegistration() {
+    stopRegistrationLoop();
+    if (examineeData) examineeData.registrationPending = false;
+    setRegStatus('');
+  }
+
+  function startRegistrationLoop() {
+    stopRegistrationLoop();
+    registrationTries = 0;
+    sendRegistration(registrationGen);
+  }
+
+  // Sequential by construction: the next attempt is scheduled only from the
+  // settle handlers of this one, so one device never has two registrations in
+  // flight — the fleet arithmetic (tests/client_fleet.test.cjs) counts on it.
+  function sendRegistration(myGen) {
+    if (myGen !== registrationGen || !registrationIsPending()) return;
+    registrationTries++;
+    if (registrationTries === 1) setRegStatus('regSending');
 
     // Detect external monitor (cheating risk indicator — examinee could be
     // sharing the exam window to a second screen visible to an accomplice).
     // screen.isExtended is true when the device has multiple displays connected.
-    // Permission API doesn't require user prompt for this property.
+    // Permission API doesn't require user prompt for this property. Read per
+    // attempt: a screen plugged in while Google was slow still counts.
     var hasExtendedScreen = false;
     try { hasExtendedScreen = !!(screen && screen.isExtended); } catch (e) {}
 
@@ -1715,47 +1859,123 @@
       audioMode: sessionData.audioMode || 'off',
       hasExtendedScreen: hasExtendedScreen ? '1' : '0',
       regKey: registrationKeyFor(examineeData.idNumber)
-    // A registration is a write, and on a stalling morning Google answers it in
-    // 30-75 s: the unattended-poll deadline, not the 30 s one, so the phone does
-    // not give up on a registration that is about to succeed.
-    }, POLL_TIMEOUT_MS).then(function(data) {
-      registerBtn.disabled = false;
-      registerBtn.textContent = 'הירשם למבחן';
-      if (data.status === 'ok') {
-        // Capture the server-issued examinee token; all subsequent API calls
-        // for this examinee must echo it.
-        if (data.examineeToken) examineeToken = data.examineeToken;
-        // The row exists in ממתינים the moment this answer came back (a
-        // 'resumed' answer means it was already there), so announce it at once:
-        // the Worker drops the session snapshot, the examiner's watch wakes and
-        // the new examinee appears on the dashboard without waiting for a clock.
-        // No delay here — unlike the beacons, this write IS confirmed.
-        nudgeGatewayAfterWrite();
-        saveExamineeState('screenInstructions');
-        showScreen('screenInstructions');
-        applyUITranslations();
-        startApprovalPolling();
-      } else {
-        // Special-case "already registered" — don't show as error.
-        // Just resume the examinee straight to the waiting screen with the data they already filled.
-        // This handles: cleared cache, switched browser, re-opened page after navigating away.
-        var msg = String(data.message || '');
-        if (msg.indexOf('כבר רשום') >= 0 || msg.indexOf('כבר רשומ') >= 0) {
-          saveExamineeState('screenInstructions');
-          showScreen('screenInstructions');
-          applyUITranslations();
-          startApprovalPolling();
-          return;
-        }
-        registerError.textContent = isOutdatedClientResponse(data) ? UPDATING_MESSAGE : (msg || 'שגיאה ברישום');
-        registerError.style.display = 'block';
-      }
-    }).catch(function() {
-      registerBtn.disabled = false;
-      registerBtn.textContent = 'הירשם למבחן';
-      registerError.textContent = 'שגיאת תקשורת. נסה שוב.';
-      registerError.style.display = 'block';
+    }, API_TIMEOUT_MS).then(function(data) {
+      if (myGen !== registrationGen) return;
+      onRegistrationAnswer(data, myGen);
+    }, function(err) {
+      if (myGen !== registrationGen) return;
+      // A timeout, a dropped connection, or Google's own HTML error page where
+      // JSON belongs (SyntaxError). None of them says whether the row was
+      // written — the regKey answers that on the next attempt.
+      logEvent('registration_retry', String((err && err.name) || 'error'));
+      scheduleRegistrationRetry(myGen);
     });
+  }
+
+  // Backoff on FAILURE (§13.4 row 2), not a wait for a change: 3 → 6 → 12 → 20
+  // → 20… seconds, for as long as this screen is open.
+  function scheduleRegistrationRetry(myGen, waitSec) {
+    if (myGen !== registrationGen || !registrationIsPending()) return;
+    var step = registrationTries - 1;
+    if (step < 0) step = 0;
+    if (step > REGISTRATION_RETRY_MS.length - 1) step = REGISTRATION_RETRY_MS.length - 1;
+    // "The examiner already sees you" is the later, stronger fact: once the poll
+    // has established that the row is in the sheet, a slow attempt must not
+    // paint "Google is slow (attempt 4)" back over it. Only the token is still
+    // missing then, and the note under the start button says so.
+    if (regStatusKey !== 'regLanded') setRegStatus('regSlow', registrationTries + 1);
+    registrationTimer = setTimeout(function() {
+      registrationTimer = null;
+      sendRegistration(myGen);
+    }, Math.max(REGISTRATION_RETRY_MS[step], (Number(waitSec) || 0) * 1000));   // never sooner than the server asked
+  }
+
+  function onRegistrationAnswer(data, myGen) {
+    if (data && data.status === 'ok') {
+      // The row is the server's now, and so is the token — with or without
+      // 'resumed', an ok answer to THIS regKey is this device's own row.
+      if (data.examineeToken) examineeToken = data.examineeToken;
+      examineeData.registrationPending = false;
+      stopRegistrationLoop();
+      saveExamineeState('screenInstructions');
+      // The row exists in ממתינים the moment this answer came back, so announce
+      // it at once: the Worker drops the session snapshot, the examiner's watch
+      // wakes and the examinee appears on the dashboard without waiting for a
+      // clock. No delay here — unlike the beacons, this write IS confirmed.
+      nudgeGatewayAfterWrite();
+      setRegStatus('regDone');
+      refreshStartButtonState();
+      return;
+    }
+    var msg = String((data && data.message) || '');
+    if (msg.indexOf('כבר רשום') >= 0 || msg.indexOf('כבר רשומ') >= 0) {
+      // #34: a row exists for this id but NOT for this key (an old server, a
+      // cache entry Google forgot, another device). Carrying on as if all were
+      // well is precisely what put a tokenless examinee in front of 'טוקן נבחן
+      // לא תקין' at 08:35 on 22/09. So: say it plainly, keep polling (the
+      // examiner may still approve, and a decision must reach this screen),
+      // leave the start button locked with its note, and stop asking — another
+      // attempt answers the same thing. The way out is the examiner's 'אפס'.
+      stopRegistrationLoop();
+      examineeData.registrationPending = false;   // no token is coming; this series is over
+      saveExamineeState('screenInstructions');
+      setRegStatus('regAlready');
+      refreshStartButtonState();
+      return;
+    }
+    // `retryable` is the server's own "not now"; so is a rate-limited answer
+    // (the per-session ceiling, 120/min since r32 - a class registering on a
+    // stalling morning can brush it): neither is a refusal, and the next
+    // attempt with the same key waits at least the `waitSec` the server named.
+    if (data && (data.retryable || data.rateLimited)) { scheduleRegistrationRetry(myGen, data.waitSec); return; }
+    // A deliberate refusal: a full session, a pending disqualification, or a
+    // session that is not open (TODO 1.5). Nothing here improves by waiting.
+    failRegistration(data);
+  }
+
+  // Back to the identification form with the server's own words, exactly as
+  // before r32 — only the screen it comes back FROM is new.
+  function failRegistration(data) {
+    stopRegistrationLoop();
+    stopApprovalPolling();
+    approvalPollGen++;          // an answer still in flight must not paint the form we just went back to
+    teardownWaitingProtections();
+    examineeData.registrationPending = false;
+    setRegStatus('');
+    saveExamineeState('screenIdForm');
+    var msg = String((data && data.message) || '');
+    registerError.textContent = isOutdatedClientResponse(data) ? UPDATING_MESSAGE : (msg || 'שגיאה ברישום');
+    registerError.style.display = 'block';
+    showScreen('screenIdForm');
+  }
+
+  registerBtn.addEventListener('click', function() {
+    registerError.style.display = 'none';
+    if (!validateIdForm()) return;
+    // One series per press. The screen changes instantly now, so a second press
+    // cannot happen in a browser — but it must not be able to start a second
+    // series from anywhere else either (22/09 08:35, #34).
+    if (registrationIsPending()) return;
+
+    // Override session language/license with examinee's choice
+    sessionData.language = examineeData.language;
+    sessionData.license = String(examineeData.license || sessionData.license || 'B');
+    // Update topbar to reflect chosen license
+    document.getElementById('topbarSub').textContent = sessionData.site + ' | ' + (LICENSE_LABELS[sessionData.license] || sessionData.license);
+
+    // The screen changes BEFORE the server is asked (§14.2). What the examinee
+    // is actually waiting for is the EXAMINER, and the approval poll — which the
+    // Worker holds until the row appears — is what tells them the registration
+    // arrived. The key is minted here so the saved state carries it into a
+    // reload, and the state is saved before anything can go wrong.
+    examineeData.registrationPending = true;
+    registrationKeyFor(examineeData.idNumber);
+    saveExamineeState('screenInstructions');
+    showScreen('screenInstructions');
+    applyUITranslations();
+    refreshStartButtonState();
+    startApprovalPolling();
+    startRegistrationLoop();
   });
 
   // ========== Screen 3: Waiting + Instructions ==========
@@ -1777,8 +1997,15 @@
     var polledToken = examineeToken;
     var polledGen = approvalPollGen;
     function isCurrent() {
+      // The token may land WHILE this poll is in flight: since r32 the chain
+      // starts before the registration answers (§14.2), and a poll that left
+      // tokenless is still about this examinee when it does. Anything else — a
+      // different id, a different session, a new chain — still discards, and
+      // those are what the guard was ever for. Without this, the answer that
+      // says 'approved' could be thrown away and the next request would hold on
+      // its fingerprint for another 25 s.
       return polledId === examineeData.idNumber && polledSession === sessionCode &&
-        polledToken === examineeToken && polledGen === approvalPollGen;
+        (polledToken === examineeToken || polledToken === '') && polledGen === approvalPollGen;
     }
     updateApprovalDebug('בדיקה #' + pollNum + ' | סשן: ' + sessionCode + ' | ת.ז.: ' + polledId);
     // Returned so the adaptive scheduler (approvalPollTick) can measure duration
@@ -1805,6 +2032,13 @@
         if (data.audioMode === 'on' || data.audioMode === 'off') {
           sessionData.audioMode = data.audioMode;
         }
+        // The poll can answer before the registration's own answer comes back:
+        // the row is in the sheet from the moment an execution wrote it, whatever
+        // Google's delivery step is doing with the reply (#35). Say so — the
+        // examiner already sees them; only the token is still on its way.
+        if (registrationIsPending() && (data.approval === 'waiting' || data.approval === 'approved')) {
+          setRegStatus('regLanded');
+        }
         if (data.approval === 'approved') {
           stopApprovalPolling();
           if (data.examMinutes && data.examMinutes > 0) {
@@ -1813,6 +2047,7 @@
           notifyApprovedToExaminee();
           showInstructions();
         } else if (data.approval === 'in_exam') {
+          abandonPendingRegistration();
           // D14: the row says this examinee is already testing while this device
           // is still on the instructions screen (re-registered after a reload,
           // or a second device). Polling forever cannot fix that — the examiner
@@ -1835,6 +2070,14 @@
         // and no server fault: the loop backs off a step and the screen stays
         // as it is — three screen locks must not raise a server error banner.
         updateApprovalDebug('בדיקה #' + pollNum + ' נקטעה', 'תגובה: ההמתנה נקטעה');
+      } else if (registrationIsPending() && String((data && data.message) || '').indexOf('לא נמצא רישום') >= 0) {
+        // r32: the row does not exist until one registration execution reaches
+        // the sheet, so the Worker's honest 'לא נמצא רישום' is the expected
+        // answer here — not an outage, and not something the examinee can act
+        // on. #regStatus is already telling the true story; a red banner would
+        // only send them looking for the reload button. The loop still backs off
+        // one step on it, and the next request is the one the Worker holds.
+        updateApprovalDebug('בדיקה #' + pollNum + ' — ההרשמה עדיין בדרך', 'תגובה: ' + ((data && data.message) || 'unknown'));
       } else {
         console.log('[APPROVAL] Non-ok status:', data && data.message);
         updateApprovalDebug('בדיקה #' + pollNum + ' שגיאה', 'תגובה: ' + ((data && data.message) || 'unknown'));
@@ -1878,6 +2121,7 @@
   // examinee sat in front of 'שגיאת שרת: לא נמצא רישום' with no way out.
   function showApprovalDecision(decision) {
     stopApprovalPolling();
+    abandonPendingRegistration();   // the examiner decided; there is no registration left to chase
     teardownWaitingProtections();
     document.getElementById('waitingPhase').style.display = 'none';
     var msgEl = document.getElementById('rejectedMsg');
@@ -1897,6 +2141,7 @@
   function restartRegistration() {
     stopApprovalPolling();
     approvalPollGen++;   // an answer still in flight must not paint the screen we just left
+    abandonPendingRegistration();
     try { clearExamineeState(); } catch (e) {}
     var backBtn = document.getElementById('backToRegisterBtn');
     if (backBtn) backBtn.style.display = 'none';
@@ -2236,6 +2481,10 @@
     e.preventDefault();
     if (!confirm(getUIString('changeConfirm'))) return;
     stopApprovalPolling();
+    // A registration still in flight is dropped first: nothing may adopt a token
+    // for a row this examinee is walking away from. Best-effort by design — if
+    // the row lands afterwards the examiner sees "ממתין" and presses 'אפס'.
+    abandonPendingRegistration();
     // Cancel registration on server
     apiGet({ action: 'cancelRegistration', sessionCode: sessionCode, idNumber: examineeData.idNumber, phone: examineeData.phone || '' }).then(function() {
       // Restore session defaults
@@ -2328,8 +2577,11 @@
   // the answer; the signed grant it returns buys exactly those 30 from the
   // session-gateway Worker, in every language, in one request.
   function doStartExam() {
-    // Guard: ensure an examinee is registered
-    if (!examineeData.idNumber || examLoadInFlight || examInProgress || examSubmitted) {
+    // Guard: ensure an examinee is registered — and that the registration's own
+    // answer is back. Without the token startExam can only fail with 'טוקן נבחן
+    // לא תקין' (#34), which is not an error the examinee can act on: the button
+    // lights up by itself when the token lands, and the note under it says so.
+    if (!examineeData.idNumber || !examineeToken || examLoadInFlight || examInProgress || examSubmitted) {
       console.log('[EXAM] doStartExam blocked — no registered examinee');
       return;
     }
@@ -2499,11 +2751,10 @@
     renderQuestion();
   }
 
-  // Airplane mode checkbox enables start button
+  // Airplane mode checkbox enables start button — but only together with the
+  // token (r32: an approval can arrive before the registration's answer does).
   document.getElementById('airplaneCheckbox').addEventListener('change', function() {
-    var btn = document.getElementById('startExamBtn');
-    btn.disabled = !this.checked;
-    btn.style.opacity = this.checked ? '1' : '0.5';
+    refreshStartButtonState();
   });
 
   document.getElementById('startExamBtn').addEventListener('click', function() {
@@ -5422,6 +5673,19 @@
       // immediately return the stale 'rejected' status and the user is stuck
       // on "הבוחן דחה את הכניסה" with no way to recover except clearing
       // browser storage. Real exam-day incident.
+      // r32 (§14.2): a reload DURING the background registration. The row may
+      // not be in the sheet yet, so "no registration" here is not a dead state —
+      // sending this examinee back to the code screen is how a stalling morning
+      // used to lose a registration that was about to succeed. Resume the SAME
+      // regKey series (the saved state carries it) and the poll instead.
+      if (examineeData.registrationPending && !examineeToken) {
+        showScreen('screenInstructions');
+        applyUITranslations();
+        refreshStartButtonState();
+        startApprovalPolling();
+        startRegistrationLoop();
+        return;
+      }
       approvalPollCall({ noWait: true }).then(function(resp) {
         var st = (resp && resp.approval) || '';
         if (st === 'waiting' || st === 'approved' || st === 'in_exam') {
