@@ -565,6 +565,109 @@ test('a grant about to expire is still sent, and the next decision is armed with
   assert.deepEqual(calls, ['disqualify', 'bankGrant']);
 });
 
+// ---------------------------------------------------------------- 22/09 12:29
+// Live incident: the examiner pressed approve, Google stalled, the request hit
+// its 30 s deadline - and the write landed a few seconds later anyway. The nudge
+// followed only status:'ok', so the gateway was never told that anything had
+// changed, and since r31.3 it re-reads Google only when somebody announces a
+// change. The examinee learned he was approved from the Worker's own safety
+// read instead of from the decision. A lost ANSWER is not a decision that did
+// not happen.
+const timeoutError = () => Object.assign(new Error('Request timed out'), { name: 'TimeoutError', transport: 'timeout' });
+const DROP = 'https://gateway.example/v1/invalidate?sessionCode=ABC12345&grant=payload.sig';
+
+test('a decision that timed out announces a plain DROP at once and again at +10 s', async () => {
+  const { ctx, posts, timer, setAnswer } = grantContext(() => ({ status: 'ok', bank: GRANT }));
+  await ctx.fetchBankGrant(true);
+  setAnswer(() => Promise.reject(timeoutError()));
+  const outcome = await ctx.examinerDecision({ action: 'approveExaminee', sessionCode: 'ABC12345', idNumber: '123456789', audioMode: 'on' })
+    .then(() => 'resolved', e => e.name);
+  assert.equal(outcome, 'TimeoutError', 'the caller still sees its own failure');
+  assert.equal(posts.length, 1, 'the gateway is told immediately');
+  assert.equal(posts[0].url, DROP,
+    'a PLAIN DROP - no idNumber, no status: a patch is a lie until the server has said ok');
+  await timer.advance(9999);
+  assert.equal(posts.length, 1, 'and not a moment earlier');
+  await timer.advance(1);
+  assert.equal(posts.length, 2, 'again at +10 s, because the write can land after we gave up waiting');
+  assert.equal(posts[1].url, DROP);
+  await timer.advance(10 * 60 * 1000);
+  assert.equal(posts.length, 2, 'exactly twice - this is an announcement, not a poll');
+});
+
+test('every unknown outcome announces; every refusal the server MEANT announces nothing', async () => {
+  const unknown = [
+    ['a dropped connection', () => Promise.reject(new Error('Failed to fetch'))],
+    ["Google's HTML error page", () => Promise.reject(Object.assign(new Error('Non-JSON response'), { name: 'SyntaxError', transport: 'nonjson' }))],
+    ['a 502 from its front door', () => Promise.reject(Object.assign(new Error('HTTP 502'), { name: 'HttpError', transport: 'http', status: 502 }))],
+    ['a retryable error the server itself flagged', () => ({ status: 'error', retryable: true, message: 'השרת עמוס' })],
+    ['an answer we cannot read', () => ({})]
+  ];
+  const definitive = [
+    ['a plain refusal', () => ({ status: 'error', message: 'busy' })],
+    ['no permission', () => ({ status: 'error', message: 'אין הרשאה' })],
+    ['an expired token', () => ({ status: 'error', tokenExpired: true })],
+    ['the wrong deployment', () => ({ status: 'error', code: 'wrong_deployment', message: 'הפעולה שייכת לשרת אחר' })]
+  ];
+  for (const [name, answer] of unknown.concat(definitive)) {
+    const expected = unknown.some(u => u[0] === name);
+    const { ctx, posts, timer, setAnswer } = grantContext(() => ({ status: 'ok', bank: GRANT }));
+    await ctx.fetchBankGrant(true);
+    setAnswer(answer);
+    await ctx.examinerDecision({ action: 'disqualify', sessionCode: 'ABC12345', idNumber: '5' }).catch(() => {});
+    await timer.advance(20000);
+    assert.equal(posts.length, expected ? 2 : 0, name);
+    if (expected) assert.equal(posts[0].url, DROP, name + ': a drop, never a patch');
+  }
+});
+
+test('a confirmed decision is unchanged: one patch nudge, and no recheck is armed', async () => {
+  const { ctx, posts, timer, setAnswer } = grantContext(() => ({ status: 'ok', bank: GRANT }));
+  await ctx.fetchBankGrant(true);
+  setAnswer(() => ({ status: 'ok' }));
+  await ctx.examinerDecision({ action: 'approveExaminee', sessionCode: 'ABC12345', idNumber: '5', audioMode: 'off' });
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].url,
+    'https://gateway.example/v1/invalidate?sessionCode=ABC12345&idNumber=5&status=approved&audio=off&grant=payload.sig');
+  await timer.advance(10 * 60 * 1000);
+  assert.equal(posts.length, 1, 'the ok path never arms the 10 s recheck');
+});
+
+test('a session that was closed in the meantime is not dropped by a recheck of the old one', async () => {
+  const { ctx, posts, timer, setAnswer } = grantContext(() => ({ status: 'ok', bank: GRANT }));
+  await ctx.fetchBankGrant(true);
+  setAnswer(() => Promise.reject(timeoutError()));
+  await ctx.examinerDecision({ action: 'forceComplete', sessionCode: 'ABC12345', idNumber: '5' }).catch(() => {});
+  assert.equal(posts.length, 1);
+  ctx.sessionCode = 'ZZZ99999';              // he closed it and opened another
+  await timer.advance(15000);
+  assert.equal(posts.length, 1, 'the recheck belongs to the session the decision was about');
+});
+
+test('the examiner is told the decision may have gone through, not just "try again"', () => {
+  const { ctx } = grantContext(() => ({ status: 'ok' }));
+  const timedOut = ctx.decisionErrorText({ name: 'TimeoutError' });
+  const network = ctx.decisionErrorText(new Error('Failed to fetch'));
+  for (const text of [timedOut, network]) {
+    assert.match(text, /ייתכן שההחלטה נקלטה/, 'the sentence that stops the third click');
+    assert.match(text, /הלוח יתעדכן לבד/);
+  }
+  assert.match(timedOut, /לא התקבל אישור בזמן/);
+  assert.match(network, /שגיאת תקשורת/);
+
+  // and it really is what the decision buttons show
+  assert.match(section(examiner, "var params = { action: 'approveExaminee'", 'actions.appendChild(rejectBtn);'),
+    /toastError\(decisionErrorText\(error\)\)/, 'approve');
+  assert.ok(examiner.indexOf("toastError('שגיאת תקשורת')") < 0,
+    'not one decision handler is left saying only "communication error"');
+  // the results-table decisions used to swallow a rejection entirely, which is
+  // the surest way to get a second and a third click on a decision that landed
+  for (const fn of ['window.disqualifyResult', 'window.overturnDQ', 'window.confirmDQ']) {
+    assert.match(section(examiner, '  ' + fn + ' = function(idx) {', '\r\n  };'),
+      /\}\)\.catch\(function\(error\) \{ toastError\(decisionErrorText\(error\)\); \}\);/, fn);
+  }
+});
+
 test('without a grant a decision still works - it just does not nudge', async () => {
   const { ctx, posts } = grantContext(() => ({ status: 'ok' }));
   const data = await ctx.examinerDecision({ action: 'disqualify', idNumber: '1' });

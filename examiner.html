@@ -1378,14 +1378,60 @@
     } catch (e) {}
   }
 
+  // 22/09/2026, 12:29, live: the examiner pressed אשר, Google was stalling, the
+  // request hit its 30 s deadline - and the write landed in the sheet a few
+  // seconds later anyway. Because the nudge follows only a status:'ok', the
+  // gateway was never told that anything had changed; since r31.3 it re-reads
+  // Google only when somebody announces a change, so the examinee learned he
+  // was approved from the Worker's own safety read (45 s, now 20 s) instead of
+  // from the decision itself. A LOST CONFIRMATION IS NOT A DECISION THAT DID
+  // NOT HAPPEN, and it must still announce "something may have changed".
+  //
+  // The announcement is the PLAIN DROP (no idNumber, no status): "your copy may
+  // be stale, read again inside your budget". A PATCH is never sent on an
+  // unknown outcome - it would write a decision into what the examinees read
+  // while the server may have refused it, and a patch is a lie until the server
+  // has said ok. Twice, because the write can land after this page gave up
+  // waiting: once now, once DECISION_RECHECK_MS later.
+  var DECISION_RECHECK_MS = 10000;
+  // A refusal the server MEANT - it ran, it said no, nothing was written - has
+  // nothing to announce (that is the pre-existing rule and it stays). Anything
+  // else is an UNKNOWN outcome: a timeout, a dropped connection, Google's HTML
+  // error page, a 404/5xx from its front door, an answer we cannot read, or a
+  // retryable error the server itself flagged.
+  function decisionOutcomeUnknown(data, err) {
+    if (err) return true;                                       // timeout / network / http / nonjson
+    if (!data || typeof data.status !== 'string') return true;  // nothing we can call an answer
+    if (data.status === 'ok') return false;
+    if (data.tokenExpired === true) return false;               // definitive: the server refused us
+    if (data.code === 'wrong_deployment') return false;         // definitive: it never reached a handler
+    return data.retryable === true;
+  }
+  function announceUnknownDecision() {
+    var session = sessionCode;
+    nudgeGateway(null);
+    setTimeout(function() { if (sessionCode === session) nudgeGateway(null); }, DECISION_RECHECK_MS);
+  }
+  // What the examiner is TOLD when the outcome is unknown. Never "try again" on
+  // its own: the decision may well be in the sheet (at 12:29 it was), the
+  // gateway has already been told to look again, and three more clicks on a
+  // stalling Google is how a slow morning becomes an incident.
+  function decisionErrorText(error) {
+    return (error && error.name === 'TimeoutError'
+      ? 'לא התקבל אישור בזמן מגוגל.'
+      : 'שגיאת תקשורת מול השרת.') +
+      ' ייתכן שההחלטה נקלטה — הלוח יתעדכן לבד. אל תלחץ שוב לפני שבדקת.';
+  }
+
   // Every examiner decision about an examinee goes through here: approve,
   // reject, reset, confirm/overturn a DQ, force-complete, disqualify, add time,
-  // close the session. Two things happen around the plain apiGet:
+  // close the session. Three things happen around the plain apiGet:
   //   1. it is counted while in flight, so the self-reload below can never fire
   //      on top of a decision the server has not answered yet;
   //   2. a SUCCESSFUL decision nudges the gateway WITH the decision itself, so
   //      the examinee's next poll (<=2 s) already carries it instead of waiting
-  //      out a stale snapshot.
+  //      out a stale snapshot;
+  //   3. an UNKNOWN outcome nudges it with a plain drop, twice - see above.
   var decisionsInFlight = 0;
   // hint (optional): { status } - the row's current status as this page knows it,
   // needed only by the decisions that do not change the status (addExamTime).
@@ -1394,9 +1440,11 @@
     return apiGet(params, timeoutMs).then(function(data) {
       decisionsInFlight--;
       if (data && data.status === 'ok') nudgeGateway(decisionNudgeDetail(params, data, hint));
+      else if (decisionOutcomeUnknown(data, null)) announceUnknownDecision();
       return data;
     }, function(err) {
       decisionsInFlight--;
+      if (decisionOutcomeUnknown(null, err)) announceUnknownDecision();
       throw err;
     });
   }
@@ -2563,7 +2611,7 @@
           confirmBtn.disabled = false; confirmBtn.textContent = 'הוסף זמן';
         }
       }).catch(function(error) {
-        errEl.textContent = examinerMutationErrorText(error); errEl.style.display = 'block';
+        errEl.textContent = decisionErrorText(error); errEl.style.display = 'block';
         confirmBtn.disabled = false; confirmBtn.textContent = 'הוסף זמן';
       });
     });
@@ -2756,7 +2804,7 @@
                 approveBtn.textContent = 'אשר';
               }
             }).catch(function(error) {
-              toastError(examinerMutationErrorText(error));
+              toastError(decisionErrorText(error));
               approveBtn.disabled = false;
               approveBtn.textContent = 'אשר';
             });
@@ -2779,7 +2827,7 @@
                 rejectBtn.textContent = 'דחה';
               }
             }).catch(function(error) {
-              toastError(examinerMutationErrorText(error));
+              toastError(decisionErrorText(error));
               rejectBtn.disabled = false;
               rejectBtn.textContent = 'דחה';
             });
@@ -2803,8 +2851,8 @@
                 resetPendingBtn.disabled = false;
                 resetPendingBtn.textContent = 'אפס';
               }
-            }).catch(function() {
-              toastError('שגיאת תקשורת');
+            }).catch(function(error) {
+              toastError(decisionErrorText(error));
               resetPendingBtn.disabled = false;
               resetPendingBtn.textContent = 'אפס';
             });
@@ -3022,7 +3070,7 @@
             examinerDecision({ action: 'confirmDQ', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
               if (data.status === 'ok') pollDashboard();
               else toastError('שגיאה: ' + (data.message || 'לא ידוע'));
-            }).catch(function() { toastError('שגיאת תקשורת'); });
+            }).catch(function(error) { toastError(decisionErrorText(error)); });
           });
           actions.appendChild(confirmDqBtn);
 
@@ -3037,7 +3085,7 @@
             examinerDecision({ action: 'overturnDQ', sessionCode: sessionCode, idNumber: item.idNumber, examinerId: examinerData.id }).then(function(data) {
               if (data.status === 'ok') pollDashboard();
               else toastError('שגיאה: ' + (data.message || 'לא ידוע'));
-            }).catch(function() { toastError('שגיאת תקשורת'); });
+            }).catch(function(error) { toastError(decisionErrorText(error)); });
           });
           actions.appendChild(overturnDqBtn);
         }
@@ -3061,8 +3109,8 @@
                   forceBtn.disabled = false;
                   forceBtn.textContent = 'סיים ידנית';
                 }
-              }).catch(function() {
-                toastError('שגיאת תקשורת');
+              }).catch(function(error) {
+                toastError(decisionErrorText(error));
                 forceBtn.disabled = false;
                 forceBtn.textContent = 'סיים ידנית';
               });
@@ -3094,8 +3142,8 @@
                 dqBtn.disabled = false;
                 dqBtn.textContent = 'פסול';
               }
-            }).catch(function() {
-              toastError('שגיאת תקשורת');
+            }).catch(function(error) {
+              toastError(decisionErrorText(error));
               dqBtn.disabled = false;
               dqBtn.textContent = 'פסול';
             });
@@ -3124,8 +3172,8 @@
                 resetBtn.disabled = false;
                 resetBtn.textContent = 'אפס';
               }
-            }).catch(function() {
-              toastError('שגיאת תקשורת');
+            }).catch(function(error) {
+              toastError(decisionErrorText(error));
               resetBtn.disabled = false;
               resetBtn.textContent = 'אפס';
             });
@@ -6119,7 +6167,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
         } else {
           alert('\u05E9\u05D2\u05D9\u05D0\u05D4: ' + (data.message || ''));
         }
-      });
+      }).catch(function(error) { toastError(decisionErrorText(error)); });
     }
   };
 
@@ -6134,7 +6182,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
         } else {
           toastError('שגיאה: ' + (data.message || ''));
         }
-      });
+      }).catch(function(error) { toastError(decisionErrorText(error)); });
     }
   };
 
@@ -6149,7 +6197,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
         } else {
           toastError('שגיאה: ' + (data.message || ''));
         }
-      });
+      }).catch(function(error) { toastError(decisionErrorText(error)); });
     }
   };
 
@@ -6251,7 +6299,7 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       clearState();
       showToast('הסשן נסגר.');
       showScreen('screenSetup');
-    });
+    }).catch(function(error) { toastError(decisionErrorText(error)); });
   };
 
   // ========== Countdown ==========
