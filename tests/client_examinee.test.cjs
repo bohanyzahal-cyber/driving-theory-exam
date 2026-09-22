@@ -1923,7 +1923,9 @@ test('source: the re-arm and the device push are wired exactly where §13.4/§13
 });
 
 test('source: the service worker precaches the shared layers and never the question texts', () => {
-  const sw = fs.readFileSync(path.join(app, 'sw-examinee.js'), 'utf8');
+  // CRLF-tolerant: git's autocrlf hands this file out with CRLF on a fresh
+  // checkout (22/09/2026, after the r32 merge), while the build tool writes LF.
+  const sw = fs.readFileSync(path.join(app, 'sw-examinee.js'), 'utf8').replace(/\r/g, '');
   new vm.Script(sw, { filename: 'sw-examinee.js' });
   for (const asset of ['./examinee.html', './shared/transport.js', './shared/bank.js']) assert.ok(sw.includes(asset), asset);
   assert.ok(!/bank\//.test(sw), 'no same-origin bank files exist any more, so no special case for them');
