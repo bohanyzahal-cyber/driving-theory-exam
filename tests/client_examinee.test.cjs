@@ -667,6 +667,124 @@ test('submit: a confirmed result clears the local copy and the close guard', asy
   assert.match(page.el('submitStatusBanner').innerHTML, /התקבלה/);
 });
 
+// ============ 3b. the result confirmed through the Worker (r32.1) ============
+// Measured live 22/09/2026 15:27 IL: the markFinished beacon and the result POST
+// left the phone at 12:27:2x UTC, the Worker's next read of Google saw the result
+// row at 12:27:35 and the examiner's dashboard showed it at 12:27:47 — but the
+// phone's HTTP answer to submitResult came back only at ~12:29:47, because
+// Google's response-delivery hop stalls 25-60 s for our projects (KNOWN_ISSUES
+// #35) even when the execution finished in seconds. So the device no longer
+// depends on the one answer it happens to be holding: it also watches the row
+// through the Worker, on the same status route the exam ran on.
+const statusPolls = page => page.requests.filter(r => String(r.__url).includes('/v1/poll') && r.kind === 'status');
+const invalidations = page => page.requests.filter(r => String(r.__url).includes('/v1/invalidate'));
+const CONFIRM_FALLBACK_MS = 6000;    // this Worker answers without a fingerprint, so the page paces itself
+
+/** A page whose result POST never comes back, and whose row says `row`. */
+function hangingSubmit(row) {
+  return completePage({ gateway: 'https://gw.example/', reply(r) {
+    if (r.action === 'submitResult') return { __hang: true };
+    if (r.kind === 'status') return { status: 'ok', examStatus: row(), extraMinutes: 0 };
+    return undefined;
+  } });
+}
+
+test('confirm: a row that says completed turns the banner green while the POST still hangs', async () => {
+  let row = 'in_exam';
+  const page = hangingSubmit(() => row);
+  await register(page);
+  await startExam(page);
+  page.t.finish();
+  await drain();
+  assert.equal(page.sent('submitResult').length, 1);
+  assert.match(page.el('submitStatusBanner').innerHTML, /שולח/, 'the POST is still in the air');
+  assert.ok(statusPolls(page).length > 0, 'and the watcher is already asking the Worker');
+
+  row = 'completed';                                   // the server wrote the row; the phone has not heard
+  await page.timer.advance(CONFIRM_FALLBACK_MS);
+  assert.match(page.el('submitStatusBanner').innerHTML, /התקבלה/, 'one poll of the watcher is enough');
+  assert.ok(!page.el('submitFailBanner'));
+
+  // ...and NOTHING else moved: "completed" says a result row exists, not that
+  // OUR POST is that row (a forced finish or a timeout fail looks the same).
+  assert.equal(page.t.hasPending(), true, 'the local copy stays until the SERVER confirms it');
+  assert.equal([...page.local.entries.keys()].filter(k => k.startsWith('pendingResult_')).length, 1);
+  const ev = { prevented: false, preventDefault() { this.prevented = true; }, returnValue: '' };
+  page.dispatch('beforeunload', ev);
+  assert.equal(ev.prevented, true, 'and the close guard is still armed');
+
+  // The POST keeps timing out behind the green banner — silently. The red
+  // "not sent" banner would be a lie while the examiner is looking at the result.
+  await page.timer.advance(200000);
+  assert.ok(page.sent('submitResult').length >= 3, 'the retries carried on: ' + page.sent('submitResult').length);
+  assert.ok(!page.el('submitFailBanner'), 'and never accused the examinee of an unsent result');
+  assert.match(page.el('submitStatusBanner').innerHTML, /התקבלה/);
+  assert.equal(page.t.hasPending(), true);
+});
+
+test('confirm: when the POST answers first the watcher stops, and nothing is done twice', async () => {
+  const page = completePage({ gateway: 'https://gw.example/' });
+  await register(page);
+  await startExam(page);
+  const polledBefore = statusPolls(page).length;
+  const pushedBefore = invalidations(page).length;
+  page.t.finish();
+  await drain();
+  assert.match(page.el('submitStatusBanner').innerHTML, /התקבלה/);
+  await page.timer.advance(10 * 60 * 1000);
+  assert.equal(statusPolls(page).length, polledBefore + 1,
+    'the watcher asked once, beside the POST, and stopped the moment the POST answered');
+  assert.equal(invalidations(page).length - pushedBefore, 2,
+    'one push for the confirmed result and one for the finished ping — the watcher pushes nothing');
+  assert.equal(page.sent('submitResult').length, 1, 'and the result was not sent again');
+  assert.equal(page.t.hasPending(), false);
+  assert.ok(!page.el('submitFailBanner'));
+});
+
+test('confirm: in_exam keeps the watcher waiting, and a disqualification confirms nothing', async () => {
+  let row = 'in_exam';
+  const page = hangingSubmit(() => row);
+  await register(page);
+  await startExam(page);
+  page.t.finish();
+  await drain();
+  const polled = statusPolls(page).length;
+  await page.timer.advance(30000);
+  assert.ok(statusPolls(page).length > polled, 'it is still watching');
+  assert.ok(!/התקבלה/.test(page.el('submitStatusBanner').innerHTML), 'in_exam is not a confirmation');
+
+  row = 'disqualified';
+  await page.timer.advance(30000);
+  assert.ok(!/התקבלה/.test(page.el('submitStatusBanner').innerHTML), 'and neither is a disqualification');
+  assert.equal(page.t.state().screen, 'screenDone', 'which also never throws a finished examinee onto the DQ screen');
+});
+
+test('confirm: the watcher stops for the next examinee, and gives up after ten minutes', async () => {
+  const reset = hangingSubmit(() => 'in_exam');
+  await register(reset);
+  await startExam(reset);
+  reset.t.finish();
+  await drain();
+  await reset.timer.advance(20000);
+  const before = statusPolls(reset).length;
+  reset.ctx.resetForNextExaminee();
+  await reset.timer.advance(60000);
+  assert.equal(statusPolls(reset).length, before,
+    'the next examinee never inherits a chain built from the previous one\'s identity');
+
+  const expiry = hangingSubmit(() => 'in_exam');
+  await register(expiry);
+  await startExam(expiry);
+  expiry.t.finish();
+  await drain();
+  await expiry.timer.advance(10 * 60 * 1000);
+  const polled = statusPolls(expiry).length;
+  assert.ok(polled > 10, 'it really did watch, for the whole ten minutes: ' + polled);
+  await expiry.timer.advance(10 * 60 * 1000);
+  assert.equal(statusPolls(expiry).length, polled,
+    'and then it gives up — nobody is still standing in front of this screen');
+});
+
 // ===================== 4. anti-cheat =====================
 test('D9: the first hidden event on a desktop starts a 2 s grace instead of disqualifying', async () => {
   const page = completePage();
@@ -1865,7 +1983,8 @@ test('source: the page owns no transport of its own any more', () => {
   assert.ok(!/function pacePoll/.test(src));
   assert.ok(!/function jitterMs/.test(src));
   assert.ok(!/setInterval\(approvalPollTick/.test(src));
-  assert.equal((src.match(/ExamTransport\.createPollLoop/g) || []).length, 3, 'approval, exam status and DQ overturn');
+  assert.equal((src.match(/ExamTransport\.createPollLoop/g) || []).length, 4,
+    'approval, exam status, DQ overturn and the submit confirmation (r32.1)');
   assert.ok(/ExamTransport\.createUpdateCheck/.test(src));
   assert.ok(/ExamTransport\.drainLog\(\)/.test(src));
 });

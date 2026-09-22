@@ -1151,6 +1151,9 @@
     window.removeEventListener('popstate', onBackButton);
     // Stop DQ overturn polling if active
     stopDQOverturnPolling();
+    // r32.1: and the watcher on the previous examinee’s result row — the next
+    // examinee must never inherit a status chain built from another identity.
+    stopSubmitConfirmPoll();
     // Clear state
     clearExamineeState();
     // Do NOT silently drop an unsent result when resetting the device for the
@@ -5010,6 +5013,11 @@
 
     showSubmitStatus('sending');
     submitWithRetry(payload, 3);
+    // ...and, in parallel with that POST, watch for the server's own answer
+    // through the Worker (r32.1, TODO 0א.7). See the WHY at
+    // startSubmitConfirmPoll: the POST’s HTTP answer can be two minutes
+    // behind the row it already wrote.
+    startSubmitConfirmPoll(payload);
 
     // Show done screen - NO score
     clearExamineeState();
@@ -5028,6 +5036,15 @@
   // message went into a display:none debug div — so a result that never reached
   // the server still looked "submitted". Now the examinee/examiner cannot miss it.
   function showSubmitFailureBanner(payload, terminalMessage) {
+    // r32.1 (22/09/2026): the Worker has already told us a result row exists
+    // for this examinee — the POST's HTTP answer is merely stuck on Google's
+    // response-delivery hop (KNOWN_ISSUES #35). The retries below keep running,
+    // silently; but telling the examinee the result was not sent while the
+    // examiner is looking at it on the dashboard is a lie, and the
+    // "נסה לשלוח עכשיו" button invites a resend nobody needs. A TERMINAL
+    // message is never suppressed: that one says the server REFUSED this
+    // result, which no row on the dashboard can answer.
+    if (!terminalMessage && _submitSeenCompleted[submitAttemptKey(payload)]) return;
     var doneScreen = document.getElementById('screenDone');
     if (!doneScreen) return;
     var ssb = document.getElementById('submitStatusBanner');
@@ -5068,6 +5085,98 @@
       el.style.cssText = 'margin-top:14px;padding:12px;border-radius:10px;background:#dcfce7;color:#166534;font-size:15px;font-weight:800;border:2px solid #16a34a;';
       el.innerHTML = '✓ התוצאה התקבלה ונשמרה בשרת';
     }
+  }
+
+  // ========== Confirmation through the Worker (r32.1, TODO 0א.7) ==========
+  // Measured live 22/09/2026 15:27 IL. The examinee pressed "סיים": the
+  // markFinished beacon and the result POST left the phone at 12:27:2x UTC, the
+  // Worker's next read of Google saw the result row at 12:27:35 and the
+  // examiner's dashboard showed it at 12:27:47 — but the phone's HTTP answer to
+  // submitResult came back only at ~12:29:47. The execution had finished in
+  // seconds; what stalled for two minutes was Google's response-delivery hop
+  // (25-60 s stalls and 404s for our projects, KNOWN_ISSUES #35). So the
+  // examinee sat in front of "⏳ שולח את התוצאה לשרת…" while everyone
+  // else in the room already had the result.
+  //
+  // The fix is to stop depending on the one answer the device happens to be
+  // holding: from the moment the result POST is sent, the phone ALSO holds a
+  // status poll at the Worker — the same route the exam itself ran on, answered
+  // within ~1 s of the row changing. "completed" on the row means a result for
+  // this examinee is in Google, so the phone can say so at once.
+  //
+  // Deliberately a UI signal and NOTHING else. "completed" says A result row
+  // exists, not that OUR POST is that row: an examiner’s "סיום כפוי" or a
+  // timeout fail written while our POST was still in flight produces the very
+  // same status. So this must NOT set _submitCompleted, NOT clear the
+  // localStorage copy and NOT disarm the close guard: the real POST keeps
+  // retrying until the SERVER confirms it, and since the server dedups and
+  // supersedes, those retries cost the sheet nothing.
+  var SUBMIT_CONFIRM_BASE_MS = EXAMSTATUS_GATEWAY_BASE_MS;   // 6 s, the exam’s own fallback cadence
+  var SUBMIT_CONFIRM_MAX_MS = EXAMSTATUS_POLL_MAX_MS;
+  var SUBMIT_CONFIRM_GIVE_UP_MS = 10 * 60 * 1000;            // nobody is still on this screen after ten minutes
+  var _submitSeenCompleted = {};        // attempt key -> the Worker says a result row exists
+  var submitConfirmLoop = null, submitConfirmTimer = null, submitConfirmPayload = null;
+
+  // forPayload (optional): stop only if the watcher is the one that was started
+  // for THAT attempt — a rescued result from a previous examinee settling in the
+  // background must not kill the live examinee's watcher.
+  function stopSubmitConfirmPoll(forPayload) {
+    if (forPayload && submitConfirmPayload &&
+        submitAttemptKey(forPayload) !== submitAttemptKey(submitConfirmPayload)) return;
+    if (submitConfirmTimer !== null) { clearTimeout(submitConfirmTimer); submitConfirmTimer = null; }
+    if (submitConfirmLoop) { submitConfirmLoop.stop(); submitConfirmLoop = null; }
+    submitConfirmPayload = null;
+  }
+
+  function startSubmitConfirmPoll(payload) {
+    // Only for the result THIS screen is showing: a pending result rescued from
+    // a previous examinee has no banner here, and its row is not this device’s
+    // business any more.
+    if (!payload || !isDisplayedResult(payload)) return;
+    if (!gatewayUrl()) return;          // no Worker, no route (§11.5) — the POST is all there is
+    var key = submitAttemptKey(payload);
+    if (_submitCompleted[key] || _submitBlocked[key]) return;
+    stopSubmitConfirmPoll();
+    submitConfirmPayload = payload;
+    forgetPollFp('status');     // a fresh chain asks for the state as it is NOW
+    submitConfirmLoop = ExamTransport.createPollLoop({
+      name: 'submit-confirm',
+      baseMs: SUBMIT_CONFIRM_BASE_MS,
+      maxMs: SUBMIT_CONFIRM_MAX_MS,
+      tick: function() {
+        // The POST (or the server’s refusal) got there first: nothing left to watch.
+        if (_submitCompleted[key] || _submitBlocked[key]) {
+          stopSubmitConfirmPoll(payload);
+          return Promise.resolve({ status: 'ok', skipped: true });
+        }
+        return statusPollCall().then(function(data) {
+          if (submitConfirmPayload !== payload) return data;   // stopped or replaced while this request was in the air
+          if (data && data.status === 'ok' && data.examStatus === 'completed') onResultConfirmedByWorker(payload);
+          // Anything else — waiting, in_exam, disqualified, dq_confirmed, an
+          // error, a stale copy — confirms nothing, and the loop simply asks again.
+          return data;
+        });
+      }
+    });
+    // Armed BEFORE the first tick: a tick that stops the watcher on the spot
+    // must not leave a ten-minute timer running behind it.
+    submitConfirmTimer = setTimeout(function() {
+      submitConfirmTimer = null;
+      stopSubmitConfirmPoll(payload);
+    }, SUBMIT_CONFIRM_GIVE_UP_MS);
+    submitConfirmLoop.start();
+  }
+
+  // The row says a result exists for this examinee. Paint the green banner, stop
+  // watching — and touch NOTHING else (see the WHY above): not _submitCompleted,
+  // not the local copy, not the close guard. Only the SERVER’s own answer to our
+  // POST may end the retries.
+  function onResultConfirmedByWorker(payload) {
+    _submitSeenCompleted[submitAttemptKey(payload)] = true;
+    stopSubmitConfirmPoll(payload);
+    if (!isDisplayedResult(payload)) return;
+    clearSubmitFailureBanner();
+    showSubmitStatus('received');
   }
 
   // ========== Pending-result survival guard (risk #1: trapped result) ==========
@@ -5389,6 +5498,8 @@
       console.log('[SUBMIT] Response:', JSON.stringify(data));
       if (data && data.status === 'ok') {
         _submitCompleted[key] = true;
+        // r32.1: the answer we were watching for arrived by its own road.
+        stopSubmitConfirmPoll(payload);
         // The server has the result; tell the Worker to drop its copy of the
         // session so the examiner's dashboard shows it now instead of after the
         // Worker's next read of Google (r31 §13.5). This attempt's OWN identity
@@ -5415,6 +5526,10 @@
         // an examiner must reconcile it with the superseding registration.
         // Repeating the rejected attempt cannot fix its token, so stop retries.
         _submitBlocked[key] = true;
+        // r32.1: the server REFUSED this result. A row saying "completed" would
+        // belong to the superseding registration, never to this attempt — stop
+        // watching, so nothing paints it green.
+        stopSubmitConfirmPoll(payload);
         clearSubmitRetry(payload);
         armPendingResultGuard();
         showPendingRecoveryNotice();
