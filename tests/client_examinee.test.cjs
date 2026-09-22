@@ -1734,3 +1734,41 @@ test('source: the service worker precaches the shared layers and never the quest
   assert.equal(cacheLine.length, 1, 'the build tool rewrites exactly this line');
   assert.match(cacheLine[0], /^var CACHE = '[^']*';$/);
 });
+
+// ---- r31.2 (22/09/2026): the registration key -------------------------------
+// Seen live at 08:35: a registration that Google answered after the phone's
+// deadline, a second press, 'כבר רשום' treated as success, and a waiting
+// screen with NO token — approved by the examiner, refused by every startExam.
+// The page now mints one key per registration attempt series, sends it on
+// every try, and adopts the token a resumed answer hands back.
+test('r31.2: every registration carries the same regKey across a retry, and a resumed answer restores the token', async () => {
+  let registrations = 0;
+  const page = completePage({ reply(request) {
+    if (request.action !== 'registerExaminee') return undefined;
+    registrations++;
+    if (registrations === 1) return { __raw: '<html>Google is having trouble</html>' };   // the phone gave up; the row was written
+    return { status: 'ok', examineeToken: 'tok-resumed', resumed: true };                 // the same key gets the row's token back
+  } });
+  await register(page);
+  const first = page.sent('registerExaminee');
+  assert.equal(first.length, 1);
+  assert.match(String(first[0].regKey || ''), /^[A-Za-z0-9_-]{16,64}$/, 'a random key rides along');
+  assert.equal(page.el('registerError').style.display, 'block', 'the lost answer is shown as a communication error');
+  page.el('registerBtn').click();
+  await drain(); await page.timer.advance(100); await drain();
+  const sent = page.sent('registerExaminee');
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1].regKey, sent[0].regKey, 'the retry names the SAME attempt');
+  await startExam(page);
+  const start = page.sent('startExam');
+  assert.equal(start.length, 1);
+  assert.equal(start[0].examineeToken, 'tok-resumed', 'the token the resumed answer returned is the one the exam uses');
+  assert.equal(page.t.state().inProgress, true);
+});
+
+test('r31.2: the registration request waits the unattended deadline, not the 30 s default', () => {
+  const src = examinee.replace(/\r/g, '');
+  const call = section(src, "      action: 'registerExaminee',", '.then(function(data) {');
+  assert.match(call, /regKey: registrationKeyFor\(examineeData\.idNumber\)/);
+  assert.match(call, /\}, POLL_TIMEOUT_MS\)\s*$/, 'a registration is a write Google may answer in 30-75 s');
+});

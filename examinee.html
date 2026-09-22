@@ -1641,6 +1641,34 @@
     return valid;
   }
 
+  // ----- Registration key (r31.2, 22/09/2026) -----
+  // One random key per registration ATTEMPT SERIES, kept across the retries
+  // the examinee makes by pressing the button again, and saved with the state
+  // so a reload keeps it too. The server remembers key -> token for half an
+  // hour: a retry that reaches a row this device already created gets that
+  // row's token back instead of 'כבר רשום' with no token — which used to put
+  // the examinee on the waiting screen tokenless, so the examiner could
+  // approve but startExam refused forever ('טוקן נבחן לא תקין'). A new key
+  // is minted only when the identity changes (another id or session).
+  function registrationKeyFor(idNumber) {
+    var keyed = String(sessionCode || '') + ':' + String(idNumber || '');
+    if (examineeData.regKey && examineeData.regKeyFor === keyed) return examineeData.regKey;
+    var bytes = null;
+    try { if (window.crypto && crypto.getRandomValues) { bytes = new Uint8Array(12); crypto.getRandomValues(bytes); } } catch (e) { bytes = null; }
+    var key = '';
+    if (bytes) { for (var i = 0; i < bytes.length; i++) key += ('0' + bytes[i].toString(16)).slice(-2); }
+    else {
+      // No WebCrypto (an old WebView): several random draws, never shorter
+      // than the 16 characters the server's key pattern is happy with.
+      key = Date.now().toString(36);
+      while (key.length < 24) key += Math.random().toString(36).slice(2);
+      key = key.replace(/[^A-Za-z0-9]/g, '').slice(0, 32);
+    }
+    examineeData.regKey = key;
+    examineeData.regKeyFor = keyed;
+    return key;
+  }
+
   registerBtn.addEventListener('click', function() {
     registerError.style.display = 'none';
     if (!validateIdForm()) return;
@@ -1672,8 +1700,12 @@
       site: examineeData.site || sessionData.site || '',
       license: examineeData.license,
       audioMode: sessionData.audioMode || 'off',
-      hasExtendedScreen: hasExtendedScreen ? '1' : '0'
-    }).then(function(data) {
+      hasExtendedScreen: hasExtendedScreen ? '1' : '0',
+      regKey: registrationKeyFor(examineeData.idNumber)
+    // A registration is a write, and on a stalling morning Google answers it in
+    // 30-75 s: the unattended-poll deadline, not the 30 s one, so the phone does
+    // not give up on a registration that is about to succeed.
+    }, POLL_TIMEOUT_MS).then(function(data) {
       registerBtn.disabled = false;
       registerBtn.textContent = 'הירשם למבחן';
       if (data.status === 'ok') {

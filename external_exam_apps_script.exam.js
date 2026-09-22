@@ -1633,9 +1633,37 @@ function handleGetSessionInfo(p) {
   return jsonResponse({ status: 'error', message: 'קוד סשן לא תקין' });
 }
 
+var REG_KEY_MEMO_SEC = 1800;
+function regKeyMemoKey(sessionCode, idNumber, regKey) {
+  return CACHE_KEY_PREFIX + 'reg_' + String(sessionCode || '').trim() + '_' + normalizeId(idNumber) + '_' + String(regKey || '').trim();
+}
+function rememberRegistrationToken(sessionCode, idNumber, regKey, token) {
+  if (!regKey || !token) return;
+  try { CacheService.getScriptCache().put(regKeyMemoKey(sessionCode, idNumber, regKey), String(token), REG_KEY_MEMO_SEC); } catch (e) {}
+}
+function recallRegistrationToken(sessionCode, idNumber, regKey) {
+  if (!regKey) return '';
+  try { return String(CacheService.getScriptCache().get(regKeyMemoKey(sessionCode, idNumber, regKey)) || ''); } catch (e) { return ''; }
+}
+function validRegKey(raw) {
+  var key = String(raw || '').trim();
+  return /^[A-Za-z0-9_-]{8,64}$/.test(key) ? key : '';
+}
+
 function handleRegisterExaminee(p) {
   var rlErr = requireRateLimit('registerExaminee', String(p.sessionCode || ''), 30, 60);
   if (rlErr) return rlErr;
+  var regKey = validRegKey(p.regKey);
+  var lock = null, held = false;
+  try { lock = LockService.getScriptLock(); held = lock.tryLock(5000); } catch (eLock) { held = false; }
+  try {
+    return registerExamineeLocked(p, regKey);
+  } finally {
+    if (held) { try { lock.releaseLock(); } catch (eRel) {} }
+  }
+}
+
+function registerExamineeLocked(p, regKey) {
   var MAX_PENDING_PER_SESSION = 50;
   var pendSheet = getSheet('ממתינים');
   var data = pendSheet.getDataRange().getValues();
@@ -1645,6 +1673,11 @@ function handleRegisterExaminee(p) {
       var status = String(data[i][5] || '').trim();
       if (normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
         if (status === 'waiting' || status === 'approved' || status === 'in_exam') {
+          var remembered = recallRegistrationToken(p.sessionCode, p.idNumber, regKey);
+          var rowToken = String((data[i].length > 12 ? data[i][12] : '') || '').trim();
+          if (regKey && remembered && rowToken && remembered === rowToken) {
+            return jsonResponse({ status: 'ok', examineeToken: rowToken, resumed: true });
+          }
           return jsonResponse({ status: 'error', message: 'כבר רשום בסשן זה' });
         }
         if (status === 'disqualified') {
@@ -1682,6 +1715,7 @@ function handleRegisterExaminee(p) {
     p.site || ''
   ]);
   invalidatePendingSnapshot(p.sessionCode);
+  rememberRegistrationToken(p.sessionCode, p.idNumber, regKey, examineeToken);
   return jsonResponse({ status: 'ok', examineeToken: examineeToken });
 }
 

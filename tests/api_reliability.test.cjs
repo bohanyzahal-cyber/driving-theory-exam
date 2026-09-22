@@ -390,3 +390,51 @@ test('a decision is never served from a cached snapshot — the re-registration 
   e.sheet('ממתינים').rows.push(approvalRow(ID, 'waiting'));
   assert.deepEqual(checkApproval(e, ID), { status: 'ok', approval: 'waiting', audioMode: 'off' });
 });
+
+// ---- r31.2 (22/09/2026): registration is idempotent for the device that made it
+// A registration that Google answered late looked failed on the phone; the
+// retry got 'כבר רשום' and the page went on WITHOUT a token, so the examiner
+// could approve but startExam refused forever ('טוקן נבחן לא תקין'). The page
+// now sends a regKey it keeps across its retries, and the server hands the
+// same row's token back to the same key — and only to it.
+const registerAs = (e, id, extra) => get(e, Object.assign({ action: 'registerExaminee', sessionCode: SESSION,
+  idNumber: id, fullName: 'ישראל ישראלי', phone: '0501234567', language: 'he', license: 'B' }, extra || {}));
+
+test('r31.2: a retry with the same regKey gets the same row and the same token back', () => {
+  const e = runtime({});
+  const first = registerAs(e, '900000501', { regKey: 'deadbeef12345678' });
+  assert.equal(first.status, 'ok');
+  assert.ok(first.examineeToken, 'a token is issued');
+  assert.equal(e.rows('ממתינים').length, 2, 'one row');
+  const retry = registerAs(e, '900000501', { regKey: 'deadbeef12345678' });
+  assert.equal(retry.status, 'ok', 'the retry is not "already registered"');
+  assert.equal(retry.examineeToken, first.examineeToken, 'the SAME token, so startExam will accept it');
+  assert.equal(retry.resumed, true);
+  assert.equal(e.rows('ממתינים').length, 2, 'and no second row');
+});
+
+test('r31.2: another key, or no key (an older page), is still refused as already registered', () => {
+  const e = runtime({});
+  assert.equal(registerAs(e, '900000502', { regKey: 'deadbeef12345678' }).status, 'ok');
+  const other = registerAs(e, '900000502', { regKey: 'cafebabe87654321' });
+  assert.equal(other.status, 'error');
+  assert.match(other.message, /כבר רשום/);
+  assert.equal(other.examineeToken, undefined, 'a different device never learns the token');
+  const legacy = registerAs(e, '900000502', {});
+  assert.equal(legacy.status, 'error');
+  assert.match(legacy.message, /כבר רשום/);
+  assert.equal(e.rows('ממתינים').length, 2);
+});
+
+test('r31.2: a malformed regKey is ignored, and a cancelled row lets the same key register anew', () => {
+  const e = runtime({});
+  const bad = registerAs(e, '900000503', { regKey: 'no spaces allowed!' });
+  assert.equal(bad.status, 'ok', 'the key is optional — a bad one is just absent');
+  assert.equal(registerAs(e, '900000503', { regKey: 'no spaces allowed!' }).status, 'error', 'so the retry has nothing to resume with');
+  // the examiner reset the examinee: the live row is gone, the next attempt is a new registration
+  e.rows('ממתינים')[1][5] = 'cancelled';
+  const again = registerAs(e, '900000503', { regKey: 'feedface00112233' });
+  assert.equal(again.status, 'ok');
+  assert.equal(again.resumed, undefined);
+  assert.equal(e.rows('ממתינים').length, 3, 'a new row, because the old one is not live');
+});

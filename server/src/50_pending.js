@@ -1,8 +1,53 @@
+// ---- Idempotent registration (r31.2, 22/09/2026) --------------------------
+// A registration is a Google write that took 30-75 s on a stalling morning.
+// The phone gave up at its deadline, the examinee pressed "הירשם" again, and the
+// server answered the retry with 'כבר רשום בסשן זה' — which the page treats as
+// success and goes on to the waiting screen WITHOUT A TOKEN. The examiner then
+// approves (the Worker does not require a token to answer a poll), and every
+// startExam fails with 'טוקן נבחן לא תקין' (reason: missing) until someone
+// resets the examinee. Seen live at 08:35 on the test site; on an exam day it
+// would have looked like "the exam never starts".
+// Now the page sends a regKey — a random id it generates once per registration
+// attempt and keeps across its retries — and the server remembers
+// regKey → token for REG_KEY_MEMO_SEC. A retry with the SAME regKey gets the
+// existing row's token back ({resumed:true}); a different device (another
+// regKey, or none: an older page) still gets 'כבר רשום'. No new sheet column:
+// the memo lives in CacheService, which is exactly as long-lived as a retry.
+// A best-effort script lock closes the remaining window where two executions
+// of the same registration read the sheet before either appended.
+var REG_KEY_MEMO_SEC = 1800;
+function regKeyMemoKey(sessionCode, idNumber, regKey) {
+  return CACHE_KEY_PREFIX + 'reg_' + String(sessionCode || '').trim() + '_' + normalizeId(idNumber) + '_' + String(regKey || '').trim();
+}
+function rememberRegistrationToken(sessionCode, idNumber, regKey, token) {
+  if (!regKey || !token) return;
+  try { CacheService.getScriptCache().put(regKeyMemoKey(sessionCode, idNumber, regKey), String(token), REG_KEY_MEMO_SEC); } catch (e) {}
+}
+function recallRegistrationToken(sessionCode, idNumber, regKey) {
+  if (!regKey) return '';
+  try { return String(CacheService.getScriptCache().get(regKeyMemoKey(sessionCode, idNumber, regKey)) || ''); } catch (e) { return ''; }
+}
+function validRegKey(raw) {
+  var key = String(raw || '').trim();
+  return /^[A-Za-z0-9_-]{8,64}$/.test(key) ? key : '';
+}
+
 function handleRegisterExaminee(p) {
   // Rate limit: max 30 registrations per minute per session. Prevents an
   // attacker with the session code from spamming hundreds of fake registrations.
   var rlErr = requireRateLimit('registerExaminee', String(p.sessionCode || ''), 30, 60);
   if (rlErr) return rlErr;
+  var regKey = validRegKey(p.regKey);
+  var lock = null, held = false;
+  try { lock = LockService.getScriptLock(); held = lock.tryLock(5000); } catch (eLock) { held = false; }
+  try {
+    return registerExamineeLocked(p, regKey);
+  } finally {
+    if (held) { try { lock.releaseLock(); } catch (eRel) {} }
+  }
+}
+
+function registerExamineeLocked(p, regKey) {
   var MAX_PENDING_PER_SESSION = 50;
   var pendSheet = getSheet('ממתינים');
   var data = pendSheet.getDataRange().getValues();
@@ -12,6 +57,12 @@ function handleRegisterExaminee(p) {
       var status = String(data[i][5] || '').trim();
       if (normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
         if (status === 'waiting' || status === 'approved' || status === 'in_exam') {
+          // The same device asking again: hand back the row it already has.
+          var remembered = recallRegistrationToken(p.sessionCode, p.idNumber, regKey);
+          var rowToken = String((data[i].length > 12 ? data[i][12] : '') || '').trim();
+          if (regKey && remembered && rowToken && remembered === rowToken) {
+            return jsonResponse({ status: 'ok', examineeToken: rowToken, resumed: true });
+          }
           return jsonResponse({ status: 'error', message: 'כבר רשום בסשן זה' });
         }
         // A PENDING disqualification (anti-cheat fired, examiner hasn't decided)
@@ -59,6 +110,7 @@ function handleRegisterExaminee(p) {
     p.site || ''              // R (17): אתר — האתר שהנבחן בחר (מארח/אורח), לתצוגה חיה לבוחן
   ]);
   invalidatePendingSnapshot(p.sessionCode);   // r23: the first poll must find the new row
+  rememberRegistrationToken(p.sessionCode, p.idNumber, regKey, examineeToken);
   return jsonResponse({ status: 'ok', examineeToken: examineeToken });
 }
 
