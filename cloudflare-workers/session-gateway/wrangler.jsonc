@@ -5,8 +5,13 @@
 
   // The Apps Script deployment the gateway reads the session snapshot from.
   // A new Apps Script deployment URL means editing this and re-deploying.
+  // 22/09/2026: a SEPARATE web-app deployment of the SAME exam project ("Worker"),
+  // so the gateway's continuous sessionSnapshot reads have a lane of their own
+  // and the examiners' and examinees' requests keep the pages' url — Google's
+  // front door queued requests per deployment for 15-60 s while executions ran
+  // in 1-4 s (Executions list, 22/09 10:45). Same code, same Script Properties.
   "vars": {
-    "API_URL": "https://script.google.com/macros/s/AKfycbzOI0zrDEngP-GvlRblhOk8tQsYBvWZ2gGliIQHTpS67WrDZl4la8NPpwtJr_Vjsh3Gzg/exec"
+    "API_URL": "https://script.google.com/macros/s/AKfycbywP9OPY-hgNn1-4vQ4N71pWW0KmqwAX_XTB3PuJzte5QMz3lkeKsp0r-tp6zjHmwZ8Ow/exec"
   },
 
   // The private question bank: `node tools/build_bank.js` fills ./assets and
