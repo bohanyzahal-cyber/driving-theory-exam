@@ -243,9 +243,29 @@ test('r31: every request teacher.html makes goes to the reports deployment', asy
   assert.ok(ctx.seen.every(c => c.url.indexOf(EXAM_URL) !== 0), 'not one of them touched the exam deployment');
 });
 
-test('r31: teacher.html carries REPORTS_API_URL as a line of its own', () => {
-  assert.match(teacher, /\r\nvar REPORTS_API_URL = API_URL;\r\n/);
+
+// r31, 22/09/2026: the reports deployment EXISTS. Each page must carry its url as
+// a literal of its own, and it must differ from the exam url: that difference is
+// the whole point of the split (DESIGN §13.3).
+const EXEC_RE = /https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec/;
+function reportsUrlOf(src, line) {
+  const m = new RegExp(line.replace(/[.*+?^$()|[\]\\]/g, '\\$&').replace('@@', '(' + EXEC_RE.source + ')')).exec(src);
+  assert.ok(m, 'the page carries the line: ' + line);
+  return m[1];
+}
+function examUrlOf(src, constant) {
+  const m = new RegExp('var ' + constant + ' ?= ?\'(' + EXEC_RE.source + ')\';').exec(src);
+  assert.ok(m, 'the page carries ' + constant);
+  return m[1];
+}
+
+test('r31: teacher.html carries the reports deployment url as a line of its own, different from the exam url', () => {
+  const reports = reportsUrlOf(teacher, "\r\nvar REPORTS_API_URL = '@@';\r\n");
+  assert.notEqual(reports, examUrlOf(teacher, 'API_URL'));
   assert.match(teacher, /apiUrl: REPORTS_API_URL,/);
+  // one reports url for the whole site
+  assert.equal(reportsUrlOf(student, "\r\nvar REPORTS_API_URL='@@';\r\n"), reports);
+  assert.equal(reportsUrlOf(examPage, "\r\n  var REPORTS_API_URL = '@@';\r\n"), reports);
 });
 
 test('D6: no raw fetch survives in teacher.html', () => {
@@ -684,7 +704,7 @@ test('r31: student.html practises against the reports deployment', async () => {
   ctx.startPractice({ mode: 'exam' }, () => {}, m => { throw new Error(m); });
   await drain();
   assert.equal(seenUrl.indexOf(REPORTS_URL + '?'), 0, 'startPractice never runs during an exam');
-  assert.match(student, /\r\nvar REPORTS_API_URL=API_URL;\r\n/);
+  assert.notEqual(reportsUrlOf(student, "\r\nvar REPORTS_API_URL='@@';\r\n"), examUrlOf(student, 'API_URL'));
   assert.match(student, /createApi\(\{ apiUrl: REPORTS_API_URL, origin: API_ORIGIN \}\)/);
 });
 
@@ -758,7 +778,7 @@ test('r31: exam.html keeps QUESTIONS_API_URL and routes through REPORTS_API_URL'
   // OTHER Apps Script project, the one with the question DB", and the reports
   // url is derived from it so there is still exactly one url to edit per page.
   assert.match(examPage, /\r\n  var QUESTIONS_API_URL = '/);
-  assert.match(examPage, /\r\n  var REPORTS_API_URL = QUESTIONS_API_URL;\r\n/);
+  assert.notEqual(reportsUrlOf(examPage, "\r\n  var REPORTS_API_URL = '@@';\r\n"), examUrlOf(examPage, 'QUESTIONS_API_URL'));
   assert.match(examPage, /createApi\(\{ apiUrl: REPORTS_API_URL, origin: 'examinee-app' \}\)/);
 });
 

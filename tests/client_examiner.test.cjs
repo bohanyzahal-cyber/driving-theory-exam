@@ -319,9 +319,25 @@ test('r31: one url for both deployments is the state before the split, and nothi
   }
 });
 
-test('r31: the page carries REPORTS_API_URL as a line of its own, so the switch is one edit', () => {
-  assert.match(examiner, /\r\n  var REPORTS_API_URL = API_URL;\r\n/,
-    'next to API_URL, the same value until the reports deployment exists');
+
+// r31, 22/09/2026: the reports deployment EXISTS. Each page must carry its url as
+// a literal of its own, and it must differ from the exam url: that difference is
+// the whole point of the split (DESIGN §13.3).
+const EXEC_RE = /https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec/;
+function reportsUrlOf(src, line) {
+  const m = new RegExp(line.replace(/[.*+?^$()|[\]\\]/g, '\\$&').replace('@@', '(' + EXEC_RE.source + ')')).exec(src);
+  assert.ok(m, 'the page carries the line: ' + line);
+  return m[1];
+}
+function examUrlOf(src, constant) {
+  const m = new RegExp('var ' + constant + ' ?= ?\'(' + EXEC_RE.source + ')\';').exec(src);
+  assert.ok(m, 'the page carries ' + constant);
+  return m[1];
+}
+
+test('r31: the page carries the reports deployment url as a line of its own, different from the exam url', () => {
+  const reports = reportsUrlOf(examiner, "\r\n  var REPORTS_API_URL = '@@';\r\n");
+  assert.notEqual(reports, examUrlOf(examiner, 'API_URL'), 'reports actions must leave the exam deployment');
   assert.match(section(examiner, '  var api = ExamTransport.createApi({', '  // timeoutMs is forwarded'),
     /reportsUrl: REPORTS_API_URL,/, 'and it is handed to the transport');
 
@@ -329,7 +345,7 @@ test('r31: the page carries REPORTS_API_URL as a line of its own, so the switch 
   // sending to the EXAM deployment: bankGrant is an exam action and it is the
   // only thing that page asks the server for.
   const findImage = fs.readFileSync(path.join(app, 'find_image.html'), 'utf8');
-  assert.match(findImage, /\r\n  var REPORTS_API_URL = API_URL;\r\n/);
+  assert.equal(reportsUrlOf(findImage, "\r\n  var REPORTS_API_URL = '@@';\r\n"), reports, 'the same reports url on every page');
   assert.match(findImage, /apiUrl: API_URL,/);
   assert.ok(findImage.indexOf('reportsUrl') < 0, 'nothing on that page belongs to the reports deployment');
 });
