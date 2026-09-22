@@ -97,12 +97,18 @@ const REREAD_GAP_MS = 2000;       // forced upstream re-read: once per session p
  * chain still demands a copy younger than FRESH_MS. So the Worker reads
  * Google (a) for a fresh chain, (b) when a nudge dropped the snapshot, (c)
  * when a row is missing, and (d) this cadence, for the changes nobody pushed.
- * 45 s instead of 2 s is ~10x fewer executions per session.
+ *
+ * 20 s, not 45: at 12:29 the same day an examiner's approve request to Google
+ * timed out on the page (30 s stall), so the page never got its `ok` and never
+ * sent the nudge — and the examinee waited out the whole safety cadence. The
+ * page now also nudges when a decision request fails, but the passive floor
+ * has to be a number we can live with when BOTH the write and the nudge are
+ * lost: 3 reads a minute per held session, still ~10x fewer than the 2 s clock.
  *
  * It MUST stay below STALE_MS, or a held chain would let its copy die before
  * refreshing it and start answering `stale` to everyone.
  */
-const HELD_REREAD_MS = 45000;
+const HELD_REREAD_MS = 20000;
 if (HELD_REREAD_MS >= STALE_MS) throw new Error('HELD_REREAD_MS must stay below STALE_MS');
 
 /** How old a snapshot may be for THIS request: a re-arm trusts what it holds. */
