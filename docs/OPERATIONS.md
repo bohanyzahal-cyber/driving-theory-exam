@@ -104,7 +104,10 @@ curl -s -L --max-time 45 "<EXEC_URL>?action=getSessionInfo&sessionCode=ZZZZZZ&or
 
 ה-`EXEC_URL` נמצא בתוך כל דף לקוח כ-`API_URL`.
 
-### שתי כתובות API (מכוון מאז r31, 22/09/2026)
+### שלוש כתובות API (מכוון מאז r31, 22/09/2026)
+
+**הכתובת השלישית (מ-22/09 11:00):** פריסת "Worker" של פרויקט המבחנים — אותו קוד, כתובת `/exec` נפרדת שרק ה-Worker משתמש בה (`wrangler.jsonc` → `API_URL`). למה: דלת הכניסה של גוגל תרה בקשות לפריסה 15–60 שנ׳ בעוד ההרצות עצמן 1–4 שנ׳ (Executions, 22/09 10:45); קריאות ה-Worker הרציפות קיבלו נתיב משלהן כדי שהבוחנים והנבחנים לא יחכו מאחוריהן. **בכל הדבקה של `.exam.js`: גרסה חדשה בשתי הפריסות** (ניהול פריסות מציג את שתיהן).
+
 
 `API_URL` בדפים = פרויקט המבחנים (`…AKfycbzOI0zrDEngP…/exec`, הקיים); `REPORTS_API_URL` = פרויקט הדו"חות/מורים/תרגול (`…AKfycbw7FwTioHoEM…/exec`, עצמאי). `ExamTransport.REPORTS_ACTIONS` קובע מה הולך לאן; `health` בכל אחד מחזיר `deployment`. שינוי כתובת = עדכון הקבוע בחמשת הדפים (examiner, teacher, student, exam, find_image) + push; הבדיקות (`client_examiner`, `client_teacher_student`) מצמידות כתובת אחת לכל האתר.
 
