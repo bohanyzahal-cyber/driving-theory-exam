@@ -43,8 +43,10 @@
  *                           straight into it (see `invalidate`)
  *   POST /v1/invalidate?sessionCode=X&idNumber=Y&examineeToken=T
  *                         — the EXAMINEE's own nudge after a write of theirs
- *                           (submit, "finished on device"); drop only, never a
- *                           patch (r31, §13.5)
+ *                           (registration, submit, "finished on device"); drop
+ *                           only, never a patch (r31, §13.5). An id the copy
+ *                           does not have yet is a budgeted drop, not a 403
+ *                           (r32.1, 22/09): that is the registration nudge
  *   OPTIONS *             — CORS preflight
  *
  * WHY (3) — the HOLD: a client that sends `wait` and the `fp` it already has
@@ -83,7 +85,7 @@
  * a client that must pace itself has to be told so at once.
  */
 
-const BUILD = '2026-09-23';
+const BUILD = '2026-09-23.1';   // r32.1: the registration nudge drops instead of 403
 
 const ALLOWED_ORIGINS = [
   'https://bohanyzahal-cyber.github.io',
@@ -1187,10 +1189,26 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
     for (let i = current.rows.length - 1; i >= 0; i--) {
       if (normalizeId(current.rows[i].id) === idNumber) { newest = current.rows[i]; break; }
     }
+    // No row for this id in the copy we hold (r32.1, 22/09/2026 15:25 live):
+    // the nudge that follows a REGISTRATION arrives before this Worker has read
+    // the row it announces, so there is no hash to check it against. Refusing
+    // it (403, as until now) left the examiner AND the phone waiting out the
+    // 20 s safety read - the whole point of the nudge, lost. The only thing
+    // this door can do is a drop, and a drop is budgeted (one upstream read per
+    // REREAD_GAP_MS per session, the same budget as the examiner's plain nudge)
+    // and needs the session code: an unknown id cannot cost Google more than
+    // one examiner clicking, and it can never write anything into an answer.
+    // A row that IS here with a different hash stays a refusal below: that is
+    // a stolen or stale token, not a row we have not seen yet.
+    if (!newest) {
+      const droppedUnknown = mayForceReread(session);
+      if (droppedUnknown) await dropSnapshot(session);
+      return jsonResponse(request, { status: 'ok', dropped: droppedUnknown });
+    }
     // A row with no stored hash cannot authenticate anyone: that is a refusal,
     // not a free pass (tokenMismatch may let it through on the READ path, where
     // the worst case is answering an old sheet's row).
-    const stored = newest ? String(newest.tokenHash || '').trim().toLowerCase() : '';
+    const stored = String(newest.tokenHash || '').trim().toLowerCase();
     if (!stored || stored !== await sha256Hex(token)) {
       return jsonResponse(request, GRANT_INVALID, 403);
     }

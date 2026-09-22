@@ -358,7 +358,7 @@ npx wrangler deploy                     # מעלה את worker.js ואת כל ת
 
 ```bash
 curl -s https://session-gateway.<account>.workers.dev/
-# {"status":"ok","service":"session-gateway","build":"2026-09-23","bank":"3dbb0d70…"}
+# {"status":"ok","service":"session-gateway","build":"2026-09-23.1","bank":"3dbb0d70…"}
 #  ^ "build" הוא איך יודעים ש-r32 באמת עלה; אם "bank" ריק — הנכסים לא עלו:
 #    הרץ build_bank.js ופרוס שוב
 

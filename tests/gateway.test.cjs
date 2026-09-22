@@ -580,7 +580,7 @@ test('the health route names the service, its build and the deployed bank', asyn
   const { body } = await call(gateway, '/');
   assert.equal(body.status, 'ok');
   assert.equal(body.service, 'session-gateway');
-  assert.match(body.build, /^\d{4}-\d{2}-\d{2}$/);
+  assert.match(body.build, /^\d{4}-\d{2}-\d{2}(\.\d+)?$/, 'a date, optionally with a same-day patch number (r32.1)');
   assert.equal(body.bank, BANK_BUILD, 'which bank is deployed is the first thing to check after a deploy');
 
   const bare = await call(harness({}).gateway, '/');
@@ -1656,7 +1656,7 @@ test('the examinee pushes their own submit: the token matches, the snapshot is d
   assert.equal(gateway._debug().waiting, 0);
 });
 
-test('an examinee nudge with the wrong token, no token or no row of its own is refused', async () => {
+test('an examinee nudge with the wrong token, no token or no id is refused', async () => {
   const { state, gateway } = harness({ [SESSION]: [
     row({ id: '900000001', status: 'in_exam', tokenHash: sha256Hex(TOKEN) }),
     row({ id: '900000002', status: 'in_exam' })            // an older row: no token stored
@@ -1667,7 +1667,6 @@ test('an examinee nudge with the wrong token, no token or no row of its own is r
   for (const [name, query] of [
     ['a stolen token', '&idNumber=900000001&examineeToken=not-the-token'],
     ["a classmate's row with no stored hash", '&idNumber=900000002&examineeToken=' + TOKEN],
-    ['an id with no row at all', '&idNumber=900000009&examineeToken=' + TOKEN],
     ['no token at all', '&idNumber=900000001'],
     ['no id at all', '&examineeToken=' + TOKEN]
   ]) {
@@ -1680,6 +1679,44 @@ test('an examinee nudge with the wrong token, no token or no row of its own is r
   const after = await poll(gateway, statusPoll('900000001'));
   assert.equal(state.calls.length, 1, 'a refused nudge never dropped anything, and never read upstream');
   assert.equal(after.body.examStatus, 'in_exam');
+});
+
+test('r32.1: a nudge for an id the copy does not have yet is the REGISTRATION nudge - a budgeted drop, not a refusal', async () => {
+  // 22/09/2026 15:25, live: the phone announced its registration the moment
+  // the server confirmed it, the Worker still held a copy read BEFORE the row
+  // existed, found no hash to compare and answered 403 - and both the dashboard
+  // and the phone waited out the 20 s safety read for the row they had already
+  // been told about.
+  const { state, gateway } = harness({ [SESSION]: [
+    row({ id: '900000001', status: 'in_exam', tokenHash: sha256Hex(TOKEN) })
+  ] });
+  await poll(gateway, statusPoll('900000001'));
+  assert.equal(state.calls.length, 1);
+
+  // The row lands in the sheet; the copy here predates it.
+  state.snapshots[SESSION] = [
+    row({ id: '900000001', status: 'in_exam', tokenHash: sha256Hex(TOKEN) }),
+    row({ id: '900000009', status: 'waiting', tokenHash: sha256Hex('tok-9') })
+  ];
+  const announced = await devicePush(gateway, '&idNumber=900000009&examineeToken=tok-9');
+  assert.equal(announced.res.status, 200);
+  assert.deepEqual(announced.body, { status: 'ok', dropped: true });
+
+  const seen = await poll(gateway, approvalPoll('900000009', { examineeToken: 'tok-9' }));
+  assert.equal(seen.body.approval, 'waiting', 'the next poll reads the row the phone announced');
+  assert.equal(state.calls.length, 2, 'one upstream read, for the drop');
+
+  // The budget is the examiner's: a second unknown id inside REREAD_GAP_MS
+  // drops nothing and costs nothing - a phone looping on this door cannot buy
+  // more Apps Script executions than one examiner clicking.
+  const again = await devicePush(gateway, '&idNumber=900000010&examineeToken=whatever');
+  assert.deepEqual(again.body, { status: 'ok', dropped: false });
+  assert.equal(state.calls.length, 2);
+
+  // ...and a row that IS here with the wrong token is still a refusal.
+  const stolen = await devicePush(gateway, '&idNumber=900000009&examineeToken=not-tok-9');
+  assert.equal(stolen.res.status, 403);
+  assert.equal(gateway._debug().waiting, 0);
 });
 
 test('an examinee may say "look again" but never what to look at', async () => {
