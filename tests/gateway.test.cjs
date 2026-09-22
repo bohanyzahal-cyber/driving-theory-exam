@@ -1006,7 +1006,8 @@ test('a hold runs out its `wait` and answers the same fingerprint', async () => 
   assert.deepEqual(body, { status: 'ok', approval: 'waiting', audioMode: 'off', fp: WAITING_FP, held: 5000 });
   assert.equal(state.clock, CLOCK0 + 5000, 'it really waited the five seconds');
   assert.equal(timers, 10, 'five evaluations, one per second, not a spin');
-  assert.equal(state.calls.length, 2, 'five seconds of holding cost one extra execution, not five');
+  assert.equal(state.calls.length, 1,
+    'and since 22/09 five seconds of holding cost Google NOTHING: this chain already holds this state');
   assert.deepEqual(gateway._debug().waiting, 0, 'and it took its resolver back out');
 });
 
@@ -1119,7 +1120,7 @@ test('a patch another isolate wrote reaches a held request through caches.defaul
   assert.equal(state.calls.length, 1, 'seen within one tick, and still no upstream read');
 });
 
-test('forty held requests cost one execution per 2 s, and one drop ends them all', async () => {
+test('forty held requests cost nothing while nothing happens, and one drop ends them all', async () => {
   const ids = Array.from({ length: 40 }, (_, i) => String(900000001 + i));
   const { state, gateway } = harness({ [SESSION]: ids.map(id => row({ id, status: 'waiting' })) });
 
@@ -1130,8 +1131,8 @@ test('forty held requests cost one execution per 2 s, and one drop ends them all
   assert.equal(await parked(gateway, 40), 40, 'forty parked requests, one session');
 
   await advance(state, 6000);
-  assert.equal(state.calls.length, 3,
-    'six seconds of holding: one read per freshness window, forty holders or one');
+  assert.equal(state.calls.length, 1,
+    'six seconds of holding, and not one execution: nothing happened, so nobody asked');
   assert.equal(gateway._debug().waiting, 40, 'still holding — nothing they care about changed');
 
   // The examiner approves ONE examinee. Only that request may end.
@@ -1140,7 +1141,7 @@ test('forty held requests cost one execution per 2 s, and one drop ends them all
   assert.equal(one.body.fp, 'a:approved:off:50');
   assert.equal(one.body.held, 6000);
   assert.equal(await parked(gateway, 39), 39, 'the rest looked, saw their own row unchanged and parked again');
-  assert.equal(state.calls.length, 3, 'and the patch bought no execution');
+  assert.equal(state.calls.length, 1, 'and the patch bought no execution');
 
   // Now the whole class is approved and the examiner fires a plain drop.
   state.snapshots[SESSION] = ids.map(id => row({ id, status: 'approved', examMinutes: 40 }));
@@ -1152,7 +1153,7 @@ test('forty held requests cost one execution per 2 s, and one drop ends them all
     assert.equal(answer.body.approval, 'approved');
     assert.equal(answer.body.fp, 'a:approved:off:40');
   }
-  assert.equal(state.calls.length, 4, 'thirty-nine woken requests shared ONE execution');
+  assert.equal(state.calls.length, 2, 'thirty-nine woken requests shared ONE execution');
   assert.equal(gateway._debug().waiting, 0, 'no resolver was left behind');
   assert.equal(gateway._debug().sessions, 0, 'and no empty Set either');
 });
@@ -1162,7 +1163,7 @@ test('nothing that asks the client to slow down is ever held', async () => {
   const stale = harness({ [SESSION]: [row({ status: 'approved', examMinutes: 50 })] });
   await poll(stale.gateway, approvalPoll('900000001'));
   stale.state.mode = 'error500';
-  stale.state.clock += 4000;
+  stale.state.clock += 50000;   // past HELD_REREAD_MS, so even a re-arm refreshes
   const onStale = await timed(stale.state,
     poll(stale.gateway, approvalPoll('900000001', { wait: 25, fp: 'a:approved:off:50' })));
   assert.deepEqual(onStale.body, {
@@ -1233,11 +1234,11 @@ test('a slow upstream started late in the hold does not stretch it past the dead
   await poll(gateway, approvalPoll('900000001'));
   assert.equal(state.calls.length, 1, 'a fresh snapshot to hold on');
 
-  // One second on, so the snapshot expires with a second of the hold still to
-  // run: the look at t=3 s finds nothing fresh and opens an upstream read that
+  // Parked one second short of the safety cadence, so the copy expires with a
+  // second of the hold still to run: that look opens an upstream read which
   // Google answers only ten seconds later. This is the shape seen live, where
   // a read started at second 24 of a 25 s hold made it 44 s long.
-  await advance(state, 1000);
+  await advance(state, 44000);
   state.upstreamDelayMs = 10000;
 
   const { body } = await settle(state,
@@ -1248,8 +1249,8 @@ test('a slow upstream started late in the hold does not stretch it past the dead
     status: 'ok', approval: 'waiting', audioMode: 'off', fp: WAITING_FP, held: 4000
   }, 'the unchanged answer, so the client simply polls again');
   assert.ok(body.held <= 3000 + 1000, 'the deadline plus one second of grace, got ' + body.held);
-  assert.equal(state.clock, CLOCK0 + 5000,
-    'answered at 5 s - NOT at 13 s, when Google finally replied');
+  assert.equal(state.clock, CLOCK0 + 48000,
+    'answered at its own deadline - NOT ten seconds later, when Google finally replied');
   assert.equal(gateway._debug().waiting, 0, 'and it took its resolver back out');
 
   // Let the abandoned read finish, so no real abort timer outlives the test.
@@ -1259,7 +1260,7 @@ test('a slow upstream started late in the hold does not stretch it past the dead
 test('the abandoned look still lands, and the next poll is served from it', async () => {
   const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
   await poll(gateway, approvalPoll('900000001'));
-  await advance(state, 1000);
+  await advance(state, 44000);
   state.upstreamDelayMs = 10000;
 
   const pending = [];
@@ -1275,7 +1276,7 @@ test('the abandoned look still lands, and the next poll is served from it', asyn
   // walked away from is the one carrying the decision.
   state.snapshots[SESSION] = [row({ status: 'approved', examMinutes: 50 })];
   await settle(state, Promise.all(pending));
-  assert.equal(state.clock, CLOCK0 + 13000, 'it finished ten seconds after it started');
+  assert.equal(state.clock, CLOCK0 + 56000, 'it finished ten seconds after it started');
   assert.equal(state.calls.length, 2, 'and it was that same read, not a new one');
 
   // Half a second later the examinee polls again. Memory holds what the
@@ -1411,7 +1412,7 @@ test('watch: a hold runs out its `wait` and answers the same fingerprint', async
   assert.equal(body.rows, 1);
   assert.equal(state.clock, CLOCK0 + 5000, 'it really waited the five seconds');
   assert.equal(timers, 10, 'five evaluations, one per second, not a spin');
-  assert.equal(state.calls.length, 2, 'five seconds of watching cost one extra execution, not five');
+  assert.equal(state.calls.length, 1, 'and five seconds of watching cost Google nothing at all');
   assert.equal(gateway._debug().waiting, 0, 'and it took its resolver back out');
 });
 
@@ -1458,13 +1459,15 @@ test('watch: an upstream read that changes nothing keeps it holding to the deadl
   const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
   const first = await watch(gateway, watchParams());
 
-  // While it holds, the freshness clock runs out and Google is read again — a
-  // NEW snapshot, with a new `at` and a token hash that was not there before.
-  // Neither is in the fingerprint, so the dashboard must not be woken by it.
+  // Parked one second short of the safety cadence, so the copy expires mid
+  // hold and Google is read again — a NEW snapshot, with a new `at` and a
+  // token hash that was not there before. Neither is in the fingerprint, so
+  // the dashboard must not be woken by it.
+  await advance(state, 44000);
   state.snapshots[SESSION] = [row({ status: 'waiting', tokenHash: sha256Hex('real-token') })];
   const { body } = await settle(state, watch(gateway, watchParams({ wait: 6, fp: first.body.fp })));
 
-  assert.ok(state.calls.length >= 2, 'the hold really did re-read Google');
+  assert.equal(state.calls.length, 2, 'the hold really did re-read Google — exactly once');
   assert.equal(body.fp, first.body.fp, 'same fingerprint: nothing the examiner sees changed');
   assert.equal(body.held, 6000, 'so it held all the way to its own deadline');
   assert.ok(body.at > CLOCK0, 'even though it answers from a newer snapshot');
@@ -1493,7 +1496,7 @@ test('watch: a stale copy and a dead upstream are never held', async () => {
   const stale = harness({ [SESSION]: [row({ status: 'waiting' })] });
   const first = await watch(stale.gateway, watchParams());
   stale.state.mode = 'error500';
-  stale.state.clock += 4000;
+  stale.state.clock += 50000;   // past HELD_REREAD_MS, so even a re-arm refreshes
 
   const onStale = await timed(stale.state, watch(stale.gateway, watchParams({ wait: 25, fp: first.body.fp })));
   assert.equal(onStale.res.status, 200);
@@ -1518,22 +1521,30 @@ test('watch: an empty session is held, and the first registration wakes it', asy
   const empty = await watch(gateway, watchParams());
   assert.equal(empty.body.fp, 's:none');
   assert.equal(empty.body.rows, 0);
+  assert.equal(state.calls.length, 1);
 
   const holding = watch(gateway, watchParams({ wait: 25, fp: 's:none' }));
   assert.equal(await parked(gateway, 1), 1,
     's:none is exactly the wait that matters before a class starts');
 
-  // The first examinee registers. Nobody nudges the Worker: the watch's own
-  // re-read on the freshness clock is what finds the row.
+  // The first examinee registers. Since 22/09 the Worker does NOT ask Google
+  // every two seconds whether that happened: the examinee's own first poll is
+  // a FRESH chain (no fp), so it reads the truth — and that read is what wakes
+  // the dashboard, for no execution of its own.
   state.snapshots[SESSION] = [row({ status: 'waiting' })];
+  const device = await poll(gateway, approvalPoll('900000001'));
+  assert.equal(device.body.approval, 'waiting');
+  assert.equal(state.calls.length, 2, 'one read, shared by the device and the dashboard');
+
   const { body } = await settle(state, holding);
   assert.equal(body.rows, 1);
   assert.notEqual(body.fp, 's:none');
-  assert.ok(body.held <= 3000, 'seen within one freshness window, got ' + body.held);
+  assert.equal(body.held, 0, 'the dashboard saw it the moment that read landed');
+  assert.equal(state.clock, CLOCK0, 'and not one tick was waited out');
   assert.equal(gateway._debug().waiting, 0);
 });
 
-test('forty held polls and one held watch still cost one execution per 2 s', async () => {
+test('forty held polls and one held watch cost nothing while nothing happens', async () => {
   const ids = Array.from({ length: 40 }, (_, i) => String(900000001 + i));
   const { state, gateway } = harness({ [SESSION]: ids.map(id => row({ id, status: 'waiting' })) });
 
@@ -1546,8 +1557,8 @@ test('forty held polls and one held watch still cost one execution per 2 s', asy
   assert.equal(await parked(gateway, 41), 41, 'forty examinees and one dashboard, one session');
 
   await advance(state, 6000);
-  assert.equal(state.calls.length, 3,
-    'six seconds of holding: one read per freshness window, forty-one holders or one');
+  assert.equal(state.calls.length, 1,
+    'six seconds of holding, forty-one open requests, and not one Apps Script execution');
   assert.equal(gateway._debug().waiting, 41, 'still holding — nothing anyone cares about changed');
 
   // The examiner approves the whole class: the dashboard and every examinee
@@ -1556,7 +1567,7 @@ test('forty held polls and one held watch still cost one execution per 2 s', asy
   await nudge(gateway, '');
   const answers = await settle(state, Promise.all(holds.concat([watching])));
 
-  assert.equal(state.calls.length, 4, 'forty-one woken requests shared ONE execution');
+  assert.equal(state.calls.length, 2, 'forty-one woken requests shared ONE execution');
   for (const answer of answers.slice(0, 40)) assert.equal(answer.body.approval, 'approved');
   const dashboard = answers[40].body;
   assert.equal(dashboard.rows, 40);
@@ -1692,7 +1703,7 @@ test('the examinee nudge spends the same re-read budget as the examiner', async 
 test('a first look Google never answers still answers inside the request budget', async () => {
   const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
   await poll(gateway, approvalPoll('900000001'));     // a copy to fall back on
-  await advance(state, 3000);                         // past FRESH_MS: the next look must read
+  await advance(state, 46000);                        // past HELD_REREAD_MS: even a re-arm must read
   state.upstreamDelayMs = 30000;                      // ...and Google has stopped answering
   const startedAt = state.clock;
 
@@ -1705,9 +1716,10 @@ test('a first look Google never answers still answers inside the request budget'
   assert.equal(state.clock - startedAt, 26000, 'the wait plus one second of grace, and not a second more');
   assert.ok(state.clock - startedAt <= 25000 + 1000,
     'a wait=25 request must never reach the client deadline of 40 s');
-  assert.equal(body.stale, true, 'answered from the copy we had, marked so');
-  assert.equal(body.held, 0, 'and a stale answer is never held');
-  assert.equal(body.fp, WAITING_FP);
+  assert.equal(body.code, 'upstream_unavailable',
+    'by then the copy had died of old age too, so the client is told to back off');
+  assert.equal(body.held, 0, 'and that is never held');
+  assert.equal(body.fp, 'x:up');
   assert.equal(pending.length, 1, 'the read was abandoned to waitUntil, not dropped');
   assert.equal(gateway._debug().waiting, 0);
 
@@ -1717,7 +1729,7 @@ test('a first look Google never answers still answers inside the request budget'
 test('a slow first look eats into the hold, never past it', async () => {
   const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
   await poll(gateway, approvalPoll('900000001'));
-  await advance(state, 3000);
+  await advance(state, 46000);
   state.upstreamDelayMs = 10000;                      // a bad Apps Script morning
   const startedAt = state.clock;
 
@@ -1730,16 +1742,17 @@ test('a slow first look eats into the hold, never past it', async () => {
   await advance(state, 40000);
 });
 
-test('a watch inherits the same one-budget rule', async () => {
+test('a watch inherits the same one-budget rule, and falls back to the copy it has', async () => {
   const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
   const first = await watch(gateway, watchParams());
-  await advance(state, 3000);
+  await advance(state, 46000);
   state.upstreamDelayMs = 30000;
   const startedAt = state.clock;
 
-  const { body } = await settle(state, watch(gateway, watchParams({ wait: 25, fp: first.body.fp })));
-  assert.equal(state.clock - startedAt, 26000, 'wait + grace, whatever Google is doing');
-  assert.equal(body.stale, true);
+  const { body } = await settle(state, watch(gateway, watchParams({ wait: 10, fp: first.body.fp })));
+  assert.equal(state.clock - startedAt, 11000, 'wait + grace, whatever Google is doing');
+  assert.equal(body.stale, true, 'the copy is 57 s old — still inside STALE_MS, so it is served');
+  assert.equal(body.fp, first.body.fp);
   assert.equal(body.held, 0);
   await advance(state, 40000);
 });
@@ -1768,7 +1781,7 @@ test("a request that joins another request's upstream read answers on its own ti
   // always race a timer this request owns.
   const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
   await poll(gateway, approvalPoll('900000001'));
-  await advance(state, 3000);
+  await advance(state, 46000);
   state.upstreamDelayMs = 30000;
 
   // A opens the read, runs out of budget and walks away, leaving it in flight.
@@ -1802,6 +1815,7 @@ test('a held watch hashes the session once per upstream read, never once per tic
   assert.match(JSON.parse([...state.store.values()][0].body).sfp, /^s:[0-9a-f]{12}$/,
     'the copy in caches.default carries the fingerprint it was stamped with');
 
+  await advance(state, 44000);   // so the safety read falls inside the hold
   const readsBefore = state.calls.length;
   const digestsBefore = subtleCalls.digest;
   const { body } = await settle(state, watch(gateway, watchParams({ wait: 25, fp: first.body.fp })));
@@ -1809,7 +1823,7 @@ test('a held watch hashes the session once per upstream read, never once per tic
   const digests = subtleCalls.digest - digestsBefore;
 
   assert.equal(body.held, 25000);
-  assert.ok(reads >= 6, 'twenty-five seconds really did re-read Google, got ' + reads);
+  assert.equal(reads, 1, 'one safety read in twenty-five seconds, got ' + reads);
   assert.equal(digests, reads, 'one hash per read — NOT one per tick (that was 25)');
 });
 
@@ -1875,9 +1889,9 @@ test('every answered watch and poll leaves one structured line naming where the 
 
   const first = await watch(gateway, watchParams());
   assert.deepEqual(state.logs.at(-1), {
-    r: 'watch', s: SESSION, src: 'fetch', fp: first.body.fp, held: 0, fl: 0, late: 0,
+    r: 'watch', s: SESSION, src: 'fetch', fp: first.body.fp, held: 0, fl: 0, age: 0, late: 0,
     up: 0, usfp: first.body.fp, rows: 1
-  }, 'src says which copy answered, usfp what Google last gave us — a flip is fp !== usfp');
+  }, 'src says which copy answered, age how old it was, usfp what Google last gave us');
 
   await poll(gateway, approvalPoll('900000001', { wait: 0 }));
   const line = state.logs.at(-1);
@@ -1892,4 +1906,121 @@ test('every answered watch and poll leaves one structured line naming where the 
   assert.equal(after.held, held.body.held);
   assert.equal(after.fl, 0, 'the first look was free — it was all hold');
   assert.equal(state.logs.filter(l => l.r === 'watch').length, 2, 'one line per request, no more');
+});
+
+// --- reading Google only when something happened (r31.2, 22/09 11:15) ------
+// KNOWN_ISSUES #35: Google's response-delivery hop stalls 25-60 s for our
+// projects while an idle project in the same account is untouched — and the
+// busiest thing we send Google is this snapshot read, every 2 s per session.
+// Every client write already announces itself (the examiner's patch/drop, the
+// examinee's nudge after submit/markFinished/registration/DQ), so a chain that
+// re-arms with an `fp` trusts the copy it already holds for HELD_REREAD_MS,
+// and a FRESH chain still demands one younger than FRESH_MS.
+
+test('a re-arm trusts a copy the fresh chain would refuse', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
+  await poll(gateway, approvalPoll('900000001', { fp: '' }));
+  assert.equal(state.calls.length, 1);
+
+  state.clock += 30000;
+  const rearm = await poll(gateway, approvalPoll('900000001', { fp: WAITING_FP }));
+  assert.equal(state.calls.length, 1,
+    'thirty seconds old is fine for a chain that already holds exactly this answer');
+  assert.equal(rearm.body.fp, WAITING_FP);
+  assert.equal(rearm.body.stale, undefined, 'and it is NOT stale — nobody said anything changed');
+
+  const fresh = await poll(gateway, approvalPoll('900000001'));
+  assert.equal(state.calls.length, 2, 'a fresh chain still demands a copy younger than two seconds');
+  assert.equal(fresh.body.approval, 'waiting');
+
+  // A watch behaves the same way.
+  const seen = await watch(gateway, watchParams());
+  state.clock += 30000;
+  await watch(gateway, watchParams({ fp: seen.body.fp }));
+  assert.equal(state.calls.length, 2, 'the dashboard re-arms for free too');
+  await watch(gateway, watchParams());
+  assert.equal(state.calls.length, 3, 'and a reloaded dashboard reads the truth');
+});
+
+test('a held chain takes one safety read when its copy crosses the cadence, and keeps holding', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
+  await poll(gateway, approvalPoll('900000001', { fp: '' }));
+  assert.equal(state.calls.length, 1);
+
+  await advance(state, 40000);   // still inside the cadence when the hold starts
+  const { body } = await settle(state, poll(gateway, approvalPoll('900000001', { wait: 25, fp: WAITING_FP })));
+
+  assert.equal(state.calls.length, 2, 'exactly one safety read, when the copy crossed 45 s');
+  assert.equal(body.held, 25000, 'and the hold simply continued — nothing had changed');
+  assert.equal(body.fp, WAITING_FP);
+  assert.equal(gateway._debug().waiting, 0);
+});
+
+test('the safety cadence stays inside the window a copy is servable in', async () => {
+  // HELD_REREAD_MS < STALE_MS, proven where it matters: a copy that has just
+  // crossed the cadence is still good enough to answer from when Google is
+  // down. If the two were the wrong way round, every held chain would go stale
+  // before it ever refreshed.
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
+  await poll(gateway, approvalPoll('900000001', { fp: '' }));
+
+  state.mode = 'error500';
+  state.clock += 50000;
+  const { body } = await settle(state, poll(gateway, approvalPoll('900000001', { wait: 25, fp: WAITING_FP })));
+  assert.equal(state.calls.length, 2, 'past the cadence it really did try to refresh');
+  assert.equal(body.stale, true, 'and what it has is still servable, marked stale');
+  assert.equal(body.held, 0, 'which is never held');
+});
+
+test('forty examinees and a dashboard, ten minutes, nothing happening: ~13 executions, not ~300', async () => {
+  const ids = Array.from({ length: 40 }, (_, i) => String(900000001 + i));
+  const { state, gateway } = harness({ [SESSION]: ids.map(id => row({ id, status: 'waiting' })) });
+
+  // Every page opens its chain: one read for the whole room.
+  const opened = await Promise.all(ids.map(id => poll(gateway, approvalPoll(id, { wait: 25, fp: '' }))));
+  const firstWatch = await watch(gateway, watchParams({ wait: 25, fp: '' }));
+  assert.equal(state.calls.length, 1, 'one read for forty-one fresh chains');
+
+  let pollFp = opened[0].body.fp;
+  let watchFp = firstWatch.body.fp;
+  for (let round = 0; round < 24; round++) {          // 24 x 25 s = ten minutes
+    const holds = ids.map(id => poll(gateway, approvalPoll(id, { wait: 25, fp: pollFp })));
+    const watching = watch(gateway, watchParams({ wait: 25, fp: watchFp }));
+    const answers = await settle(state, Promise.all(holds.concat([watching])));
+    assert.equal(answers[0].body.held, 25000, 'round ' + round + ': every chain held its full 25 s');
+    pollFp = answers[0].body.fp;
+    watchFp = answers[40].body.fp;
+  }
+
+  assert.equal(state.clock - CLOCK0, 600000, 'ten minutes of forty-one open requests');
+  assert.ok(state.calls.length <= 16 && state.calls.length >= 12,
+    'about one execution per 45 s — got ' + state.calls.length + ', it used to be ~300');
+  assert.equal(gateway._debug().waiting, 0, 'and nothing was left parked');
+});
+
+test('a nudge is what makes the Worker read: the drop, not the clock', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'in_exam', tokenHash: sha256Hex(TOKEN) })] });
+  const seen = await watch(gateway, watchParams({ fp: '' }));
+  assert.equal(state.calls.length, 1);
+
+  const holding = watch(gateway, watchParams({ wait: 25, fp: seen.body.fp }));
+  const polling = poll(gateway, statusPoll('900000001', { wait: 25, fp: 's:in_exam:0', examineeToken: TOKEN }));
+  assert.equal(await parked(gateway, 2), 2);
+
+  // Twenty seconds of silence buy nothing at all...
+  await advance(state, 20000);
+  assert.equal(state.calls.length, 1, 'twenty seconds of holding, zero executions');
+  assert.equal(gateway._debug().waiting, 2);
+
+  // ...and then the device submits and says so.
+  state.snapshots[SESSION] = [row({ status: 'completed', tokenHash: sha256Hex(TOKEN) })];
+  assert.deepEqual((await devicePush(gateway, '&idNumber=900000001&examineeToken=' + TOKEN)).body,
+    { status: 'ok', dropped: true });
+
+  const dash = await settle(state, holding);
+  const device = await settle(state, polling);
+  assert.equal(state.calls.length, 2, 'ONE read, because something actually happened');
+  assert.notEqual(dash.body.fp, seen.body.fp);
+  assert.equal(device.body.examStatus, 'completed');
+  assert.equal(state.clock - CLOCK0, 20000, 'and both saw it without waiting out a tick');
 });

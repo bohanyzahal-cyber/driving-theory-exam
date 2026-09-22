@@ -78,9 +78,35 @@ const ALLOWED_ORIGINS = [
   'http://127.0.0.1'
 ];
 
-const FRESH_MS = 2000;            // a snapshot this young answers without asking
+const FRESH_MS = 2000;            // a FRESH CHAIN's snapshot: this young answers without asking
 const STALE_MS = 60000;           // older than this and we would rather error
 const REREAD_GAP_MS = 2000;       // forced upstream re-read: once per session per gap
+
+/**
+ * The passive safety cadence — how old a snapshot may get before a request
+ * that is RE-ARMING a chain (it sent `fp`, so it already holds exactly this
+ * state) asks Google again.
+ *
+ * WHY (22/09 11:15, KNOWN_ISSUES #35): Google's response-delivery hop stalls
+ * 25-60 s for our projects while an idle project in the same account is
+ * untouched, and the busiest thing we send Google is this read — every 2 s per
+ * session, which is 30/min for a running exam and 10/min for a dashboard
+ * nobody is looking at. It does not need to be a clock at all: every write a
+ * client makes already announces itself (the examiner's patch/drop, the
+ * examinee's nudge after submit/markFinished/registration/DQ), and a fresh
+ * chain still demands a copy younger than FRESH_MS. So the Worker reads
+ * Google (a) for a fresh chain, (b) when a nudge dropped the snapshot, (c)
+ * when a row is missing, and (d) this cadence, for the changes nobody pushed.
+ * 45 s instead of 2 s is ~10x fewer executions per session.
+ *
+ * It MUST stay below STALE_MS, or a held chain would let its copy die before
+ * refreshing it and start answering `stale` to everyone.
+ */
+const HELD_REREAD_MS = 45000;
+if (HELD_REREAD_MS >= STALE_MS) throw new Error('HELD_REREAD_MS must stay below STALE_MS');
+
+/** How old a snapshot may be for THIS request: a re-arm trusts what it holds. */
+const freshnessFor = clientFp => (clientFp ? HELD_REREAD_MS : FRESH_MS);
 const UPSTREAM_TIMEOUT_MS = 25000;
 const SESSION_RE = /^[A-Z0-9]{6,8}$/;
 
@@ -497,13 +523,23 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
   const cacheKey = (kind, session) =>
     'https://session-gateway.internal/' + kind + '/' + encodeURIComponent(session);
 
-  async function cacheRead(kind, session) {
+  /**
+   * `maxAgeMs` is checked against `rat` — the time THIS gateway made the copy
+   * current (an upstream read, or a patch), stamped into the body before it is
+   * written. The cache entry's own max-age is the outer bound (HELD_REREAD_MS
+   * for 'snap' since 22/09, so another isolate can serve a re-armed chain
+   * without asking Google); a fresh chain narrows it to FRESH_MS here. A copy
+   * written before r31.2 has no `rat` and is taken at the entry's word.
+   */
+  async function cacheRead(kind, session, maxAgeMs) {
     if (!caches || !caches.default) return null;
     try {
       const hit = await caches.default.match(new Request(cacheKey(kind, session)));
       if (!hit) return null;
       const body = await hit.json();
-      return body && Array.isArray(body.rows) ? body : null;
+      if (!body || !Array.isArray(body.rows)) return null;
+      if (maxAgeMs != null && Number.isFinite(body.rat) && clock() - body.rat > maxAgeMs) return null;
+      return body;
     } catch (e) {
       return null;
     }
@@ -518,7 +554,9 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
         headers: { 'Content-Type': 'application/json', 'Cache-Control': 'max-age=' + maxAge }
       })
     );
-    try { await Promise.all([store('snap', FRESH_MS / 1000), store('stale', STALE_MS / 1000)]); } catch (e) { /* cache is best effort */ }
+    try {
+      await Promise.all([store('snap', HELD_REREAD_MS / 1000), store('stale', STALE_MS / 1000)]);
+    } catch (e) { /* cache is best effort */ }
   }
 
   function memoryRead(session, maxAgeMs) {
@@ -526,6 +564,12 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
     if (!hit || clock() - hit.at > maxAgeMs) return null;
     return hit.snapshot;
   }
+
+  /** How old the copy we are about to answer from is — for the log, only. */
+  const snapshotAge = snapshot => {
+    const made = Number(snapshot && snapshot.rat);
+    return Number.isFinite(made) ? Math.max(0, clock() - made) : -1;
+  };
 
   /**
    * Awaits `promise` for at most `ms` on a timer THIS request owns, and drops
@@ -640,6 +684,7 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
         // cached copy every second never hashes anything (see
         // sessionFingerprint — this is the 7-12 ms of CPU it costs otherwise).
         snapshot.sfp = await sessionFingerprint(snapshot);
+        snapshot.rat = clock();   // OUR clock, so another isolate can age it
         lastUpstream.set(session, { ms: Math.max(0, clock() - startedAt), sfp: snapshot.sfp });
         memory.set(session, { at: clock(), snapshot });
         await cacheWrite(session, snapshot);
@@ -664,12 +709,12 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
    * held. The read itself is abandoned, not cancelled — it is coalesced, and
    * whoever asks next is served by it.
    */
-  async function loadSnapshot(session, forceFresh, until, ctx, trace) {
+  async function loadSnapshot(session, forceFresh, until, ctx, trace, maxAgeMs) {
     if (!forceFresh) {
-      const fresh = memoryRead(session, FRESH_MS);
-      if (fresh) { trace.src = 'memory'; return { ok: true, snapshot: fresh, fromCache: true, stale: false }; }
-      const cached = await cacheRead('snap', session);
-      if (cached) { trace.src = 'cache'; return { ok: true, snapshot: cached, fromCache: true, stale: false }; }
+      const fresh = memoryRead(session, maxAgeMs);
+      if (fresh) { trace.src = 'memory'; trace.age = snapshotAge(fresh); return { ok: true, snapshot: fresh, fromCache: true, stale: false }; }
+      const cached = await cacheRead('snap', session, maxAgeMs);
+      if (cached) { trace.src = 'cache'; trace.age = snapshotAge(cached); return { ok: true, snapshot: cached, fromCache: true, stale: false }; }
     }
     const pending = fetchCoalesced(session);
     const fetched = await within(Math.max(0, until - clock()) + HOLD_GRACE_MS, pending);
@@ -678,11 +723,13 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
       trace.late = 1;
     } else if (fetched) {
       trace.src = 'fetch';
+      trace.age = snapshotAge(fetched);
       return { ok: true, snapshot: fetched, fromCache: false, stale: false };
     }
     const old = memoryRead(session, STALE_MS) || await cacheRead('stale', session);
-    if (old) { trace.src = 'stale'; return { ok: true, snapshot: old, fromCache: true, stale: true }; }
+    if (old) { trace.src = 'stale'; trace.age = snapshotAge(old); return { ok: true, snapshot: old, fromCache: true, stale: true }; }
     trace.src = 'none';
+    trace.age = -1;
     return { ok: false };
   }
 
@@ -730,6 +777,7 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
     // session's fingerprint moves, and the copy in caches.default must carry
     // the NEW one (see sessionFingerprint).
     snapshot.sfp = await sessionFingerprint(snapshot);
+    snapshot.rat = clock();   // a confirmed write makes the copy current again
     memory.set(session, { at: clock(), snapshot: snapshot });
     await cacheWrite(session, snapshot);
     wake(session); // a request held on this session answers the decision NOW
@@ -1058,8 +1106,8 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
   }
 
   /** The answer as an ordinary poll computes it — today's path, within the budget. */
-  async function firstLook(session, kind, idNumber, tokenHex, until, ctx, trace) {
-    const loaded = await loadSnapshot(session, false, until, ctx, trace);
+  async function firstLook(session, kind, idNumber, tokenHex, until, ctx, trace, maxAgeMs) {
+    const loaded = await loadSnapshot(session, false, until, ctx, trace, maxAgeMs);
     if (!loaded.ok) return UNAVAILABLE_VIEW;
     const view = evaluate(kind, loaded.snapshot, idNumber, tokenHex, loaded.stale);
     // A row the examinee just created is missing from a snapshot taken before
@@ -1068,7 +1116,7 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
     // The second read shares the same deadline: two bounded reads, never two
     // unbounded ones.
     if (view.provisional && loaded.fromCache && mayForceReread(session)) {
-      const refreshed = await loadSnapshot(session, true, until, ctx, trace);
+      const refreshed = await loadSnapshot(session, true, until, ctx, trace, maxAgeMs);
       if (refreshed.ok) return evaluate(kind, refreshed.snapshot, idNumber, tokenHex, refreshed.stale);
     }
     return view;
@@ -1092,27 +1140,33 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
    * nudge, and a held request re-reads on the freshness clock anyway.
    */
   async function lookAtNewest(session, clientFp, view, trace) {
-    const mine = memoryRead(session, FRESH_MS);
+    // A held request always carries an `fp`, so its window is the safety
+    // cadence: a tick costs a cache read (the cross-isolate patch channel),
+    // never an Apps Script execution, until the copy crosses HELD_REREAD_MS.
+    const maxAgeMs = freshnessFor(clientFp);
+    const mine = memoryRead(session, maxAgeMs);
     if (mine) {
       const fromMemory = await view(mine, false);
       trace.src = 'memory';
+      trace.age = snapshotAge(mine);
       if (fromMemory.fp !== clientFp) return fromMemory;
-      const cached = await cacheRead('snap', session);
+      const cached = await cacheRead('snap', session, maxAgeMs);
       if (cached) {
         const patched = await view(cached, false);
-        if (patched.fp !== clientFp) { trace.src = 'cache'; return patched; }
+        if (patched.fp !== clientFp) { trace.src = 'cache'; trace.age = snapshotAge(cached); return patched; }
       }
       return fromMemory;
     }
-    const cached = await cacheRead('snap', session);
-    if (cached) { trace.src = 'cache'; return view(cached, false); }
+    const cached = await cacheRead('snap', session, maxAgeMs);
+    if (cached) { trace.src = 'cache'; trace.age = snapshotAge(cached); return view(cached, false); }
     // The hold's own grace timer is what bounds this join of the coalesced
     // read (see `within`), so this await is never a bare one.
     const fetched = await fetchCoalesced(session);
-    if (fetched) { trace.src = 'fetch'; return view(fetched, false); }
+    if (fetched) { trace.src = 'fetch'; trace.age = snapshotAge(fetched); return view(fetched, false); }
     const old = memoryRead(session, STALE_MS) || await cacheRead('stale', session);
-    if (old) { trace.src = 'stale'; return view(old, true); }
+    if (old) { trace.src = 'stale'; trace.age = snapshotAge(old); return view(old, true); }
     trace.src = 'none';
+    trace.age = -1;
     return UNAVAILABLE_VIEW;
   }
 
@@ -1196,12 +1250,12 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
     const waitMs = waitMillis(url.searchParams.get('wait'));
     // ONE budget for the whole request — the first look and the hold share it.
     const deadline = startedAt + (waitMs || FIRST_LOOK_MAX_MS);
-    const trace = { src: 'none', late: 0 };
+    const trace = { src: 'none', late: 0, age: -1 };
 
     // No `provisional` re-read here, unlike firstLook: an empty session is not
     // a mistake to correct, it is the normal state before the first examinee
     // registers — and `s:none` is held until that registration wakes it.
-    const loaded = await loadSnapshot(session, false, deadline, ctx, trace);
+    const loaded = await loadSnapshot(session, false, deadline, ctx, trace, freshnessFor(clientFp));
     const first = loaded.ok ? await sessionView(loaded.snapshot, loaded.stale) : UNAVAILABLE_VIEW;
     const firstLookMs = Math.max(0, clock() - startedAt);
     const held = await holdUntilChanged({
@@ -1229,7 +1283,8 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
     const last = lastUpstream.get(session) || {};
     emit(JSON.stringify(Object.assign({
       r: route, s: session, src: trace.src, fp: fp, held: held | 0,
-      fl: trace.fl | 0, late: trace.late | 0, up: last.ms | 0, usfp: last.sfp || ''
+      fl: trace.fl | 0, age: trace.age | 0, late: trace.late | 0,
+      up: last.ms | 0, usfp: last.sfp || ''
     }, extra)));
   }
 
@@ -1267,8 +1322,8 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
     // ONE budget for the whole request — the first look and the hold share it,
     // and a request that sends no `wait` still gets a bound on its first look.
     const deadline = startedAt + (waitMs || FIRST_LOOK_MAX_MS);
-    const trace = { src: 'none', late: 0 };
-    const first = await firstLook(session, kind, idNumber, tokenHex, deadline, ctx, trace);
+    const trace = { src: 'none', late: 0, age: -1 };
+    const first = await firstLook(session, kind, idNumber, tokenHex, deadline, ctx, trace, freshnessFor(clientFp));
     const firstLookMs = Math.max(0, clock() - startedAt);
 
     // The hold. Only while the answer is EXACTLY the one the client already
