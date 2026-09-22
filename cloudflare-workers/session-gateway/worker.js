@@ -100,8 +100,14 @@ const HOLD_MAX_STEPS = 26;
 // time: the client aborts at 40 s and counts that as a real communication
 // failure. The hold is bounded by its own deadline, never by Google's answer.
 const HOLD_GRACE_MS = 1000;
-// The loser of that race and nothing else: a value no view can ever be.
+// The loser of a `within()` race and nothing else: a value no view can be.
 const HOLD_TIMED_OUT = Symbol('hold-timed-out');
+
+// A request that sends no `wait` is not held - but its FIRST look can still
+// join an upstream read that Google is taking 20 s to answer, and it must not
+// sit there for the 25 s of UPSTREAM_TIMEOUT_MS either. Longer than any
+// healthy read (0.7-2 s), shorter than the client's own deadline.
+const FIRST_LOOK_MAX_MS = 20000;
 
 // The assets binding is addressed by URL; the host is arbitrary and never
 // leaves the isolate. Paths are built from validated numbers only.
@@ -393,19 +399,48 @@ const UNAVAILABLE_VIEW = {
  */
 const SESSION_FP_FIELDS = ['id', 'status', 'audio', 'examMinutes', 'extraMinutes', 'warn', 'fin', 'ext', 'dq'];
 
+// The four r31 fields, where "absent" and "zero" are the SAME state and must
+// hash the same. WHY (22/09, from `wrangler tail`): one examiner page saw its
+// answer alternate between two fingerprints for the same unchanged session,
+// 250 ms apart, in ~2 s bursts. The exam project moved r30 -> r31 that
+// morning, so two snapshots of DIFFERENT SHAPE were alive at once - an old one
+// with no warn/fin/ext/dq (hashing '') beside a new one carrying 0 (hashing
+// '0') - and `lookAtNewest` answers whichever copy DIFFERS from what the
+// client holds, so memory and cache flip-flopped the dashboard forever. Only
+// these four collapse: `extraMinutes: 0` has always been sent, and `id` /
+// `status` / `audio` / `examMinutes` have no "absent" state.
+const SESSION_FP_ZEROABLE = { warn: 1, fin: 1, ext: 1, dq: 1 };
+
+function fpCell(row, field) {
+  const value = row[field];
+  if (value == null || value === '') return '';
+  if (SESSION_FP_ZEROABLE[field] && (value === 0 || value === '0' || value === false)) return '';
+  return String(value);
+}
+
 // Per snapshot OBJECT, so a request held for 25 s hashes each copy once:
 // memory hands back the same object on every tick of the hold. A WeakMap, so
 // a snapshot that falls out of memory takes its entry with it; and the PROMISE
 // is what is cached, so two holds that meet on one snapshot share one digest.
 const sessionFpCache = new WeakMap();
 
+/**
+ * `snapshot.sfp` is the fingerprint stamped ONCE, where the snapshot was
+ * stored (fetchCoalesced / patchSnapshot), and it travels into caches.default
+ * inside the JSON. WHY: a held watch re-reads the cached copy every second,
+ * and `caches.default` hands back a NEW object each time, so the WeakMap could
+ * never hit and every tick paid for another SHA-256 - 7-12 ms of CPU per held
+ * request, against a free-plan ceiling of 10 ms (`wrangler tail`, 22/09).
+ * A copy written by an older Worker has no `sfp`, and is hashed here as before.
+ */
 function sessionFingerprint(snapshot) {
+  const stamped = snapshot && snapshot.sfp;
+  if (typeof stamped === 'string' && stamped) return Promise.resolve(stamped);
   const known = sessionFpCache.get(snapshot);
   if (known) return known;
   const rows = Array.isArray(snapshot.rows) ? snapshot.rows : [];
   const pending = rows.length
-    ? sha256Hex(rows.map(row => SESSION_FP_FIELDS
-        .map(field => row[field] == null ? '' : String(row[field])).join('|')).join(';'))
+    ? sha256Hex(rows.map(row => SESSION_FP_FIELDS.map(field => fpCell(row, field)).join('|')).join(';'))
         .then(hex => 's:' + hex.slice(0, 12))
     : Promise.resolve('s:none');
   sessionFpCache.set(snapshot, pending);
@@ -438,11 +473,24 @@ async function sessionView(snapshot, stale) {
  * module-level singleton below coalesces across requests of one isolate while
  * each test gets its own clean instance.
  */
-export function createGateway({ fetch, caches, now, env, sleep }) {
+export function createGateway({ fetch, caches, now, env, sleep, log }) {
   const clock = now || (() => Date.now());
-  const nap = sleep || (ms => new Promise(resolve => setTimeout(resolve, ms)));
+  // The default timer carries its own `cancel`, and so does the tests' fake
+  // one: a timer that LOST its race must go, or every held request leaves a
+  // trail of live timers behind it for as long as the isolate lives.
+  const nap = sleep || (ms => {
+    let id;
+    const timer = new Promise(resolve => { id = setTimeout(resolve, ms); });
+    timer.cancel = () => clearTimeout(id);
+    return timer;
+  });
+  // One line per answered request, so `wrangler tail` can explain a
+  // fingerprint that moved without a write (22/09). Injected in tests so the
+  // suite stays silent and can assert on what was written.
+  const emit = log || (line => { try { console.log(line); } catch (e) { /* logging never fails a request */ } });
   const memory = new Map();   // session -> { at, snapshot }
   const inflight = new Map(); // session -> Promise<snapshot|null>
+  const lastUpstream = new Map(); // session -> { ms, sfp } of the last read, for the log
   const lastForced = new Map(); // session -> ms of the last forced re-read
   const waiters = new Map();  // session -> Set<resolve> — the held requests
 
@@ -479,6 +527,35 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
     return hit.snapshot;
   }
 
+  /**
+   * Awaits `promise` for at most `ms` on a timer THIS request owns, and drops
+   * that timer as soon as the race is decided. HOLD_TIMED_OUT = the timer won.
+   *
+   * WHY every join of a shared promise must go through here (22/09, from
+   * `wrangler tail`): 15 of 74 requests died as HTTP 500 with outcome
+   * "exception" — «the Workers runtime canceled this request because it
+   * detected that your Worker's code had hung and would never generate a
+   * response» — after 2-3 ms of wall time and 0 CPU. That is Cloudflare's hang
+   * detection, and it fires on a request that is awaiting a promise ANOTHER
+   * request created (our coalesced `inflight` read, kept alive by that other
+   * request's waitUntil) while having no pending I/O or timer of its own. The
+   * timer here IS that pending timer, and it also bounds the wait.
+   */
+  async function within(ms, promise) {
+    const timer = nap(Math.max(0, ms));
+    try {
+      return await Promise.race([promise, timer.then(() => HOLD_TIMED_OUT)]);
+    } finally {
+      if (timer && typeof timer.cancel === 'function') timer.cancel();
+    }
+  }
+
+  /** A promise this request walked away from: let it finish for whoever is next. */
+  function abandon(promise, ctx) {
+    const orphan = promise.catch(() => { /* a late failure is no longer ours */ });
+    if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(orphan);
+  }
+
   // --- waking the held requests --------------------------------------------
 
   /**
@@ -508,7 +585,9 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
     let resolve;
     const woken = new Promise(r => { resolve = r; });
     parked.add(resolve);
-    return Promise.race([woken, nap(ms)]).then(() => {
+    const timer = nap(ms);
+    return Promise.race([woken, timer]).then(() => {
+      if (timer && typeof timer.cancel === 'function') timer.cancel();
       const current = waiters.get(session);
       if (!current) return;
       current.delete(resolve);
@@ -549,12 +628,19 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
   function fetchCoalesced(session) {
     const pending = inflight.get(session);
     if (pending) return pending;
+    const startedAt = clock();
     // The cache write is awaited, not floating: a Worker may be torn down as
     // soon as it answers, and a dropped write means the next isolate asks
     // Apps Script again — exactly what this gateway exists to prevent.
     const promise = fetchUpstream(session).then(async snapshot => {
       inflight.delete(session);
       if (snapshot) {
+        // Stamped HERE, once, before it is stored: `sfp` then travels into
+        // caches.default inside the JSON, so a held watch that re-reads the
+        // cached copy every second never hashes anything (see
+        // sessionFingerprint — this is the 7-12 ms of CPU it costs otherwise).
+        snapshot.sfp = await sessionFingerprint(snapshot);
+        lastUpstream.set(session, { ms: Math.max(0, clock() - startedAt), sfp: snapshot.sfp });
         memory.set(session, { at: clock(), snapshot });
         await cacheWrite(session, snapshot);
         wake(session); // fresh truth: whoever is held on this session re-reads it
@@ -565,16 +651,38 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
     return promise;
   }
 
-  /** { ok, snapshot, fromCache, stale } — `ok:false` only when nothing exists. */
-  async function loadSnapshot(session, forceFresh) {
+  /**
+   * { ok, snapshot, fromCache, stale } — `ok:false` only when nothing exists.
+   *
+   * Bounded by `until`, which is THIS request's own deadline. WHY (22/09):
+   * this is the first look, it runs BEFORE the hold, and it used to await the
+   * coalesced read bare — so a request that joined a read Google was taking
+   * 20 s over started its 25 s hold 20 s late and answered after 45 s, past
+   * the client's own 40 s abort (four such requests in one 24-minute tail).
+   * The budget is the request's, not Google's: when the read does not land in
+   * time we answer from the best copy we have, marked stale, which is never
+   * held. The read itself is abandoned, not cancelled — it is coalesced, and
+   * whoever asks next is served by it.
+   */
+  async function loadSnapshot(session, forceFresh, until, ctx, trace) {
     if (!forceFresh) {
-      const fresh = memoryRead(session, FRESH_MS) || await cacheRead('snap', session);
-      if (fresh) return { ok: true, snapshot: fresh, fromCache: true, stale: false };
+      const fresh = memoryRead(session, FRESH_MS);
+      if (fresh) { trace.src = 'memory'; return { ok: true, snapshot: fresh, fromCache: true, stale: false }; }
+      const cached = await cacheRead('snap', session);
+      if (cached) { trace.src = 'cache'; return { ok: true, snapshot: cached, fromCache: true, stale: false }; }
     }
-    const fetched = await fetchCoalesced(session);
-    if (fetched) return { ok: true, snapshot: fetched, fromCache: false, stale: false };
+    const pending = fetchCoalesced(session);
+    const fetched = await within(Math.max(0, until - clock()) + HOLD_GRACE_MS, pending);
+    if (fetched === HOLD_TIMED_OUT) {
+      abandon(pending, ctx);
+      trace.late = 1;
+    } else if (fetched) {
+      trace.src = 'fetch';
+      return { ok: true, snapshot: fetched, fromCache: false, stale: false };
+    }
     const old = memoryRead(session, STALE_MS) || await cacheRead('stale', session);
-    if (old) return { ok: true, snapshot: old, fromCache: true, stale: true };
+    if (old) { trace.src = 'stale'; return { ok: true, snapshot: old, fromCache: true, stale: true }; }
+    trace.src = 'none';
     return { ok: false };
   }
 
@@ -618,6 +726,10 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
     const rows = current.rows.slice();
     rows[index] = Object.assign({}, rows[index], fields);  // only the named row
     const snapshot = { at: current.at, rows: rows };       // `at` stays the read time
+    // Re-stamped, never inherited: the whole point of a patch is that the
+    // session's fingerprint moves, and the copy in caches.default must carry
+    // the NEW one (see sessionFingerprint).
+    snapshot.sfp = await sessionFingerprint(snapshot);
     memory.set(session, { at: clock(), snapshot: snapshot });
     await cacheWrite(session, snapshot);
     wake(session); // a request held on this session answers the decision NOW
@@ -671,17 +783,22 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
     return buildPromise;
   }
 
-  // Imported once per isolate: importKey on every request would be pure waste
-  // on the hot path. An empty secret is kept out of importKey, which rejects it.
-  let keyPromise = null;
-  function hmacKey() {
-    if (!keyPromise) {
-      keyPromise = crypto.subtle.importKey(
-        'raw', new TextEncoder().encode(String(env.GATEWAY_KEY || '')),
-        { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']
-      ).catch(() => null);
-    }
-    return keyPromise;
+  // The imported KEY is cached, never the promise that produces it. Once it is
+  // in hand every later grant check is synchronous; until then each request
+  // imports its own. WHY not share the promise (22/09): a request that awaits
+  // a promise ANOTHER request created, with no I/O or timer of its own, is
+  // killed by the runtime's hang detection — and this await is the very first
+  // thing a watch or a nudge does. An import is cheap; being cancelled is not.
+  // An empty secret is kept out of importKey, which rejects it.
+  let cryptoKey = null;
+  async function hmacKey() {
+    if (cryptoKey) return cryptoKey;
+    const imported = await crypto.subtle.importKey(
+      'raw', new TextEncoder().encode(String(env.GATEWAY_KEY || '')),
+      { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']
+    ).catch(() => null);
+    if (imported) cryptoKey = imported;
+    return imported;
   }
 
   /**
@@ -940,16 +1057,18 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
       (rawId || status) ? { status: 'ok', patched: false } : { status: 'ok' });
   }
 
-  /** The answer as an ordinary poll computes it — today's path, unchanged. */
-  async function firstLook(session, kind, idNumber, tokenHex) {
-    const loaded = await loadSnapshot(session, false);
+  /** The answer as an ordinary poll computes it — today's path, within the budget. */
+  async function firstLook(session, kind, idNumber, tokenHex, until, ctx, trace) {
+    const loaded = await loadSnapshot(session, false, until, ctx, trace);
     if (!loaded.ok) return UNAVAILABLE_VIEW;
     const view = evaluate(kind, loaded.snapshot, idNumber, tokenHex, loaded.stale);
     // A row the examinee just created is missing from a snapshot taken before
     // it existed — read once more before telling them they are not registered,
     // or that the registration they are polling for was rejected or reset.
+    // The second read shares the same deadline: two bounded reads, never two
+    // unbounded ones.
     if (view.provisional && loaded.fromCache && mayForceReread(session)) {
-      const refreshed = await loadSnapshot(session, true);
+      const refreshed = await loadSnapshot(session, true, until, ctx, trace);
       if (refreshed.ok) return evaluate(kind, refreshed.snapshot, idNumber, tokenHex, refreshed.stale);
     }
     return view;
@@ -972,35 +1091,40 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
    * It never spends mayForceReread's budget: that one pays for the examiner's
    * nudge, and a held request re-reads on the freshness clock anyway.
    */
-  async function lookAtNewest(session, clientFp, view) {
+  async function lookAtNewest(session, clientFp, view, trace) {
     const mine = memoryRead(session, FRESH_MS);
     if (mine) {
       const fromMemory = await view(mine, false);
+      trace.src = 'memory';
       if (fromMemory.fp !== clientFp) return fromMemory;
       const cached = await cacheRead('snap', session);
       if (cached) {
         const patched = await view(cached, false);
-        if (patched.fp !== clientFp) return patched;
+        if (patched.fp !== clientFp) { trace.src = 'cache'; return patched; }
       }
       return fromMemory;
     }
     const cached = await cacheRead('snap', session);
-    if (cached) return view(cached, false);
+    if (cached) { trace.src = 'cache'; return view(cached, false); }
+    // The hold's own grace timer is what bounds this join of the coalesced
+    // read (see `within`), so this await is never a bare one.
     const fetched = await fetchCoalesced(session);
-    if (fetched) return view(fetched, false);
+    if (fetched) { trace.src = 'fetch'; return view(fetched, false); }
     const old = memoryRead(session, STALE_MS) || await cacheRead('stale', session);
-    return old ? view(old, true) : UNAVAILABLE_VIEW;
+    if (old) { trace.src = 'stale'; return view(old, true); }
+    trace.src = 'none';
+    return UNAVAILABLE_VIEW;
   }
 
   /** One iteration of an examinee's held poll. */
-  function holdLook(session, kind, idNumber, tokenHex, clientFp) {
+  function holdLook(session, kind, idNumber, tokenHex, clientFp, trace) {
     return lookAtNewest(session, clientFp,
-      (snapshot, stale) => evaluate(kind, snapshot, idNumber, tokenHex, stale));
+      (snapshot, stale) => evaluate(kind, snapshot, idNumber, tokenHex, stale), trace);
   }
 
   /** One iteration of an examiner's held watch — same order, session view. */
-  function holdLookSession(session, clientFp) {
-    return lookAtNewest(session, clientFp, sessionView);
+  function holdLookSession(session, clientFp, trace) {
+    return lookAtNewest(session, clientFp, sessionView, trace);
   }
 
   /**
@@ -1014,11 +1138,16 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
    * view `{ answer, fp, holdable }`. Returns `{ view, held }`; a view that is
    * not holdable, an empty `clientFp` or a `wait` of 0 answers at once with
    * held = 0, which is what a client that must pace itself has to be told.
+   *
+   * `startedAt`/`deadline` belong to the REQUEST, not to the hold: the first
+   * look has already spent part of that budget (22/09 — before this, a slow
+   * first look and a full hold added up to 45 s of wall time). What this
+   * guarantees is `first look + hold ≤ wait + HOLD_GRACE_MS`, always, and
+   * `held` is measured from the request's own start so that it is the number
+   * the client sees on its stopwatch.
    */
-  async function holdUntilChanged({ session, view, clientFp, waitMs, ctx, look }) {
+  async function holdUntilChanged({ session, view, clientFp, waitMs, startedAt, deadline, ctx, look }) {
     if (!(waitMs && clientFp && view.holdable && view.fp === clientFp)) return { view: view, held: 0 };
-    const start = clock();
-    const deadline = start + waitMs;
     for (let step = 0; step < HOLD_MAX_STEPS && clock() < deadline; step++) {
       await waitForChange(session, Math.min(HOLD_TICK_MS, deadline - clock()));
       // The look may open an upstream read, so it races what is left of the
@@ -1026,9 +1155,8 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
       // and answered 10 s later would otherwise hold the request past the
       // client's own 40 s abort: a slow Google must never turn a held poll
       // into a client-side communication failure.
-      const grace = Math.max(0, deadline - clock()) + HOLD_GRACE_MS;
       const pending = look(clientFp);
-      const next = await Promise.race([pending, nap(grace).then(() => HOLD_TIMED_OUT)]);
+      const next = await within(Math.max(0, deadline - clock()) + HOLD_GRACE_MS, pending);
       if (next === HOLD_TIMED_OUT) {
         // Abandoned, not cancelled. The read is coalesced, so letting it
         // finish lands the snapshot in memory and in caches.default for the
@@ -1036,14 +1164,13 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
         // the runtime may kill it together with this response and the next
         // one pays for the same read again. The answer is the view we already
         // had - same fp, so the client just asks again.
-        const abandoned = pending.catch(() => { /* a late failure is no longer ours */ });
-        if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(abandoned);
+        abandon(pending, ctx);
         break;
       }
       view = next;
       if (!view.holdable || view.fp !== clientFp) break;
     }
-    return { view: view, held: Math.max(0, clock() - start) };
+    return { view: view, held: Math.max(0, clock() - startedAt) };
   }
 
   /**
@@ -1058,6 +1185,7 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
    * code park a request and buy one upstream read per 2 s with it.
    */
   async function watch(request, url, ctx) {
+    const startedAt = clock();
     if (!(await verifyGrant(url.searchParams.get('grant'), ['examiner']))) {
       return jsonResponse(request, GRANT_INVALID, 403);
     }
@@ -1066,23 +1194,47 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
 
     const clientFp = param(url, 'fp');
     const waitMs = waitMillis(url.searchParams.get('wait'));
+    // ONE budget for the whole request — the first look and the hold share it.
+    const deadline = startedAt + (waitMs || FIRST_LOOK_MAX_MS);
+    const trace = { src: 'none', late: 0 };
 
     // No `provisional` re-read here, unlike firstLook: an empty session is not
     // a mistake to correct, it is the normal state before the first examinee
     // registers — and `s:none` is held until that registration wakes it.
-    const loaded = await loadSnapshot(session, false);
+    const loaded = await loadSnapshot(session, false, deadline, ctx, trace);
     const first = loaded.ok ? await sessionView(loaded.snapshot, loaded.stale) : UNAVAILABLE_VIEW;
+    const firstLookMs = Math.max(0, clock() - startedAt);
     const held = await holdUntilChanged({
-      session: session, view: first, clientFp: clientFp, waitMs: waitMs, ctx: ctx,
-      look: fp => holdLookSession(session, fp)
+      session: session, view: first, clientFp: clientFp, waitMs: waitMs,
+      startedAt: startedAt, deadline: deadline, ctx: ctx,
+      look: fp => holdLookSession(session, fp, trace)
     });
+    trace.fl = firstLookMs;
+    logAnswer('watch', session, trace, held.view.fp, held.held, { rows: held.view.answer.rows });
     // `status` leads, then the two long-poll fields, then the view's own body
     // (whose `status` re-states the same value and keeps that first place).
     return jsonResponse(request,
       Object.assign({ status: 'ok', fp: held.view.fp, held: held.held | 0 }, held.view.answer));
   }
 
+  /**
+   * One line per answered watch/poll, so the next `wrangler tail` explains
+   * itself: WHERE the answered view came from, which fingerprint it carries,
+   * how long the first look took, and what the last upstream read of that
+   * session cost and produced. That is the whole diagnosis of a fingerprint
+   * that moves without a write — `fp` different from `usfp` means a copy of
+   * another shape is alive beside the one Google last gave us.
+   */
+  function logAnswer(route, session, trace, fp, held, extra) {
+    const last = lastUpstream.get(session) || {};
+    emit(JSON.stringify(Object.assign({
+      r: route, s: session, src: trace.src, fp: fp, held: held | 0,
+      fl: trace.fl | 0, late: trace.late | 0, up: last.ms | 0, usfp: last.sfp || ''
+    }, extra)));
+  }
+
   async function poll(request, url, ctx) {
+    const startedAt = clock();
     const kind = url.searchParams.get('kind') || '';
     const session = String(url.searchParams.get('sessionCode') || '').trim();
     const rawId = url.searchParams.get('idNumber') || '';
@@ -1112,16 +1264,24 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
 
     const idNumber = normalizeId(rawId);
     const tokenHex = token ? await sha256Hex(token) : '';
-    const first = await firstLook(session, kind, idNumber, tokenHex);
+    // ONE budget for the whole request — the first look and the hold share it,
+    // and a request that sends no `wait` still gets a bound on its first look.
+    const deadline = startedAt + (waitMs || FIRST_LOOK_MAX_MS);
+    const trace = { src: 'none', late: 0 };
+    const first = await firstLook(session, kind, idNumber, tokenHex, deadline, ctx, trace);
+    const firstLookMs = Math.max(0, clock() - startedAt);
 
     // The hold. Only while the answer is EXACTLY the one the client already
     // has: a changed answer, a stale copy, a dead upstream and a token error
     // all return at once. Each iteration re-evaluates and either answers or
     // parks again, until the deadline or the step guard.
     const held = await holdUntilChanged({
-      session: session, view: first, clientFp: clientFp, waitMs: waitMs, ctx: ctx,
-      look: fp => holdLook(session, kind, idNumber, tokenHex, fp)
+      session: session, view: first, clientFp: clientFp, waitMs: waitMs,
+      startedAt: startedAt, deadline: deadline, ctx: ctx,
+      look: fp => holdLook(session, kind, idNumber, tokenHex, fp, trace)
     });
+    trace.fl = firstLookMs;
+    logAnswer('poll', session, trace, held.view.fp, held.held, { k: kind });
     return reply(held.view.answer, held.view.fp, held.held);
   }
 
@@ -1140,8 +1300,14 @@ export function createGateway({ fetch, caches, now, env, sleep }) {
       return jsonResponse(request, { status: 'error', message: 'method not allowed' }, 405);
     }
     if (url.pathname === '/' || url.pathname === '') {
+      // `bankBuild()` is a promise shared by the whole isolate, so this join
+      // gets its own timer like every other one (see `within`) — the watchdog
+      // must never be told the Worker is down because the runtime cancelled a
+      // health check that was waiting on another request's asset read.
+      const build = await within(5000, bankBuild());
       return jsonResponse(request, {
-        status: 'ok', service: 'session-gateway', build: BUILD, bank: await bankBuild()
+        status: 'ok', service: 'session-gateway', build: BUILD,
+        bank: build === HOLD_TIMED_OUT ? '' : build
       });
     }
     if (url.pathname === '/v1/poll') return poll(request, url, ctx);
