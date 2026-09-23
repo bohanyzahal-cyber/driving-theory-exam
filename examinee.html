@@ -353,6 +353,7 @@
         <h2>ממתין לאישור הבוחן...</h2>
         <p class="muted">הבוחן יאשר את הכניסה שלך. אנא המתן.</p>
         <p id="regStatus" style="display:none; margin:10px auto 0; max-width:500px; padding:10px 14px; background:#eff6ff; border:1px solid #93c5fd; border-radius:10px; color:#1e3a5f; font-size:14px; font-weight:600; line-height:1.5;"></p>
+        <p id="gwStatus" style="display:none; margin:10px auto 0; max-width:500px; padding:10px 14px; background:#f0fdf4; border:1px solid #86efac; border-radius:10px; color:#14532d; font-size:14px; font-weight:600; line-height:1.5;"></p>
         <div style="margin:18px auto 0; max-width:500px; padding:14px 18px; background:#fef3c7; border:2px solid #f59e0b; border-radius:12px; color:#92400e; font-size:14px; font-weight:600; line-height:1.5;">
           ⚠️ <strong>חשוב:</strong> אל תסגור את הדף הזה ואל תעבור לטאב אחר.<br>
           <span style="font-weight:400; font-size:13px;">המתן כאן עד שהבוחן יאשר. תקבל צליל והודעה ברגע האישור.</span>
@@ -572,6 +573,21 @@
   function isPhone()   { return getDeviceClass() === 'phone'; }
   function isTablet()  { return getDeviceClass() === 'tablet'; }
   function isDesktop() { return getDeviceClass() === 'desktop'; }
+  // iPhone / iPod: iOS has no split screen, Split View or Slide Over on a phone
+  // (iPad only). On an iPhone a "small" viewport is Safari page zoom (aA menu /
+  // Settings > Safari > Page Zoom shrink innerWidth/innerHeight in CSS px while
+  // screen.* stays), pinch-zoom, rotation or the toolbar - never a second app.
+  // Leaving Safari is still caught by visibilitychange (onTabSwitch). 23/09/2026.
+  function isIPhone() {
+    try {
+      if (/iPhone|iPod/i.test(navigator.userAgent || '')) return true;
+      // "Request Desktop Website" makes an iPhone say Macintosh, like an iPad;
+      // what gives it away is a touch screen narrower than any iPad (744+ pt).
+      return navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1 &&
+        Math.min(Number(screen.width) || 0, Number(screen.height) || 0) > 0 &&
+        Math.min(Number(screen.width) || 0, Number(screen.height) || 0) < 600;
+    } catch (e) { return false; }
+  }
   function isMobileDevice() {
     // Backward-compat: every call site that gates on "mobile" wants the
     // lenient settings, which apply equally to phones and tablets.
@@ -851,6 +867,18 @@
   UI_STRINGS['es'].startWaitToken = 'Esperando la confirmación del servidor… (el examen se abrirá automáticamente)';
   UI_STRINGS['am'].startWaitToken = 'ከአገልጋዩ የምዝገባ ማረጋገጫ በመጠበቅ ላይ… (ፈተናው በራሱ ይከፈታል)';
 
+  // r33 (24/09/2026): this phone could not reach the exam server (the Worker) and
+  // is working through Google instead — see "Google fallback" below. Said so the
+  // examinee does not start reloading, and so the examiner walking the room can
+  // tell a slow-but-working phone from a stuck one.
+  UI_STRINGS['he'].gwFallback = '📡 הטלפון לא מצליח להגיע לשרת המבחן, ולכן עבר אוטומטית לחיבור חלופי דרך Google. זה תקין — האישור של הבוחן יגיע תוך כ-15 שניות. אין צורך לרענן את הדף.';
+  UI_STRINGS['ru'].gwFallback = '📡 Телефон не может связаться с сервером экзамена, поэтому автоматически работает через Google. Это нормально — одобрение экзаменатора придёт примерно через 15 секунд. Не обновляйте страницу.';
+  UI_STRINGS['en'].gwFallback = "📡 This phone can't reach the exam server, so it switched automatically to a backup route through Google. That's fine — the examiner's approval will arrive within about 15 seconds. No need to refresh.";
+  UI_STRINGS['ar'].gwFallback = '📡 الهاتف لا يستطيع الوصول إلى خادم الامتحان، لذلك انتقل تلقائيًا إلى مسار بديل عبر Google. هذا طبيعي — ستصل موافقة الفاحص خلال نحو 15 ثانية. لا حاجة لتحديث الصفحة.';
+  UI_STRINGS['fr'].gwFallback = "📡 Ce téléphone n'arrive pas à joindre le serveur de l'examen : il passe automatiquement par une voie de secours via Google. C'est normal — l'approbation de l'examinateur arrivera en 15 secondes environ. Inutile de recharger la page.";
+  UI_STRINGS['es'].gwFallback = '📡 Este teléfono no logra conectarse al servidor del examen, así que pasó automáticamente a una ruta alternativa a través de Google. Es normal: la aprobación del examinador llegará en unos 15 segundos. No hace falta recargar la página.';
+  UI_STRINGS['am'].gwFallback = '📡 ስልኩ ወደ ፈተና አገልጋዩ መድረስ አልቻለም፣ ስለዚህ በራስ-ሰር በGoogle በኩል በአማራጭ መንገድ ይሰራል። ይህ ችግር የለውም — የፈታኙ ፈቃድ በ15 ሰከንድ ገደማ ውስጥ ይደርሳል። ገጹን ማደስ አያስፈልግም።';
+
   function applyUITranslations() {
     var lang = getExamLang();
     var isRTL = (lang === 'he' || lang === 'ar');
@@ -934,6 +962,7 @@
     // state (a key, not text), so switching language never freezes them.
     renderRegStatus();
     renderStartWaitNote();
+    renderGatewayStatus();   // r33: the "working through Google" line, same rule
 
     // Change selection link (instructions)
     var changeInstr = document.getElementById('changeSelectionInstructions');
@@ -1296,20 +1325,23 @@
 
   // ========== Session gateway ==========
   // The Cloudflare Worker named by getSessionInfo is THE route for this page's
-  // two polls. There is no second one: 40 waiting examinees cost ONE upstream
-  // call per session instead of 480 Apps Script executions a minute, and the
-  // page never gives that up — sending the fleet straight at Google is exactly
-  // the storm the gateway exists to prevent, and it is worst precisely when
-  // things are already going wrong. An {status:'error', code:'upstream_unavailable'}
-  // JSON is a normal failed poll: Google is busy BEHIND the Worker.
+  // two polls whenever this phone can reach it: 40 waiting examinees cost ONE
+  // upstream call per session instead of 480 Apps Script executions a minute,
+  // and a phone that reaches the Worker never gives that up — sending the fleet
+  // straight at Google is exactly the storm the gateway exists to prevent. An
+  // {status:'error', code:'upstream_unavailable'} JSON is a normal failed poll:
+  // the Worker answered, Google is busy BEHIND it, and nothing changes route.
   //
   // A Worker that does not answer at all (timeout / network / 5xx / non-JSON) is
   // retried by the poll loop on its own ladder — x1.5 per failure up to maxMs
   // (20 s); it never touches the transport's backend-health state, so a Worker
-  // hiccup cannot slow the submit path or push polls to the degraded floor — and
-  // the waiting screen raises its error banner after three failed polls. The
-  // loop never dies. A Cloudflare outage is handled operationally (roll back to
-  // the previous release), not by this page.
+  // hiccup cannot slow the submit path or push polls to the degraded floor.
+  // Since r33 (24/09/2026) a phone that fails the Worker GW_FAILS_TO_FALLBACK
+  // times in a row (or fails the probe at the code screen) is NOT left there:
+  // on 23/09 phones that could never reach the Worker at all sat on the waiting
+  // screen for an hour while Google answered them fine. It falls back to Google
+  // at a slow, bounded cadence — see "Google fallback" below — and comes back
+  // to the Worker the moment the Worker's front door answers it again.
   //
   // Since r30 the server refuses to start an exam without GATEWAY_URL, so a
   // session that names no gateway is a misconfigured deployment; the code screen
@@ -1368,21 +1400,21 @@
     return url;
   }
   var approvalRoute = null, statusRoute = null;
-  // One route, always the Worker. A rejection is handed straight back to the
-  // poll loop, which backs off exactly as it does for any failed poll — there is
-  // nowhere else to send it, and retrying the Worker is the correct answer to a
-  // Worker that is briefly unwell.
+  // The Worker first, always. A rejection is handed straight back to the poll
+  // loop, which backs off exactly as it does for any failed poll; a run of them
+  // (noteGatewayFailure) moves this phone to the Google fallback below.
   function pollRoute(kind) {
     return function(args) {
       var noWait = !!(args && args.noWait);
+      if (inGoogleMode()) return googleRoute(kind, noWait);
       // fetchJsonQuiet, not fetchJsonWithTimeout: the Worker is not the exam
       // backend. A Worker 5xx/timeout must not mark Apps Script "degraded" —
       // that would push the submit path and every poll to the 30-60 s floor
       // for a hiccup on a different service. The loop's own ladder is enough.
       return ExamTransport.fetchJsonQuiet(gatewayPollUrl(kind, noWait), { cache: 'no-store' },
           noWait ? POLL_TIMEOUT_MS : LONGPOLL_TIMEOUT_MS)
-        .then(function(data) { rememberPollFp(kind, data); return data; }, function(err) {
-          if (gatewayFailureCounts(err)) throw err;
+        .then(function(data) { noteGatewayOk(); rememberPollFp(kind, data); return data; }, function(err) {
+          if (gatewayFailureCounts(err)) { noteGatewayFailure(err, kind); throw err; }
           // Neither news nor a fault: the loop backs off one step like any
           // failed poll and the screen says nothing. The fingerprint goes with
           // it, so the next poll asks without one and is answered at once.
@@ -1394,7 +1426,8 @@
   }
   // opts.noWait = true for the one-off calls a person is waiting for on screen
   // (the timer-expiry extension check, the restore verification): they must be
-  // answered immediately, never held.
+  // answered immediately, never held — and, in the fallback, never made to wait
+  // out the Google gap either.
   function approvalPollCall(opts) {
     if (!approvalRoute) approvalRoute = pollRoute('approval');
     return approvalRoute(opts);
@@ -1406,6 +1439,258 @@
   // A new session code comes with its own gateway url, and a fingerprint only
   // means anything for the session it was issued in.
   function resetPollRoutes() { approvalRoute = null; statusRoute = null; resetPollFps(); }
+
+  // ----- Google fallback (r33, 24/09/2026 — KNOWN_ISSUES #38) -----
+  // WHY: on 23/09 at least 13 examinees at three sites registered through Google
+  // but never got ONE request through to the Worker. The approvals the examiner
+  // pressed — up to five times for the same examinee — could not reach them, and
+  // the big site ended the morning on paper. None of those requests appears in
+  // the Worker's log, so something between the phone and the Worker refused them
+  // (Cloudflare in front of workers.dev is the prime suspect, and its owner can
+  // neither see nor change what it blocks there), while Google, on the same
+  // phone at the same moment, answered. So a phone that cannot reach the Worker
+  // now asks Google for what the Worker only ever stood in for:
+  //   approval / DQ-overturn wait     -> checkApproval (Apps Script, same answer shape)
+  //   in-exam status / submit confirm -> getExamStatus
+  //   question texts                  -> bankRelay: our server fetches the SAME
+  //                                      /v1/bank answer with the SAME grant,
+  //                                      server to server (loadExamTexts)
+  // Bounded so that it can never become the storm the gateway exists to prevent:
+  // one Google request per GOOGLE_GAP_MS per kind per phone, and only on the
+  // phones that failed the Worker — every other phone stays on it. A phone in the
+  // fallback knocks on the Worker's front door (GET /, which never touches
+  // Google) after a minute, then two, four… up to five, and goes back the moment
+  // it is let in. The phone says so on the waiting screen (gwStatus) and to the
+  // server (reportGateway / the registration's gwDiag), where the examiner sees a
+  // '📡' badge on the row and we finally get the device's side of the story.
+  var GW_WORKER = 'worker', GW_GOOGLE = 'google';
+  var gwMode = GW_WORKER;
+  var gwFailStreak = 0;                   // consecutive counted Worker failures
+  var GW_FAILS_TO_FALLBACK = 3;           // one or two lost answers are a bad cell, not a blocked route
+  var gwEverOk = false;                   // this page has had at least one Worker answer
+  var gwFallbacks = 0;                    // how many times this page fell back (backs the re-probe off)
+  var GW_PROBE_TIMEOUT_MS = 8000;
+  var GW_REPROBE_BASE_MS = 60000, GW_REPROBE_MAX_MS = 300000;
+  var gwReprobeTimer = null;
+  var gwProbeGen = 0;                     // a newer probe (new session code) makes older answers moot
+  var gwLastProbeErr = null;
+  var gwDiagPending = '';                 // the diagnosis the registration / next report carries
+  var gwReportedFor = '';                 // the token whose row already says '📡'
+  var GOOGLE_GAP_MS = { approval: 12000, status: 20000 };
+  var googleLastAt = {};
+  var GW_STATE_KEY = 'ext_gw_mode';       // sessionStorage: survives a reload of this tab
+  var GW_STATE_MAX_AGE_MS = 3 * 3600 * 1000;
+
+  function inGoogleMode() { return gwMode === GW_GOOGLE; }
+
+  // Same answer shapes as the Worker's poll (the Worker was built to stand in for
+  // exactly these two actions), without a fingerprint — so nothing re-arms at
+  // 250 ms, and the per-kind gap is what paces every loop that comes through
+  // here: approval, DQ-overturn wait, in-exam status, submit confirmation.
+  function googleRoute(kind, noWait) {
+    var action = kind === 'approval' ? 'checkApproval' : 'getExamStatus';
+    var last = googleLastAt[kind] || 0;
+    var wait = (noWait || !last) ? 0 : Math.max(0, last + (GOOGLE_GAP_MS[kind] || 15000) - Date.now());
+    return new Promise(function(resolve) { setTimeout(resolve, wait); }).then(function() {
+      googleLastAt[kind] = Date.now();
+      return apiGet({ action: action, sessionCode: sessionCode,
+        idNumber: (examineeData && examineeData.idNumber) || '', examineeToken: examineeToken || '' },
+        noWait ? POLL_TIMEOUT_MS : API_TIMEOUT_MS);
+    });
+  }
+
+  function noteGatewayOk() { gwFailStreak = 0; gwEverOk = true; }
+  function noteGatewayFailure(err, what) {
+    gwFailStreak++;
+    if (gwFailStreak >= GW_FAILS_TO_FALLBACK) {
+      enterGoogleMode(what || 'poll', err, 'n=' + gwFailStreak + '|ever=' + (gwEverOk ? 1 : 0));
+    }
+  }
+
+  // A short description of this device and of how the Worker failed it, for the
+  // server's diagnostics sheet. No personal data: OS + browser version only.
+  function gwDiagString(why, err, extra) {
+    var ua = '';
+    try { ua = String(navigator.userAgent || ''); } catch (e) {}
+    var os = /(iPhone OS [\d_]+|iPad; CPU OS [\d_]+|Android [\d.]+|Windows NT [\d.]+|Mac OS X [\d_]+)/.exec(ua);
+    var br = /(CriOS|FxiOS|EdgiOS|SamsungBrowser|GSA|Instagram|FBAV|Edg|OPR|Chrome|Firefox)\/[\d.]+|Version\/[\d.]+/.exec(ua);
+    var parts = ['v1', 'why=' + why];
+    if (err) {
+      parts.push('e=' + String(err.name || 'Error') + ':' + String(err.message || '').slice(0, 40));
+      parts.push('t=' + String(err.transport || ''));
+    }
+    if (extra) parts.push(extra);
+    parts.push('os=' + (os ? os[1].replace(/\s+/g, '') : '?'));
+    parts.push('br=' + (br ? br[0] : '?'));
+    try { parts.push('on=' + (navigator.onLine === false ? '0' : '1')); } catch (e) {}
+    return parts.join('|').replace(/[^\x20-\x7E]/g, '').slice(0, 300);
+  }
+
+  function enterGoogleMode(why, err, extra) {
+    if (inGoogleMode()) return;
+    gwMode = GW_GOOGLE;
+    gwFailStreak = 0;
+    gwFallbacks++;
+    gwReprobeFails = 0;
+    resetPollFps();                        // the Worker's fingerprints mean nothing to Google
+    var diag = gwDiagString(why, err, extra);
+    logEvent('gw_fallback', diag);
+    saveGatewayState();
+    // The failures that brought us here were the Worker's; the new route starts
+    // with a clean slate, and the red banner gives way to the green line.
+    approvalFailCount = 0;
+    var errBanner = document.getElementById('approvalError');
+    if (errBanner) errBanner.style.display = 'none';
+    renderGatewayStatus();
+    reportGatewayMode(GW_GOOGLE, diag);
+    scheduleGatewayReprobe();
+  }
+
+  function leaveGoogleMode(why) {
+    if (!inGoogleMode()) return;
+    gwMode = GW_WORKER;
+    gwFailStreak = 0;
+    gwReprobeFails = 0;
+    resetPollFps();
+    if (gwReprobeTimer) { clearTimeout(gwReprobeTimer); gwReprobeTimer = null; }
+    logEvent('gw_back', why);
+    saveGatewayState();
+    renderGatewayStatus();
+    reportGatewayMode(GW_WORKER, gwDiagString(why));
+  }
+
+  // A new session code: whatever this page learned belongs to the old one.
+  function resetGatewayState() {
+    gwProbeGen++;
+    if (gwReprobeTimer) { clearTimeout(gwReprobeTimer); gwReprobeTimer = null; }
+    gwMode = GW_WORKER; gwFailStreak = 0; gwEverOk = false; gwFallbacks = 0; gwReprobeFails = 0;
+    gwLastProbeErr = null; gwDiagPending = ''; gwReportedFor = ''; googleLastAt = {};
+    renderGatewayStatus();
+  }
+
+  // Before the registration exists there is no row to write on, so the
+  // diagnosis rides with the registration itself (gwDiag); after, it is its own
+  // fire-and-forget call. Either way the row gets its '📡' once per token.
+  function reportGatewayMode(mode, diag) {
+    gwDiagPending = mode === GW_GOOGLE ? diag : '';
+    var id = examineeData && examineeData.idNumber;
+    if (!sessionCode || !id || !examineeToken) return;
+    if (mode === GW_GOOGLE && gwReportedFor === examineeToken) return;
+    gwReportedFor = mode === GW_GOOGLE ? examineeToken : '';
+    try {
+      apiPostNoWait({ action: 'reportGateway', sessionCode: sessionCode, idNumber: id,
+        examineeToken: examineeToken, mode: mode, diag: diag });
+    } catch (e) {}
+  }
+
+  // The Worker's front door: GET / answers from the Worker alone (a build stamp),
+  // never from Google, so knocking on it costs nobody anything.
+  function probeGatewayOnce() {
+    var base = gatewayUrl().replace(/\/+$/, '');
+    if (!base) return Promise.resolve(false);
+    return ExamTransport.fetchJsonQuiet(base + '/', { cache: 'no-store' }, GW_PROBE_TIMEOUT_MS).then(function(data) {
+      return !!(data && data.status === 'ok');
+    }, function(err) { gwLastProbeErr = err; return false; });
+  }
+
+  // What answered, when the front door did not? A no-cors request to Cloudflare's
+  // own trace page resolves when SOMETHING at the Worker's address answered (a
+  // block or challenge page has no CORS headers, so the real probe could not read
+  // it) and rejects when nothing did (DNS, TLS, no route, a relay that failed).
+  function traceProbe() {
+    var base = gatewayUrl().replace(/\/+$/, '');
+    return new Promise(function(resolve) {
+      var done = false;
+      function finish(v) { if (!done) { done = true; resolve(v); } }
+      setTimeout(function() { finish('timeout'); }, GW_PROBE_TIMEOUT_MS);
+      try {
+        fetch(base + '/cdn-cgi/trace', { mode: 'no-cors', cache: 'no-store' })
+          .then(function() { finish('answered'); }, function() { finish('none'); });
+      } catch (e) { finish('none'); }
+    });
+  }
+
+  // Runs in the background from the moment the session code is accepted, while
+  // the examinee types their details — so by the time they press "הירשם" this
+  // phone already knows its route. Two knocks, 1.5 s apart: one lost packet on a
+  // weak cell is not a verdict.
+  function probeGatewayAtStart() {
+    var myGen = ++gwProbeGen;
+    var started = Date.now();
+    // "?gw=google" in the link sends this phone straight to the fallback: for a
+    // rehearsal of the Google route on a phone that CAN reach the Worker, and for
+    // the examiner who already knows a phone cannot (a second QR / link).
+    if (gatewayForcedToGoogle()) { enterGoogleMode('forced'); return; }
+    probeGatewayOnce().then(function(ok) {
+      if (myGen !== gwProbeGen) return;
+      if (ok) { noteGatewayOk(); return; }
+      setTimeout(function() {
+        if (myGen !== gwProbeGen) return;
+        probeGatewayOnce().then(function(ok2) {
+          if (myGen !== gwProbeGen) return;
+          if (ok2) { noteGatewayOk(); return; }
+          if (inGoogleMode()) return;     // the polls got there first
+          traceProbe().then(function(trace) {
+            if (myGen !== gwProbeGen || inGoogleMode()) return;
+            enterGoogleMode('probe', gwLastProbeErr, 'ms=' + (Date.now() - started) + '|trace=' + trace);
+          });
+        });
+      }, 1500);
+    });
+  }
+
+  // A minute, then two, four… capped at five: every failed knock and every
+  // earlier fall-back on this page doubles the wait, so a phone that keeps being
+  // let in and thrown out again (a Worker whose front door answers while its
+  // polls die) spends its time on the route that works for it.
+  var gwReprobeFails = 0;
+  function gatewayForcedToGoogle() {
+    try { return String(new URLSearchParams(window.location.search || '').get('gw') || '').toLowerCase() === 'google'; }
+    catch (e) { return false; }
+  }
+
+  function scheduleGatewayReprobe() {
+    if (gatewayForcedToGoogle()) return;   // a forced fallback stays put for this page
+    if (gwReprobeTimer) clearTimeout(gwReprobeTimer);
+    var steps = Math.max(0, gwFallbacks - 1) + gwReprobeFails;
+    var ms = Math.min(GW_REPROBE_BASE_MS * Math.pow(2, steps), GW_REPROBE_MAX_MS);
+    var myGen = gwProbeGen;
+    gwReprobeTimer = setTimeout(function() {
+      gwReprobeTimer = null;
+      if (myGen !== gwProbeGen || !inGoogleMode()) return;
+      probeGatewayOnce().then(function(ok) {
+        if (myGen !== gwProbeGen || !inGoogleMode()) return;
+        if (ok) { leaveGoogleMode('reprobe'); return; }
+        gwReprobeFails++;
+        scheduleGatewayReprobe();
+      });
+    }, ms);
+  }
+
+  // One tab, one session: a reload in the middle of an exam must not send a phone
+  // that could not reach the Worker back to knocking on it three times per poll.
+  function saveGatewayState() {
+    try { sessionStorage.setItem(GW_STATE_KEY, JSON.stringify({ code: sessionCode, mode: gwMode, n: gwFallbacks, at: Date.now() })); } catch (e) {}
+  }
+  function restoreGatewayState() {
+    var saved = null;
+    try { saved = JSON.parse(sessionStorage.getItem(GW_STATE_KEY) || 'null'); } catch (e) { saved = null; }
+    if (!saved || saved.code !== sessionCode || saved.mode !== GW_GOOGLE) return;
+    if (!(Date.now() - Number(saved.at || 0) < GW_STATE_MAX_AGE_MS)) return;
+    gwMode = GW_GOOGLE;
+    gwFallbacks = Math.max(1, Number(saved.n) || 1);
+    gwDiagPending = gwDiagString('restored');
+    logEvent('gw_restored', gwFallbacks);
+    renderGatewayStatus();
+    scheduleGatewayReprobe();
+  }
+
+  function renderGatewayStatus() {
+    var el = document.getElementById('gwStatus');
+    if (!el) return;
+    el.textContent = inGoogleMode() ? getUIString('gwFallback') : '';
+    el.style.display = inGoogleMode() ? 'block' : 'none';
+  }
 
   // ----- Pushing OUR OWN writes to the Worker (r31, DESIGN §13.5) -----
   // Until now only the examiner pushed. A submitted result and a "finished on
@@ -1435,6 +1720,10 @@
   // Script write plus slack. Nobody is looking at this timer.
   var NUDGE_AFTER_BEACON_MS = 2000;
   function nudgeGatewayAfterWrite(forSession, forId, forToken) {
+    // A phone in the Google fallback cannot reach the Worker — that is the whole
+    // point of the fallback — so it does not try: the Worker learns of this
+    // phone's writes from the examiner's own pushes and its 45 s safety read.
+    if (inGoogleMode()) return;
     try {
       var base = gatewayUrl();
       var code = forSession || sessionCode;
@@ -1628,6 +1917,10 @@
         sessionCode = code;
         sessionData = data.session;
         resetPollRoutes();   // this session's polls carry their own gateway url and fingerprints
+        // r33: find out now, while the examinee types their details, whether this
+        // phone can reach the Worker at all — in the background, blocking nothing.
+        resetGatewayState();
+        probeGatewayAtStart();
         // Ensure license is string (Google Sheets may return number for "1")
         sessionData.license = String(sessionData.license || 'B');
         // Save original session language/license as default (for resetForNextExaminee)
@@ -1848,6 +2141,7 @@
     // attempt: a screen plugged in while Google was slow still counts.
     var hasExtendedScreen = false;
     try { hasExtendedScreen = !!(screen && screen.isExtended); } catch (e) {}
+    var carriedGw = inGoogleMode();   // r33: does THIS attempt carry the fallback diagnosis?
 
     apiGet({
       action: 'registerExaminee',
@@ -1861,10 +2155,13 @@
       license: examineeData.license,
       audioMode: sessionData.audioMode || 'off',
       hasExtendedScreen: hasExtendedScreen ? '1' : '0',
-      regKey: registrationKeyFor(examineeData.idNumber)
+      regKey: registrationKeyFor(examineeData.idNumber),
+      // r33: a phone that already knows it cannot reach the Worker says so with
+      // its registration, so its row carries the '📡' badge from the first moment.
+      gwDiag: inGoogleMode() ? gwDiagPending : undefined
     }, API_TIMEOUT_MS).then(function(data) {
       if (myGen !== registrationGen) return;
-      onRegistrationAnswer(data, myGen);
+      onRegistrationAnswer(data, myGen, carriedGw);
     }, function(err) {
       if (myGen !== registrationGen) return;
       // A timeout, a dropped connection, or Google's own HTML error page where
@@ -1893,11 +2190,18 @@
     }, Math.max(REGISTRATION_RETRY_MS[step], (Number(waitSec) || 0) * 1000));   // never sooner than the server asked
   }
 
-  function onRegistrationAnswer(data, myGen) {
+  function onRegistrationAnswer(data, myGen, carriedGw) {
     if (data && data.status === 'ok') {
       // The row is the server's now, and so is the token — with or without
       // 'resumed', an ok answer to THIS regKey is this device's own row.
       if (data.examineeToken) examineeToken = data.examineeToken;
+      // A fallback that began while this registration was on its way is told
+      // now that there is a row to put it on (once per token — reportGatewayMode).
+      // A row this very attempt created with gwDiag already carries it.
+      if (inGoogleMode()) {
+        if (carriedGw && !data.resumed && data.examineeToken) gwReportedFor = data.examineeToken;
+        else reportGatewayMode(GW_GOOGLE, gwDiagPending || gwDiagString('late'));
+      }
       examineeData.registrationPending = false;
       stopRegistrationLoop();
       saveExamineeState('screenInstructions');
@@ -2103,7 +2407,7 @@
         // a degraded backend must not be answered with reloads (the 16/09 storms)
         showApprovalError(isBackendDegraded()
           ? 'השרת עמוס כרגע — ממשיכים לנסות אוטומטית. אין צורך לרענן את הדף.'
-          : 'בעיית תקשורת עם השרת. נסה לרענן את הדף.');
+          : 'בעיית תקשורת עם השרת — ממשיכים לנסות אוטומטית. אם זה נמשך, עבור למקום עם קליטה טובה יותר או פנה לבוחן.');
       }
       throw err;   // the loop must see the failure and back off
     });
@@ -2289,6 +2593,9 @@
       // back its 250 ms gap as 'paced' in both cases, and the fast window must
       // not slow it back down to 2 s.
       nextDelay: function(info, paced) {
+        // r33: in the Google fallback the route itself keeps one request per
+        // GOOGLE_GAP_MS — asking sooner would only queue behind that gap.
+        if (inGoogleMode()) return Math.max(paced, GOOGLE_GAP_MS.approval);
         if (info.held > 0 || info.rearm) return paced;
         if (info.slow || info.failed || paced > baseMs) return paced;
         return (Date.now() - approvalPollStartedAt) < APPROVAL_FAST_WINDOW_MS ? APPROVAL_GATEWAY_FAST_MS : baseMs;
@@ -2363,13 +2670,39 @@
 
   function loadExamTexts(bankRef) {
     if (!bankRef || !bankRef.grant) return Promise.reject(new Error('no grant'));
-    return QuestionBank.loadGrant(bankRef).then(function(res) {
+    var viaWorker = inGoogleMode() ? Promise.reject(gatewayUnreachableError()) : QuestionBank.loadGrant(bankRef);
+    return viaWorker.catch(function(err) {
+      // r33: the Worker could not be REACHED (or this phone is already in the
+      // Google fallback): our own server fetches the same /v1/bank answer with
+      // the same grant. A Worker that answered and refused (a 403 grant, a 503
+      // bank) is not a route problem — the relay would be refused the same way —
+      // so that failure goes back to the caller exactly as before.
+      var t = err && err.transport;
+      if (!(inGoogleMode() || t === 'network' || t === 'timeout' || t === 'nonjson')) throw err;
+      if (!inGoogleMode()) enterGoogleMode('bank', err);
+      logEvent('bank_via_server', String((err && err.message) || err).slice(0, 60));
+      return loadExamTextsViaServer(bankRef);
+    }).then(function(res) {
       // An id that no language could serve is a blank question. Better to fail
       // the load and try again than to sit an examinee in front of "(שאלה לא זמינה)".
       if (res.missing && res.missing.length) throw new Error('missing ids ' + res.missing.join(','));
       examBank = bankRef;
       logEvent('bank_loaded', res.count + '@' + res.build);
       return res;
+    });
+  }
+  function gatewayUnreachableError() {
+    var e = new Error('gateway unreachable (fallback)');
+    e.transport = 'network';
+    return e;
+  }
+  // bankRelay answers with the Worker's own /v1/bank body (plus relay:true), so it
+  // is ingested by the very code that ingests the Worker's answer.
+  function loadExamTextsViaServer(bankRef) {
+    return apiPost({ action: 'bankRelay', sessionCode: sessionCode, idNumber: examineeData.idNumber,
+      examineeToken: examineeToken, grant: String(bankRef.grant) }, CRITICAL_POST_TIMEOUT_MS).then(function(resp) {
+      if (isOutdatedClientResponse(resp)) throw new Error('server has no bankRelay');
+      return QuestionBank.ingestAnswer(resp);
     });
   }
 
@@ -2860,6 +3193,7 @@
       sessionCode: sessionCode,
       idNumber: examineeData.idNumber,
       dqEventId: currentDQEventId,
+      reason: currentDQReason,
       origin: API_ORIGIN,
       examineeToken: examineeToken
     };
@@ -2876,6 +3210,7 @@
 
   var provisionalDQSent = false;  // true when a provisional DQ was sent (waiting for the grace timer)
   var currentDQEventId = '';      // unique per DQ event, so the server tells a retry from a new attempt
+  var currentDQReason = '';       // which detector fired (split-area, split-resize, zoom-out, hidden, blur, ...)
 
   // Generate a new DQ event ID only if there isn't an active one already.
   // This prevents duplicate IDs when visibilitychange and blur fire simultaneously.
@@ -2951,6 +3286,7 @@
         provisionalDQSent = false;
         newDQEventId();
         try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+        currentDQReason = 'hidden-final';
         sendDQToServer();
       } else {
         // First offense — start grace timer only, do NOT send DQ yet
@@ -2962,6 +3298,7 @@
           tabSwitchDQConfirmed = true;
           tabSwitchGraceTimer = null;
           try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+          currentDQReason = 'hidden-10s';
           sendDQToServer();
         }, TAB_SWITCH_GRACE_MS);
       }
@@ -2978,6 +3315,7 @@
         if (tabSwitchGraceTimer) { clearTimeout(tabSwitchGraceTimer); tabSwitchGraceTimer = null; }
         tabSwitchDQConfirmed = true;
         try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+        currentDQReason = 'hidden-5s';
         sendDQToServer();
         showDQScreen();
       } else if (tabSwitchGraceTimer) {
@@ -3213,6 +3551,7 @@
     tabSwitchDQConfirmed = false;
     tabSwitchWarnings = 0;
     currentDQEventId = '';
+    currentDQReason = '';
     provisionalDQSent = false;
     if (splitScreenBlurTimer) { clearTimeout(splitScreenBlurTimer); splitScreenBlurTimer = null; }
 
@@ -3312,6 +3651,7 @@
       if (isFullscreenActive()) return;
       tabSwitchDQConfirmed = true;
       try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+      currentDQReason = 'fullscreen-exit';
       sendDQToServer();
       showDQScreen();
     }, FULLSCREEN_GRACE_MS);
@@ -3389,6 +3729,7 @@
       tabSwitchDQConfirmed = true;
       newDQEventId();
       try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+      currentDQReason = 'fullscreen-prompt';
       sendDQToServer();
       showDQScreen();
     }, FS_RESUME_DEADLINE_MS);
@@ -3464,7 +3805,7 @@
       // Phones can't be forced into fullscreen, and the relative baseline above is
       // MASKED by a pre-split start — so also run an absolute size-based monitor
       // that compares the viewport to the whole screen (startMobileSplitMonitor).
-      startMobileSplitMonitor();
+      if (!isIPhone()) startMobileSplitMonitor();
     } else {
       // Desktop: baseline = physical screen size. Prevents "register with small window" cheat.
       // Window MUST occupy >= 90% of the screen at all times.
@@ -3477,7 +3818,7 @@
     splitScreenInitVVScale = (window.visualViewport && window.visualViewport.scale) || 1;
     // Capture the immutable original (normal) zoom level once per exam start.
     splitScreenOrigDPR = splitScreenInitDPR;
-    splitScreenOrigVVScale = splitScreenInitVVScale;
+    splitScreenOrigVVScale = Math.min(1, splitScreenInitVVScale);
     if (!splitScreenBound) {
       splitScreenBound = true;
       window.addEventListener('resize', onSplitResize);
@@ -3547,6 +3888,7 @@
     tabSwitchDQConfirmed = true;
     newDQEventId();
     try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+    currentDQReason = 'zoom-out';
     sendDQToServer();
     showDQScreen();
   }
@@ -3597,6 +3939,7 @@
       tabSwitchDQConfirmed = true;
       newDQEventId();
       try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+      currentDQReason = 'split-start';
       sendDQToServer();
       showDQScreen();
     }
@@ -3672,6 +4015,7 @@
           removeMobileSplitPrompt();
           tabSwitchDQConfirmed = true;
           try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+          currentDQReason = 'split-area';
           sendDQToServer();
           showDQScreen();
         }
@@ -3754,6 +4098,7 @@
   function onSplitResize() {
     if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
     if (splitScreenInitW === 0) return;
+    if (isIPhone()) return;   // no split screen on an iPhone - see isIPhone
     // Debounce: wait 500ms after last resize event before checking
     if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
     resizeDebounceTimer = setTimeout(function() {
@@ -3814,6 +4159,7 @@
         tabSwitchDQConfirmed = true;
         newDQEventId();
         try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+        currentDQReason = 'split-resize';
         sendDQToServer();
         showDQScreen();
       }
@@ -3836,6 +4182,7 @@
       provisionalDQSent = false;
       newDQEventId();
       try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+      currentDQReason = 'blur-hidden-final';
       sendDQToServer();
       showDQScreen();
     } else {
@@ -3859,6 +4206,7 @@
           if (document.visibilityState !== 'hidden') { currentDQEventId = ''; return; }
           tabSwitchDQConfirmed = true;
           try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+          currentDQReason = 'blur-hidden-10s';
           sendDQToServer();
           showDQScreen();
         }, TAB_SWITCH_GRACE_MS);
@@ -3881,6 +4229,7 @@
         // onTabSwitch. Same principle as the blur grace-timer (visibility-gated).
         tabSwitchDQConfirmed = true;
         try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
+        currentDQReason = 'blur-hidden-5s';
         sendDQToServer();
         showDQScreen();
       } else if (awayMs < SHORT_BLUR_IGNORE_MS && document.visibilityState === 'visible') {
@@ -5651,6 +6000,7 @@
         sessionCode = saved.sessionCode;
         sessionData = saved.sessionData;
         resetPollRoutes();
+        restoreGatewayState();
         showScreen(sessionCode ? 'screenIdForm' : 'screenCode');
       });
       return;
@@ -5667,6 +6017,7 @@
     // Ensure license is string (Google Sheets may return number for "1")
     if (sessionData.license) sessionData.license = String(sessionData.license);
     resetPollRoutes();          // the restored session may carry a gateway url
+    restoreGatewayState();      // r33: a phone in the Google fallback stays there across a reload
     saveExamineeState(saved.screen);   // this tab now owns the state
 
     // Recovery: if this examinee finished but their result never reached the

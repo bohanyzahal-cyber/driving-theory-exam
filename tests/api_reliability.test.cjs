@@ -261,7 +261,7 @@ test('health&deep=1 times one cell of our own document and reports a failure ins
   const e = runtime();
   const ok = get(e, { action: 'health', deep: '1' });
   assert.equal(ok.status, 'ok');
-  assert.equal(ok.build, '2026-09-23-r32');
+  assert.equal(ok.build, '2026-09-24-r33');
   assert.equal(ok.deep, true);
   assert.equal(ok.indexIds, 1700);
   assert.ok(typeof ok.sheetMs === 'number' && ok.sheetMs >= 0);
@@ -279,7 +279,7 @@ test('health identifies build without Sheets, Drive or private parameters', () =
   e.ctx.getSheet = () => { throw new Error('health must not access Sheets'); };
   const result = get(e, { action: 'health', token: 'DO_NOT_LOG_ME' });
   assert.equal(result.status, 'ok');
-  assert.equal(result.build, '2026-09-23-r32');
+  assert.equal(result.build, '2026-09-24-r33');
   assert.equal(e.logs.length, 2);
   assert.ok(e.logs[0].includes('"phase":"start"'));
   assert.ok(e.logs[1].includes('"phase":"end"'));
@@ -335,17 +335,36 @@ test('a handler that has gone missing answers an error instead of crashing', () 
 const ID = idOf(1);
 const approvalRow = (id, status, over) => pendingRow(id, Object.assign({ 5: status }, over || {}));
 const approvals = rows => runtime({ sheets: { 'ממתינים': [PENDING_HEADER, ...rows] } });
-// The handler is called directly: the API action itself is retired (below).
+// The handler itself; the API action answers exactly the same (test below).
 const checkApproval = (e, id, token) => e.json(e.ctx.handleCheckApproval({ origin: 'examinee-app', sessionCode: SESSION, idNumber: id,
   examineeToken: token === undefined ? 'token-' + id : token }));
+const postJson = (e, body) => e.json(e.ctx.doPost({ postData: { contents: JSON.stringify(Object.assign({ origin: 'examinee-app' }, body)) } }));
 
-test('checkApproval / getExamStatus are retired API actions: an old page is told to reload, never answered', () => {
-  const e = approvals([approvalRow(ID, 'waiting')]);
+// Retired 21/09 (the page polled only through the Worker), served again in r33
+// (24/09, KNOWN_ISSUES #38): they ARE the Google fallback of a phone that
+// cannot reach the Worker. An answer of client_outdated here would put
+// "המערכת מתעדכנת, רענן את הדף" on exactly the phones that most need an answer.
+test('r33: checkApproval / getExamStatus are served again, with the handlers\' own answers and rules', () => {
+  const e = approvals([approvalRow(ID, 'waiting'), approvalRow(idOf(2), 'in_exam', { 11: '2026-09-22T06:10:00Z' })]);
+  const viaApi = get(e, { action: 'checkApproval', sessionCode: SESSION, idNumber: ID, examineeToken: 'token-' + ID });
+  assert.deepEqual(viaApi, { status: 'ok', approval: 'waiting', audioMode: 'off' });
+  assert.deepEqual(viaApi, checkApproval(e, ID), 'the API answers what the handler answers');
+  const status = get(e, { action: 'getExamStatus', sessionCode: SESSION, idNumber: idOf(2), examineeToken: 'token-' + idOf(2) });
+  assert.deepEqual(status, { status: 'ok', examStatus: 'in_exam', extraMinutes: 0 });
+  // The token rule is unchanged: a stale token is refused on both.
+  assert.equal(get(e, { action: 'checkApproval', sessionCode: SESSION, idNumber: ID, examineeToken: 'stale' }).examineeTokenError, 'mismatch');
+  assert.equal(get(e, { action: 'getExamStatus', sessionCode: SESSION, idNumber: idOf(2), examineeToken: 'stale' }).examineeTokenError, 'mismatch');
+  // Still GET only, exactly as before the retirement.
+  assert.match(postJson(e, { action: 'checkApproval', sessionCode: SESSION, idNumber: ID }).message, /דורשת GET/);
+  assert.match(postJson(e, { action: 'getExamStatus', sessionCode: SESSION, idNumber: ID }).message, /דורשת GET/);
   for (const action of ['checkApproval', 'getExamStatus']) {
-    const body = get(e, { action: action, sessionCode: SESSION, idNumber: ID, examineeToken: 'token-' + ID });
-    assert.equal(body.code, 'client_outdated', action);
-    assert.equal(body.approval, undefined, action + ' leaks nothing');
+    assert.equal(e.ctx.apiRegistry()[action].auth, 'none', action + ': the handler enforces its own token rule');
   }
+  // ...and the handlers' own flood limit: 60 a minute per examinee (three polls
+  // above already counted: the API one, the direct one and the stale token).
+  for (let i = 0; i < 57; i++) assert.equal(get(e, { action: 'checkApproval', sessionCode: SESSION, idNumber: ID }).status, 'ok', 'poll ' + i);
+  const limited = get(e, { action: 'checkApproval', sessionCode: SESSION, idNumber: ID });
+  assert.equal(limited.rateLimited, true, 'the 61st poll inside a minute');
 });
 
 test('a live registration outranks every finished row above it', () => {
@@ -709,4 +728,358 @@ test('r32: snapshot results are the dashboard\'s completed list, minus the blob 
   assert.equal(text.indexOf('wrongDetails'), -1);
   assert.equal(text.indexOf('מזהה שאלה'), -1);
   assert.equal(text.indexOf('סגירת דפדפן'), -1);
+});
+
+// ============================================================================
+// r33 (24/09/2026, KNOWN_ISSUES #38): the Google fallback of a phone that
+// cannot reach the Worker. On 23/09 many phones registered through Google and
+// then never made ONE request to the Worker; the page now notices and asks this
+// script instead. The server's part: bankRelay (the texts, fetched from the
+// Worker server to server with the phone's own grant), reportGateway (the '📡'
+// on the examiner's row + the device's own diagnosis), the gwDiag of a
+// registration made in the fallback, the self-DQ reason, and the operator's
+// testGatewayReachability().
+// ============================================================================
+
+// UrlFetchApp is new to the server. This fake records every call and answers
+// from respond(url, opts) — an Error is thrown, as UrlFetchApp throws. A test
+// that must NOT fetch passes no responder.
+function fetchSpy(e, respond) {
+  const calls = [];
+  e.ctx.UrlFetchApp = {
+    fetch(url, opts) {
+      calls.push({ url: String(url), opts });
+      if (!respond) throw new Error('UrlFetchApp must not be called here');
+      const answer = respond(String(url), opts);
+      if (answer instanceof Error) throw answer;
+      return { getResponseCode: () => answer.code, getContentText: () => answer.text };
+    }
+  };
+  return calls;
+}
+// The shape of the Worker's /v1/bank body (tests/contracts.test.cjs takes it
+// from the REAL Worker); Amharic too, so a text survives the relay whole.
+const workerBank = ids => ({ status: 'ok', build: 'bank-test', missing: [],
+  questions: ids.map(id => ({ id, l: { he: { t: 'שאלה ' + id, a: ['א', 'ב', 'ג', 'ד'] }, am: { t: 'ጥያቄ ' + id } } })) });
+const relay = (e, n, grant, extra) => postJson(e, Object.assign({ action: 'bankRelay', sessionCode: SESSION,
+  idNumber: idOf(n), examineeToken: 'token-' + idOf(n), grant }, extra || {}));
+
+test('r33 bankRelay: the Worker\'s answer to the examinee\'s own grant comes back unchanged, plus relay:true', () => {
+  const e = runtime({ ids: [idOf(1)] });
+  const started = startExam(e, 1);
+  assert.equal(started.status, 'ok');
+  const ids = started.questions.map(q => q.id);
+  const calls = fetchSpy(e, () => ({ code: 200, text: JSON.stringify(workerBank(ids)) }));
+  e.logs.length = 0;
+  const relayed = relay(e, 1, started.bank.grant);
+  assert.deepEqual(relayed, Object.assign(workerBank(ids), { relay: true }), 'the Worker body, field for field, and the flag');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, GATEWAY_URL + '/v1/bank?grant=' + encodeURIComponent(started.bank.grant));
+  assert.equal(calls[0].opts.method, 'get');
+  assert.equal(calls[0].opts.muteHttpExceptions, true);
+  assert.equal(calls[0].opts.followRedirects, true);
+  assert.equal(calls[0].opts.headers.Accept, 'application/json');
+  assert.ok(e.logs.length > 0, 'the router logged the request');
+  assert.ok(!e.logs.join('\n').includes(started.bank.grant.split('.')[1]), 'the grant is a credential: never logged');
+  // A GATEWAY_URL saved with trailing slashes still makes one clean URL.
+  e.properties.set('GATEWAY_URL', GATEWAY_URL + '//');
+  assert.equal(relay(e, 1, started.bank.grant).status, 'ok');
+  assert.equal(calls[1].url, GATEWAY_URL + '/v1/bank?grant=' + encodeURIComponent(started.bank.grant));
+});
+
+test('r33 bankRelay: anything but this examinee\'s live exam grant is grant_invalid, and nothing is fetched', () => {
+  const e = runtime({ ids: [idOf(1), idOf(2)] });
+  const mine = startExam(e, 1).bank.grant;
+  const theirs = startExam(e, 2).bank.grant;
+  const calls = fetchSpy(e, null);
+  const sub = SESSION + ':' + idOf(1), exp = NOW + 3600000;
+  const sign = (payload, key) => e.ctx.signBankGrant(payload, key);
+  const forgedPayload = Buffer.from(JSON.stringify({ v: 1, s: 'exam', ids: [1], sub, exp })).toString('base64url');
+  const notJson = Buffer.from('not json at all').toString('base64url');
+  const macOf = text => require('node:crypto').createHmac('sha256', 'secret-key').update(text).digest('base64url');
+  const cases = {
+    'a bad signature': mine.slice(0, -1) + (mine.slice(-1) === 'A' ? 'B' : 'A'),
+    'a payload edited after signing': forgedPayload + '.' + mine.split('.')[1],
+    'another examinee\'s grant (wrong sub)': theirs,
+    'the practice scope, same sub': sign({ v: 1, s: 'practice', ids: [1], sub, exp }),
+    'the examiner scope': sign({ v: 1, s: 'examiner', sub, exp }),
+    'another key': sign({ v: 1, s: 'exam', ids: [1], sub, exp }, 'another-key'),
+    'version 2': sign({ v: 2, s: 'exam', ids: [1], sub, exp }),
+    'no ids': sign({ v: 1, s: 'exam', ids: [], sub, exp }),
+    'a signed payload that is not JSON': notJson + '.' + macOf(notJson),
+    'three parts': mine + '.x',
+    'longer than 4096': mine + 'A'.repeat(4097 - mine.length),
+    'empty': '',
+    'not a string': 12345,
+    'absent': undefined
+  };
+  for (const [label, grant] of Object.entries(cases)) {
+    e.clock.t += 31000;   // ten relays per five minutes: keep the loop under the limit
+    const reply = relay(e, 1, grant);
+    assert.equal(reply.status, 'error', label);
+    assert.equal(reply.code, 'grant_invalid', label);
+    assert.equal(reply.message, 'הרשאת השאלות אינה תקפה — נסה להתחיל שוב', label);
+  }
+  // The examinee's real grant, four hours and a second after it was issued.
+  e.clock.t = NOW + 4 * 3600 * 1000 + 1000;
+  assert.equal(relay(e, 1, mine).code, 'grant_invalid', 'expired');
+  assert.equal(calls.length, 0, 'not one of them reached the Worker');
+});
+
+test('r33 bankRelay: blocked, broken or unreachable is relay_failed, retryable, and never echoes the grant', () => {
+  const e = runtime({ ids: [idOf(1)] });
+  const grant = startExam(e, 1).bank.grant;
+  const cases = [
+    ['Cloudflare 1010, the 23/09 suspect', { code: 403, text: 'error code: 1010' }, 403, 'error code: 1010'],
+    ['a Cloudflare HTML block page', { code: 403, text: '<!DOCTYPE html><html><head><title>Attention Required! | Cloudflare</title></head><body><p>Sorry, you have been blocked</p><span>error code: 1020</span></body></html>' }, 403, 'error code: 1020'],
+    ['HTML where JSON belongs', { code: 200, text: '<html><body>not the Worker</body></html>' }, 200, '<html><body>not the Worker</body></html>'],
+    ['the Worker refusing the grant', { code: 403, text: '{"status":"error","code":"grant_invalid"}' }, 403, '{"status":"error","code":"grant_invalid"}'],
+    ['the Worker without its bank', { code: 503, text: '{"status":"error","code":"bank_unavailable","retryable":true}' }, 503,
+      '{"status":"error","code":"bank_unavailable","retryable":true}'],
+    ['a 200 that is not a bank answer', { code: 200, text: '{"status":"ok","questions":"nope"}' }, 200, '{"status":"ok","questions":"nope"}'],
+    ['an exception that quotes the URL', new Error('Address unavailable: ' + GATEWAY_URL + '/v1/bank?grant=' + grant), 0, null]
+  ];
+  for (const [label, answer, http, detail] of cases) {
+    e.clock.t += 31000;
+    fetchSpy(e, () => answer);
+    const reply = relay(e, 1, grant);
+    assert.equal(reply.status, 'error', label);
+    assert.equal(reply.code, 'relay_failed', label);
+    assert.equal(reply.http, http, label);
+    assert.equal(reply.retryable, true, label);
+    assert.equal(reply.message, 'לא הצלחנו לטעון את השאלות דרך השרת — נסה שוב או פנה לבוחן', label);
+    assert.ok(typeof reply.detail === 'string' && reply.detail.length > 0 && reply.detail.length <= 80, label + ': ' + reply.detail);
+    if (detail !== null) assert.equal(reply.detail, detail, label);
+    for (const piece of grant.split('.')) assert.ok(!reply.detail.includes(piece.slice(0, 16)), label + ': the grant leaked into the detail');
+  }
+});
+
+test('r33 bankRelay: POST only, the examinee token first, then ten per five minutes per examinee', () => {
+  const e = runtime({ ids: [idOf(1), idOf(2)] });
+  const grant1 = startExam(e, 1).bank.grant, grant2 = startExam(e, 2).bank.grant;
+  const calls = fetchSpy(e, () => ({ code: 200, text: JSON.stringify(workerBank([1])) }));
+  assert.equal(get(e, { action: 'bankRelay', sessionCode: SESSION, idNumber: idOf(1), examineeToken: 'token-' + idOf(1),
+    grant: grant1 }).message, 'פעולה זו דורשת POST');
+  assert.equal(relay(e, 1, grant1, { examineeToken: 'stolen' }).examineeTokenError, 'mismatch');
+  assert.equal(relay(e, 1, grant1, { examineeToken: undefined }).examineeTokenError, 'missing');
+  assert.equal(postJson(e, { action: 'bankRelay', sessionCode: SESSION, idNumber: '900000099', examineeToken: 'x',
+    grant: grant1 }).examineeTokenError, 'not_found');
+  assert.equal(calls.length, 0, 'a refused caller fetches nothing');
+  for (let i = 0; i < 10; i++) assert.equal(relay(e, 1, grant1).status, 'ok', 'relay ' + (i + 1));
+  const limited = relay(e, 1, grant1);
+  assert.equal(limited.rateLimited, true);
+  assert.ok(limited.waitSec > 0 && limited.waitSec <= 300, 'waitSec=' + limited.waitSec);
+  assert.equal(calls.length, 10, 'the refused eleventh fetched nothing');
+  assert.equal(relay(e, 2, grant2).status, 'ok', 'another examinee has his own ten');
+  e.clock.t += 301 * 1000;
+  assert.equal(relay(e, 1, grant1).status, 'ok', 'five minutes later the window has moved on');
+  const spec = e.ctx.apiRegistry().bankRelay;
+  assert.equal(spec.methods.join(','), 'POST');
+  assert.equal(spec.auth, 'examinee');
+  assert.equal(spec.rateLimit.max, 10);
+  assert.equal(spec.rateLimit.windowSec, 300);
+  assert.equal(spec.rateLimit.id({ sessionCode: SESSION, idNumber: '1' }), spec.rateLimit.id({ sessionCode: SESSION, idNumber: '000000001' }));
+});
+
+test('r33 bankRelay: without GATEWAY_URL it is the administrator\'s problem; without the key no grant is valid', () => {
+  const e = runtime({ ids: [idOf(1)] });
+  const grant = startExam(e, 1).bank.grant;
+  const calls = fetchSpy(e, null);
+  e.properties.delete('GATEWAY_URL');
+  const unset = relay(e, 1, grant);
+  assert.equal(unset.code, 'bank_not_configured');
+  assert.equal(unset.message, 'מאגר השאלות אינו מוגדר בשרת — פנה למנהל המערכת');
+  e.properties.set('GATEWAY_URL', GATEWAY_URL);
+  e.properties.delete('GATEWAY_KEY');
+  assert.equal(relay(e, 1, grant).code, 'grant_invalid', 'nothing can be verified without the key');
+  assert.equal(calls.length, 0);
+});
+
+const report = (e, n, body) => postJson(e, Object.assign({ action: 'reportGateway', sessionCode: SESSION,
+  idNumber: idOf(n), examineeToken: 'token-' + idOf(n) }, body || {}));
+// What examinee.html gwDiagString sends: no personal data, OS + browser only.
+const GW_DIAG = 'v1|why=probe|e=TypeError:Failed to fetch|t=network|ms=9500|trace=none|os=Android14|br=Chrome/128.0.0.0|on=1';
+const clientRows = e => e.rows('אבחון').filter(r => r[1] === 'CLIENT');
+
+test('r33 reportGateway: column Q says 📡, the warning counter P is never touched, the diagnosis lands in אבחון', () => {
+  const e = runtime({ sheets: { 'ממתינים': [PENDING_HEADER, pendingRow(idOf(1), { 5: 'in_exam', 15: 2, 16: 'יצא מהמסך' })] } });
+  e.resetCounters();
+  assert.deepEqual(report(e, 1, { mode: 'google', diag: GW_DIAG }), { status: 'ok' });
+  const row = () => e.rows('ממתינים')[1];
+  assert.equal(row()[16], '📡 גיבוי גוגל (probe)');
+  assert.equal(row()[15], 2, 'P counts anti-cheat warnings — a gateway report is not one');
+  assert.equal(row()[5], 'in_exam', 'nor is the status touched');
+  const c = e.counters().perSheet['ממתינים'];
+  assert.equal(c.setValues, 1, 'ONE cell written');
+  assert.equal(c.fullReads + c.rangeReads, 1, 'the auth check\'s read, handed forward — no second read');
+  const logged = clientRows(e);
+  assert.equal(logged.length, 1);
+  assert.equal(logged[0][2], SESSION);
+  assert.equal(logged[0][3], idOf(1));
+  assert.deepEqual(JSON.parse(logged[0][6]).map(x => [x.e, x.m, x.d]), [['gw', 'google', GW_DIAG]]);
+
+  // Back on the Worker: the same cell, the other label.
+  assert.deepEqual(report(e, 1, { mode: 'worker', diag: 'v1|why=reprobe|os=Android14' }), { status: 'ok' });
+  assert.equal(row()[16], '📡 חזר ל-Worker (reprobe)');
+  assert.equal(row()[15], 2);
+  // The same report again writes nothing.
+  e.resetCounters();
+  report(e, 1, { mode: 'worker', diag: 'v1|why=reprobe|os=Android14' });
+  assert.equal(e.counters().perSheet['ממתינים'].setValues, 0, 'no write for a cell that already says it');
+});
+
+test('r33 reportGateway: only a live row is marked, and the label is ours — never the device\'s text', () => {
+  const rows = [
+    pendingRow(idOf(1), { 5: 'waiting' }), pendingRow(idOf(2), { 5: 'approved' }), pendingRow(idOf(3), { 5: 'in_exam' }),
+    pendingRow(idOf(4), { 5: 'completed', 16: 'x' }), pendingRow(idOf(5), { 5: 'disqualified', 16: 'פסילה: split-area' })
+  ];
+  const e = runtime({ sheets: { 'ממתינים': [PENDING_HEADER, ...rows] } });
+  for (const n of [1, 2, 3]) {
+    assert.deepEqual(report(e, n, { mode: 'google', diag: 'v1|why=poll' }), { status: 'ok' });
+    assert.equal(e.rows('ממתינים')[n][16], '📡 גיבוי גוגל (poll)', 'status ' + rows[n - 1][5]);
+  }
+  for (const n of [4, 5]) {
+    assert.deepEqual(report(e, n, { mode: 'google', diag: 'v1|why=poll' }), { status: 'ok' }, 'best effort: still ok');
+    assert.equal(e.rows('ממתינים')[n][16], rows[n - 1][16], 'a finished or disqualified row keeps its own line');
+  }
+  // A why that is not a short token is left out; markup never reaches the cell.
+  report(e, 1, { mode: 'google', diag: 'v1|why=<img src=x onerror=alert(1)>' });
+  assert.equal(e.rows('ממתינים')[1][16], '📡 גיבוי גוגל');
+  report(e, 1, { mode: 'google', diag: 'why=' + 'a'.repeat(60) });
+  assert.ok(e.rows('ממתינים')[1][16].length <= 40, e.rows('ממתינים')[1][16]);
+  // An unknown mode writes nothing, and is kept as 'unknown', not as its text.
+  report(e, 2, { mode: 'GOOGLE!!', diag: 'v1|why=odd' });
+  assert.equal(e.rows('ממתינים')[2][16], '📡 גיבוי גוגל (poll)');
+  assert.deepEqual(JSON.parse(clientRows(e).at(-1)[6]).map(x => [x.m, x.d]), [['unknown', 'v1|why=odd']]);
+  // No diagnosis: nothing appended to אבחון, and the label carries no reason.
+  const before = clientRows(e).length;
+  report(e, 3, { mode: 'worker' });
+  assert.equal(e.rows('ממתינים')[3][16], '📡 חזר ל-Worker');
+  assert.equal(clientRows(e).length, before);
+});
+
+test('r33 reportGateway: the diagnosis is cleaned and capped; a wrong token keeps nothing; POST, twenty per ten minutes', () => {
+  const e = runtime({ sheets: { 'ממתינים': [PENDING_HEADER, pendingRow(idOf(1), { 5: 'in_exam' })] } });
+  report(e, 1, { mode: 'google', diag: 'v1|why=probe\r\n\u0007\u202Eevil|' + 'x'.repeat(400) });
+  const kept = JSON.parse(clientRows(e).at(-1)[6])[0].d;
+  assert.ok(kept.length <= 300, 'capped: ' + kept.length);
+  assert.ok(!/[\u0000-\u001F\u007F\u202E]/.test(kept), 'no control or bidi character survives');
+  assert.ok(kept.startsWith('v1|why=probe'), kept.slice(0, 30));
+  const rowsBefore = clientRows(e).length;
+  const refused = report(e, 1, { mode: 'google', diag: 'v1|why=probe', examineeToken: 'stolen' });
+  assert.equal(refused.examineeTokenError, 'mismatch');
+  assert.equal(clientRows(e).length, rowsBefore, 'a caller without the token leaves no trace');
+  assert.match(get(e, { action: 'reportGateway', sessionCode: SESSION, idNumber: idOf(1), examineeToken: 'token-' + idOf(1) }).message, /דורשת POST/);
+  let ok = 1;   // the first report above
+  for (let i = 0; i < 30; i++) if (report(e, 1, { mode: 'google' }).status === 'ok') ok++;
+  assert.equal(ok, 20, 'twenty reports per ten minutes per examinee');
+  const spec = e.ctx.apiRegistry().reportGateway;
+  assert.equal(spec.auth, 'examinee');
+  assert.equal(spec.methods.join(','), 'POST');
+  assert.equal(spec.rateLimit.max, 20);
+  assert.equal(spec.rateLimit.windowSec, 600);
+});
+
+test('r33 registerExaminee: a registration made in the fallback is born with 📡 in column Q', () => {
+  const e = runtime({});
+  const first = registerAs(e, '900000701', { regKey: 'gwfallback000001', gwDiag: GW_DIAG });
+  assert.equal(first.status, 'ok');
+  const row = e.rows('ממתינים')[1];
+  assert.equal(row[16], '📡 גיבוי גוגל');
+  assert.equal(row[15], 0, 'the warning counter starts at 0 as always');
+  assert.equal(row[12], first.examineeToken);
+  const logged = clientRows(e);
+  assert.equal(logged.length, 1);
+  assert.deepEqual(JSON.parse(logged[0][6]).map(x => [x.e, x.m, x.d]), [['gw', 'register', GW_DIAG]]);
+  // The same device's retry resumes the row: nothing appended, nothing logged twice.
+  const retry = registerAs(e, '900000701', { regKey: 'gwfallback000001', gwDiag: GW_DIAG });
+  assert.equal(retry.resumed, true);
+  assert.equal(retry.examineeToken, first.examineeToken);
+  assert.equal(e.rows('ממתינים').length, 2);
+  assert.equal(clientRows(e).length, 1);
+  // Without a diagnosis Q stays empty — and '', 'undefined' and 'null' are no diagnosis.
+  const plainRegistrations = { '900000702': {}, '900000703': { gwDiag: '' }, '900000704': { gwDiag: 'undefined' }, '900000705': { gwDiag: 'null' } };
+  for (const [id, extra] of Object.entries(plainRegistrations)) {
+    assert.equal(registerAs(e, id, extra).status, 'ok', id);
+    assert.equal(e.rows('ממתינים').at(-1)[16], '', id + ' carries no badge');
+  }
+  assert.equal(clientRows(e).length, 1, 'and nothing more was logged');
+});
+
+const selfDq = (e, n, extra) => postJson(e, Object.assign({ action: 'disqualify', sessionCode: SESSION, idNumber: idOf(n),
+  examineeToken: 'token-' + idOf(n), dqEventId: 'ev-' + n }, extra || {}));
+const dqRows = (e, n) => e.rows('תוצאות').filter(r => String(r[1]) === idOf(n) && r[7] === 'פסול');
+
+test('r33 disqualify: the detector that fired reaches column Q as "פסילה: <reason>"', () => {
+  const e = runtime({ sheets: { 'ממתינים': [PENDING_HEADER, pendingRow(idOf(1), { 5: 'in_exam', 15: 1, 16: 'יצא מהמסך' })] } });
+  assert.equal(selfDq(e, 1, { reason: 'split-area' }).status, 'ok');
+  const row = e.rows('ממתינים')[1];
+  assert.equal(row[5], 'disqualified');
+  assert.equal(row[13], 1, 'the DQ counter as before');
+  assert.equal(row[15], 1, 'the warning counter untouched');
+  assert.equal(row[16], 'פסילה: split-area');
+  const results = dqRows(e, 1);
+  assert.equal(results.length, 1);
+  assert.equal(results[0][23], '', 'column X (חשוד) is not this feature\'s');
+  assert.equal(results[0][24], 'ev-1');
+  // A second beacon of the same event is still ONE result row.
+  assert.equal(selfDq(e, 1, { reason: 'split-area' }).status, 'ok');
+  assert.equal(dqRows(e, 1).length, 1, 'dqEventId idempotency unchanged');
+  assert.equal(e.rows('ממתינים')[1][16], 'פסילה: split-area');
+  // Every reason examinee.html sends passes the rule unchanged.
+  for (const reason of ['hidden-final', 'hidden-10s', 'hidden-5s', 'fullscreen-exit', 'fullscreen-prompt', 'zoom-out',
+    'split-start', 'split-area', 'split-resize', 'blur-hidden-final', 'blur-hidden-10s', 'blur-hidden-5s']) {
+    assert.equal(e.ctx.selfDqReason(reason), reason);
+  }
+});
+
+test('r33 disqualify: a malformed reason, or an examiner\'s DQ, leaves column Q alone', () => {
+  const examiners = [Array(11).fill('h'),
+    ['בוחן', '111111111', 'pw', 'כן', '7', 'בוחן', 'tokE', new Date(NOW + 86400000).toISOString(), 0, '', '']];
+  const e = runtime({ sheets: { 'בוחנים': examiners, 'ממתינים': [PENDING_HEADER,
+    pendingRow(idOf(1), { 5: 'in_exam', 16: 'יצא מהמסך' }), pendingRow(idOf(2), { 5: 'in_exam', 16: 'יצא מהמסך' })] } });
+  let event = 0;
+  for (const reason of ['Split-Area', 'split area', '<b>x</b>', 'x'.repeat(25), '', 'פסילה', null]) {
+    assert.equal(selfDq(e, 1, { reason, dqEventId: 'bad-' + (++event) }).status, 'ok', JSON.stringify(reason));
+    assert.equal(e.rows('ממתינים')[1][16], 'יצא מהמסך', JSON.stringify(reason) + ' must not be written');
+    assert.equal(e.rows('ממתינים')[1][5], 'disqualified', 'the disqualification itself still happens');
+  }
+  const byExaminer = postJson(e, { action: 'disqualify', origin: 'examiner-app', sessionCode: SESSION, idNumber: idOf(2),
+    examinerId: '111111111', token: 'tokE', reason: 'split-area', dqEventId: 'ex-1' });
+  assert.equal(byExaminer.status, 'ok');
+  assert.equal(e.rows('ממתינים')[2][5], 'disqualified');
+  assert.equal(e.rows('ממתינים')[2][16], 'יצא מהמסך', 'the reason is the device\'s — an examiner DQ carries none');
+});
+
+test('r33 testGatewayReachability: a reachable Worker, a Cloudflare block and a key mismatch read differently; no secret is printed', () => {
+  const e = runtime({});
+  const calls = fetchSpy(e, url => {
+    if (url === GATEWAY_URL + '/') return { code: 200, text: '{"status":"ok","service":"session-gateway","build":"2026-09-23.3","bank":"b"}' };
+    if (url === GATEWAY_URL + '/v1/bank?grant=x.y') return { code: 403, text: '{"status":"error","code":"grant_invalid"}' };
+    return { code: 200, text: JSON.stringify(workerBank([1])) };
+  });
+  const ok = e.ctx.testGatewayReachability();
+  assert.match(ok, /front-door=200 worker \| fake-grant=403 worker \| real-grant=200 ok => OK - Google reaches the Worker/);
+  assert.equal(calls.length, 3);
+  const realGrant = decodeURIComponent(calls[2].url.split('grant=')[1]);
+  assert.match(realGrant, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/, 'the third probe is a real signed grant');
+  const printed = e.logs.join('\n') + '\n' + ok;
+  assert.ok(!printed.includes('secret-key'), 'the key is never printed');
+  assert.ok(!printed.includes(realGrant.split('.')[1]), 'nor the real grant');
+  assert.ok(!printed.includes('שאלה 1'), 'nor a question text');
+  assert.ok(e.logs.some(l => l.startsWith('front-door GET / -> HTTP 200 [worker] {"status":"ok"')), e.logs.join('\n'));
+
+  e.logs.length = 0;
+  fetchSpy(e, () => ({ code: 403, text: 'error code: 1010' }));
+  assert.match(e.ctx.testGatewayReachability(), /CLOUDFLARE BLOCKS GOOGLE/);
+  assert.ok(e.logs.some(l => /HTTP 403 \[cloudflare-block\] error code: 1010/.test(l)), e.logs.join('\n'));
+
+  fetchSpy(e, url => (url === GATEWAY_URL + '/' ? { code: 200, text: '{"status":"ok"}' } : { code: 403, text: '{"status":"error","code":"grant_invalid"}' }));
+  assert.match(e.ctx.testGatewayReachability(), /refused a real grant - compare GATEWAY_KEY/);
+
+  fetchSpy(e, () => new Error('DNS error: gw.example.workers.dev'));
+  assert.match(e.ctx.testGatewayReachability(), /front-door=0 unreachable .*UNCLEAR/);
+
+  e.properties.delete('GATEWAY_URL');
+  assert.match(e.ctx.testGatewayReachability(), /GATEWAY_URL is not set/);
 });

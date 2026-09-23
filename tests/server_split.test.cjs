@@ -295,11 +295,45 @@ test('every action has a target and every target names a real action', () => {
   const targeted = Object.keys(targets).sort();
   assert.deepEqual(targeted, registered,
     'the monolith registers every action, so the two lists are the same list');
-  assert.equal(registered.length, 65);
+  assert.equal(registered.length, 67, 'r33 added bankRelay and reportGateway');
   for (const action of registered) {
     assert.ok(['both', 'exam', 'reports'].includes(targets[action]), action + ' has target ' + targets[action]);
   }
   assert.deepEqual(targeted.filter(a => targets[a] === 'both'), ['getOfficeNumber', 'health']);
+});
+
+// r33 (24/09/2026): the Google fallback of a phone that cannot reach the Worker
+// runs on the EXAM project — the examinee page only knows that URL — and the
+// server's first UrlFetchApp calls stay out of the reports file: the exam
+// project's manifest (appsscript.json, tracked) already declares
+// script.external_request, while the reports project (created 22/09) has a
+// manifest this repo does not track — a UrlFetchApp there could make Google
+// demand a new authorisation in the middle of a paste.
+test('r33: bankRelay and reportGateway are exam actions, and UrlFetchApp stays in the exam half', () => {
+  const e = env(MONOLITH);
+  const targets = plain(e.ctx.ACTION_TARGETS);
+  for (const action of ['bankRelay', 'reportGateway', 'checkApproval', 'getExamStatus']) {
+    assert.equal(targets[action], 'exam', action);
+  }
+  const clientReports = plain(transportModule().REPORTS_ACTIONS);
+  assert.ok(!clientReports.includes('bankRelay') && !clientReports.includes('reportGateway'),
+    'the page sends them to the exam URL');
+  const exam = env(EXAM_FILE), reports = env(REPORTS_FILE);
+  for (const action of ['bankRelay', 'reportGateway']) {
+    const served = dispatch(exam, action, 'POST');
+    assert.notEqual(served.code, 'wrong_deployment', action);
+    assert.equal(served.message, 'חסרים פרטי נבחן', action + ' reached its examinee-token check');
+    assert.equal(dispatch(reports, action, 'POST').code, 'wrong_deployment', action);
+  }
+  // The two polls are real answers again in the exam file, not client_outdated.
+  for (const action of ['checkApproval', 'getExamStatus']) {
+    assert.notEqual(dispatch(exam, action, 'GET').code, 'client_outdated', action);
+  }
+  assert.equal(typeof exam.ctx.testGatewayReachability, 'function', 'the operator runs it in the exam project');
+  assert.equal(typeof reports.ctx.testGatewayReachability, 'undefined');
+  assert.ok(!fs.readFileSync(path.join(ROOT, REPORTS_FILE), 'utf8').includes('UrlFetchApp'),
+    'no UrlFetchApp in the reports file');
+  assert.ok(fs.readFileSync(path.join(ROOT, EXAM_FILE), 'utf8').includes('UrlFetchApp'));
 });
 
 test('an action without a target is refused at registration, not at 06:30', () => {

@@ -1787,6 +1787,37 @@ test('the retired code really is gone', () => {
   assert.ok(examiner.indexOf("<script src=\"shared/bank.js\"></script>") >= 0);
 });
 
+// ---------------------------------------------------------------- r33 badge
+// A phone that cannot reach the Worker works through Google (KNOWN_ISSUES #38)
+// and the server puts a '📡' line in its row's column Q (lastWarning). The
+// board shows it as a small blue badge in both lists — built from the text
+// alone, escaped — and nothing at all for any other lastWarning.
+test('r33: a lastWarning that starts with 📡 is a blue gateway badge, escaped, in both lists; anything else is none', () => {
+  const fn = section(examiner, '  function gatewayFallbackBadge(item) {', '\r\n\r\n  function updatePendingList(');
+  const ctx = { escHtml: s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') };
+  vm.createContext(ctx);
+  vm.runInContext(fn, ctx);
+  const badge = warning => ctx.gatewayFallbackBadge({ lastWarning: warning });
+  const google = badge('📡 גיבוי גוגל (probe)');
+  assert.match(google, /background:#e0f2fe/);
+  assert.match(google, />📡 גיבוי גוגל \(probe\)<\/span>$/);
+  assert.match(google, /title="הטלפון לא הגיע לשרת המבחן \(Worker\) ועובד דרך Google — אישור ועדכונים מגיעים באיחור של עד כ-15 שניות"/);
+  assert.match(badge('📡 חזר ל-Worker (reprobe)'), /title="הטלפון חזר לעבוד מול שרת המבחן/);
+  for (const other of ['', 'יצא מהמסך', 'פסילה: split-area', ' 📡 not at the start', undefined, null]) {
+    assert.equal(badge(other), '', JSON.stringify(other));
+  }
+  assert.equal(ctx.gatewayFallbackBadge(null), '');
+  assert.equal(ctx.gatewayFallbackBadge({}), '');
+  const hostile = badge('📡 <img src=x onerror=alert(1)>');
+  assert.ok(!hostile.includes('<img'), 'the text is escaped');
+  assert.match(hostile, /&lt;img/);
+  // Both renderers carry it, at the end of the name line with the other badges.
+  const pendingRegion = section(examiner, '  // ========== Pending list ==========', '  // ========== Active list ==========');
+  const activeRegion = section(examiner, '  // ========== Active list ==========', '  // ========== Completed list ==========');
+  assert.match(pendingRegion, /extScreenBadge \+ gatewayFallbackBadge\(item\) \+ '<\/div>'/);
+  assert.match(activeRegion, /extScreenBadgeActive \+ gatewayFallbackBadge\(item\) \+ '<\/div>'/);
+});
+
 // ---------------------------------------------------------------- service workers
 for (const sw of ['sw-examiner.js', 'sw-teacher.js']) {
   test(sw + ': parses, is GET-only, precaches the shared modules and keeps its build-written cache name', () => {

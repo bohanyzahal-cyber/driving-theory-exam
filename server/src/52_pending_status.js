@@ -17,11 +17,60 @@ function handleReportWarning(p) {
     if (hit.idx !== -1 && (hit.status === 'in_exam' || hit.status === 'approved')) {
       var prev = (hit.row.length > 15) ? (Number(hit.row[15]) || 0) : 0;
       var extras = { warnCount: prev + 1 };
-      if (p.reason) extras.lastWarning = String(p.reason).slice(0, 40);
+      // r33: the reason is the examinee's text and lands in a cell the examiner
+      // board renders (and Sheets may read as a formula): no markup characters,
+      // no control characters, no leading formula sign.
+      var reason = String(p.reason || '').replace(/[<>"'&`\u0000-\u001F\u007F]/g, '').replace(/^[=+\-@\s]+/, '').slice(0, 40);
+      if (reason) extras.lastWarning = reason;
       writePendingCells(sheet, hit.idx + 1, p.sessionCode, extras);
     }
   } catch(e) {}
   return jsonResponse({ status: 'ok' });
+}
+
+// ---- reportGateway (r33, 24/09/2026, KNOWN_ISSUES #38) ----------------------
+// A phone that cannot reach the Worker works through this script instead
+// (checkApproval / getExamStatus / bankRelay) and says so: mode 'google' when
+// it falls back, 'worker' when it gets back in. Column Q (אזהרה אחרונה) of its
+// live row gets a '📡' line, which the examiner board shows as a badge; that is
+// the ONLY cell written — the warning counter (P) counts anti-cheat warnings
+// and this is not one. The device's own diagnosis goes to 'אבחון' with the
+// client logs. Best effort: once auth and the rate limit let it through, it
+// always answers ok, whatever happened to the writes.
+// The label is ours, never the device's text: '📡 גיבוי גוגל (<why>)', where
+// <why> is a short token from the diagnosis — nothing a caller sends can put
+// markup or a quote into a cell the board renders.
+var GATEWAY_LABEL_GOOGLE = '📡 גיבוי גוגל';
+var GATEWAY_LABEL_WORKER = '📡 חזר ל-Worker';
+var GATEWAY_LABEL_MAX = 40;
+defineAction('reportGateway', { methods: ['POST'], auth: 'examinee', handler: handleReportGateway,
+  rateLimit: { max: 20, windowSec: 600, id: function(p) { return String(p.sessionCode || '') + '_' + normalizeId(p.idNumber); } } });
+function handleReportGateway(p) {
+  var mode = String(p.mode || '');
+  var known = (mode === 'google' || mode === 'worker');
+  var diag = sanitizeGatewayDiag(p.diag);
+  if (known) {
+    try {
+      // The row the auth check just read, handed forward: no second read.
+      var ctx = examineeRowContext(p.sessionCode, p.idNumber);
+      var hit = findLatestPendingRow(ctx.tail.rows, p.sessionCode, p.idNumber, ['waiting', 'approved', 'in_exam']);
+      if (hit.idx !== -1) {
+        var label = gatewayModeLabel(mode, diag);
+        // Same text already there (a repeated report): no write, no flush.
+        if (String((hit.row.length > 16 ? hit.row[16] : '') || '') !== label) {
+          writePendingCells(getSheet('ממתינים'), hit.idx + ctx.tail.off + 1, p.sessionCode, { lastWarning: label });
+        }
+      }
+    } catch (e) { /* a report must never fail the phone */ }
+  }
+  recordGatewayDiag(p.sessionCode, p.idNumber, known ? mode : 'unknown', diag);
+  return jsonResponse({ status: 'ok' });
+}
+function gatewayModeLabel(mode, diag) {
+  var label = mode === 'worker' ? GATEWAY_LABEL_WORKER : GATEWAY_LABEL_GOOGLE;
+  var why = /(?:^|[|;,&\s])why=([A-Za-z0-9_.:-]{1,20})/.exec(String(diag || ''));
+  if (why) label += ' (' + why[1] + ')';
+  return label.slice(0, GATEWAY_LABEL_MAX);
 }
 
 // Raw status probe for the examinee DURING the exam. handleCheckApproval can't be

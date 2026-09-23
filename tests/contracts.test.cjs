@@ -440,3 +440,61 @@ test('the examinee page payload (texts, no score) is scored by the server and la
   assert.ok(!details.includes('undefined'));
   assert.equal(env.sheet('ממתינים').rows[1][5], 'completed');
 });
+
+// ---- r33 (24/09/2026): bankRelay — the SAME /v1/bank answer, server to server
+// A phone that cannot reach the Worker gets its texts from Apps Script, which
+// fetches them from the Worker with the phone's own grant. The page ingests the
+// relayed answer with the very code that ingests the Worker's (shared/bank.js
+// ingestAnswer), so the two must be the same object — proven here against the
+// REAL Worker. UrlFetchApp is synchronous and the Worker is not, so the
+// Worker's answer is taken first, for the exact URL the server must ask for,
+// and handed to a UrlFetchApp that answers that URL and nothing else.
+async function workerAnswerFor(worker, url) {
+  const res = await worker(new Request(url));
+  return { code: res.status, text: await res.text() };
+}
+function urlFetchServing(env, url, answer) {
+  const asked = [];
+  env.ctx.UrlFetchApp = {
+    fetch(requested) {
+      asked.push(String(requested));
+      const hit = String(requested) === url ? answer : { code: 404, text: 'not found' };
+      return { getResponseCode: () => hit.code, getContentText: () => hit.text };
+    }
+  };
+  return asked;
+}
+const relayOne = (env, grant) => post(env, { action: 'bankRelay', sessionCode: SESSION, idNumber: '900000001',
+  examineeToken: 'tok-900000001', grant });
+
+test('r33 bankRelay hands the page exactly what the real Worker serves for that grant, plus relay:true', async () => {
+  const env = sessionEnv();
+  const started = startOne(env);
+  const url = GATEWAY_URL + '/v1/bank?grant=' + encodeURIComponent(started.bank.grant);
+  const answer = await workerAnswerFor(bankWorker(), url);
+  assert.equal(answer.code, 200);
+  const asked = urlFetchServing(env, url, answer);
+  const relayed = relayOne(env, started.bank.grant);
+  assert.deepEqual(asked, [url], 'one fetch, of exactly the URL the page itself would have used');
+  assert.equal(relayed.relay, true);
+  const direct = JSON.parse(answer.text);
+  assert.deepEqual(Object.assign({}, relayed, { relay: undefined }), Object.assign({}, direct, { relay: undefined }),
+    'the Worker\'s answer, field for field');
+  assert.deepEqual(relayed.questions.map(q => q.id), started.questions.map(q => q.id), 'the 30 granted ids, in order');
+  for (const q of relayed.questions) assert.equal(q.l.he.t, HE_BY_ID[q.id].t, 'question ' + q.id + ' text survives the relay');
+});
+
+test('r33 bankRelay: a server and a Worker that disagree on GATEWAY_KEY answer relay_failed 403, never a broken exam', async () => {
+  const env = sessionEnv();
+  const started = startOne(env);
+  const url = GATEWAY_URL + '/v1/bank?grant=' + encodeURIComponent(started.bank.grant);
+  const answer = await workerAnswerFor(bankWorker('the-worker-has-another-key'), url);
+  assert.equal(answer.code, 403);
+  urlFetchServing(env, url, answer);
+  const relayed = relayOne(env, started.bank.grant);
+  assert.equal(relayed.status, 'error');
+  assert.equal(relayed.code, 'relay_failed');
+  assert.equal(relayed.http, 403);
+  assert.equal(relayed.retryable, true);
+  assert.match(relayed.detail, /grant_invalid/, 'the Worker\'s own refusal, so the diagnosis is one look');
+});

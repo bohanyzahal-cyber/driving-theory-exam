@@ -284,6 +284,59 @@ function signBankGrant(payloadObj, key) {
   return payloadB64 + '.' + sigB64;
 }
 
+// r33 (24/09/2026): this script now also READS its own grants. A phone that
+// cannot reach the Worker asks bankRelay (60_exam.js) to fetch its texts server
+// to server, and the relay must never become a proxy for anything but a grant
+// this script signed — so it is verified here before a single byte is fetched.
+// The exact mirror of signBankGrant: the HMAC is recomputed over the ENCODED
+// payload and compared as the same unpadded base64url string the signer
+// produced, in a compare whose time does not depend on where the strings first
+// differ. The payload is decoded only once the signature holds, and a stale
+// `exp` or a version other than 1 is refused like the Worker refuses it.
+// Returns the payload object, or null for anything at all wrong.
+var BANK_GRANT_MAX_CHARS = 4096;
+function verifyBankGrant(raw, key) {
+  if (typeof raw !== 'string' || !raw || raw.length > BANK_GRANT_MAX_CHARS) return null;
+  var parts = raw.split('.');
+  if (parts.length !== 2 || !/^[A-Za-z0-9_-]+$/.test(parts[0]) || !/^[A-Za-z0-9_-]+$/.test(parts[1])) return null;
+  var secret = key || gatewayKey();
+  if (!secret) return null;
+  var expected = '';
+  try {
+    expected = Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature(parts[0], secret)).replace(/=+$/, '');
+  } catch (eSign) { return null; }
+  if (!constantTimeEqual(expected, parts[1])) return null;
+  var payload = null;
+  try { payload = JSON.parse(base64UrlDecodeAscii(parts[0])); } catch (eParse) { return null; }
+  if (!payload || typeof payload !== 'object' || payload.v !== 1) return null;
+  if (!(Number(payload.exp) > Date.now())) return null;
+  return payload;
+}
+
+function constantTimeEqual(a, b) {
+  var x = String(a), y = String(b);
+  if (x.length !== y.length) return false;
+  var diff = 0;
+  for (var i = 0; i < x.length; i++) diff |= x.charCodeAt(i) ^ y.charCodeAt(i);
+  return diff === 0;
+}
+
+// base64url (padding optional) → one character per decoded byte. Enough for a
+// grant payload and nothing else: bankGrantJson escapes every character above
+// U+007F, so the signed JSON is pure ASCII. Throws outside the alphabet.
+var BASE64URL_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+function base64UrlDecodeAscii(text) {
+  var s = String(text || '').replace(/=+$/, ''), out = '', buffer = 0, bits = 0;
+  for (var i = 0; i < s.length; i++) {
+    var v = BASE64URL_ALPHABET.indexOf(s.charAt(i));
+    if (v < 0) throw new Error('not base64url');
+    buffer = ((buffer << 6) | v) & 0x3FFF;   // bits < 8 before the shift, so 14 live bits at most
+    bits += 6;
+    if (bits >= 8) { bits -= 8; out += String.fromCharCode((buffer >> bits) & 0xFF); }
+  }
+  return out;
+}
+
 // Is the Worker that serves the texts wired up at all? startExam/startPractice
 // ask BEFORE they write anything: an exam whose questions can never load must
 // not consume the examinee's attempt.

@@ -35,7 +35,18 @@ self.addEventListener('activate', function(e) {
         names.filter(function(n) { return n !== CACHE_NAME; })
              .map(function(n) { return caches.delete(n); })
       );
-    })
+    }).then(function() {
+      // r33: whatever an older version of this worker cached from ANOTHER origin
+      // (gateway answers, question texts with their grants) goes now — the name
+      // of the cache only changes with student.html, so it would otherwise stay.
+      return caches.open(CACHE_NAME).then(function(cache) {
+        return cache.keys().then(function(reqs) {
+          return Promise.all(reqs.filter(function(r) {
+            try { return new URL(r.url).origin !== self.location.origin; } catch (errUrl) { return true; }
+          }).map(function(r) { return cache.delete(r); }));
+        });
+      });
+    }).catch(function() {})
   );
   self.clients.claim();
 });
@@ -51,6 +62,14 @@ self.addEventListener('fetch', function(e) {
   if (req.method !== 'GET') return;
   var url = req.url;
   if (url.indexOf('script.google.com') !== -1) return;   // API — always network
+  // r33 (24/09/2026): SAME-ORIGIN only. Every page of this site registers its
+  // service worker at the same scope, so a phone that practised here meets the
+  // exam page under THIS worker — and it used to take every cross-origin GET as
+  // well: the session-gateway polls (a 25 s hold proxied through a worker) and
+  // the /v1/bank question texts, which it then CACHED with the grant in the key,
+  // against this file's own promise below. Cross-origin requests now go straight
+  // to the network, exactly as sw-examinee.js has always left them.
+  try { if (new URL(url).origin !== self.location.origin) return; } catch (errUrl) { return; }
 
   e.respondWith(
     fetch(req).then(function(response) {

@@ -207,6 +207,179 @@ function examMinutesFor(row) {
   return Math.round(EXAM_BASE_MINUTES * ext);
 }
 
+// ---- bankRelay (r33, 24/09/2026, KNOWN_ISSUES #38) --------------------------
+// On 23/09 many phones registered through Google and then never managed ONE
+// request to the Worker — something in front of workers.dev refused them
+// before our code ran. Such a phone now asks THIS script for its question
+// texts, and the script fetches them from the Worker server to server with the
+// phone's own grant: the answer is the Worker's /v1/bank body, unchanged, plus
+// relay:true, so the page ingests it with the very code that ingests the
+// Worker's own answer (shared/bank.js ingestAnswer).
+// Not an open proxy: the URL is fixed, and the grant must be one this script
+// signed, in the exam scope, for THIS examinee (the sub startExam writes), and
+// unexpired — the examinee token alone fetches nothing. The grant is a bearer
+// credential for 30 texts: it is never logged, and every error detail is
+// scrubbed of it. Every UrlFetchApp call of the server lives in this module
+// (exam-only): the reports project never needs the external-request scope.
+var RELAY_FAILED_MESSAGE = 'לא הצלחנו לטעון את השאלות דרך השרת — נסה שוב או פנה לבוחן';
+var RELAY_DETAIL_MAX = 80;
+defineAction('bankRelay', { methods: ['POST'], auth: 'examinee', handler: handleBankRelay,
+  rateLimit: { max: 10, windowSec: 300, id: function(p) { return String(p.sessionCode || '') + '_' + normalizeId(p.idNumber); } } });
+function handleBankRelay(data) {
+  if (!gatewayUrl()) return bankNotConfiguredResponse();
+  if (!examGrantFor(data.grant, data.sessionCode, data.idNumber)) {
+    return jsonResponse({ status: 'error', code: 'grant_invalid',
+      message: 'הרשאת השאלות אינה תקפה — נסה להתחיל שוב' });
+  }
+  var fetched = fetchBankFromGateway(data.grant);
+  if (fetched.body) {
+    fetched.body.relay = true;
+    return jsonResponse(fetched.body);
+  }
+  return jsonResponse({ status: 'error', code: 'relay_failed', http: fetched.http, retryable: true,
+    message: RELAY_FAILED_MESSAGE, detail: fetched.detail });
+}
+
+// The payload of `grant` when it is a live exam grant of (sessionCode, idNumber)
+// — the very sub startExam signs — or null.
+function examGrantFor(grant, sessionCode, idNumber) {
+  var payload = verifyBankGrant(grant);
+  if (!payload || payload.s !== 'exam') return null;
+  var sub = (String(sessionCode || '').trim() + ':' + normalizeId(idNumber)).slice(0, BANK_GRANT_SUB_MAX);
+  if (typeof payload.sub !== 'string' || payload.sub !== sub) return null;
+  if (!Array.isArray(payload.ids) || !payload.ids.length) return null;
+  return payload;
+}
+
+// One GET of the Worker's /v1/bank, as bankRelay and testGatewayReachability
+// both make it. { http, body } for a real bank answer (HTTP 200, status ok,
+// questions an array); otherwise { http, detail } — http 0 when the fetch
+// itself threw. getContentText('UTF-8') by name: the texts are Hebrew,
+// Russian, Arabic and Amharic, and must not depend on a Content-Type default.
+function fetchBankFromGateway(grant) {
+  var url = gatewayUrl().replace(/\/+$/, '') + '/v1/bank?grant=' + encodeURIComponent(String(grant));
+  var http = 0, text = '';
+  diagMark('relay:bank');
+  try {
+    var res = UrlFetchApp.fetch(url, { method: 'get', muteHttpExceptions: true, followRedirects: true,
+      headers: { 'Accept': 'application/json' } });
+    http = Number(res.getResponseCode()) || 0;
+    text = String(res.getContentText('UTF-8') || '');
+  } catch (err) {
+    diagMark('relay:bank-error');
+    return { http: 0, detail: relayDetail(String(err && err.message ? err.message : err), grant) };
+  }
+  diagMark('relay:bank-done');
+  if (http === 200) {
+    var body = null;
+    try { body = JSON.parse(text); } catch (eParse) { body = null; }
+    if (body && typeof body === 'object' && body.status === 'ok' && Array.isArray(body.questions)) {
+      return { http: http, body: body };
+    }
+  }
+  return { http: http, detail: relayDetail(text, grant) };
+}
+
+// What the page (and 'אבחון', through the page's own report) may see of a
+// failure: Cloudflare's "error code: NNNN" when the body carries one, otherwise
+// the first RELAY_DETAIL_MAX printable characters — never the grant, which an
+// exception message may echo inside the URL.
+function relayDetail(text, grant) {
+  var s = String(text || '');
+  if (grant) s = s.split(String(grant)).join('[grant]');
+  s = s.replace(/grant=[^&\s"'<>]*/g, 'grant=[grant]');
+  var cloudflare = /error code:\s*\d{3,5}/i.exec(s);
+  if (cloudflare) return cloudflare[0];
+  return s.replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, RELAY_DETAIL_MAX);
+}
+
+// ---- testGatewayReachability — run BY HAND from the Apps Script editor ------
+// Proves (or disproves) the one thing bankRelay depends on: that GOOGLE can
+// reach the Worker. Three GETs, each logged with its HTTP code and the first
+// 120 characters of its body:
+//   /                      the Worker's front door (never touches Google)
+//   /v1/bank?grant=x.y     a fake grant — our Worker answers a JSON 403
+//   /v1/bank, real grant   ONE question, exactly the call bankRelay makes
+//                          (logged as a count; no text, no grant)
+// A JSON answer = our Worker ran. An HTML 403 with "error code: 1010", or a
+// Cloudflare challenge page = Cloudflare stops Google before the Worker, and
+// bankRelay cannot help those phones. The first run in the editor is also
+// where Google asks for any missing permission (external requests).
+// Never prints GATEWAY_KEY, a real grant or a question text.
+function testGatewayReachability() {
+  var base = gatewayUrl().replace(/\/+$/, '');
+  if (!base) {
+    var unset = 'testGatewayReachability: GATEWAY_URL is not set in the Script properties — nothing to test';
+    Logger.log(unset);
+    return unset;
+  }
+  var probes = [{ name: 'front-door', path: '/' }, { name: 'fake-grant', path: '/v1/bank?grant=x.y' }];
+  var parts = [], kinds = [];
+  for (var i = 0; i < probes.length; i++) {
+    var r = gatewayProbe(base + probes[i].path);
+    Logger.log(probes[i].name + ' GET ' + probes[i].path + ' -> HTTP ' + r.http + ' [' + r.kind + '] ' + r.snippet);
+    parts.push(probes[i].name + '=' + r.http + ' ' + r.kind);
+    kinds.push(r.kind);
+  }
+  var real = { http: 0, ok: false, kind: 'skipped', snippet: 'no grant could be signed (GATEWAY_KEY missing?)' };
+  var ids = Object.keys(questionIndex());
+  var bank = ids.length ? bankGrantFor('exam', [Number(ids[0])], 'probe:reachability') : null;
+  if (bank) {
+    var fetched = fetchBankFromGateway(bank.grant);
+    real.http = fetched.http;
+    real.ok = !!fetched.body;
+    real.kind = fetched.body ? 'worker' : gatewayProbeKind(fetched.http, fetched.detail);
+    real.snippet = fetched.body
+      ? ('status ok, ' + fetched.body.questions.length + ' question(s), missing ' +
+         (Array.isArray(fetched.body.missing) ? fetched.body.missing.length : 0))
+      : fetched.detail;
+  }
+  Logger.log('real-grant GET /v1/bank?grant=<1 question> -> HTTP ' + real.http + ' [' + real.kind + '] ' + real.snippet);
+  parts.push('real-grant=' + real.http + ' ' + (real.ok ? 'ok' : real.kind));
+  kinds.push(real.kind);
+
+  var verdict;
+  if (kinds.indexOf('cloudflare-block') !== -1) {
+    verdict = 'CLOUDFLARE BLOCKS GOOGLE - bankRelay cannot reach the Worker';
+  } else if (kinds[0] === 'worker' && kinds[1] === 'worker' && real.ok) {
+    verdict = 'OK - Google reaches the Worker; bankRelay will work';
+  } else if (kinds[0] === 'worker' && kinds[1] === 'worker' && !bank) {
+    verdict = 'the Worker answers Google, but no grant can be signed here - set GATEWAY_KEY';
+  } else if (kinds[0] === 'worker' && kinds[1] === 'worker') {
+    verdict = 'the Worker answers Google but refused a real grant - compare GATEWAY_KEY here and in the Worker';
+  } else {
+    verdict = 'UNCLEAR - read the three lines above';
+  }
+  var summary = 'testGatewayReachability: ' + parts.join(' | ') + ' => ' + verdict;
+  Logger.log(summary);
+  return summary;
+}
+function gatewayProbe(url) {
+  var http = 0, text = '';
+  try {
+    var res = UrlFetchApp.fetch(url, { method: 'get', muteHttpExceptions: true, followRedirects: true,
+      headers: { 'Accept': 'application/json' } });
+    http = Number(res.getResponseCode()) || 0;
+    text = String(res.getContentText('UTF-8') || '');
+  } catch (err) {
+    text = 'EXCEPTION ' + String(err && err.message ? err.message : err);
+  }
+  return { http: http, kind: gatewayProbeKind(http, text),
+    snippet: text.replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) };
+}
+// 'worker' = our Worker answered (every answer of it is a JSON envelope with a
+// status); 'cloudflare-block' = Cloudflare's own error or challenge page.
+function gatewayProbeKind(http, text) {
+  var body = String(text || ''), json = null;
+  try { json = JSON.parse(body); } catch (e) { json = null; }
+  if (json && typeof json === 'object' && typeof json.status === 'string') return 'worker';
+  if (/error code:\s*\d{3,5}/i.test(body) ||
+      /cf-chl|challenge-platform|cf_chl_opt|Just a moment|Attention Required|cf-error-details|cf-browser-verification/i.test(body)) {
+    return 'cloudflare-block';
+  }
+  return http ? 'unexpected' : 'unreachable';
+}
+
 // ---- Retired actions --------------------------------------------------------
 // One release of grace for a client that was loaded before the deploy: it asks
 // for questions, gets a clear "refresh the page" instead of a broken exam.

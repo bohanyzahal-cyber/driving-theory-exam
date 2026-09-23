@@ -967,6 +967,46 @@ function signBankGrant(payloadObj, key) {
   return payloadB64 + '.' + sigB64;
 }
 
+var BANK_GRANT_MAX_CHARS = 4096;
+function verifyBankGrant(raw, key) {
+  if (typeof raw !== 'string' || !raw || raw.length > BANK_GRANT_MAX_CHARS) return null;
+  var parts = raw.split('.');
+  if (parts.length !== 2 || !/^[A-Za-z0-9_-]+$/.test(parts[0]) || !/^[A-Za-z0-9_-]+$/.test(parts[1])) return null;
+  var secret = key || gatewayKey();
+  if (!secret) return null;
+  var expected = '';
+  try {
+    expected = Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature(parts[0], secret)).replace(/=+$/, '');
+  } catch (eSign) { return null; }
+  if (!constantTimeEqual(expected, parts[1])) return null;
+  var payload = null;
+  try { payload = JSON.parse(base64UrlDecodeAscii(parts[0])); } catch (eParse) { return null; }
+  if (!payload || typeof payload !== 'object' || payload.v !== 1) return null;
+  if (!(Number(payload.exp) > Date.now())) return null;
+  return payload;
+}
+
+function constantTimeEqual(a, b) {
+  var x = String(a), y = String(b);
+  if (x.length !== y.length) return false;
+  var diff = 0;
+  for (var i = 0; i < x.length; i++) diff |= x.charCodeAt(i) ^ y.charCodeAt(i);
+  return diff === 0;
+}
+
+var BASE64URL_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+function base64UrlDecodeAscii(text) {
+  var s = String(text || '').replace(/=+$/, ''), out = '', buffer = 0, bits = 0;
+  for (var i = 0; i < s.length; i++) {
+    var v = BASE64URL_ALPHABET.indexOf(s.charAt(i));
+    if (v < 0) throw new Error('not base64url');
+    buffer = ((buffer << 6) | v) & 0x3FFF;
+    bits += 6;
+    if (bits >= 8) { bits -= 8; out += String.fromCharCode((buffer >> bits) & 0xFF); }
+  }
+  return out;
+}
+
 function bankGrantConfigured() { return Boolean(gatewayUrl() && gatewayKey()); }
 
 function bankGrantFor(scope, ids, sub) {
@@ -1246,7 +1286,7 @@ function handleBankGrant(p) {
 }
 var API_DEPLOYMENT = "reports";
 
-var THEORY_API_BUILD = '2026-09-23-r32';
+var THEORY_API_BUILD = '2026-09-24-r33';
 var API_STARTED_AT = 0;
 
 function apiActionList() {
@@ -1335,7 +1375,8 @@ var ACTION_TARGETS = {
   startExam: 'exam', markExamStarted: 'exam', getExamQuestions: 'exam',
   registerExamQuestions: 'exam', submitResult: 'exam', submitFailOnClose: 'exam',
   cancelFailOnClose: 'exam', getResultUploadToken: 'exam',
-  sessionSnapshot: 'exam', bankGrant: 'exam'
+  sessionSnapshot: 'exam', bankGrant: 'exam',
+  bankRelay: 'exam', reportGateway: 'exam'
 };
 
 
@@ -1383,8 +1424,8 @@ function legacyActionTable() {
     ['getSessionInfo', 'GET', 'none', 'handleGetSessionInfo'],
     ['registerExaminee', 'GET', 'none', 'handleRegisterExaminee'],
     ['cancelRegistration', 'GET', 'none', 'handleCancelRegistration'],
-    ['checkApproval', 'GET', 'none', 'handleClientOutdated'],
-    ['getExamStatus', 'GET', 'none', 'handleClientOutdated'],
+    ['checkApproval', 'GET', 'none', 'handleCheckApproval'],
+    ['getExamStatus', 'GET', 'none', 'handleGetExamStatus'],
     ['addExamTime', 'GET', 'none', 'handleAddExamTime'],
     ['markFinished', 'GET', 'none', 'handleMarkFinished'],
     ['disqualify', 'GET,POST', 'none', 'handleDisqualify'],
@@ -1988,6 +2029,20 @@ function diagRecordClientLog(sessionCode, idNumber, entries) {
     try { id = Utilities.getUuid(); } catch (eId) { id = 'client_' + Date.now(); }
     return diagRecordRow(id, [nowISO(), 'CLIENT', String(sessionCode || ''), normalizeId(idNumber), '', '', text]);
   } catch (e) { return 'error'; }
+}
+
+var DIAG_GATEWAY_MAX_CHARS = 300;
+function sanitizeGatewayDiag(raw) {
+  if (raw === null || raw === undefined) return '';
+  var text = String(raw);
+  if (text === 'undefined' || text === 'null') return '';
+  text = text.replace(/[\t\r\n]+/g, ' ').replace(/[^\x20-\x7E\u0590-\u05FF]/g, '').trim();
+  return text.slice(0, DIAG_GATEWAY_MAX_CHARS);
+}
+function recordGatewayDiag(sessionCode, idNumber, mode, diag) {
+  if (!diag) return 'empty';
+  try { return diagRecordClientLog(sessionCode, idNumber, [{ t: Date.now(), e: 'gw', m: String(mode || ''), d: diag }]); }
+  catch (e) { return 'error'; }
 }
 
 function flushDiagnostics() {

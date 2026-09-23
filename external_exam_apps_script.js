@@ -963,6 +963,46 @@ function signBankGrant(payloadObj, key) {
   return payloadB64 + '.' + sigB64;
 }
 
+var BANK_GRANT_MAX_CHARS = 4096;
+function verifyBankGrant(raw, key) {
+  if (typeof raw !== 'string' || !raw || raw.length > BANK_GRANT_MAX_CHARS) return null;
+  var parts = raw.split('.');
+  if (parts.length !== 2 || !/^[A-Za-z0-9_-]+$/.test(parts[0]) || !/^[A-Za-z0-9_-]+$/.test(parts[1])) return null;
+  var secret = key || gatewayKey();
+  if (!secret) return null;
+  var expected = '';
+  try {
+    expected = Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature(parts[0], secret)).replace(/=+$/, '');
+  } catch (eSign) { return null; }
+  if (!constantTimeEqual(expected, parts[1])) return null;
+  var payload = null;
+  try { payload = JSON.parse(base64UrlDecodeAscii(parts[0])); } catch (eParse) { return null; }
+  if (!payload || typeof payload !== 'object' || payload.v !== 1) return null;
+  if (!(Number(payload.exp) > Date.now())) return null;
+  return payload;
+}
+
+function constantTimeEqual(a, b) {
+  var x = String(a), y = String(b);
+  if (x.length !== y.length) return false;
+  var diff = 0;
+  for (var i = 0; i < x.length; i++) diff |= x.charCodeAt(i) ^ y.charCodeAt(i);
+  return diff === 0;
+}
+
+var BASE64URL_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+function base64UrlDecodeAscii(text) {
+  var s = String(text || '').replace(/=+$/, ''), out = '', buffer = 0, bits = 0;
+  for (var i = 0; i < s.length; i++) {
+    var v = BASE64URL_ALPHABET.indexOf(s.charAt(i));
+    if (v < 0) throw new Error('not base64url');
+    buffer = ((buffer << 6) | v) & 0x3FFF;
+    bits += 6;
+    if (bits >= 8) { bits -= 8; out += String.fromCharCode((buffer >> bits) & 0xFF); }
+  }
+  return out;
+}
+
 function bankGrantConfigured() { return Boolean(gatewayUrl() && gatewayKey()); }
 
 function bankGrantFor(scope, ids, sub) {
@@ -1242,7 +1282,7 @@ function handleBankGrant(p) {
 }
 var API_DEPLOYMENT = "all";
 
-var THEORY_API_BUILD = '2026-09-23-r32';
+var THEORY_API_BUILD = '2026-09-24-r33';
 var API_STARTED_AT = 0;
 
 function apiActionList() {
@@ -1331,7 +1371,8 @@ var ACTION_TARGETS = {
   startExam: 'exam', markExamStarted: 'exam', getExamQuestions: 'exam',
   registerExamQuestions: 'exam', submitResult: 'exam', submitFailOnClose: 'exam',
   cancelFailOnClose: 'exam', getResultUploadToken: 'exam',
-  sessionSnapshot: 'exam', bankGrant: 'exam'
+  sessionSnapshot: 'exam', bankGrant: 'exam',
+  bankRelay: 'exam', reportGateway: 'exam'
 };
 
 
@@ -1379,8 +1420,8 @@ function legacyActionTable() {
     ['getSessionInfo', 'GET', 'none', 'handleGetSessionInfo'],
     ['registerExaminee', 'GET', 'none', 'handleRegisterExaminee'],
     ['cancelRegistration', 'GET', 'none', 'handleCancelRegistration'],
-    ['checkApproval', 'GET', 'none', 'handleClientOutdated'],
-    ['getExamStatus', 'GET', 'none', 'handleClientOutdated'],
+    ['checkApproval', 'GET', 'none', 'handleCheckApproval'],
+    ['getExamStatus', 'GET', 'none', 'handleGetExamStatus'],
     ['addExamTime', 'GET', 'none', 'handleAddExamTime'],
     ['markFinished', 'GET', 'none', 'handleMarkFinished'],
     ['disqualify', 'GET,POST', 'none', 'handleDisqualify'],
@@ -2274,10 +2315,12 @@ function handleRegisterExaminee(p) {
   }
   var lock = null, held = false;
   try { lock = LockService.getScriptLock(); held = lock.tryLock(5000); } catch (eLock) { held = false; }
+  var outcome = {};
   try {
-    return registerExamineeLocked(p, regKey);
+    return registerExamineeLocked(p, regKey, outcome);
   } finally {
     if (held) { try { lock.releaseLock(); } catch (eRel) {} }
+    if (outcome.gwDiag) { try { recordGatewayDiag(p.sessionCode, p.idNumber, 'register', outcome.gwDiag); } catch (eDiag) {} }
   }
 }
 
@@ -2294,7 +2337,7 @@ function registrationSessionError(sessionCode) {
   return null;
 }
 
-function registerExamineeLocked(p, regKey) {
+function registerExamineeLocked(p, regKey, outcome) {
   var MAX_PENDING_PER_SESSION = 50;
   var pendSheet = getSheet('ממתינים');
   var data = pendSheet.getDataRange().getValues();
@@ -2328,6 +2371,7 @@ function registerExamineeLocked(p, regKey) {
   }
   var examineeToken = generateExamineeToken();
   var hasExtendedScreen = (p.hasExtendedScreen === '1' || p.hasExtendedScreen === 1 || p.hasExtendedScreen === true);
+  var gwDiag = sanitizeGatewayDiag(p.gwDiag);
   pendSheet.appendRow([
     p.sessionCode,
     p.idNumber,
@@ -2345,9 +2389,10 @@ function registerExamineeLocked(p, regKey) {
     0,
     hasExtendedScreen ? 'כן' : '',
     0,
-    '',
+    gwDiag ? GATEWAY_LABEL_GOOGLE : '',
     p.site || ''
   ]);
+  if (outcome && gwDiag) outcome.gwDiag = gwDiag;
   invalidatePendingSnapshot(p.sessionCode);
   rememberRegistrationToken(p.sessionCode, p.idNumber, regKey, examineeToken);
   return jsonResponse({ status: 'ok', examineeToken: examineeToken });
@@ -2730,11 +2775,43 @@ function handleReportWarning(p) {
     if (hit.idx !== -1 && (hit.status === 'in_exam' || hit.status === 'approved')) {
       var prev = (hit.row.length > 15) ? (Number(hit.row[15]) || 0) : 0;
       var extras = { warnCount: prev + 1 };
-      if (p.reason) extras.lastWarning = String(p.reason).slice(0, 40);
+      var reason = String(p.reason || '').replace(/[<>"'&`\u0000-\u001F\u007F]/g, '').replace(/^[=+\-@\s]+/, '').slice(0, 40);
+      if (reason) extras.lastWarning = reason;
       writePendingCells(sheet, hit.idx + 1, p.sessionCode, extras);
     }
   } catch(e) {}
   return jsonResponse({ status: 'ok' });
+}
+
+var GATEWAY_LABEL_GOOGLE = '📡 גיבוי גוגל';
+var GATEWAY_LABEL_WORKER = '📡 חזר ל-Worker';
+var GATEWAY_LABEL_MAX = 40;
+defineAction('reportGateway', { methods: ['POST'], auth: 'examinee', handler: handleReportGateway,
+  rateLimit: { max: 20, windowSec: 600, id: function(p) { return String(p.sessionCode || '') + '_' + normalizeId(p.idNumber); } } });
+function handleReportGateway(p) {
+  var mode = String(p.mode || '');
+  var known = (mode === 'google' || mode === 'worker');
+  var diag = sanitizeGatewayDiag(p.diag);
+  if (known) {
+    try {
+      var ctx = examineeRowContext(p.sessionCode, p.idNumber);
+      var hit = findLatestPendingRow(ctx.tail.rows, p.sessionCode, p.idNumber, ['waiting', 'approved', 'in_exam']);
+      if (hit.idx !== -1) {
+        var label = gatewayModeLabel(mode, diag);
+        if (String((hit.row.length > 16 ? hit.row[16] : '') || '') !== label) {
+          writePendingCells(getSheet('ממתינים'), hit.idx + ctx.tail.off + 1, p.sessionCode, { lastWarning: label });
+        }
+      }
+    } catch (e) {  }
+  }
+  recordGatewayDiag(p.sessionCode, p.idNumber, known ? mode : 'unknown', diag);
+  return jsonResponse({ status: 'ok' });
+}
+function gatewayModeLabel(mode, diag) {
+  var label = mode === 'worker' ? GATEWAY_LABEL_WORKER : GATEWAY_LABEL_GOOGLE;
+  var why = /(?:^|[|;,&\s])why=([A-Za-z0-9_.:-]{1,20})/.exec(String(diag || ''));
+  if (why) label += ' (' + why[1] + ')';
+  return label.slice(0, GATEWAY_LABEL_MAX);
 }
 
 function handleGetExamStatus(p) {
@@ -2938,9 +3015,13 @@ function handleDisqualify(p) {
     }
   }
 
+  var dqReason = p.examinerId ? '' : selfDqReason(p.reason);
+
   if (pendRowIdx !== -1) {
     var prevCount = (pendData[pendRowIdx].length > 13) ? (Number(pendData[pendRowIdx][13]) || 0) : 0;
-    setPendingStatus(pendSheet, pendRowIdx + 1, p.sessionCode, 'disqualified', { dqCount: prevCount + 1 });
+    var dqExtras = { dqCount: prevCount + 1 };
+    if (dqReason) dqExtras.lastWarning = 'פסילה: ' + dqReason;
+    setPendingStatus(pendSheet, pendRowIdx + 1, p.sessionCode, 'disqualified', dqExtras);
     for (var dqd = 1; dqd < pendData.length; dqd++) {
       if (dqd === pendRowIdx) continue;
       if (String(pendData[dqd][0]) !== String(p.sessionCode) || normalizeId(pendData[dqd][1]) !== normalizeId(p.idNumber)) continue;
@@ -2999,6 +3080,11 @@ function handleDisqualify(p) {
   ]);
   SpreadsheetApp.flush();
   return jsonResponse({ status: 'ok' });
+}
+
+function selfDqReason(raw) {
+  var reason = (raw === null || raw === undefined) ? '' : String(raw).trim();
+  return /^[a-z0-9-]{1,24}$/.test(reason) ? reason : '';
 }
 
 function handleCancelDisqualify(p) {
@@ -3534,6 +3620,139 @@ function examMinutesFor(row) {
   var ext = parseFloat(row[10]) || 1;
   if (ext !== 1.25 && ext !== 1.5) ext = 1;
   return Math.round(EXAM_BASE_MINUTES * ext);
+}
+
+var RELAY_FAILED_MESSAGE = 'לא הצלחנו לטעון את השאלות דרך השרת — נסה שוב או פנה לבוחן';
+var RELAY_DETAIL_MAX = 80;
+defineAction('bankRelay', { methods: ['POST'], auth: 'examinee', handler: handleBankRelay,
+  rateLimit: { max: 10, windowSec: 300, id: function(p) { return String(p.sessionCode || '') + '_' + normalizeId(p.idNumber); } } });
+function handleBankRelay(data) {
+  if (!gatewayUrl()) return bankNotConfiguredResponse();
+  if (!examGrantFor(data.grant, data.sessionCode, data.idNumber)) {
+    return jsonResponse({ status: 'error', code: 'grant_invalid',
+      message: 'הרשאת השאלות אינה תקפה — נסה להתחיל שוב' });
+  }
+  var fetched = fetchBankFromGateway(data.grant);
+  if (fetched.body) {
+    fetched.body.relay = true;
+    return jsonResponse(fetched.body);
+  }
+  return jsonResponse({ status: 'error', code: 'relay_failed', http: fetched.http, retryable: true,
+    message: RELAY_FAILED_MESSAGE, detail: fetched.detail });
+}
+
+function examGrantFor(grant, sessionCode, idNumber) {
+  var payload = verifyBankGrant(grant);
+  if (!payload || payload.s !== 'exam') return null;
+  var sub = (String(sessionCode || '').trim() + ':' + normalizeId(idNumber)).slice(0, BANK_GRANT_SUB_MAX);
+  if (typeof payload.sub !== 'string' || payload.sub !== sub) return null;
+  if (!Array.isArray(payload.ids) || !payload.ids.length) return null;
+  return payload;
+}
+
+function fetchBankFromGateway(grant) {
+  var url = gatewayUrl().replace(/\/+$/, '') + '/v1/bank?grant=' + encodeURIComponent(String(grant));
+  var http = 0, text = '';
+  diagMark('relay:bank');
+  try {
+    var res = UrlFetchApp.fetch(url, { method: 'get', muteHttpExceptions: true, followRedirects: true,
+      headers: { 'Accept': 'application/json' } });
+    http = Number(res.getResponseCode()) || 0;
+    text = String(res.getContentText('UTF-8') || '');
+  } catch (err) {
+    diagMark('relay:bank-error');
+    return { http: 0, detail: relayDetail(String(err && err.message ? err.message : err), grant) };
+  }
+  diagMark('relay:bank-done');
+  if (http === 200) {
+    var body = null;
+    try { body = JSON.parse(text); } catch (eParse) { body = null; }
+    if (body && typeof body === 'object' && body.status === 'ok' && Array.isArray(body.questions)) {
+      return { http: http, body: body };
+    }
+  }
+  return { http: http, detail: relayDetail(text, grant) };
+}
+
+function relayDetail(text, grant) {
+  var s = String(text || '');
+  if (grant) s = s.split(String(grant)).join('[grant]');
+  s = s.replace(/grant=[^&\s"'<>]*/g, 'grant=[grant]');
+  var cloudflare = /error code:\s*\d{3,5}/i.exec(s);
+  if (cloudflare) return cloudflare[0];
+  return s.replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, RELAY_DETAIL_MAX);
+}
+
+function testGatewayReachability() {
+  var base = gatewayUrl().replace(/\/+$/, '');
+  if (!base) {
+    var unset = 'testGatewayReachability: GATEWAY_URL is not set in the Script properties — nothing to test';
+    Logger.log(unset);
+    return unset;
+  }
+  var probes = [{ name: 'front-door', path: '/' }, { name: 'fake-grant', path: '/v1/bank?grant=x.y' }];
+  var parts = [], kinds = [];
+  for (var i = 0; i < probes.length; i++) {
+    var r = gatewayProbe(base + probes[i].path);
+    Logger.log(probes[i].name + ' GET ' + probes[i].path + ' -> HTTP ' + r.http + ' [' + r.kind + '] ' + r.snippet);
+    parts.push(probes[i].name + '=' + r.http + ' ' + r.kind);
+    kinds.push(r.kind);
+  }
+  var real = { http: 0, ok: false, kind: 'skipped', snippet: 'no grant could be signed (GATEWAY_KEY missing?)' };
+  var ids = Object.keys(questionIndex());
+  var bank = ids.length ? bankGrantFor('exam', [Number(ids[0])], 'probe:reachability') : null;
+  if (bank) {
+    var fetched = fetchBankFromGateway(bank.grant);
+    real.http = fetched.http;
+    real.ok = !!fetched.body;
+    real.kind = fetched.body ? 'worker' : gatewayProbeKind(fetched.http, fetched.detail);
+    real.snippet = fetched.body
+      ? ('status ok, ' + fetched.body.questions.length + ' question(s), missing ' +
+         (Array.isArray(fetched.body.missing) ? fetched.body.missing.length : 0))
+      : fetched.detail;
+  }
+  Logger.log('real-grant GET /v1/bank?grant=<1 question> -> HTTP ' + real.http + ' [' + real.kind + '] ' + real.snippet);
+  parts.push('real-grant=' + real.http + ' ' + (real.ok ? 'ok' : real.kind));
+  kinds.push(real.kind);
+
+  var verdict;
+  if (kinds.indexOf('cloudflare-block') !== -1) {
+    verdict = 'CLOUDFLARE BLOCKS GOOGLE - bankRelay cannot reach the Worker';
+  } else if (kinds[0] === 'worker' && kinds[1] === 'worker' && real.ok) {
+    verdict = 'OK - Google reaches the Worker; bankRelay will work';
+  } else if (kinds[0] === 'worker' && kinds[1] === 'worker' && !bank) {
+    verdict = 'the Worker answers Google, but no grant can be signed here - set GATEWAY_KEY';
+  } else if (kinds[0] === 'worker' && kinds[1] === 'worker') {
+    verdict = 'the Worker answers Google but refused a real grant - compare GATEWAY_KEY here and in the Worker';
+  } else {
+    verdict = 'UNCLEAR - read the three lines above';
+  }
+  var summary = 'testGatewayReachability: ' + parts.join(' | ') + ' => ' + verdict;
+  Logger.log(summary);
+  return summary;
+}
+function gatewayProbe(url) {
+  var http = 0, text = '';
+  try {
+    var res = UrlFetchApp.fetch(url, { method: 'get', muteHttpExceptions: true, followRedirects: true,
+      headers: { 'Accept': 'application/json' } });
+    http = Number(res.getResponseCode()) || 0;
+    text = String(res.getContentText('UTF-8') || '');
+  } catch (err) {
+    text = 'EXCEPTION ' + String(err && err.message ? err.message : err);
+  }
+  return { http: http, kind: gatewayProbeKind(http, text),
+    snippet: text.replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120) };
+}
+function gatewayProbeKind(http, text) {
+  var body = String(text || ''), json = null;
+  try { json = JSON.parse(body); } catch (e) { json = null; }
+  if (json && typeof json === 'object' && typeof json.status === 'string') return 'worker';
+  if (/error code:\s*\d{3,5}/i.test(body) ||
+      /cf-chl|challenge-platform|cf_chl_opt|Just a moment|Attention Required|cf-error-details|cf-browser-verification/i.test(body)) {
+    return 'cloudflare-block';
+  }
+  return http ? 'unexpected' : 'unreachable';
 }
 
 defineAction('getExamQuestions', { methods: ['GET'], auth: 'none', handler: handleClientOutdated });
@@ -4148,6 +4367,20 @@ function diagRecordClientLog(sessionCode, idNumber, entries) {
     try { id = Utilities.getUuid(); } catch (eId) { id = 'client_' + Date.now(); }
     return diagRecordRow(id, [nowISO(), 'CLIENT', String(sessionCode || ''), normalizeId(idNumber), '', '', text]);
   } catch (e) { return 'error'; }
+}
+
+var DIAG_GATEWAY_MAX_CHARS = 300;
+function sanitizeGatewayDiag(raw) {
+  if (raw === null || raw === undefined) return '';
+  var text = String(raw);
+  if (text === 'undefined' || text === 'null') return '';
+  text = text.replace(/[\t\r\n]+/g, ' ').replace(/[^\x20-\x7E\u0590-\u05FF]/g, '').trim();
+  return text.slice(0, DIAG_GATEWAY_MAX_CHARS);
+}
+function recordGatewayDiag(sessionCode, idNumber, mode, diag) {
+  if (!diag) return 'empty';
+  try { return diagRecordClientLog(sessionCode, idNumber, [{ t: Date.now(), e: 'gw', m: String(mode || ''), d: diag }]); }
+  catch (e) { return 'error'; }
 }
 
 function flushDiagnostics() {

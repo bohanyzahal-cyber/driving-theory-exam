@@ -178,7 +178,9 @@ const ISSUED_IDS = SERVER_QUESTIONS.map(q => q.id);
 // gateway: the Worker every session names. It is the page's ONLY poll route, so
 // a session without one is a misconfigured deployment — pass gateway: '' to test
 // exactly that, and nothing else.
-function completePage({ local = memoryStore(), session = memoryStore(), reply, gateway = 'https://gw.example/', onReload, userAgent = 'Synthetic desktop', touchPoints = 0, search = '' } = {}) {
+// geom (r33): { sw, sh, iw, ih, dpr?, vv? } — a phone's screen and viewport in
+// CSS px, for the anti-cheat geometry (iPhone page zoom, Android split screen).
+function completePage({ local = memoryStore(), session = memoryStore(), reply, gateway = 'https://gw.example/', onReload, userAgent = 'Synthetic desktop', touchPoints = 0, search = '', geom = null, platform = 'Synthetic' } = {}) {
   const ui = makeDom();
   const timer = new Timers();
   const requests = [], beacons = [];
@@ -208,10 +210,15 @@ function completePage({ local = memoryStore(), session = memoryStore(), reply, g
     isFinite, parseFloat, parseInt, encodeURIComponent, decodeURIComponent, URL, URLSearchParams, Blob: class { constructor(parts) { this.parts = parts; } },
     setTimeout: timer.set, clearTimeout: timer.clear, setInterval: timer.setInterval, clearInterval: timer.clear,
     AbortController,
-    document: ui.document, screen: { width: 1920, height: 1080, availWidth: 1920, availHeight: 1080, isExtended: false },
-    innerWidth: 1920, innerHeight: 1080, outerWidth: 1920, outerHeight: 1080,
+    document: ui.document,
+    screen: geom ? { width: geom.sw, height: geom.sh, availWidth: geom.sw, availHeight: geom.sh, isExtended: false }
+                 : { width: 1920, height: 1080, availWidth: 1920, availHeight: 1080, isExtended: false },
+    innerWidth: geom ? geom.iw : 1920, innerHeight: geom ? geom.ih : 1080,
+    outerWidth: geom ? geom.iw : 1920, outerHeight: geom ? geom.ih : 1080,
+    devicePixelRatio: geom ? (geom.dpr || 3) : 1,
+    visualViewport: geom && geom.vv ? geom.vv : undefined,
     localStorage: local, sessionStorage: session,
-    navigator: { userAgent: userAgent, platform: 'Synthetic', maxTouchPoints: touchPoints, onLine: true,
+    navigator: { userAgent: userAgent, platform: platform, maxTouchPoints: touchPoints, onLine: true,
       sendBeacon(url, blob) { beacons.push(JSON.parse(blob.parts[0])); return true; } },
     history: { pushState() {} },
     location: { search: search, pathname: '/examinee.html', reload() { reloads++; if (onReload) onReload(); } },
@@ -305,9 +312,13 @@ function defaultReply(request, gateway) {
       return { status: 'ok', build: 'r25', session: { site: 'בדיקת נתונים', license: 'B', language: 'he', audioMode: 'off',
         examinerName: 'בוחן', classroom: '1', sites: ['בדיקת נתונים'], gateway: { url: gateway } } };
     case 'registerExaminee': return { status: 'ok', examineeToken: 'tok-1' };
-    // No checkApproval / getExamStatus: the page cannot reach Apps Script with
-    // either one any more. A request carrying them would be a regression, and
-    // the assertions below name it.
+    // checkApproval / getExamStatus / bankRelay are the r33 Google FALLBACK — a
+    // phone that reaches the Worker never sends them (the gateway tests assert
+    // that), and one that cannot gets the same answers the Worker would give.
+    case 'checkApproval': return { status: 'ok', approval: 'approved', audioMode: 'off', examMinutes: 40 };
+    case 'getExamStatus': return { status: 'ok', examStatus: 'in_exam', extraMinutes: 0 };
+    case 'bankRelay': return Object.assign(bankAnswer(ISSUED_IDS), { relay: true });
+    case 'reportGateway': return { status: 'ok' };
     case 'startExam': return { status: 'ok', build: 'r25', examMinutes: 40, extraMinutes: 0, audioMode: 'off',
       language: request.language, license: request.license, registeredAt: '', questions: SERVER_QUESTIONS,
       bank: EXAM_BANK };
@@ -469,6 +480,8 @@ test('bank: a Worker that will not answer is retried on the ladder, then the exa
   await drain();
   await page.timer.advance(6000);                       // the 1.5 s + 3 s ladder inside bank.js
   assert.equal(bankCalls(page).length, 3, 'three attempts and then it stops — a ladder, not a storm');
+  assert.equal(page.sent('bankRelay').length, 0,
+    'a Worker that ANSWERED (a readable 503) is not a route problem — the relay would be refused the same way (r33)');
   assert.equal(page.t.state().inProgress, false);
   assert.match(page.el('examArea').innerHTML, /לא הצלחנו לטעון את השאלות/);
   assert.equal(page.sent('startExam').length, 1, 'the row was already written; the retry does not write a second one');
@@ -1016,6 +1029,109 @@ test('DQ: an overturn after a RELOAD resumes from the texts the suspended state 
   assert.equal(second.sent('startExam').length, 0);
 });
 
+// ============ 4b. phones: split screen, page zoom, pinch zoom (r33, 23/09/2026) ============
+// Three iPhones were disqualified 15–30 s after starting on 23/09, one of them
+// three times in a row: Safari page zoom (aA, 115% and up) shrinks innerWidth /
+// innerHeight while screen.* stays, and the area-based split monitor read that
+// as a split screen. An iPhone has no split screen for Safari at all.
+const IPHONE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6.1 Mobile/15E148 Safari/604.1';
+const ANDROID_UA = 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36';
+const IPHONE_AT_125 = { sw: 390, sh: 844, iw: 312, ih: 531 };     // iPhone 12-14, aA 125%, toolbar expanded
+function makeVV(scale) {
+  const handlers = [];
+  return { scale, width: 0, height: 0, offsetTop: 0, offsetLeft: 0,
+    addEventListener(t, cb) { if (t === 'resize') handlers.push(cb); },
+    removeEventListener(t, cb) { const i = handlers.indexOf(cb); if (i >= 0) handlers.splice(i, 1); },
+    fire() { for (const cb of [...handlers]) cb(); } };
+}
+async function watchSplit(page, maxMs) {
+  let promptAt = -1, dqAt = -1;
+  const t0 = page.timer.now;
+  for (let t = 0; t < maxMs; t += 250) {
+    await page.timer.advance(250);
+    if (promptAt < 0 && page.ui.byId.get('mobileSplitPrompt')) promptAt = page.timer.now - t0;
+    if (dqAt < 0 && page.t.state().dq) { dqAt = page.timer.now - t0; break; }
+  }
+  return { promptAt, dqAt, reasons: page.beacons.filter(b => b.action === 'disqualify').map(b => b.reason) };
+}
+
+test('phone: an iPhone at 125% Safari page zoom is never shown "split screen" and never disqualified for it', async () => {
+  const page = completePage({ userAgent: IPHONE_UA, touchPoints: 5, geom: IPHONE_AT_125 });
+  await register(page);
+  await startExam(page);
+  const r = await watchSplit(page, 60000);
+  assert.equal(r.promptAt, -1, 'no split-screen prompt');
+  assert.equal(r.dqAt, -1, 'no disqualification');
+  assert.equal(page.sent('reportWarning').length, 0, 'and no "מסך מפוצל" warning on the dashboard');
+});
+
+test('phone: …and neither is an iPhone in "Request Desktop Website" (it says Macintosh)', async () => {
+  const page = completePage({ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6.1 Safari/605.1.15',
+    platform: 'MacIntel', touchPoints: 5, geom: IPHONE_AT_125 });
+  await register(page);
+  await startExam(page);
+  const r = await watchSplit(page, 40000);
+  assert.equal(r.promptAt, -1);
+  assert.equal(r.dqAt, -1);
+});
+
+test('phone: an iPhone overturned back into the exam is not disqualified again 18 s later', async () => {
+  let approval = 'approved', status = 'in_exam';
+  const page = completePage({ userAgent: IPHONE_UA, touchPoints: 5, geom: IPHONE_AT_125, reply(r) {
+    if (r.kind === 'approval') return { status: 'ok', approval, audioMode: 'off' };
+    if (r.kind === 'status') return { status: 'ok', examStatus: status, extraMinutes: 0 };
+    return undefined;
+  } });
+  await register(page);
+  await startExam(page);
+  status = 'disqualified';                          // the examiner's DQ (the only kind left for this geometry)
+  await page.timer.advance(20000);
+  assert.equal(page.t.state().dq, true);
+  status = 'in_exam'; approval = 'in_exam';         // …overturned
+  for (let i = 0; i < 80 && !page.t.state().inProgress; i++) await page.timer.advance(250);
+  assert.equal(page.t.state().inProgress, true, 'resumed');
+  const r = await watchSplit(page, 40000);
+  assert.equal(r.dqAt, -1, 'and it stays in the exam');
+  assert.equal(page.beacons.filter(b => b.action === 'disqualify').length, 0, 'the page never disqualified it itself');
+});
+
+test('phone: the same shrunken viewport on an ANDROID phone is a real split screen — prompt, then DQ with its reason', async () => {
+  const page = completePage({ userAgent: ANDROID_UA, touchPoints: 5, geom: { sw: 412, sh: 915, iw: 412, ih: 380, dpr: 2.625 } });
+  await register(page);
+  await startExam(page);
+  const r = await watchSplit(page, 40000);
+  assert.ok(r.promptAt >= 0 && r.promptAt <= 3000, 'the prompt comes at once: ' + r.promptAt);
+  assert.ok(r.dqAt >= 15000 && r.dqAt <= 20000, 'the DQ after the 15 s grace: ' + r.dqAt);
+  assert.deepEqual(r.reasons, ['split-area'], 'and the beacon says which detector fired');
+  assert.ok(page.sent('reportWarning').some(w => w.reason === 'מסך מפוצל'));
+});
+
+test('phone: an iPhone that leaves Safari is still caught, with the reason on the beacon', async () => {
+  const page = completePage({ userAgent: IPHONE_UA, touchPoints: 5, geom: IPHONE_AT_125 });
+  await register(page);
+  await startExam(page);
+  await page.timer.advance(3000);
+  page.setVisibility('hidden');
+  await page.timer.advance(11000);                  // past the 10 s grace
+  page.setVisibility('visible'); await drain();
+  assert.equal(page.t.state().dq, true);
+  const reasons = page.beacons.filter(b => b.action === 'disqualify').map(b => b.reason);
+  assert.ok(reasons.length >= 1 && /^hidden-/.test(reasons[reasons.length - 1]), 'reason: ' + reasons.join(','));
+});
+
+test('phone: a start while pinch-zoomed in is not a "zoom-out" when the examinee pinches back to normal', async () => {
+  const vv = makeVV(1.6);
+  const page = completePage({ userAgent: IPHONE_UA, touchPoints: 5, geom: { sw: 390, sh: 844, iw: 390, ih: 664, vv } });
+  await register(page);
+  await startExam(page);
+  await page.timer.advance(3000);
+  vv.scale = 1.0; vv.fire(); await drain();
+  assert.equal(page.t.state().dq, false);
+  vv.scale = 0.8; vv.fire(); await drain();         // a real zoom-OUT below normal is still not allowed
+  assert.equal(page.t.state().dq, true);
+  assert.deepEqual(page.beacons.filter(b => b.action === 'disqualify').map(b => b.reason), ['zoom-out']);
+});
+
 // ===================== 5. images =====================
 test('D15: the local copy is the only source tried first; the proxy and gov.il are fallbacks', async () => {
   const page = completePage();
@@ -1121,36 +1237,58 @@ test('gateway: upstream_unavailable slows the poll down but never sends the flee
   assert.ok(polls < 20, 'and the client backs off instead of hammering: ' + polls);
 });
 
-test('gateway: a Worker outage is retried on the ladder — never answered by sending the room at Apps Script', async () => {
-  // Five consecutive real failures (a 502 the page can see, while it is on
-  // screen). There is nowhere else to go: the loop keeps asking the Worker, more
-  // and more slowly, and it never dies.
-  let gatewayDown = true;
-  const page = completePage({
-    reply: r => (String(r.__url).includes('/v1/poll') && gatewayDown) ? { __status: 502, __raw: 'bad gateway' } : undefined });
+test('gateway: a Worker that stays down moves THIS phone to the bounded Google fallback, and back when it recovers', async () => {
+  // r33 (KNOWN_ISSUES #38). Until 23/09 this test said "never Apps Script" — and
+  // phones that could never reach the Worker sat on the waiting screen for an
+  // hour while Google answered them fine. Now three failures in a row (a 502 the
+  // page can see, while it is on screen) move this one phone to Google, at one
+  // request per 12 s; it knocks on the Worker's front door again after a
+  // minute, then two…, and goes back the moment it is let in.
+  let gatewayDown = false;
+  let approval = 'waiting';
+  const page = completePage({ reply(r) {
+    const url = String(r.__url);
+    if (url.includes('/v1/poll')) {
+      if (gatewayDown) return { __status: 502, __raw: 'bad gateway' };
+      return r.kind === 'approval' ? { status: 'ok', approval, audioMode: 'off' } : undefined;
+    }
+    if (url === 'https://gw.example/' && gatewayDown) return { __network: true };
+    if (r.action === 'checkApproval') return { status: 'ok', approval, audioMode: 'off', examMinutes: 40 };
+    return undefined;
+  } });
   page.el('sessionCodeInput').value = 'ABC12345';
   page.el('codeSubmitBtn').click(); await drain();
+  assert.equal(page.el('gwStatus').style.display, 'none', 'the front door answered: the Worker it is');
+  gatewayDown = true;                            // …and then it goes down
   for (const [id, value] of [['idNumber', '123456789'], ['firstName', 'א'], ['lastName', 'ב'], ['phoneNumber', '0501234567']]) page.el(id).value = value;
   page.el('registerBtn').click(); await drain();
 
-  await page.timer.advance(300000);
-  const failed = pollsOf(page, 'approval');
-  assert.ok(failed.length >= 5, 'five failures and more: ' + failed.length);
-  assert.equal(page.sent('checkApproval').length, 0, 'not one of them went to Apps Script');
-  assert.equal(page.sent('getExamStatus').length, 0);
-  // growing delays, and a ceiling: the loop's own ladder ends at maxMs (20 s)
-  // and stays there — a Worker 502 never marks the BACKEND degraded (that would
-  // slow the submit path too). Five minutes of outage is a handful of requests
-  // per device, not a storm.
-  const gap = i => failed[i + 1].__at - failed[i].__at;
-  assert.ok(gap(failed.length - 2) > gap(0), 'the retries spread out: ' + gap(0) + ' ms then ' + gap(failed.length - 2) + ' ms');
-  assert.ok(gap(failed.length - 2) <= 20000, 'and stop growing at maxMs: ' + gap(failed.length - 2));
-  assert.ok(failed.length <= 20, 'a whole outage cost this device ' + failed.length + ' requests');
-  assert.match(page.el('approvalError').textContent, /\S/, 'the examinee is told that the line is down');
+  await page.timer.advance(90000);
+  const workerTries = pollsOf(page, 'approval').length;
+  assert.equal(workerTries, 3, 'three failed polls, and not one more, before the switch');
+  const google = page.sent('checkApproval');
+  assert.ok(google.length >= 4, 'then Google answers the waiting phone: ' + google.length);
+  const gaps = google.slice(1).map((r, i) => r.__at - google[i].__at);
+  assert.ok(gaps.every(g => g >= 12000), 'never faster than one request per 12 s: ' + gaps.join(','));
+  assert.equal(page.el('gwStatus').style.display, 'block', 'the examinee is told the phone works through Google');
+  assert.match(page.el('gwStatus').textContent, /Google/);
+  assert.notEqual(page.el('approvalError').style.display, 'block', 'and is NOT told the line is down — it is not');
+  const told = page.sent('reportGateway');
+  assert.equal(told.length, 1, 'the server is told once');
+  assert.equal(told[0].mode, 'google');
+  assert.equal(told[0].examineeToken, 'tok-1', 'on this registration’s own row');
+  assert.match(told[0].diag, /^v1\|why=approval\|/);
 
-  gatewayDown = false;                           // the Worker comes back
-  await page.timer.advance(120000);
-  assert.ok(pollsOf(page, 'approval').length > failed.length, 'the chain was still alive and picked it straight back up');
+  gatewayDown = false;                           // the Worker recovers
+  const beforeBack = pollsOf(page, 'approval').length;
+  await page.timer.advance(200000);              // knocks at +60 s (refused) and +180 s (let in)
+  assert.ok(pollsOf(page, 'approval').length > beforeBack, 'the phone is back on the Worker');
+  assert.equal(page.el('gwStatus').style.display, 'none');
+  assert.deepEqual(page.sent('reportGateway').map(r => r.mode), ['google', 'worker'], 'and says so');
+  const googleTotal = page.sent('checkApproval').length;
+  approval = 'approved';
+  await page.timer.advance(30000);
+  assert.equal(page.sent('checkApproval').length, googleTotal, 'Google is left alone once the Worker is back');
   assert.equal(page.el('instructionsPhase').style.display, 'block', 'and the approval it had been waiting for lands');
 });
 
@@ -1257,17 +1395,17 @@ test('long poll: a held request killed by a screen lock is not a broken Worker',
   assert.ok(whileHidden >= 3, 'the chain kept trying, backing off: ' + whileHidden);
   assert.ok(whileHidden < 40, 'and it did back off: ' + whileHidden);
 
-  // The difference a dropped hold makes is on the SCREEN, not in the routing:
-  // both go on asking the Worker, but only a failure the examinee could see is
-  // allowed to accuse the server.
+  // The difference a dropped hold makes: a request the DEVICE killed changes
+  // nothing — not the screen, not the route. Only a failure the examinee could
+  // see counts, and since r33 a run of those is what moves a phone to Google.
   assert.ok(!page.el('approvalError') || page.el('approvalError').style.display !== 'block',
     'nothing was said while the phone was asleep');
+  assert.equal(page.el('gwStatus').style.display, 'none', 'and the phone did not change route in its sleep');
   page.setVisibility('visible');
   await page.timer.advance(3000);                // past the 2 s wake grace
   mode = 'http';                                 // now the Worker really is answering 502, on screen
   await page.timer.advance(180000);
-  assert.equal(page.sent('checkApproval').length, 0, 'and a real failure is still no reason to call Apps Script');
-  assert.equal(page.el('approvalError').style.display, 'block', 'it is a reason to tell the examinee');
+  assert.ok(page.sent('checkApproval').length >= 1, 'a failure the examinee can see, three times over, IS a reason to try Google');
 });
 
 test('long poll: three screen locks never raise a server error on the waiting screen', async () => {
@@ -1702,6 +1840,132 @@ test('nudge: it is never sent without a Worker url', async () => {
   assert.equal(pushed[0].examineeToken, 'tok-old');
 });
 
+// ===================== 6e. the Google fallback (r33, KNOWN_ISSUES #38) =====================
+// 23/09/2026: phones that registered through Google but could never reach the
+// Worker sat on the waiting screen for an hour. A phone that cannot reach the
+// Worker now does everything through Google, slowly and boundedly.
+const workerRequests = (page, part) => page.requests.filter(r => String(r.__url).indexOf('https://gw.example/') === 0 && (!part || String(r.__url).includes(part)));
+
+test('fallback: a phone that cannot reach the Worker at all takes the whole exam through Google', async () => {
+  let approval = 'waiting';
+  const page = completePage({ reply(r) {
+    if (String(r.__url).indexOf('https://gw.example/') === 0) return { __network: true };   // nothing at the Worker's address answers
+    if (r.action === 'checkApproval') return { status: 'ok', approval, audioMode: 'off', examMinutes: 40 };
+    return undefined;
+  } });
+  page.el('sessionCodeInput').value = 'ABC12345';
+  page.el('codeSubmitBtn').click(); await drain();
+  await page.timer.advance(3000);                 // two knocks 1.5 s apart, then the trace probe
+  assert.equal(workerRequests(page, '/cdn-cgi/trace').length, 1, 'it asked what, if anything, answers at that address');
+  for (const [id, value] of [['idNumber', '123456789'], ['firstName', 'א'], ['lastName', 'ב'], ['phoneNumber', '0501234567']]) page.el(id).value = value;
+  page.el('registerBtn').click(); await drain();
+  await page.timer.advance(100);
+
+  const reg = page.sent('registerExaminee')[0];
+  assert.match(String(reg.gwDiag || ''), /^v1\|why=probe\|/, 'the registration says why this phone is on Google');
+  assert.match(reg.gwDiag, /trace=none/, 'and that nothing at all answered at the Worker address');
+  assert.equal(page.el('gwStatus').style.display, 'block');
+
+  await page.timer.advance(40000);
+  const polls = page.sent('checkApproval');
+  assert.ok(polls.length >= 3, 'the approval is asked of Google: ' + polls.length);
+  const gaps = polls.slice(1).map((r, i) => r.__at - polls[i].__at);
+  assert.ok(gaps.every(g => g >= 12000), 'one request per 12 s at most: ' + gaps.join(','));
+  assert.equal(workerRequests(page, '/v1/poll').length, 0, 'and the Worker is not asked at all');
+  assert.equal(page.sent('reportGateway').length, 0, 'the registration already carried the diagnosis — no second report');
+
+  approval = 'approved';
+  await page.timer.advance(13000);
+  assert.equal(page.el('instructionsPhase').style.display, 'block', 'the approval arrived through Google');
+  await startExam(page);
+  await page.timer.advance(100);
+  assert.equal(page.t.state().inProgress, true, 'the exam runs');
+  assert.equal(page.sent('bankRelay').length, 1, 'the texts came through our own server');
+  assert.equal(page.sent('bankRelay')[0].grant, EXAM_BANK.grant, 'with the grant startExam issued, untouched');
+  assert.equal(page.requests.filter(r => String(r.__url).includes('/v1/bank')).length, 0, 'the Worker was not asked for them');
+  assert.deepEqual(plain(page.t.state().questions).map(q => q.id), ISSUED_IDS, 'the same 30 questions, in the server order');
+
+  const before = page.sent('getExamStatus').length;
+  await page.timer.advance(60000);
+  const status = page.sent('getExamStatus').length - before;
+  assert.ok(status >= 2 && status <= 4, 'one in-exam status check per ~20 s: ' + status);
+  assert.equal(workerRequests(page, '/v1/invalidate').length, 0, 'and no pushes to a Worker it cannot reach');
+});
+
+test('fallback: texts the Worker will not deliver come through the relay, and the phone changes route', async () => {
+  const page = completePage({ reply: r => String(r.__url).includes('/v1/bank') ? { __network: true } : undefined });
+  await register(page);
+  await startExam(page);
+  await page.timer.advance(8000);                 // bank.js ladder (1.5 s + 3 s), then the relay
+  assert.equal(page.t.state().inProgress, true, 'the exam started anyway');
+  assert.equal(page.sent('bankRelay').length, 1);
+  const told = page.sent('reportGateway');
+  assert.equal(told.length, 1);
+  assert.equal(told[0].mode, 'google');
+  assert.match(told[0].diag, /^v1\|why=bank\|/);
+  const before = page.sent('getExamStatus').length;
+  await page.timer.advance(45000);
+  assert.ok(page.sent('getExamStatus').length > before, 'the in-exam status follows the phone to Google');
+});
+
+test('fallback: a relay that fails too leaves the examinee exactly where a failed load always did', async () => {
+  const page = completePage({ reply(r) {
+    if (String(r.__url).includes('/v1/bank')) return { __network: true };
+    if (r.action === 'bankRelay') return { status: 'error', code: 'relay_failed', retryable: true, message: 'x' };
+    return undefined;
+  } });
+  await register(page);
+  await startExam(page);
+  await page.timer.advance(8000);
+  assert.equal(page.t.state().inProgress, false);
+  assert.match(page.el('examArea').innerHTML, /לא הצלחנו לטעון את השאלות/);
+  assert.equal(page.sent('startExam').length, 1, 'and nothing wrote a second exam');
+});
+
+test('fallback: a reload keeps a phone on Google instead of knocking on the Worker three times per poll', async () => {
+  const session = memoryStore(), local = memoryStore();
+  const down = r => (String(r.__url).indexOf('https://gw.example/') === 0 ? { __network: true } : undefined);
+  const first = completePage({ session, local, reply: r => down(r) || (r.action === 'checkApproval' ? { status: 'ok', approval: 'waiting', audioMode: 'off' } : undefined) });
+  first.el('sessionCodeInput').value = 'ABC12345';
+  first.el('codeSubmitBtn').click(); await drain();
+  await first.timer.advance(3000);
+  for (const [id, value] of [['idNumber', '123456789'], ['firstName', 'א'], ['lastName', 'ב'], ['phoneNumber', '0501234567']]) first.el(id).value = value;
+  first.el('registerBtn').click(); await drain();
+  await first.timer.advance(20000);
+  assert.equal(first.el('gwStatus').style.display, 'block');
+
+  const again = completePage({ session, local, reply: r => down(r) || (r.action === 'checkApproval' ? { status: 'ok', approval: 'waiting', audioMode: 'off' } : undefined) });
+  await drain();
+  await again.timer.advance(30000);
+  assert.equal(again.el('gwStatus').style.display, 'block', 'the reloaded tab knows its route');
+  assert.equal(workerRequests(again, '/v1/poll').length, 0, 'and does not spend three failed polls finding out again');
+  assert.ok(again.sent('checkApproval').length >= 2, 'it goes on waiting through Google');
+});
+
+test('fallback: "?gw=google" in the link sends the phone straight to Google — for a rehearsal, or a phone known to be stuck', async () => {
+  const page = completePage({ search: '?code=ABC12345&gw=google' });
+  await drain();
+  await page.timer.advance(400);                  // the link's code is submitted after 300 ms
+  assert.equal(page.el('gwStatus').style.display, 'block');
+  assert.equal(workerRequests(page).length, 0, 'not even a knock on the Worker');
+  for (const [id, value] of [['idNumber', '123456789'], ['firstName', 'א'], ['lastName', 'ב'], ['phoneNumber', '0501234567']]) page.el(id).value = value;
+  page.el('registerBtn').click(); await drain();
+  await page.timer.advance(15000);
+  assert.match(String(page.sent('registerExaminee')[0].gwDiag || ''), /why=forced/);
+  assert.equal(page.el('instructionsPhase').style.display, 'block', 'approved through Google');
+  await page.timer.advance(400000);
+  assert.equal(workerRequests(page).length, 0, 'and it never goes knocking — the link said so');
+});
+
+test('fallback: an upstream_unavailable ANSWER is the Worker talking — no change of route', async () => {
+  const page = completePage({ reply: r => String(r.__url).includes('/v1/poll') ? { status: 'error', code: 'upstream_unavailable', retryable: true } : undefined });
+  await register(page);
+  await page.timer.advance(120000);
+  assert.equal(page.el('gwStatus').style.display, 'none');
+  assert.equal(page.sent('checkApproval').length, 0);
+  assert.equal(page.sent('reportGateway').length, 0);
+});
+
 // ===================== 7. restore =====================
 test('D20: a state left by another examinee is never adopted silently', async () => {
   const local = memoryStore();
@@ -1989,17 +2253,23 @@ test('source: the page owns no transport of its own any more', () => {
   assert.ok(/ExamTransport\.drainLog\(\)/.test(src));
 });
 
-test('source: the direct poll route is gone — the Worker is the only one', () => {
+test('source: Apps Script is polled only through the bounded Google fallback (r33)', () => {
   const src = examinee.replace(/\r/g, '');
-  assert.ok(!/createFailover/.test(src), 'nothing to fail over to');
+  assert.ok(!/createFailover/.test(src), 'no generic failover machinery');
   for (const gone of ['directApprovalCall', 'directStatusCall', 'APPROVAL_DIRECT_BASE_MS', 'EXAMSTATUS_DIRECT_BASE_MS']) {
     assert.ok(!new RegExp('\\b' + gone + '\\b').test(src), gone + ' is gone');
   }
-  assert.ok(!/action: 'checkApproval'|action: 'getExamStatus'/.test(src),
-    'the page has no way left to poll Apps Script directly');
-  assert.ok(!/gatewayUrl\(\)\s*\?/.test(src), 'and no cadence branches on whether a gateway exists');
-  assert.ok(src.includes('המערכת אינה מוגדרת (Worker) — פנה למנהל המערכת'), 'a missing Worker is named, not polled');
-  assert.ok(!/falls? back to (the )?direct|five minutes/.test(src), 'and the comments do not promise a fallback');
+  // ONE place names each Google poll action, and pollRoute reaches it only in
+  // Google mode — a phone that reaches the Worker never polls Apps Script.
+  assert.equal((src.match(/'checkApproval'/g) || []).length, 1, 'one place names checkApproval');
+  assert.equal((src.match(/'getExamStatus'/g) || []).length, 1, 'one place names getExamStatus');
+  assert.match(src, /if \(inGoogleMode\(\)\) return googleRoute\(kind, noWait\);/);
+  const gap = /var GOOGLE_GAP_MS = \{ approval: (\d+), status: (\d+) \};/.exec(src);
+  assert.ok(gap && Number(gap[1]) >= 10000 && Number(gap[2]) >= 15000, 'at a cadence Apps Script can carry');
+  const fails = /var GW_FAILS_TO_FALLBACK = (\d+);/.exec(src);
+  assert.ok(fails && Number(fails[1]) >= 3, 'and never on one or two lost answers');
+  assert.ok(!/gatewayUrl\(\)\s*\?/.test(src), 'no cadence branches on whether a gateway exists');
+  assert.ok(src.includes('המערכת אינה מוגדרת (Worker) — פנה למנהל המערכת'), 'a missing Worker is still named, not polled');
 });
 
 test('source: the re-arm and the device push are wired exactly where §13.4/§13.5 put them', () => {
@@ -2007,7 +2277,8 @@ test('source: the re-arm and the device push are wired exactly where §13.4/§13
   // §13.4: the ONE loop that overrides the pacing must let a re-armed answer
   // through, or the fast window would pull it back to 2 s. The other two chains
   // pass no nextDelay at all, so transport's gap is already the last word.
-  assert.match(src, /nextDelay: function\(info, paced\) \{\s*\n\s*if \(info\.held > 0 \|\| info\.rearm\) return paced;/,
+  // r33: the one line before it is the Google fallback's own floor.
+  assert.match(src, /nextDelay: function\(info, paced\) \{\s*\n(\s*\/\/[^\n]*\n)*\s*if \(inGoogleMode\(\)\) return Math\.max\(paced, GOOGLE_GAP_MS\.approval\);\s*\n\s*if \(info\.held > 0 \|\| info\.rearm\) return paced;/,
     'the approval loop follows info.rearm');
   assert.equal((src.match(/nextDelay:/g) || []).length, 1, 'and it is still the only loop that overrides the pacing');
   // §13.5: a RESEND after a re-registration must announce itself with the token

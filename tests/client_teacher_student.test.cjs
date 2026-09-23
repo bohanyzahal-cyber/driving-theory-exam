@@ -796,11 +796,12 @@ test('exam.html: the standalone flow requires the grant and never loads a bank b
 test('sw-student.js: parses, is GET-only and precaches the shared modules', () => {
   const src = fs.readFileSync(path.join(app, 'sw-student.js'), 'utf8');
   const listeners = [];
-  const self = { addEventListener: (t, cb) => listeners.push([t, cb]), skipWaiting() {}, clients: { claim() {} } };
+  const self = { addEventListener: (t, cb) => listeners.push([t, cb]), skipWaiting() {}, clients: { claim() {} },
+    location: { origin: 'https://example' } };
   vm.runInNewContext(src, {
     self,
     caches: { open: () => Promise.resolve({ addAll: () => Promise.resolve() }), keys: () => Promise.resolve([]), match: () => Promise.resolve(null), delete: () => Promise.resolve() },
-    fetch: () => Promise.resolve(), console: quiet
+    fetch: () => Promise.resolve(), console: quiet, URL
   });
   assert.deepEqual(listeners.map(l => l[0]), ['install', 'activate', 'fetch']);
   assert.match(src, /^var CACHE_NAME = '[a-z]+-[a-z0-9]+';$/m);
@@ -812,6 +813,16 @@ test('sw-student.js: parses, is GET-only and precaches the shared modules', () =
   assert.equal(responded, false, 'D7: Cache.put throws on a non-GET request');
   fetchHandler({ request: { method: 'GET', url: 'https://example/student.html?cb=1' }, respondWith: () => { responded = true; } });
   assert.equal(responded, true);
+  // r33 (24/09/2026): the same scope serves the exam page, so this worker used to
+  // take the session-gateway polls and the /v1/bank texts too (and cache the
+  // texts). Cross-origin requests now go straight to the network.
+  for (const url of ['https://session-gateway.example.workers.dev/v1/poll?kind=approval&wait=25',
+                     'https://session-gateway.example.workers.dev/v1/bank?grant=g.s',
+                     'https://hebrew-tts.example.workers.dev/?q=x']) {
+    let taken = false;
+    fetchHandler({ request: { method: 'GET', url }, respondWith: () => { taken = true; } });
+    assert.equal(taken, false, 'cross-origin is left alone: ' + url);
+  }
   assert.match(src, /ignoreSearch: true/, 'a cache-busted shell still matches its cached copy offline');
   // The questions are not served from this origin any more - they come from the
   // gateway, against a grant, and are never put in a cache.

@@ -142,6 +142,29 @@ function diagRecordClientLog(sessionCode, idNumber, entries) {
   } catch (e) { return 'error'; }
 }
 
+// r33 (24/09/2026, KNOWN_ISSUES #38): a phone that cannot reach the Worker says
+// how the Worker failed it (examinee.html gwDiagString: 'v1|why=…|e=…|os=…|br=…'),
+// with its registration (gwDiag) or on its own (reportGateway). Until now the
+// only evidence of such a phone was its ABSENCE from the Worker's log. The text
+// reaches the sheet, so only printable characters survive, and never more than
+// DIAG_GATEWAY_MAX_CHARS. A missing value serialised by a careless caller
+// ('undefined' / 'null') is no diagnosis at all.
+var DIAG_GATEWAY_MAX_CHARS = 300;
+function sanitizeGatewayDiag(raw) {
+  if (raw === null || raw === undefined) return '';
+  var text = String(raw);
+  if (text === 'undefined' || text === 'null') return '';
+  text = text.replace(/[\t\r\n]+/g, ' ').replace(/[^\x20-\x7E\u0590-\u05FF]/g, '').trim();
+  return text.slice(0, DIAG_GATEWAY_MAX_CHARS);
+}
+// Lands exactly where the client logs land ('אבחון', type CLIENT), as ONE
+// entry. JSON, so the cell starts with '[' and can never be read as a formula.
+function recordGatewayDiag(sessionCode, idNumber, mode, diag) {
+  if (!diag) return 'empty';
+  try { return diagRecordClientLog(sessionCode, idNumber, [{ t: Date.now(), e: 'gw', m: String(mode || ''), d: diag }]); }
+  catch (e) { return 'error'; }
+}
+
 // Run from the editor during an exam morning if 'אבחון' looks empty while the
 // dashboards are slow: writes the parked SLOW rows and records killed executions.
 function flushDiagnostics() {

@@ -2807,6 +2807,34 @@
     });
   }
 
+  // r33 (24/09/2026): a phone that cannot reach the Worker works through Google
+  // and its row says so - column Q (lastWarning) starts with '📡' (the server's
+  // reportGateway / a registration made in the fallback). Rendered from the
+  // text alone, escaped; anything else in lastWarning is not this badge's business.
+  // r33: 'פסילה: <code>' (server 65_dq.js, from examinee.html currentDQReason) in
+  // the examiner's words. An unknown code is shown as it is; no code = ''.
+  var DQ_REASON_LABELS = {
+    'hidden-final': 'יציאה מהמסך אחרי 3 אזהרות', 'hidden-10s': 'יציאה מהמסך מעל 10 שנ׳',
+    'hidden-5s': 'יציאה מהמסך מעל 5 שנ׳ (שיחה?)', 'fullscreen-exit': 'יציאה ממסך מלא',
+    'fullscreen-prompt': 'לא חזר למסך מלא', 'zoom-out': 'הקטנת תצוגה', 'split-start': 'חלון קטן/מפוצל כבר בהתחלה',
+    'split-area': 'מסך מפוצל', 'split-resize': 'שינוי גודל חלון', 'blur-hidden-final': 'מעבר לאפליקציה אחרת',
+    'blur-hidden-10s': 'מעבר לאפליקציה אחרת מעל 10 שנ׳', 'blur-hidden-5s': 'מעבר לאפליקציה אחרת מעל 5 שנ׳'
+  };
+  function dqReasonLabel(lastWarning) {
+    var m = /^פסילה: ([a-z0-9-]{1,24})$/.exec(String(lastWarning || ''));
+    if (!m) return '';
+    return DQ_REASON_LABELS[m[1]] || m[1];
+  }
+
+  function gatewayFallbackBadge(item) {
+    var text = String((item && item.lastWarning) || '');
+    if (text.indexOf('📡') !== 0) return '';
+    var title = text.indexOf('📡 חזר ל-Worker') === 0
+      ? 'הטלפון חזר לעבוד מול שרת המבחן (Worker) — קודם עבד דרך Google'
+      : 'הטלפון לא הגיע לשרת המבחן (Worker) ועובד דרך Google — אישור ועדכונים מגיעים באיחור של עד כ-15 שניות';
+    return ' <span style="background:#e0f2fe;color:#075985;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:700;border:1px solid #7dd3fc;" title="' + title + '">' + escHtml(text) + '</span>';
+  }
+
   function updatePendingList(pending) {
     var list = document.getElementById('pendingList');
     var badge = document.getElementById('pendingBadge');
@@ -2915,7 +2943,7 @@
           timeBadge = ' <span style="background:#ede9fe;color:#6d28d9;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:500;">⏱ +50%</span>';
         }
         li.innerHTML =
-          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + statusBadge + timeBadge + langBadge + popBadge + (item.site && item.site !== currentSite ? ' <span style="background:#dbeafe;color:#1e40af;padding:1px 7px;border-radius:8px;font-size:0.8em;font-weight:700;">📍 ' + escHtml(item.site) + '</span>' : '') + licBadge + audioBadge + extScreenBadge + '</div>' +
+          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + statusBadge + timeBadge + langBadge + popBadge + (item.site && item.site !== currentSite ? ' <span style="background:#dbeafe;color:#1e40af;padding:1px 7px;border-radius:8px;font-size:0.8em;font-weight:700;">📍 ' + escHtml(item.site) + '</span>' : '') + licBadge + audioBadge + extScreenBadge + gatewayFallbackBadge(item) + '</div>' +
           '<div class="person-meta">ת.ז. ' + escHtml(item.idNumber) + '</div>' + repeatBadge + '</div>' +
           '<div class="person-actions"></div>';
         // Stronger red visual treatment when this examinee already tested today
@@ -3206,7 +3234,11 @@
         // awaiting examiner decision (Bug #2/#4 fix).
         var dqBanner = '';
         if (item.dqPending) {
-          dqBanner = '<div style="background:#fee2e2;color:#991b1b;padding:6px 10px;border-radius:6px;margin-top:4px;font-size:0.9em;font-weight:700;">⚠️ פסילה אוטומטית — דורש החלטה</div>';
+          // r33: the device now says WHICH detector fired ('פסילה: <code>' in
+          // lastWarning) — the examiner decides with the reason in front of them.
+          var dqWhy = dqReasonLabel(item.lastWarning);
+          dqBanner = '<div style="background:#fee2e2;color:#991b1b;padding:6px 10px;border-radius:6px;margin-top:4px;font-size:0.9em;font-weight:700;">⚠️ פסילה אוטומטית — דורש החלטה' +
+            (dqWhy ? ' <span style="font-weight:600;">(' + escHtml(dqWhy) + ')</span>' : '') + '</div>';
         }
         // The examinee's device reported it finished but the full result hasn't landed
         // yet (weak connection). Tell the examiner to WAIT, not force a redo — a result
@@ -3229,11 +3261,13 @@
         // examiner — now repeated suspicious behavior is surfaced. Hover = last reason.
         var warnBadge = '';
         if (item.warnings && item.warnings > 0) {
-          var warnTitle = item.lastWarning ? (' title="' + escHtml('אחרון: ' + item.lastWarning) + '"') : '';
+          // escHtml leaves quotes alone, and this text sits inside an attribute
+          // (lastWarning is examinee-supplied via reportWarning): quotes too.
+          var warnTitle = item.lastWarning ? (' title="' + escHtml('אחרון: ' + item.lastWarning).replace(/"/g, '&quot;').replace(/'/g, '&#39;') + '"') : '';
           warnBadge = ' <span' + warnTitle + ' style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:8px;font-size:0.8em;font-weight:700;">⚠ ' + item.warnings + ' אזהרות</span>';
         }
         li.innerHTML =
-          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + dqCountBadge + warnBadge + timeBadge + extraTimeBadge + langBadge + popBadge + (item.site && item.site !== currentSite ? ' <span style="background:#dbeafe;color:#1e40af;padding:1px 7px;border-radius:8px;font-size:0.8em;font-weight:700;">📍 ' + escHtml(item.site) + '</span>' : '') + licBadge + audioBadge + extScreenBadgeActive + '</div>' +
+          '<div class="person-info"><div class="person-name">' + escHtml(item.name) + dqCountBadge + warnBadge + timeBadge + extraTimeBadge + langBadge + popBadge + (item.site && item.site !== currentSite ? ' <span style="background:#dbeafe;color:#1e40af;padding:1px 7px;border-radius:8px;font-size:0.8em;font-weight:700;">📍 ' + escHtml(item.site) + '</span>' : '') + licBadge + audioBadge + extScreenBadgeActive + gatewayFallbackBadge(item) + '</div>' +
           '<div class="person-meta">ת.ז. ....' + id4 + (elapsed ? ' | <span style="' + elapsedStyle + '">זמן: ' + elapsed + '</span>' : '') + overtimeWarning + '</div>' +
           dqBanner + finishedBanner + '</div>' +
           '<div class="person-actions"></div>';

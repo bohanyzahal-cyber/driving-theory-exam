@@ -111,20 +111,26 @@
   // (an error envelope from the Worker lands here too, with its code).
   function loadQuestions(url) {
     if (!url) return Promise.reject(new Error('bank grant missing'));
-    return fetchWithRetry(url).then(function (body) {
-      if (!body || body.status !== 'ok' || !Array.isArray(body.questions)) {
-        throw new Error('bad bank answer' + (body && body.code ? ' (' + body.code + ')' : ''));
-      }
-      var missing = Array.isArray(body.missing) ? body.missing.slice() : [];
-      var count = 0;
-      for (var i = 0; i < body.questions.length; i++) {
-        // An id that yielded no language at all is as absent as one the Worker
-        // never found: the caller must not draw it as an empty question.
-        if (ingest(body.questions[i])) count++;
-        else if (body.questions[i] && body.questions[i].id != null) missing.push(body.questions[i].id);
-      }
-      return { build: String(body.build || ''), count: count, missing: missing };
-    });
+    return fetchWithRetry(url).then(ingestAnswer);
+  }
+
+  // One /v1/bank answer into the banks — whoever fetched it. Since r33 (24/09/2026)
+  // that is not always this file: a phone that cannot reach the Worker at all asks
+  // our own server (bankRelay), which fetches the SAME answer from the Worker with
+  // the same grant and hands it back unchanged, so it goes through exactly this.
+  function ingestAnswer(body) {
+    if (!body || body.status !== 'ok' || !Array.isArray(body.questions)) {
+      throw new Error('bad bank answer' + (body && body.code ? ' (' + body.code + ')' : ''));
+    }
+    var missing = Array.isArray(body.missing) ? body.missing.slice() : [];
+    var count = 0;
+    for (var i = 0; i < body.questions.length; i++) {
+      // An id that yielded no language at all is as absent as one the Worker
+      // never found: the caller must not draw it as an empty question.
+      if (ingest(body.questions[i])) count++;
+      else if (body.questions[i] && body.questions[i].id != null) missing.push(body.questions[i].id);
+    }
+    return { build: String(body.build || ''), count: count, missing: missing };
   }
 
   // Exam / practice: the grant itself names the ids, so the device gets exactly
@@ -232,6 +238,7 @@
   global.QuestionBank = {
     LANGS: LANGS,
     loadGrant: loadGrant,
+    ingestAnswer: ingestAnswer,
     loadIds: loadIds,
     loadFull: loadFull,
     exportIds: exportIds,

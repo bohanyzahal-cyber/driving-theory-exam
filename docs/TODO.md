@@ -106,7 +106,7 @@
 |---|---|
 | ~~7.1~~ | ~~`student.html` stubs~~ | ✅ נמחק 22/09/2026 |
 | 7.2 | `server/src/98_migration_practice.js` | למחוק אחרי 27/09 (ראה 0.3) |
-| ~~7.3~~ | ~~`checkApproval` / `getExamStatus` בשרת~~ | ✅ 21/09 ערב (יוסי: לא דוחים): שתי הפעולות פרשו מה-API (→ `client_outdated`); הפונקציות נשארות כאמת-מידה לבדיקות החוזים |
+| ~~7.3~~ | ~~`checkApproval` / `getExamStatus` בשרת~~ | ✅ 21/09 ערב: שתי הפעולות פרשו מה-API (→ `client_outdated`). **r33 (24/09): מוגשות שוב** — מסלול הגיבוי של טלפון שלא מגיע ל-Worker (KNOWN_ISSUES #38, DESIGN §15); לא למחוק |
 
 ---
 

@@ -245,6 +245,45 @@ function envWith(extra, properties) {
   });
 }
 
+// ---- 3c. r33: the Google fallback costs the auth read and one cell ----------
+// A phone that cannot reach the Worker (KNOWN_ISSUES #38) reports it
+// (reportGateway) and gets its texts through this script (bankRelay). On the
+// audited fixture neither may cost more than the examinee-token check's ONE
+// tail read of 'ממתינים': the report writes a single cell (Q), the relay
+// writes nothing at all, and neither ever reads a growing sheet whole.
+{
+  const env = envWith({});
+  const id = '600000000';   // in_exam in SESSION
+  const post = body => env.json(env.ctx.doPost({ postData: { contents: JSON.stringify(Object.assign(
+    { origin: 'examinee-app', sessionCode: SESSION, idNumber: id, examineeToken: 'tok-' + id }, body)) } }));
+  env.resetCounters();
+  const reported = post({ action: 'reportGateway', mode: 'google', diag: 'v1|why=probe|os=Android14' });
+  const c = env.counters();
+  check('reportGateway: one ממתינים tail read (the auth check), ONE cell written, nothing else in Sheets', () => {
+    assert.deepEqual(reported, { status: 'ok' });
+    assert.equal(c.perSheet['ממתינים'].fullReads, 0, 'never a full read of a sheet that grows all day');
+    assert.equal(c.perSheet['ממתינים'].rangeReads, 2, 'one tail read = header + tail, handed from the auth check');
+    assert.equal(c.perSheet['ממתינים'].setValues, 1, 'column Q only');
+    assert.equal(c.perSheet['ממתינים'].appends, 0);
+    const row = env.rows('ממתינים').filter(r => r[0] === SESSION && r[1] === id)[0];
+    assert.equal(row[16], '📡 גיבוי גוגל (probe)');
+    assert.equal(row[15], '', 'the warning counter cell is exactly as it was');
+  });
+
+  env.ctx.UrlFetchApp = { fetch: () => ({ getResponseCode: () => 200,
+    getContentText: () => '{"status":"ok","build":"b","questions":[{"id":1}],"missing":[]}' }) };
+  const grant = env.ctx.bankGrantFor('exam', [1, 2, 3], SESSION + ':' + id).grant;
+  env.resetCounters();
+  const relayed = post({ action: 'bankRelay', grant });
+  const r = env.counters();
+  check('bankRelay: the auth check\'s tail read and nothing else — no write, no second read', () => {
+    assert.equal(relayed.status, 'ok');
+    assert.equal(relayed.relay, true);
+    assert.equal(r.reads, 2, 'reads=' + r.reads + ' ' + JSON.stringify(r.perSheet));
+    assert.equal(r.appends + r.setValues, 0, 'the relay writes nothing');
+  });
+}
+
 // ---- 4. sessionSnapshot: one upstream call for the whole session ------------
 // r32 (DESIGN §14.1): the board is drawn from THIS answer, so it costs one more
 // tail read — 'תוצאות', the same one the board itself pays. That is the whole
@@ -555,6 +594,8 @@ function envWith(extra, properties) {
   writesSnapshot('forceComplete', env => env.ctx.handleForceComplete(Object.assign({ sessionCode: SESSION, idNumber: inExamId }, examiner)));
   writesSnapshot('markFinished', env => env.ctx.handleMarkFinished({ sessionCode: SESSION, idNumber: inExamId, examineeToken: 'tok-' + inExamId }));
   writesSnapshot('reportWarning', env => env.ctx.handleReportWarning({ sessionCode: SESSION, idNumber: inExamId, examineeToken: 'tok-' + inExamId, reason: 'tab-switch' }));
+  writesSnapshot('reportGateway (r33)', env => env.ctx.handleReportGateway({ sessionCode: SESSION, idNumber: inExamId, examineeToken: 'tok-' + inExamId, mode: 'google', diag: 'v1|why=probe' }));
+  writesSnapshot('self-disqualify with a reason (r33)', env => env.ctx.handleDisqualify({ sessionCode: SESSION, idNumber: inExamId, examineeToken: 'tok-' + inExamId, dqEventId: 'r33', reason: 'split-area' }));
   writesSnapshot('the dashboard reconciliation', env => {
     const sheet = env.sheet('ממתינים');
     // make one in_exam row stale: registered long before the exam window ends

@@ -6,7 +6,7 @@
 // @@API_DEPLOYMENT@@
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-23-r32';
+var THEORY_API_BUILD = '2026-09-24-r33';
 // When the current request entered the script — health&deep=1 reports the whole
 // request against it, so a watchdog can separate our time from Google's.
 var API_STARTED_AT = 0;
@@ -137,7 +137,9 @@ var ACTION_TARGETS = {
   startExam: 'exam', markExamStarted: 'exam', getExamQuestions: 'exam',
   registerExamQuestions: 'exam', submitResult: 'exam', submitFailOnClose: 'exam',
   cancelFailOnClose: 'exam', getResultUploadToken: 'exam',
-  sessionSnapshot: 'exam', bankGrant: 'exam'
+  sessionSnapshot: 'exam', bankGrant: 'exam',
+  // r33 (24/09/2026): the Google fallback of a phone that cannot reach the Worker
+  bankRelay: 'exam', reportGateway: 'exam'
 };
 
 // ---- Where the action rows live --------------------------------------------
@@ -204,13 +206,16 @@ function legacyActionTable() {
     ['getSessionInfo', 'GET', 'none', 'handleGetSessionInfo'],
     ['registerExaminee', 'GET', 'none', 'handleRegisterExaminee'],
     ['cancelRegistration', 'GET', 'none', 'handleCancelRegistration'],
-    // Retired 21/09/2026 evening: the examinee page polls ONLY through the
-    // session gateway (there is no direct route any more). An old page still
-    // calling these is told to reload, like every other retired action.
-    // handleCheckApproval / handleGetExamStatus themselves stay: they are the
-    // reference the Worker is tested against (tests/contracts.test.cjs).
-    ['checkApproval', 'GET', 'none', 'handleClientOutdated'],
-    ['getExamStatus', 'GET', 'none', 'handleClientOutdated'],
+    // Retired 21/09/2026 evening (the page polled ONLY through the session
+    // gateway) and SERVED AGAIN in r33 (24/09/2026, KNOWN_ISSUES #38): on 23/09
+    // many phones reached Google but never the Worker, so a phone that fails
+    // the Worker now polls these two directly — paced by the page (12 s / 20 s)
+    // and only on the phones that failed; every other phone stays on the
+    // Worker. Same handlers, same answers: they are also the reference the
+    // Worker is tested against (tests/contracts.test.cjs). Auth is theirs: a
+    // per-examinee rate limit and the token-mismatch rule inside the handler.
+    ['checkApproval', 'GET', 'none', 'handleCheckApproval'],
+    ['getExamStatus', 'GET', 'none', 'handleGetExamStatus'],
     ['addExamTime', 'GET', 'none', 'handleAddExamTime'],
     ['markFinished', 'GET', 'none', 'handleMarkFinished'],
     // 'disqualify' is deliberately not examiner-gated: the examinee client sends

@@ -115,10 +115,15 @@ function handleRegisterExaminee(p) {
   }
   var lock = null, held = false;
   try { lock = LockService.getScriptLock(); held = lock.tryLock(5000); } catch (eLock) { held = false; }
+  var outcome = {};
   try {
-    return registerExamineeLocked(p, regKey);
+    return registerExamineeLocked(p, regKey, outcome);
   } finally {
     if (held) { try { lock.releaseLock(); } catch (eRel) {} }
+    // r33: the fallback diagnosis of a row this execution appended, recorded
+    // AFTER the lock is released — an append to 'אבחון' must never hold up the
+    // next examinee's registration.
+    if (outcome.gwDiag) { try { recordGatewayDiag(p.sessionCode, p.idNumber, 'register', outcome.gwDiag); } catch (eDiag) {} }
   }
 }
 
@@ -139,7 +144,9 @@ function registrationSessionError(sessionCode) {
   return null;
 }
 
-function registerExamineeLocked(p, regKey) {
+// outcome (optional, r33): told whether this execution appended a row that
+// carries a fallback diagnosis, so the caller can record it outside the lock.
+function registerExamineeLocked(p, regKey, outcome) {
   var MAX_PENDING_PER_SESSION = 50;
   var pendSheet = getSheet('ממתינים');
   var data = pendSheet.getDataRange().getValues();
@@ -186,6 +193,10 @@ function registerExamineeLocked(p, regKey) {
   // External-monitor indicator from client (screen.isExtended). Cheating risk
   // signal — examinee may be sharing window to a second screen with accomplice.
   var hasExtendedScreen = (p.hasExtendedScreen === '1' || p.hasExtendedScreen === 1 || p.hasExtendedScreen === true);
+  // r33: a phone that already knows it cannot reach the Worker registers with
+  // gwDiag, and its row carries the '📡' badge from the very first render
+  // (column Q, see reportGateway in 52_pending_status.js).
+  var gwDiag = sanitizeGatewayDiag(p.gwDiag);
   pendSheet.appendRow([
     p.sessionCode,
     p.idNumber,
@@ -203,9 +214,10 @@ function registerExamineeLocked(p, regKey) {
     0,                        // N (13): ספירת DQ — מתעלה עם כל disqualify
     hasExtendedScreen ? 'כן' : '', // O (14): מסך נוסף — סימן אזהרה
     0,                        // P (15): ספירת אזהרות — מאותחל ל-0 (נכתב ע"י warning)
-    '',                       // Q (16): אזהרה אחרונה — נכתב ע"י warning
+    gwDiag ? GATEWAY_LABEL_GOOGLE : '', // Q (16): אזהרה אחרונה — נכתב ע"י warning / r33: '📡' של גיבוי גוגל
     p.site || ''              // R (17): אתר — האתר שהנבחן בחר (מארח/אורח), לתצוגה חיה לבוחן
   ]);
+  if (outcome && gwDiag) outcome.gwDiag = gwDiag;
   invalidatePendingSnapshot(p.sessionCode);   // r23: the first poll must find the new row
   rememberRegistrationToken(p.sessionCode, p.idNumber, regKey, examineeToken);
   return jsonResponse({ status: 'ok', examineeToken: examineeToken });

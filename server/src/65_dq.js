@@ -48,13 +48,21 @@ function handleDisqualify(p) {
     }
   }
 
+  // r33 (24/09/2026): which detector fired on the examinee's device
+  // (examinee.html currentDQReason: split-area, zoom-out, hidden-10s, ...), for
+  // the examiner's row as 'פסילה: <reason>' in column Q. Self-DQ only, and only
+  // a short lowercase token — anything else is dropped, never written.
+  var dqReason = p.examinerId ? '' : selfDqReason(p.reason);
+
   // Update pending status to 'disqualified' (only if a row exists) AND increment
   // the DQ-event counter in column N so the examiner can see how many times this
   // examinee triggered an anti-cheat event — even if some were auto-reverted in
   // grace period via cancelDisqualify.
   if (pendRowIdx !== -1) {
     var prevCount = (pendData[pendRowIdx].length > 13) ? (Number(pendData[pendRowIdx][13]) || 0) : 0;
-    setPendingStatus(pendSheet, pendRowIdx + 1, p.sessionCode, 'disqualified', { dqCount: prevCount + 1 });
+    var dqExtras = { dqCount: prevCount + 1 };
+    if (dqReason) dqExtras.lastWarning = 'פסילה: ' + dqReason;
+    setPendingStatus(pendSheet, pendRowIdx + 1, p.sessionCode, 'disqualified', dqExtras);
     // Clear any OTHER active (in_exam/approved) rows for this examinee so a
     // duplicate row doesn't linger on the board beside the disqualified one.
     for (var dqd = 1; dqd < pendData.length; dqd++) {
@@ -132,6 +140,11 @@ function handleDisqualify(p) {
   ]);
   SpreadsheetApp.flush();
   return jsonResponse({ status: 'ok' });
+}
+
+function selfDqReason(raw) {
+  var reason = (raw === null || raw === undefined) ? '' : String(raw).trim();
+  return /^[a-z0-9-]{1,24}$/.test(reason) ? reason : '';
 }
 
 // Cancel a provisional disqualification — called when examinee returns within grace period
