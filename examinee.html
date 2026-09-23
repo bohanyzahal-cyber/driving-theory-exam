@@ -1414,7 +1414,17 @@
       return ExamTransport.fetchJsonQuiet(gatewayPollUrl(kind, noWait), { cache: 'no-store' },
           noWait ? POLL_TIMEOUT_MS : LONGPOLL_TIMEOUT_MS)
         .then(function(data) { noteGatewayOk(); rememberPollFp(kind, data); return data; }, function(err) {
-          if (gatewayFailureCounts(err)) { noteGatewayFailure(err, kind); throw err; }
+          if (gatewayFailureCounts(err)) {
+            // r33.3 (23/09 night): a HELD poll that outlives its deadline is the
+            // Worker waiting on a stalled Google behind it (23/09: 3.5-10% of held
+            // polls ran 41-56 s, clustered in the stalls) — not a Worker this
+            // phone cannot reach; those fail at once, or at the code-screen probe.
+            // Counting it would move a whole room to Google exactly while Google
+            // is the thing that is stalled. It still counts for the banner and
+            // the backoff, exactly as before r33.
+            if (!(err && err.transport === 'timeout' && !noWait)) noteGatewayFailure(err, kind);
+            throw err;
+          }
           // Neither news nor a fault: the loop backs off one step like any
           // failed poll and the screen says nothing. The fingerprint goes with
           // it, so the next poll asks without one and is answered at once.

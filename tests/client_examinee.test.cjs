@@ -1957,6 +1957,42 @@ test('fallback: "?gw=google" in the link sends the phone straight to Google — 
   assert.equal(workerRequests(page).length, 0, 'and it never goes knocking — the link said so');
 });
 
+test('fallback r33.3: held polls that outlive their deadline behind a Google stall keep the phone on the Worker', async () => {
+  // 23/09: while Google stalled, the Worker held polls for 41-56 s and the page
+  // gave up at 40 s. That is the Worker waiting on Google, not a Worker the phone
+  // cannot reach — moving the room to Google then would only add to the stall.
+  let stalled = true;
+  const page = completePage({ reply(r) {
+    if (String(r.__url).includes('/v1/poll')) return stalled ? { __hang: true } : { status: 'ok', approval: 'approved', audioMode: 'off', examMinutes: 40 };
+    return undefined;                                // the front door answers
+  } });
+  await register(page);
+  await page.timer.advance(300000);                  // five minutes of stall
+  assert.ok(pollsOf(page, 'approval').length >= 3, 'the chain kept asking the Worker');
+  assert.equal(page.el('gwStatus').style.display, 'none', 'and stayed on it');
+  assert.equal(page.sent('checkApproval').length, 0, 'Google was not asked to stand in for a slow Worker');
+  assert.equal(page.sent('reportGateway').length, 0);
+  stalled = false;                                   // the stall ends
+  await page.timer.advance(60000);
+  assert.equal(page.el('instructionsPhase').style.display, 'block', 'and the approval lands through the Worker');
+});
+
+test('fallback r33.3: a Worker that is black-holed from the start is still caught at the code screen', async () => {
+  // A route that swallows packets looks like a timeout too — but at the probe,
+  // where nothing is held, a timeout IS the verdict.
+  const page = completePage({ reply: r => String(r.__url).indexOf('https://gw.example/') === 0 ? { __hang: true } : undefined });
+  page.el('sessionCodeInput').value = 'ABC12345';
+  page.el('codeSubmitBtn').click(); await drain();
+  await page.timer.advance(30000);                   // 8 s + 1.5 s + 8 s, then the 8 s trace probe
+  assert.equal(page.el('gwStatus').style.display, 'block', 'the phone knows its route before it registers');
+  for (const [id, value] of [['idNumber', '123456789'], ['firstName', 'א'], ['lastName', 'ב'], ['phoneNumber', '0501234567']]) page.el(id).value = value;
+  page.el('registerBtn').click(); await drain();
+  await page.timer.advance(100);
+  const diag = String(page.sent('registerExaminee')[0].gwDiag || '');
+  assert.match(diag, /why=probe/);
+  assert.match(diag, /trace=timeout/, 'and says nothing answered at that address in time');
+});
+
 test('fallback: an upstream_unavailable ANSWER is the Worker talking — no change of route', async () => {
   const page = completePage({ reply: r => String(r.__url).includes('/v1/poll') ? { status: 'error', code: 'upstream_unavailable', retryable: true } : undefined });
   await register(page);
