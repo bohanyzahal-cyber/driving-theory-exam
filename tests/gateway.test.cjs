@@ -520,12 +520,12 @@ test('upstream failure with nothing cached is a retryable error, not an HTML pag
   assert.equal(state.calls.length, 1);
 });
 
-test('a snapshot older than 60s is not served at all', async () => {
+test('a snapshot older than 180 s is not served at all (r32.3: was 60 s)', async () => {
   const { state, gateway } = harness({ [SESSION]: [row({ status: 'approved' })] });
   await poll(gateway, approvalPoll('900000001'));
 
   state.mode = 'error500';
-  state.clock += 61000;
+  state.clock += 181000;
   const { body } = await poll(gateway, approvalPoll('900000001'));
   assert.equal(body.code, 'upstream_unavailable');
   assert.equal(state.calls.length, 2);
@@ -2458,12 +2458,12 @@ test('r32.2: a decision after a drop is never written into the pre-drop copy', a
   assert.equal(seen.body.stale, true, 'still only the stale fallback until Google answers');
 });
 
-test('r32.2: the fallback expires with STALE_MS like any stale copy', async () => {
+test('r32.2/r32.3: the drop fallback expires with the stale-serving bound (180 s)', async () => {
   const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
   await poll(gateway, approvalPoll('900000001'));
   state.mode = 'error500';
   await nudge(gateway, '');
-  state.clock += 61000;                                       // past STALE_MS (60 s) since the copy was read
+  state.clock += 181000;                                      // past STALE_SERVE_MS (180 s) since the copy was read
   const late = await poll(gateway, approvalPoll('900000001'));
-  assert.equal(late.body.code, 'upstream_unavailable', 'a minute-old copy is not served');
+  assert.equal(late.body.code, 'upstream_unavailable', 'a three-minute-old copy is not served');
 });

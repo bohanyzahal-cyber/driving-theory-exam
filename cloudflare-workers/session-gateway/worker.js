@@ -85,7 +85,7 @@
  * a client that must pace itself has to be told so at once.
  */
 
-const BUILD = '2026-09-23.2';   // r32.2: a drop keeps a stale fallback; 2 s hold tick; header-only newer check
+const BUILD = '2026-09-23.3';   // r32.3: a stale copy is served for up to 180 s (r32.2: drop fallback, 2 s tick, header check)
 
 const ALLOWED_ORIGINS = [
   'https://bohanyzahal-cyber.github.io',
@@ -94,7 +94,15 @@ const ALLOWED_ORIGINS = [
 ];
 
 const FRESH_MS = 2000;            // a FRESH CHAIN's snapshot: this young answers without asking
-const STALE_MS = 60000;           // older than this and we would rather error
+const STALE_MS = 60000;           // older than this and a DECISION is never patched into it
+// r32.3 (23/09/2026, live): how old a copy may be and still be SERVED, marked
+// stale, when Google does not answer. 60 s -> 180 s: Google stalled for 2-5
+// minutes at a time that morning (11:09, 11:11-11:15), and after the first
+// minute every held request answered upstream_unavailable - a failed poll on
+// the phone, and the examiner's board falling back to examinerDashboard every
+// 5 s, i.e. MORE load on Google exactly while it was stuck. A stale answer is
+// never held and says stale:true; the page asks again in 3-6 s.
+const STALE_SERVE_MS = 180000;
 const REREAD_GAP_MS = 2000;       // forced upstream re-read: once per session per gap
 
 /**
@@ -684,7 +692,7 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
       })
     );
     try {
-      await Promise.all([store('snap', HELD_REREAD_MS / 1000), store('stale', STALE_MS / 1000)]);
+      await Promise.all([store('snap', HELD_REREAD_MS / 1000), store('stale', STALE_SERVE_MS / 1000)]);
     } catch (e) { /* cache is best effort */ }
   }
 
@@ -734,7 +742,7 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
     const copy = dropped.get(session);
     if (!copy) return null;
     const made = Number(copy.rat);
-    if (Number.isFinite(made) && clock() - made > STALE_MS) { dropped.delete(session); return null; }
+    if (Number.isFinite(made) && clock() - made > STALE_SERVE_MS) { dropped.delete(session); return null; }
     return copy;
   }
 
@@ -928,7 +936,7 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
       trace.age = snapshotAge(fetched);
       return { ok: true, snapshot: fetched, fromCache: false, stale: false };
     }
-    const old = memoryRead(session, STALE_MS) || adopt(session, await cacheRead('stale', session)) || droppedRead(session);
+    const old = memoryRead(session, STALE_SERVE_MS) || adopt(session, await cacheRead('stale', session, STALE_SERVE_MS)) || droppedRead(session);
     if (old) { trace.src = 'stale'; trace.age = snapshotAge(old); return { ok: true, snapshot: old, fromCache: true, stale: true }; }
     trace.src = 'none';
     trace.age = -1;
@@ -963,7 +971,7 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
   async function patchSnapshot(session, idNumber, fields) {
     const current = memoryRead(session, STALE_MS)
       || await cacheRead('snap', session)
-      || await cacheRead('stale', session);
+      || await cacheRead('stale', session, STALE_MS);   // r32.3: the 'stale' entry now lives 180 s; a patch keeps 60
     if (!current || !Array.isArray(current.rows)) return false;
     // Sheet order, oldest first — the last match is the live attempt, exactly
     // the row approvalAnswer/statusAnswer would have answered from.
@@ -1409,7 +1417,7 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
     // read (see `within`), so this await is never a bare one.
     const fetched = await fetchCoalesced(session);
     if (fetched) { trace.src = 'fetch'; trace.age = snapshotAge(fetched); return view(fetched, false); }
-    const old = memoryRead(session, STALE_MS) || adopt(session, await cacheRead('stale', session)) || droppedRead(session);
+    const old = memoryRead(session, STALE_SERVE_MS) || adopt(session, await cacheRead('stale', session, STALE_SERVE_MS)) || droppedRead(session);
     if (old) { trace.src = 'stale'; trace.age = snapshotAge(old); return view(old, true); }
     trace.src = 'none';
     trace.age = -1;
