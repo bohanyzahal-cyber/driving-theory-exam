@@ -85,7 +85,7 @@
  * a client that must pace itself has to be told so at once.
  */
 
-const BUILD = '2026-09-23.1';   // r32.1: the registration nudge drops instead of 403
+const BUILD = '2026-09-23.2';   // r32.2: a drop keeps a stale fallback; 2 s hold tick; header-only newer check
 
 const ALLOWED_ORIGINS = [
   'https://bohanyzahal-cyber.github.io',
@@ -138,7 +138,13 @@ const SESSION_RE = /^[A-Z0-9]{6,8}$/;
 // evaluates at most this many times and then answers with what it has.
 const WAIT_MIN_S = 1;
 const WAIT_MAX_S = 25;
-const HOLD_TICK_MS = 1000;
+// r32.2 (23/09/2026, live): 1 s -> 2 s. With four sites polling, held requests
+// averaged 15 ms of CPU (p90 27, max 39) against the free plan's 10 ms, and
+// Cloudflare killed 19 of them in half an hour (outcome exceededCpu, HTTP 503 -
+// the phone counts that as a failed poll and shows 'בעיית תקשורת'). The tick
+// only carries a patch written by ANOTHER isolate; this isolate's own events
+// still wake a hold at once. A cross-isolate decision now lands within 2 s.
+const HOLD_TICK_MS = 2000;
 const HOLD_MAX_STEPS = 26;
 
 // A hold answers at its deadline plus this grace even when the look it started
@@ -623,6 +629,10 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
   const lastUpstream = new Map(); // session -> { ms, sfp } of the last read, for the log
   const lastForced = new Map(); // session -> ms of the last forced re-read
   const waiters = new Map();  // session -> Set<resolve> — the held requests
+  // r32.2: the copy that was current when THIS isolate dropped the session.
+  // Answer-side fallback ONLY (never patched, never adopted as fresh): see
+  // dropSnapshot and droppedRead.
+  const dropped = new Map();  // session -> snapshot
 
   const cacheKey = (kind, session) =>
     'https://session-gateway.internal/' + kind + '/' + encodeURIComponent(session);
@@ -704,6 +714,28 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
     const hit = memory.get(session);
     if (!hit || clock() - hit.at > maxAgeMs) return null;
     return hit.snapshot;
+  }
+
+  /**
+   * The pre-drop copy, while it is younger than STALE_MS (r32.2, TODO 0א.8).
+   * WHY: until r32.1 a drop deleted memory, 'snap' AND 'stale' - so while the
+   * re-read it asked for was stuck in Google (5-20 s on 23/09, sometimes no
+   * answer), every held request of the session had NO copy at all and
+   * answered x:up (upstream_unavailable): ~60 such answers in ten minutes,
+   * each one a failed poll on a phone and a 5 s examinerDashboard fallback on
+   * the board - more Google load exactly when Google was slow. Serving the
+   * copy we had as `stale` (never held, the client asks again in 3-6 s) is
+   * what r31 already did whenever Google failed WITHOUT a drop.
+   * Deliberately not in `memory`: a drop means "something changed", so this
+   * copy must never pass for fresh, and patchSnapshot must never write a
+   * decision into it (that would resurrect the pre-drop rows as current).
+   */
+  function droppedRead(session) {
+    const copy = dropped.get(session);
+    if (!copy) return null;
+    const made = Number(copy.rat);
+    if (Number.isFinite(made) && clock() - made > STALE_MS) { dropped.delete(session); return null; }
+    return copy;
   }
 
   /**
@@ -896,7 +928,7 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
       trace.age = snapshotAge(fetched);
       return { ok: true, snapshot: fetched, fromCache: false, stale: false };
     }
-    const old = memoryRead(session, STALE_MS) || adopt(session, await cacheRead('stale', session));
+    const old = memoryRead(session, STALE_MS) || adopt(session, await cacheRead('stale', session)) || droppedRead(session);
     if (old) { trace.src = 'stale'; trace.age = snapshotAge(old); return { ok: true, snapshot: old, fromCache: true, stale: true }; }
     trace.src = 'none';
     trace.age = -1;
@@ -964,6 +996,10 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
 
   /** The next poll of this session reads upstream instead of a stale snapshot. */
   async function dropSnapshot(session) {
+    // r32.2: keep what we had as the stale fallback (see droppedRead).
+    const had = memory.get(session);
+    const prior = (had && had.snapshot) || await cacheRead('snap', session) || await cacheRead('stale', session);
+    if (prior && Array.isArray(prior.rows)) dropped.set(session, prior);
     memory.delete(session);
     if (caches && caches.default) {
       try {
@@ -1353,8 +1389,15 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
       // r31 read it. Only a DIFFERING fingerprint opens the body.
       const header = await cacheFingerprint('snap', session, maxAgeMs);
       if (header && mine.sfp && header.sfp === mine.sfp) return fromMemory;
+      // r32.2: a DIFFERENT copy that is not NEWER than ours (another isolate's
+      // late upstream read, say) used to be parsed on every tick for the rest
+      // of the hold - most of the 15-39 ms of CPU a held request cost on
+      // 23/09. Its read time travels in a header, so only a newer copy is
+      // opened, and that one is adopted: the next tick compares equal again.
+      if (header && Number.isFinite(Number(mine.rat)) && header.rat < Number(mine.rat)) return fromMemory;
       const cached = await cacheRead('snap', session, maxAgeMs);
       if (cached) {
+        if (!Number.isFinite(Number(mine.rat)) || Number(cached.rat) > Number(mine.rat)) adopt(session, cached);
         const patched = await view(cached, false);
         if (patched.fp !== clientFp) { trace.src = 'cache'; trace.age = snapshotAge(cached); return patched; }
       }
@@ -1366,7 +1409,7 @@ export function createGateway({ fetch, caches, now, env, sleep, log }) {
     // read (see `within`), so this await is never a bare one.
     const fetched = await fetchCoalesced(session);
     if (fetched) { trace.src = 'fetch'; trace.age = snapshotAge(fetched); return view(fetched, false); }
-    const old = memoryRead(session, STALE_MS) || adopt(session, await cacheRead('stale', session));
+    const old = memoryRead(session, STALE_MS) || adopt(session, await cacheRead('stale', session)) || droppedRead(session);
     if (old) { trace.src = 'stale'; trace.age = snapshotAge(old); return view(old, true); }
     trace.src = 'none';
     trace.age = -1;

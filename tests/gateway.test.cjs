@@ -1048,7 +1048,7 @@ test('a hold runs out its `wait` and answers the same fingerprint', async () => 
 
   assert.deepEqual(body, { status: 'ok', approval: 'waiting', audioMode: 'off', fp: WAITING_FP, held: 5000 });
   assert.equal(state.clock, CLOCK0 + 5000, 'it really waited the five seconds');
-  assert.equal(timers, 10, 'five evaluations, one per second, not a spin');
+  assert.equal(timers, 6, 'three evaluations, one per 2 s tick (r32.2), not a spin');
   assert.equal(state.calls.length, 1,
     'and since 22/09 five seconds of holding cost Google NOTHING: this chain already holds this state');
   assert.deepEqual(gateway._debug().waiting, 0, 'and it took its resolver back out');
@@ -1158,9 +1158,9 @@ test('a patch another isolate wrote reaches a held request through caches.defaul
   const { body } = await settle(state, holding);
   assert.deepEqual(body, {
     status: 'ok', approval: 'approved', audioMode: 'off', examMinutes: 50,
-    fp: 'a:approved:off:50', held: 1000
+    fp: 'a:approved:off:50', held: 2000
   });
-  assert.equal(state.calls.length, 1, 'seen within one tick, and still no upstream read');
+  assert.equal(state.calls.length, 1, 'seen within one 2 s tick (r32.2), and still no upstream read');
 });
 
 test('forty held requests cost nothing while nothing happens, and one drop ends them all', async () => {
@@ -1266,7 +1266,7 @@ test('a hold is refused when the client is already behind, and `wait` is clamped
   const { body, timers } = await timed(state, poll(gateway, approvalPoll('900000001', { wait: 26, fp: 'a:approved:off:50' })));
   assert.equal(body.held, 25000, 'clamped to the 25 s ceiling');
   assert.ok(timers <= 26 * 2, 'at most 26 evaluations for a full hold, got ' + timers / 2);
-  assert.equal(timers, 50, '25 evaluations, each parking a tick and a grace timer');
+  assert.equal(timers, 26, '13 evaluations at the 2 s tick (r32.2), each parking a tick and a grace timer');
   assert.equal(gateway._debug().waiting, 0);
 });
 
@@ -1454,7 +1454,7 @@ test('watch: a hold runs out its `wait` and answers the same fingerprint', async
   assert.equal(body.held, 5000);
   assert.equal(body.rows, 1);
   assert.equal(state.clock, CLOCK0 + 5000, 'it really waited the five seconds');
-  assert.equal(timers, 10, 'five evaluations, one per second, not a spin');
+  assert.equal(timers, 6, 'three evaluations, one per 2 s tick (r32.2), not a spin');
   assert.equal(state.calls.length, 1, 'and five seconds of watching cost Google nothing at all');
   assert.equal(gateway._debug().waiting, 0, 'and it took its resolver back out');
 });
@@ -1524,7 +1524,7 @@ test('watch: a full hold is clamped to 25 s and costs at most HOLD_MAX_STEPS eva
   const { body, timers } = await timed(state, watch(gateway, watchParams({ wait: 26, fp: first.body.fp })));
   assert.equal(body.held, 25000, 'clamped to the 25 s ceiling');
   assert.ok(timers <= 26 * 2, 'at most 26 evaluations, got ' + timers / 2);
-  assert.equal(timers, 50, '25 evaluations, each parking a tick and a grace timer');
+  assert.equal(timers, 26, '13 evaluations at the 2 s tick (r32.2), each parking a tick and a grace timer');
   assert.equal(gateway._debug().waiting, 0);
 
   // wait=0, a fraction, a word and a negative all mean "answer now".
@@ -2367,7 +2367,7 @@ test('a quiet 25 s watch looks at the cache every tick and parses it at most onc
 
   assert.equal(body.held, 25000, 'it really held the whole time');
   assert.equal(body.session, undefined, 'and nothing changed');
-  assert.ok(matches >= 20, 'it looked at the cache on every tick — got ' + matches);
+  assert.ok(matches >= 12, 'it looked at the cache on every 2 s tick (r32.2) — got ' + matches);
   assert.ok(parses <= 1, 'but parsed the body at most once in 25 seconds — got ' + parses +
     ' (r31 parsed it on every tick a memory copy answered: 23 of them)');
   assert.equal(gateway._debug().waiting, 0);
@@ -2407,9 +2407,63 @@ test('a snapshot another isolate wrote into the cache still reaches a held watch
   assert.equal(first._debug().waiting, 1, 'nothing woke it — it is still parked');
 
   const { body } = await settle(state, holding);
-  assert.equal(body.held, 1000, 'seen on the very next tick');
+  assert.equal(body.held, 2000, 'seen on the very next 2 s tick (r32.2)');
   assert.notEqual(body.fp, seen.body.fp);
   assert.equal(body.session.rows[0].status, 'approved', 'with the data, from the cached copy');
   assert.deepEqual(body.session.results, seen.body.session.results);
   assert.equal(state.calls.length, 1, 'and still no upstream read');
+});
+
+// ---- r32.2 (23/09/2026, live exam day): a drop keeps a stale fallback -------
+// 09:30-10:06: ~60 x:up answers in ten minutes. Every nudge dropped memory,
+// 'snap' AND 'stale'; while the re-read it asked for was stuck in Google, the
+// session had no copy at all, every held request answered upstream_unavailable
+// (a failed poll on the phone, a 5 s examinerDashboard fallback on the board).
+
+test('r32.2: after a drop, a Google that does not answer leaves the pre-drop copy as stale - never x:up', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
+  await poll(gateway, approvalPoll('900000001'));
+  assert.equal(state.calls.length, 1, 'one read: the copy exists');
+
+  state.mode = 'error500';                                  // Google stops answering
+  assert.equal((await nudge(gateway, '')).body.status, 'ok'); // the examiner's plain drop
+
+  const after = await poll(gateway, approvalPoll('900000001'));
+  assert.equal(after.body.status, 'ok', 'an answer, not upstream_unavailable');
+  assert.equal(after.body.approval, 'waiting', 'the state we had before the drop');
+  assert.equal(after.body.stale, true, 'marked stale: never held, the client asks again in seconds');
+  assert.equal(state.logs.at(-1).src, 'stale');
+
+  const board = await watch(gateway, watchParams());
+  assert.equal(board.body.status, 'ok', 'the board is answered too, instead of falling back to Google every 5 s');
+  assert.equal(board.body.stale, true);
+
+  state.mode = 'ok';                                          // Google is back
+  state.snapshots[SESSION] = [row({ status: 'approved', examMinutes: 50 })];
+  const fresh = await poll(gateway, approvalPoll('900000001'));
+  assert.equal(fresh.body.approval, 'approved', 'the next read replaces the fallback');
+  assert.equal(fresh.body.stale, undefined);
+  assert.equal(gateway._debug().waiting, 0);
+});
+
+test('r32.2: a decision after a drop is never written into the pre-drop copy', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
+  await poll(gateway, approvalPoll('900000001'));
+  await nudge(gateway, '');                                   // drop: the copy is only a fallback now
+  state.mode = 'error500';
+  const decided = await nudge(gateway, '&idNumber=900000001&status=approved&examMinutes=50');
+  assert.equal(decided.body.patched, false,
+    'nothing CURRENT to patch - resurrecting the pre-drop rows as fresh would hide what the drop announced');
+  const seen = await poll(gateway, approvalPoll('900000001'));
+  assert.equal(seen.body.stale, true, 'still only the stale fallback until Google answers');
+});
+
+test('r32.2: the fallback expires with STALE_MS like any stale copy', async () => {
+  const { state, gateway } = harness({ [SESSION]: [row({ status: 'waiting' })] });
+  await poll(gateway, approvalPoll('900000001'));
+  state.mode = 'error500';
+  await nudge(gateway, '');
+  state.clock += 61000;                                       // past STALE_MS (60 s) since the copy was read
+  const late = await poll(gateway, approvalPoll('900000001'));
+  assert.equal(late.body.code, 'upstream_unavailable', 'a minute-old copy is not served');
 });
