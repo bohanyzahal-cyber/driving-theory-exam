@@ -1282,7 +1282,7 @@ function handleBankGrant(p) {
 }
 var API_DEPLOYMENT = "all";
 
-var THEORY_API_BUILD = '2026-09-24-r33';
+var THEORY_API_BUILD = '2026-09-24-r33.1';
 var API_STARTED_AT = 0;
 
 function apiActionList() {
@@ -1423,7 +1423,7 @@ function legacyActionTable() {
     ['checkApproval', 'GET', 'none', 'handleCheckApproval'],
     ['getExamStatus', 'GET', 'none', 'handleGetExamStatus'],
     ['addExamTime', 'GET', 'none', 'handleAddExamTime'],
-    ['markFinished', 'GET', 'none', 'handleMarkFinished'],
+    ['markFinished', 'GET,POST', 'none', 'handleMarkFinished'],
     ['disqualify', 'GET,POST', 'none', 'handleDisqualify'],
     ['reportWarning', 'GET,POST', 'none', 'handleReportWarning'],
     ['cancelDisqualify', 'GET,POST', 'none', 'handleCancelDisqualify'],

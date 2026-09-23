@@ -261,7 +261,7 @@ test('health&deep=1 times one cell of our own document and reports a failure ins
   const e = runtime();
   const ok = get(e, { action: 'health', deep: '1' });
   assert.equal(ok.status, 'ok');
-  assert.equal(ok.build, '2026-09-24-r33');
+  assert.equal(ok.build, '2026-09-24-r33.1');
   assert.equal(ok.deep, true);
   assert.equal(ok.indexIds, 1700);
   assert.ok(typeof ok.sheetMs === 'number' && ok.sheetMs >= 0);
@@ -279,7 +279,7 @@ test('health identifies build without Sheets, Drive or private parameters', () =
   e.ctx.getSheet = () => { throw new Error('health must not access Sheets'); };
   const result = get(e, { action: 'health', token: 'DO_NOT_LOG_ME' });
   assert.equal(result.status, 'ok');
-  assert.equal(result.build, '2026-09-24-r33');
+  assert.equal(result.build, '2026-09-24-r33.1');
   assert.equal(e.logs.length, 2);
   assert.ok(e.logs[0].includes('"phase":"start"'));
   assert.ok(e.logs[1].includes('"phase":"end"'));
@@ -365,6 +365,27 @@ test('r33: checkApproval / getExamStatus are served again, with the handlers\' o
   for (let i = 0; i < 57; i++) assert.equal(get(e, { action: 'checkApproval', sessionCode: SESSION, idNumber: ID }).status, 'ok', 'poll ' + i);
   const limited = get(e, { action: 'checkApproval', sessionCode: SESSION, idNumber: ID });
   assert.equal(limited.rateLimited, true, 'the 61st poll inside a minute');
+});
+
+// r33.1 (24/09/2026): the examinee page sends "finished on device" as a BEACON
+// (sendBeacon = POST) and has since r30; the router served markFinished to GET
+// only, so every ping was refused and the examiner never saw "סיים — מסנכרן
+// תוצאה" — exactly the banner that keeps a slow result from being redone.
+test('r33.1: markFinished is accepted as a POST beacon and marks the in-exam row', () => {
+  const e = approvals([approvalRow(ID, 'in_exam', { 11: '2026-09-22T06:10:00Z' })]);
+  const viaPost = postJson(e, { action: 'markFinished', sessionCode: SESSION, idNumber: ID, examineeToken: 'token-' + ID });
+  assert.equal(viaPost.status, 'ok', 'the beacon is accepted: ' + JSON.stringify(viaPost));
+  // (the legacy rows are registered by the first dispatch, so read the registry after it)
+  assert.equal(e.ctx.apiRegistry().markFinished.methods.slice().sort().join(','), 'GET,POST');   // VM arrays: compare as text
+  assert.ok(String(e.rows('ממתינים')[1][18] || '').length > 0, 'and the row carries the finished-on-device time');
+  assert.equal(e.rows('ממתינים')[1][5], 'in_exam', 'without changing the status');
+  // The token rule is the handler's own and still holds for the POST.
+  const stale = approvals([approvalRow(ID, 'in_exam')]);
+  assert.equal(postJson(stale, { action: 'markFinished', sessionCode: SESSION, idNumber: ID, examineeToken: 'stale' }).examineeTokenError, 'mismatch');
+  assert.equal(String(stale.rows('ממתינים')[1][18] || ''), '', 'nothing written for a stale token');
+  // GET keeps working for an older page.
+  const viaGet = approvals([approvalRow(ID, 'in_exam')]);
+  assert.equal(get(viaGet, { action: 'markFinished', sessionCode: SESSION, idNumber: ID, examineeToken: 'token-' + ID }).status, 'ok');
 });
 
 test('a live registration outranks every finished row above it', () => {

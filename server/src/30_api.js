@@ -6,7 +6,7 @@
 // @@API_DEPLOYMENT@@
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-24-r33';
+var THEORY_API_BUILD = '2026-09-24-r33.1';
 // When the current request entered the script — health&deep=1 reports the whole
 // request against it, so a watchdog can separate our time from Google's.
 var API_STARTED_AT = 0;
@@ -217,7 +217,11 @@ function legacyActionTable() {
     ['checkApproval', 'GET', 'none', 'handleCheckApproval'],
     ['getExamStatus', 'GET', 'none', 'handleGetExamStatus'],
     ['addExamTime', 'GET', 'none', 'handleAddExamTime'],
-    ['markFinished', 'GET', 'none', 'handleMarkFinished'],
+    // GET,POST since r33.1 (24/09/2026): the page has sent this ping as a BEACON
+    // (sendBeacon = POST, like disqualify / reportWarning below) since r30, and a
+    // GET-only row refused every one of them — the examiner never saw
+    // 'סיים — מסנכרן תוצאה' (found 23/09 evening).
+    ['markFinished', 'GET,POST', 'none', 'handleMarkFinished'],
     // 'disqualify' is deliberately not examiner-gated: the examinee client sends
     // it too, and handleDisqualify accepts either an examiner token or an active
     // pending row of that examinee.
