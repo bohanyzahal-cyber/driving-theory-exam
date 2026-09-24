@@ -483,3 +483,80 @@ test('markPendingCompleted does not drop a snapshot when it wrote nothing', () =
   assert.equal(e.flushes.count, flushesBefore, 'nothing was written, so nothing needed flushing');
   assert.ok(e.cache.get(snapshotKey(e)) !== null, 'a no-op must not cost the next poller an upstream read');
 });
+
+// ---- 8. the exam-hours guard reaches exactly the two heavy reports ---------
+// 24/09/2026: handleCommanderDashboard and handleCenterManagerReport refuse
+// while exams are running (liveExamActivity / examHoursRefusal, 86_commander.js).
+// NOTHING else may: a commander enters a live session, views it and corrects a
+// score in the middle of an exam morning (Yossi, 24/09). So the call graph of
+// the built files is checked, not a list of names: the top-level functions from
+// which liveExamActivity can be reached — directly or through any chain — are
+// its own wrapper and those two handlers. An edit that calls the guard from
+// anywhere else, the score-update path above all, fails here.
+
+// Every identifier each top-level function mentions (a call, or the name passed
+// on as a value). Statements outside any function are pooled as '<program>', so
+// a guard wired in at load time (a defineAction row) is caught as well.
+function topLevelReferences(file) {
+  const acorn = require(path.join(ROOT, 'tools', 'vendor', 'acorn.js'));
+  const ast = acorn.parse(fs.readFileSync(path.join(ROOT, file), 'utf8'), { ecmaVersion: 2022, sourceType: 'script' });
+  const graph = new Map();
+  const collect = (node, parent, into) => {
+    if (Array.isArray(node)) { for (const item of node) collect(item, parent, into); return; }
+    if (!node || typeof node !== 'object' || !node.type) return;
+    if (node.type === 'Identifier') {
+      const isKey = parent && ((parent.type === 'MemberExpression' && parent.property === node && !parent.computed) ||
+        (parent.type === 'Property' && parent.key === node && !parent.computed));
+      if (!isKey) into.add(node.name);
+      return;
+    }
+    for (const key in node) collect(node[key], node, into);
+  };
+  for (const statement of ast.body) {
+    const owner = statement.type === 'FunctionDeclaration' ? statement.id.name : '<program>';
+    if (!graph.has(owner)) graph.set(owner, new Set());
+    collect(statement.type === 'FunctionDeclaration' ? [statement.params, statement.body] : statement, null, graph.get(owner));
+  }
+  return graph;
+}
+function reachersOf(graph, target) {
+  const found = new Set();
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const [fn, refs] of graph) {
+      if (fn === target || found.has(fn)) continue;
+      if (refs.has(target) || [...found].some(f => refs.has(f))) { found.add(fn); grew = true; }
+    }
+  }
+  return found;
+}
+// What a commander uses during an exam (examiner.html: the all-sessions modal,
+// the board, the correction / manual-result / meta modals, the DQ and time
+// buttons), and the reports that are deliberately NOT guarded.
+const COMMANDER_LIVE_PATH = ['handleListAllSessions', 'handleExaminerDashboard', 'handleSessionSnapshot',
+  'handleCommanderCorrectResult', 'handleCorrectToPass', 'handleSubmitManualResult', 'handleCorrectExamineeMeta',
+  'handleOverturnDQ', 'handleConfirmDQ', 'handleForceComplete', 'handleResetExaminee', 'handleMarkSent',
+  'handleApproveExaminee', 'handleRejectExaminee', 'handleAddExamTime', 'handleDisqualify', 'handleBankGrant'];
+const UNGUARDED_REPORTS = ['handleSiteCombinedReport', 'handleExaminerForecast', 'handleTeacherCommanderDashboard'];
+
+test('exam-hours guard: only the commander dashboard and the center-manager report can reach it', () => {
+  for (const file of [MONOLITH, REPORTS_FILE]) {
+    const graph = topLevelReferences(file);
+    assert.ok(graph.has('liveExamActivity') && graph.has('examHoursRefusal'), file + ' does not carry the guard');
+    assert.deepEqual([...reachersOf(graph, 'liveExamActivity')].sort(),
+      ['examHoursRefusal', 'handleCenterManagerReport', 'handleCommanderDashboard'], file);
+    // ...and each of the two asks it itself, first hand.
+    assert.ok(graph.get('handleCommanderDashboard').has('examHoursRefusal'), file);
+    assert.ok(graph.get('handleCenterManagerReport').has('examHoursRefusal'), file);
+    // The lists above are real functions of this file, so the check is not vacuous.
+    const declared = file === MONOLITH ? COMMANDER_LIVE_PATH.concat(UNGUARDED_REPORTS) : UNGUARDED_REPORTS;
+    for (const fn of declared) assert.ok(graph.has(fn), file + ' no longer declares ' + fn + ' — update this list');
+  }
+  // The hot file carries neither the guard nor anything that mentions it.
+  const exam = topLevelReferences(EXAM_FILE);
+  assert.ok(!exam.has('liveExamActivity') && !exam.has('examHoursRefusal'), 'the guard is a reports-only helper');
+  for (const [fn, refs] of exam) {
+    assert.ok(!refs.has('liveExamActivity') && !refs.has('examHoursRefusal'), EXAM_FILE + ': ' + fn + ' mentions the guard');
+  }
+  for (const fn of COMMANDER_LIVE_PATH) assert.ok(exam.has(fn), EXAM_FILE + ' no longer declares ' + fn);
+});

@@ -1530,6 +1530,7 @@
       parts.push('t=' + String(err.transport || ''));
     }
     if (extra) parts.push(extra);
+    if (gwAltResult) parts.push('alt=' + gwAltResult);
     parts.push('os=' + (os ? os[1].replace(/\s+/g, '') : '?'));
     parts.push('br=' + (br ? br[0] : '?'));
     try { parts.push('on=' + (navigator.onLine === false ? '0' : '1')); } catch (e) {}
@@ -1620,6 +1621,31 @@
     });
   }
 
+  // r34 (24/09/2026): the SAME Worker under our own domain — a diagnosis, not a
+  // route. On 24/09, 21 of 79 phones got nothing at all back from workers.dev
+  // (no answer, no error: trace=timeout) for 30-60 minutes, while Google
+  // answered them in 3-5 s. If those phones reach this address, the name is what
+  // is blocked, and switching GATEWAY_URL in the Script Properties fixes it for
+  // everyone; if phones that reach workers.dev do NOT reach it, it must not be
+  // switched. Every phone knocks once when its session code is accepted; the
+  // answer rides on its submit ('gw_alt' in the client log) and, on a phone that
+  // falls back, in its gw diagnosis (alt=).
+  var GW_ALT_URL = 'https://api.teoria-digital-vitaly.com';
+  var gwAltResult = '';
+  function probeAltGateway(myGen) {
+    var started = Date.now();
+    ExamTransport.fetchJsonQuiet(GW_ALT_URL + '/', { cache: 'no-store' }, GW_PROBE_TIMEOUT_MS).then(function(data) {
+      return (data && data.status === 'ok') ? 'ok' : 'bad';
+    }, function(err) {
+      var t = String((err && err.transport) || 'error');
+      return t === 'http' ? 'http' + ((err && err.status) || '') : t;
+    }).then(function(result) {
+      if (myGen !== gwProbeGen) return;
+      gwAltResult = result + '@' + (Date.now() - started);
+      logEvent('gw_alt', gwAltResult);
+    });
+  }
+
   // Runs in the background from the moment the session code is accepted, while
   // the examinee types their details — so by the time they press "הירשם" this
   // phone already knows its route. Two knocks, 1.5 s apart: one lost packet on a
@@ -1627,6 +1653,8 @@
   function probeGatewayAtStart() {
     var myGen = ++gwProbeGen;
     var started = Date.now();
+    gwAltResult = '';
+    probeAltGateway(myGen);
     // "?gw=google" in the link sends this phone straight to the fallback: for a
     // rehearsal of the Google route on a phone that CAN reach the Worker, and for
     // the examiner who already knows a phone cannot (a second QR / link).
@@ -3208,16 +3236,6 @@
       examineeToken: examineeToken
     };
   }
-  // Build disqualify URL for fire-and-forget requests
-  function buildDisqualifyUrl() {
-    var params = dqPayload();
-    var qs = [];
-    for (var k in params) {
-      if (params.hasOwnProperty(k)) qs.push(encodeURIComponent(k) + '=' + encodeURIComponent(params[k]));
-    }
-    return API_URL + '?' + qs.join('&');
-  }
-
   var provisionalDQSent = false;  // true when a provisional DQ was sent (waiting for the grace timer)
   var currentDQEventId = '';      // unique per DQ event, so the server tells a retry from a new attempt
   var currentDQReason = '';       // which detector fired (split-area, split-resize, zoom-out, hidden, blur, ...)
@@ -3231,32 +3249,116 @@
     return currentDQEventId;
   }
 
-  // D10: sendBeacon is the right tool — it survives the page going away and
-  // costs ONE Apps Script execution. The fetch is only for browsers without it
-  // (or when the beacon is refused, e.g. an over-quota queue); sending both, as
-  // this did by design, doubled every disqualification and every cancel.
+  // D10: sendBeacon is the right tool for a write nobody waits for — it survives
+  // the page going away and costs ONE Apps Script execution. The fetch is only
+  // for browsers without it (or when the beacon is refused, e.g. an over-quota
+  // queue); sending both, as this did by design, doubled every write.
+  // r34 (24/09/2026): as TEXT. A Blob typed application/json is not a
+  // CORS-safelisted type, so Chromium — every Android phone — turns the beacon
+  // into a CORS request that needs a preflight, an OPTIONS that Apps Script
+  // never answers, and the POST itself never leaves; sendBeacon has already
+  // returned true, so no fallback runs either. On 24/09 'סיים במכשיר' reached the
+  // sheet from 13 of 13 phones in Safari / Chrome-on-iPhone and from 0 of 7 on
+  // Android or in the Google app, and two Android phones disqualified
+  // themselves six times between them with a DQ count of 0 on the server.
+  // Reproduced in Chromium 152: OPTIONS, then nothing. text/plain is what every
+  // other request of this page sends, and the server parses the body whatever
+  // its type.
   function beaconToApi(payload) {
     try {
       if (!navigator.sendBeacon) return false;
-      return !!navigator.sendBeacon(API_URL, new Blob([JSON.stringify(payload)], { type: 'application/json' }));
+      return !!navigator.sendBeacon(API_URL, new Blob([JSON.stringify(payload)], { type: 'text/plain' }));
     } catch (ex) { return false; }
   }
 
-  // unloading = the page is going away (onBeforeUnload). Then the beacon is all
-  // there is: a fetch would be killed with the document, and a timer 2 s out will
-  // never fire, so no push is even attempted — the examiner sees that
-  // disqualification on the Worker's safety read. Every other caller stays on
-  // screen (the DQ screen waits for the examiner's decision), so the push is
-  // scheduled and the examiner is told "needs decision" a couple of seconds after
-  // the device decided it.
+  // r34 (24/09/2026): a disqualification this page decides is a CONFIRMED
+  // request, not a beacon — everything after it depends on the server really
+  // having it:
+  //  - a DQ that never lands is invisible twice over: the examiner never sees
+  //    it, and the device, asking "did the examiner overturn it?", finds the
+  //    row still in_exam and resumes by itself (the two Android phones above);
+  //  - even one that lands takes seconds, while the overturn poll's FIRST answer
+  //    comes from a copy taken before it (the Worker's, or Apps Script's
+  //    per-session snapshot). 'in_exam' there is the row as it was, not an
+  //    examiner's decision: all 8 self-DQs of 24/09 resumed 2.7-25 s later,
+  //    faster than any examiner can click.
+  // So it is POSTed with the answer read, retried until the server confirms
+  // (a repeated dqEventId is skipped in תוצאות), pushed to the Worker the moment
+  // it is confirmed — a confirmed write, like registration and start — and
+  // overturnIsReal() trusts 'in_exam' only once the server has shown this DQ.
+  // unloading = the page is going away (onBeforeUnload): then the beacon is all
+  // there is — a fetch would be killed with the document and no timer would ever
+  // fire, so no push is attempted; the examiner sees that DQ on the Worker's
+  // safety read.
+  var DQ_RETRY_MS = [3000, 6000, 12000, 20000];
+  var DQ_RETRY_FOR_MS = 15 * 60 * 1000;     // by then the examiner is standing next to the phone
+  var DQ_OVERTURN_TRUST_MS = 45000;         // a DQ confirmed this long ago predates no copy (the Worker's safety read)
+  var dqTrackedFor = '';                    // the DQ event the three fields below describe
+  var dqAckAt = 0;                          // when the server confirmed it; 0 = not yet
+  var dqSeenOnServer = false;               // an answer showed the row out of in_exam after it — or the DQ came from the server
+  var dqRetryTimer = null;
+  var dqOverturnIgnoredLogged = false;
+
+  // A new DQ event (or '' when the DQ is over): forget what the last one learned
+  // and stop its retries.
+  function trackDQEvent(eventId) {
+    if (dqTrackedFor === eventId) return;
+    dqTrackedFor = eventId;
+    dqAckAt = 0;
+    dqSeenOnServer = false;
+    dqOverturnIgnoredLogged = false;
+    if (dqRetryTimer) { clearTimeout(dqRetryTimer); dqRetryTimer = null; }
+  }
+
   function sendDQToServer(unloading) {
     var payload = dqPayload();
     logEvent('dq_sent', currentDQEventId);
-    var beaconed = beaconToApi(payload);
-    if (!beaconed && !unloading) {
-      try { fetch(buildDisqualifyUrl() + '&_m=fetch1').catch(function() {}); } catch(ex) {}
-    }
-    if (!unloading) setTimeout(nudgeGatewayAfterWrite, NUDGE_AFTER_BEACON_MS);
+    if (unloading) { beaconToApi(payload); return; }
+    trackDQEvent(payload.dqEventId);
+    postDQUntilConfirmed(payload, Date.now(), 0);
+  }
+
+  function postDQUntilConfirmed(payload, firstAt, attempt) {
+    var eventId = payload.dqEventId;
+    dqRetryTimer = null;
+    apiPost(payload, CRITICAL_POST_TIMEOUT_MS).then(function(resp) {
+      if (eventId !== dqTrackedFor) return;         // overturned, or a newer event owns the page now
+      if (resp && resp.status === 'ok') {
+        dqAckAt = Date.now();
+        logEvent('dq_ack', eventId);
+        nudgeGatewayAfterWrite();                   // the row is disqualified in Google as of this answer
+        return;
+      }
+      // Refused — the token, the row's state: nothing a retry can change. Only
+      // "too many requests" / "busy" is worth waiting out.
+      logEvent('dq_refused', String((resp && (resp.message || resp.code)) || 'no answer').slice(0, 60));
+      if (resp && (resp.rateLimited || resp.retryable)) scheduleDQRetry(payload, firstAt, attempt, (Number(resp.waitSec) || 0) * 1000);
+    }, function() {
+      if (eventId !== dqTrackedFor) return;
+      scheduleDQRetry(payload, firstAt, attempt, 0);
+    });
+  }
+
+  function scheduleDQRetry(payload, firstAt, attempt, atLeastMs) {
+    if (Date.now() - firstAt > DQ_RETRY_FOR_MS) { logEvent('dq_gave_up', payload.dqEventId); return; }
+    var ms = Math.max(DQ_RETRY_MS[Math.min(attempt, DQ_RETRY_MS.length - 1)], atLeastMs || 0);
+    logEvent('dq_retry', attempt + 1);
+    dqRetryTimer = setTimeout(function() { postDQUntilConfirmed(payload, firstAt, attempt + 1); }, ms);
+  }
+
+  // The answer Apps Script (scanApprovalRows) and the Worker (NOT_FOUND) give an
+  // id whose newest row is finished — which is what a DISQUALIFIED row is.
+  function isNoLiveRowAnswer(data) {
+    return !!(data && data.status === 'error' && !data.examineeTokenError && String(data.message || '') === 'לא נמצא רישום');
+  }
+
+  // Is an 'in_exam' answer the examiner's overturn, or the row as it was before
+  // this device's own disqualification reached Google? (sendDQToServer)
+  function overturnIsReal(data) {
+    if (data && data.stale) return false;           // a stale copy decides nothing
+    if (dqSeenOnServer) return true;                // the server showed the DQ, so in_exam now is a decision
+    if (!dqAckAt) return false;                     // the server has not even confirmed it
+    return Date.now() - dqAckAt >= DQ_OVERTURN_TRUST_MS;
   }
 
   // Cancel a provisional DQ — called when examinee returns within grace period
@@ -3464,6 +3566,12 @@
       if (!isCurrent()) return data;
       if (data && data.status === 'ok') {
         if (data.approval === 'in_exam') {
+          // r34: until the server has shown this DQ, in_exam is the row as it
+          // was before it, not the examiner's decision (overturnIsReal).
+          if (!overturnIsReal(data)) {
+            if (!dqOverturnIgnoredLogged) { dqOverturnIgnoredLogged = true; logEvent('dq_overturn_ignored', dqAckAt ? 'unseen' : 'unconfirmed'); }
+            return data;
+          }
           // Examiner overturned DQ — try to resume exam
           stopDQOverturnPolling();
           restoreExamFromSuspended();
@@ -3472,6 +3580,10 @@
           stopDQOverturnPolling();
           showFinalDQScreen();
         }
+      } else if (isNoLiveRowAnswer(data)) {
+        // How the server answers a DISQUALIFIED row: the DQ is there now, and the
+        // next in_exam can only be the examiner putting the examinee back.
+        dqSeenOnServer = true;
       }
       return data;
     });
@@ -3562,6 +3674,7 @@
     tabSwitchWarnings = 0;
     currentDQEventId = '';
     currentDQReason = '';
+    trackDQEvent('');   // the DQ is over: its retries stop, and the next one starts clean
     provisionalDQSent = false;
     if (splitScreenBlurTimer) { clearTimeout(splitScreenBlurTimer); splitScreenBlurTimer = null; }
 
@@ -4080,6 +4193,9 @@
           // resume; a real second disqualification still lands after that.
           if (Date.now() - lastOverturnResumeAt < DQ_RESUME_GRACE_MS) return data;
           tabSwitchDQConfirmed = true;
+          // The server itself says so: the next in_exam is the examiner's decision.
+          trackDQEvent('server:' + Date.now());
+          dqSeenOnServer = true;
           try { localStorage.setItem('examEnded_' + sessionCode + '_' + examineeData.idNumber, 'dq'); } catch(ex) {}
           showDQScreen();
         }
@@ -6105,6 +6221,9 @@
         } catch(ex) {}
         // Retry DQ notification to server (in case original request failed)
         if (currentDQEventId) { try { sendDQToServer(); } catch(ex) {} }
+        // No event id = the examiner's own DQ (the status poll brought it): the
+        // server is its source, so the next in_exam is the examiner's decision.
+        else { trackDQEvent('server:' + Date.now()); dqSeenOnServer = true; }
         var examArea = document.getElementById('examArea');
         examArea.innerHTML =
           '<div style="text-align:center; padding:40px 20px;">' +

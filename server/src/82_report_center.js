@@ -21,6 +21,10 @@ function handleCenterManagerReport(p) {
   if (!managedSites.length) {
     return jsonResponse({ status: 'error', message: 'לא הוקצו אתרים מנוהלים — פנה למנהל המערכת' });
   }
+  // Not while exams are running (24/09/2026) — after every role check, before
+  // the results read. The rule and the override: examHoursRefusal, 86_commander.js.
+  var examHours = examHoursRefusal(p, 'centerManagerReport');
+  if (examHours) return examHours;
   // Normalise site names: strip all whitespace + lowercase for forgiving match
   // (handles "ב.ה. 6910" vs "ב.ה.6910" vs " ב.ה. 6910 " — common manual-entry drift).
   function normalizeSiteName(s) {

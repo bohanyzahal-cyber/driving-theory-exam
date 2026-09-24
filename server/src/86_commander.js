@@ -21,6 +21,88 @@ function parseSheetDate(val) {
   return null;
 }
 
+// ========== No heavy report while exams are running (24/09/2026) ==========
+// 24/09, 10:20-10:22: a commander opened this dashboard three times (60 s, 55 s,
+// 42 s — each one reads the whole results history, its archive, 'ממתינים' and
+// the 112k-row practice sheet) and at 10:23 the exam project's own open of the
+// spreadsheet hung for 243 s. The two heavy reports of the reports deployment
+// — this one and the center-manager report (82_report_center.js) — therefore
+// ask first whether anybody is being examined, and refuse with a message
+// instead of reading. ONLY those two: a commander entering a live session,
+// viewing it and correcting a score (listAllSessions, examinerDashboard,
+// commanderCorrectResult, correctToPass, ...) are exam actions that never come
+// here, and tests/server_split.test.cjs fails if anything else reaches this.
+//
+// "Being examined" = a row of 'ממתינים' that is waiting / approved / in_exam,
+// in a session that is open (K TRUE, and J not passed — the rule of
+// handleListAllSessions and of the forecast: an empty J is not an expiry),
+// whose exam start (L), or its registration (E) while it has none, is less than
+// LIVE_EXAM_WINDOW_MS old. The time bound is what stops the abandoned row of an
+// examinee who never finished from blocking the reports for the rest of the
+// day: an exam is 40 minutes (60 with the longest extension).
+// Cost: the per-execution 'סשנים' memo (this dashboard reads it anyway) and,
+// only when some session is open, one tail read of 'ממתינים' — what one
+// examiner poll pays. Never the archive, never 'תוצאות'.
+// The guard protects the exams and must never break a report: if anything in
+// it throws, it answers "nothing live" (error: true) and the report runs.
+var LIVE_EXAM_WINDOW_MS = 2 * 60 * 60 * 1000;
+var LIVE_EXAM_STATUSES = { waiting: 1, approved: 1, in_exam: 1 };
+function liveExamActivity() {
+  try {
+    diagMark('sheet:live-exams');
+    var now = Date.now(), open = {}, anyOpen = false;
+    var sess = sessionRows();
+    for (var s = 1; s < sess.length; s++) {
+      var active = sess[s][10] === true || String(sess[s][10]).toUpperCase() === 'TRUE';   // K: פעיל
+      if (!active) continue;
+      var until = parseSheetDateTime(sess[s][9]);                                           // J: תקף עד
+      if (until && until.getTime() <= now) continue;
+      var code = String(sess[s][0] || '').trim();
+      if (code) { open[code] = true; anyOpen = true; }
+    }
+    if (!anyOpen) return { sessions: 0, examinees: 0 };
+    var rows = readPendingTail().rows, since = now - LIVE_EXAM_WINDOW_MS;
+    var seen = {}, sessions = 0, examinees = 0;
+    for (var i = 1; i < rows.length; i++) {
+      var sc = String(rows[i][0] || '').trim();
+      if (open[sc] !== true) continue;
+      if (LIVE_EXAM_STATUSES[String(rows[i][5] || '').trim()] !== 1) continue;
+      var started = rows[i][11];                                                            // L: התחלת מבחן
+      var hasStart = String(started === null || started === undefined ? '' : started).trim() !== '';
+      var at = parseSheetDateTime(hasStart ? started : rows[i][4]);                         // E: זמן הרשמה
+      if (!at || at.getTime() < since) continue;
+      examinees++;
+      if (seen[sc] !== true) { seen[sc] = true; sessions++; }
+    }
+    return { sessions: sessions, examinees: examinees };
+  } catch (e) {
+    return { sessions: 0, examinees: 0, error: true };
+  }
+}
+
+// null = go ahead. `force=1` is an undocumented emergency override with no UI:
+// the report runs anyway, and while exams ARE live that is recorded as one
+// NOTE row in 'אבחון' (who, which report, how many examinees) — the report
+// itself is about to cost 40-60 s, so one parked/appended row is nothing.
+function examHoursRefusal(p, action) {
+  var live = liveExamActivity();
+  if (!(live.examinees > 0)) return null;
+  if (String(p.force || '') === '1') {
+    try {
+      var noteId = '';
+      try { noteId = Utilities.getUuid(); } catch (eId) { noteId = 'note_' + Date.now(); }
+      diagRecordRow(noteId, [nowISO(), 'NOTE', (DIAG_EXEC && DIAG_EXEC.method) || '', action, '', 'force=1',
+        'exam_hours override by ' + normalizeId(p.examinerId) + ': ' + live.examinees + ' examinees in ' +
+        live.sessions + ' sessions']);
+    } catch (eNote) { /* the override is recorded when it can be; the report runs either way */ }
+    return null;
+  }
+  return jsonResponse({ status: 'error', code: 'exam_hours', retryable: false,
+    live: { sessions: live.sessions, examinees: live.examinees },
+    message: 'יש עכשיו בחינות פעילות — ' + live.examinees + ' נבחנים ב-' + live.sessions +
+      ' סשנים. הדוחות נחסמים בזמן בחינות כדי לא להאט את המבחנים. נסה שוב כשהבחינות יסתיימו.' });
+}
+
 function handleCommanderDashboard(p) {
   // Verify role
   var exSheet = getSheet('בוחנים');
@@ -35,6 +117,10 @@ function handleCommanderDashboard(p) {
   if (role !== 'מפקד') {
     return jsonResponse({ status: 'error', message: 'אין הרשאת מפקד' });
   }
+  // Not while exams are running — after the role check (a non-commander keeps
+  // today's answer) and before the first heavy read. See examHoursRefusal.
+  var examHours = examHoursRefusal(p, 'commanderDashboard');
+  if (examHours) return examHours;
 
   // Parse date range
   var dateFrom = parseDateParam(p.dateFrom);

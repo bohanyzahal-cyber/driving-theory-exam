@@ -54,6 +54,24 @@ function handleDisqualify(p) {
   // a short lowercase token — anything else is dropped, never written.
   var dqReason = p.examinerId ? '' : selfDqReason(p.reason);
 
+  // r34 (24/09/2026): a disqualification this server ALREADY has — a result row
+  // of this session and id with the same dqEventId, still 'פסול' or already
+  // 'בוטל' by the examiner — changes nothing at all, 'ממתינים' included. The
+  // examinee page now retries an unconfirmed DQ until it gets an answer
+  // (examinee.html postDQUntilConfirmed; KNOWN_ISSUES #40). A retry whose first
+  // attempt DID land but whose answer Google lost (#35) must not count the DQ a
+  // second time in column N — and one that lands AFTER the examiner overturned
+  // it must not disqualify the examinee again. The same check used to run only
+  // after the pending row had already been rewritten below.
+  var dqEventId = String(p.dqEventId || '');
+  var sheet = getSheet('תוצאות');
+  // The dedupe window is 2 minutes and a retry lands within minutes, so the tail
+  // is always enough — this used to read every result ever recorded.
+  var data = readResultsTail().rows;
+  if (dqEventId && dqEventAlreadyRecorded(data, p.sessionCode, p.idNumber, dqEventId)) {
+    return jsonResponse({ status: 'ok', duplicate: true });
+  }
+
   // Update pending status to 'disqualified' (only if a row exists) AND increment
   // the DQ-event counter in column N so the examiner can see how many times this
   // examinee triggered an anti-cheat event — even if some were auto-reverted in
@@ -78,23 +96,15 @@ function handleDisqualify(p) {
   // Idempotency: prevent duplicate פסול rows when examinee anti-cheat AND examiner
   // manual DQ fire on the same examinee close in time (different dqEventIds).
   // Rules:
-  //   1. Same dqEventId on a פסול/בוטל row -> retry, skip silently.
+  //   1. Same dqEventId on a פסול/בוטל row -> retry, skip silently (checked above,
+  //      before 'ממתינים' is touched — r34).
   //   2. Recent (≤2 min) פסול row WITHOUT 'בוטל' status -> same logical DQ event from
   //      another path (e.g. examiner clicked after auto-DQ already fired) -> skip.
   //   3. Otherwise (latest is not פסול, or it's old/cancelled) -> create new row.
-  var dqEventId = String(p.dqEventId || '');
-  var sheet = getSheet('תוצאות');
-  // The dedupe window is 2 minutes and a retry lands within seconds, so the tail
-  // is always enough — this used to read every result ever recorded.
-  var data = readResultsTail().rows;
   var nowMs = Date.now();
   for (var i = data.length - 1; i >= 1; i--) {
     if (String(data[i][13]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
       var rowStatus = String(data[i][7]).trim();
-      // Rule 1: same dqEventId (active or cancelled) — retry from sendDQToServer, skip
-      if ((rowStatus === 'פסול' || rowStatus === 'בוטל') && dqEventId && String(data[i][24] || '') === dqEventId) {
-        return jsonResponse({ status: 'ok' });
-      }
       // Rule 2: latest is an active 'פסול' (not cancelled) within last 2 minutes
       // → treat as the same DQ episode even if dqEventId differs/missing.
       if (rowStatus === 'פסול') {
@@ -140,6 +150,19 @@ function handleDisqualify(p) {
   ]);
   SpreadsheetApp.flush();
   return jsonResponse({ status: 'ok' });
+}
+
+// Rule 1 of handleDisqualify: a result row of this session and id that carries
+// this very dqEventId (column Y) and is still 'פסול' or was overturned to 'בוטל'.
+function dqEventAlreadyRecorded(rows, sessionCode, idNumber, dqEventId) {
+  var want = String(sessionCode), id = normalizeId(idNumber);
+  for (var i = rows.length - 1; i >= 1; i--) {
+    if (String(rows[i][13]) !== want || normalizeId(rows[i][1]) !== id) continue;
+    if (String(rows[i][24] || '') !== dqEventId) continue;
+    var status = String(rows[i][7]).trim();
+    if (status === 'פסול' || status === 'בוטל') return true;
+  }
+  return false;
 }
 
 function selfDqReason(raw) {

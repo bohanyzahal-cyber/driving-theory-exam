@@ -261,7 +261,7 @@ test('health&deep=1 times one cell of our own document and reports a failure ins
   const e = runtime();
   const ok = get(e, { action: 'health', deep: '1' });
   assert.equal(ok.status, 'ok');
-  assert.equal(ok.build, '2026-09-24-r33.1');
+  assert.equal(ok.build, '2026-09-27-r34');
   assert.equal(ok.deep, true);
   assert.equal(ok.indexIds, 1700);
   assert.ok(typeof ok.sheetMs === 'number' && ok.sheetMs >= 0);
@@ -279,7 +279,7 @@ test('health identifies build without Sheets, Drive or private parameters', () =
   e.ctx.getSheet = () => { throw new Error('health must not access Sheets'); };
   const result = get(e, { action: 'health', token: 'DO_NOT_LOG_ME' });
   assert.equal(result.status, 'ok');
-  assert.equal(result.build, '2026-09-24-r33.1');
+  assert.equal(result.build, '2026-09-27-r34');
   assert.equal(e.logs.length, 2);
   assert.ok(e.logs[0].includes('"phase":"start"'));
   assert.ok(e.logs[1].includes('"phase":"end"'));
@@ -1072,6 +1072,45 @@ test('r33 disqualify: a malformed reason, or an examiner\'s DQ, leaves column Q 
   assert.equal(e.rows('ממתינים')[2][16], 'יצא מהמסך', 'the reason is the device\'s — an examiner DQ carries none');
 });
 
+// r34 (24/09/2026, KNOWN_ISSUES #40): the examinee page now RETRIES a self-DQ
+// until the server answers. A retry of an event the server already has must
+// change nothing — not the DQ counter when only the answer was lost (#35), and
+// above all not the row when the examiner has overturned it in the meantime.
+test('r34 disqualify: a retry of a DQ the server already has changes nothing — not even after an overturn', () => {
+  const examiners = [Array(11).fill('h'),
+    ['בוחן', '111111111', 'pw', 'כן', '7', 'בוחן', 'tokE', new Date(NOW + 86400000).toISOString(), 0, '', '']];
+  const e = runtime({ sheets: { 'בוחנים': examiners, 'ממתינים': [PENDING_HEADER, pendingRow(idOf(1), { 5: 'in_exam' })] } });
+  const pending = () => e.rows('ממתינים')[1];
+  assert.equal(selfDq(e, 1, { reason: 'hidden-10s' }).status, 'ok');
+  assert.equal(pending()[5], 'disqualified');
+  assert.equal(pending()[13], 1);
+
+  // Google lost the answer; the page sends the same event again.
+  const again = selfDq(e, 1, { reason: 'hidden-10s' });
+  assert.equal(again.status, 'ok');
+  assert.equal(again.duplicate, true);
+  assert.equal(pending()[13], 1, 'counted once');
+  assert.equal(dqRows(e, 1).length, 1, 'one result row');
+
+  // The examiner overturns it…
+  const overturn = get(e, { action: 'overturnDQ', origin: 'examiner-app', sessionCode: SESSION, idNumber: idOf(1),
+    examinerId: '111111111', token: 'tokE' });
+  assert.equal(overturn.status, 'ok');
+  assert.equal(pending()[5], 'in_exam');
+
+  // …and a retry that was still on its way lands afterwards.
+  assert.equal(selfDq(e, 1, { reason: 'hidden-10s' }).status, 'ok');
+  assert.equal(pending()[5], 'in_exam', 'the examiner\'s overturn stands');
+  assert.equal(pending()[13], 1, 'and the counter still says one');
+  assert.equal(pending()[16], 'פסילה: hidden-10s', 'column Q keeps the reason of the DQ that was overturned');
+
+  // A NEW event after the overturn is a new disqualification, exactly as before.
+  assert.equal(selfDq(e, 1, { reason: 'zoom-out', dqEventId: 'ev-1b' }).status, 'ok');
+  assert.equal(pending()[5], 'disqualified');
+  assert.equal(pending()[13], 2);
+  assert.equal(pending()[16], 'פסילה: zoom-out');
+});
+
 test('r33 testGatewayReachability: a reachable Worker, a Cloudflare block and a key mismatch read differently; no secret is printed', () => {
   const e = runtime({});
   const calls = fetchSpy(e, url => {
@@ -1103,4 +1142,228 @@ test('r33 testGatewayReachability: a reachable Worker, a Cloudflare block and a 
 
   e.properties.delete('GATEWAY_URL');
   assert.match(e.ctx.testGatewayReachability(), /GATEWAY_URL is not set/);
+});
+
+// ============================================================================
+// 24/09/2026: no heavy report while exams are running. That morning a
+// commander opened the commander dashboard three times (60 s, 55 s, 42 s) and a
+// minute later the exam project's own open of the spreadsheet hung for 243 s.
+// handleCommanderDashboard and handleCenterManagerReport now ask
+// liveExamActivity() (86_commander.js) first and answer code 'exam_hours'
+// instead of reading. These tests run the REPORTS build through its router —
+// the file and the path that serve the two reports in production. The last one
+// proves the path a commander uses DURING an exam (enter a session, view it,
+// correct a score) is untouched, in the exam build and in the monolith.
+// ============================================================================
+const REPORTS_BUILD = 'external_exam_apps_script.reports.js';
+const EXAM_BUILD = 'external_exam_apps_script.exam.js';
+const MONOLITH_BUILD = 'external_exam_apps_script.js';
+const MIN = 60000, HOUR = 3600000;
+const at = ms => new Date(ms).toISOString();
+const plainOf = v => JSON.parse(JSON.stringify(v));
+// 'תוצאות' column A is todayStr(): DD/MM/YYYY HH:MM in local time.
+function sheetDateOf(ms) {
+  const d = new Date(ms), p = n => String(n).padStart(2, '0');
+  return p(d.getDate()) + '/' + p(d.getMonth() + 1) + '/' + d.getFullYear() + ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+}
+const STAFF_HEADER = ['שם', 'ת.ז.', 'סיסמה', 'פעיל', 'מס בוחן', 'תפקיד', 'טוקן', 'תוקף טוקן', 'ניסיונות כושלים', 'נעילה עד', 'אתרים מנוהלים'];
+function staff() {
+  const until = at(NOW + 86400000);
+  return [STAFF_HEADER,
+    ['מפקד', '999999999', 'pw', 'כן', '99', 'מפקד', 'tokC', until, 0, '', ''],
+    ['מפקד מרכז', '999999998', 'pw', 'כן', '98', 'מפקד מרכז', 'tokM', until, 0, '', 'בסיס 6'],
+    ['בוחן א', '111111111', 'pw', 'כן', '7', 'בוחן', 'tokE', until, 0, '', '']];
+}
+const COMMANDER = { examinerId: '999999999', token: 'tokC' };
+const CENTER = { examinerId: '999999998', token: 'tokM' };
+const PLAIN_EXAMINER = { examinerId: '111111111', token: 'tokE' };
+// K (10) = פעיל, J (9) = תקף עד.
+const openSession = (code, over) =>
+  sessionRow(Object.assign({ 0: code, 3: 'בסיס 6', 8: at(NOW - HOUR), 9: at(NOW + 7 * HOUR), 10: true }, over || {}));
+// E (4) = registered, F (5) = status, L (11) = exam start ('' = never started).
+const liveRow = (code, id, status, registered, started) =>
+  pendingRow(id, { 0: code, 4: at(registered), 5: status, 11: started ? at(started) : '' });
+const RESULTS_HEADER = ['תאריך', 'ת.ז.', 'שם', 'טלפון', 'דרגה', 'ציון', 'אחוז', 'עבר/נכשל', 'זמן', 'בוחן', 'אתר', 'כיתה',
+  'שפה', 'קוד סשן', 'ניסיון', 'פירוט שגויות', 'נשלח?', 'פסול?', 'קישור וואטסאפ', 'אוכלוסיה', 'תוקן?', 'שמע', 'מאומת',
+  'חשוד', 'dqEventId', 'תוקן ע"י', 'סיבת תיקון', 'תאריך תיקון', 'מסלול שפות', 'מכשיר'];
+function resultRow(code, id, whenMs) {
+  const row = new Array(30).fill('');
+  row[0] = sheetDateOf(whenMs); row[1] = id; row[2] = 'נבחן ' + id; row[3] = '0500000000'; row[4] = 'B';
+  row[5] = '24/30'; row[6] = '80%'; row[7] = 'נכשל'; row[8] = '30 דק\' 00 שנ\''; row[9] = 'בוחן א'; row[10] = 'בסיס 6';
+  row[11] = '1'; row[12] = 'he'; row[13] = code; row[14] = 1; row[19] = 'חיילים'; row[21] = 'off'; row[22] = 'מאומת';
+  return row;
+}
+// The exam morning: five examinees live in two sessions, and one row of every
+// kind that must NOT count.
+function examMorning() {
+  return {
+    'סשנים': [SESSIONS_HEADER, openSession('LIVE0001'), openSession('LIVE0002'),
+      openSession('CLOSED01', { 10: false }), openSession('EXPIRED1', { 9: at(NOW - MIN) })],
+    'ממתינים': [PENDING_HEADER,
+      liveRow('LIVE0001', idOf(1), 'in_exam', NOW - 20 * MIN, NOW - 10 * MIN),
+      liveRow('LIVE0001', idOf(2), 'in_exam', NOW - 20 * MIN, NOW - 10 * MIN),
+      liveRow('LIVE0001', idOf(3), 'approved', NOW - 5 * MIN),
+      liveRow('LIVE0001', idOf(4), 'waiting', NOW - MIN),
+      liveRow('LIVE0002', idOf(5), 'in_exam', NOW - 3 * HOUR, NOW - 90 * MIN),       // registered long ago: the START decides
+      liveRow('LIVE0001', idOf(6), 'completed', NOW - 50 * MIN, NOW - 45 * MIN),     // finished
+      liveRow('LIVE0001', idOf(7), 'waiting', NOW - 3 * HOUR),                       // abandoned in the queue
+      liveRow('LIVE0002', idOf(8), 'in_exam', NOW - 3 * HOUR, NOW - 2 * HOUR - MIN),  // never finished
+      liveRow('CLOSED01', idOf(9), 'in_exam', NOW - 20 * MIN, NOW - 10 * MIN),       // K is FALSE
+      liveRow('EXPIRED1', idOf(10), 'waiting', NOW - 10 * MIN),                      // J has passed
+      liveRow('NOSUCH01', idOf(11), 'in_exam', NOW - 20 * MIN, NOW - 10 * MIN)],     // no such session
+    'תוצאות': [RESULTS_HEADER, resultRow('LIVE0001', idOf(6), NOW - 40 * MIN)]
+  };
+}
+function guardEnv(sheets, serverFile) {
+  return createEnv({ serverFile: serverFile || REPORTS_BUILD, now: NOW, properties: Object.assign({}, GATEWAY_PROPS),
+    sheets: Object.assign({ 'בוחנים': staff(), 'סשנים': [SESSIONS_HEADER], 'ממתינים': [PENDING_HEADER],
+      'תוצאות': [RESULTS_HEADER] }, sheets || {}) });
+}
+const RANGE = { dateFrom: '01/09/2026', dateTo: '22/09/2026' };
+const commanderDash = (e, extra) =>
+  get(e, Object.assign({ action: 'commanderDashboard', origin: 'examiner-app' }, COMMANDER, RANGE, extra || {}));
+const centerReport = (e, who, extra) =>
+  get(e, Object.assign({ action: 'centerManagerReport', origin: 'examiner-app' }, who || CENTER, extra || {}));
+const examHoursMessage = (examinees, sessions) => 'יש עכשיו בחינות פעילות — ' + examinees + ' נבחנים ב-' + sessions +
+  ' סשנים. הדוחות נחסמים בזמן בחינות כדי לא להאט את המבחנים. נסה שוב כשהבחינות יסתיימו.';
+const noteRows = e => (e.sheets.get('אבחון') ? e.rows('אבחון') : []).filter(r => r[1] === 'NOTE');
+
+test('exam hours: a live exam refuses both reports — with the counts, and before any heavy read', () => {
+  const e = guardEnv(examMorning());
+  const marks = [], realMark = e.ctx.diagMark;
+  e.ctx.diagMark = phase => { marks.push(String(phase)); return realMark(phase); };
+  e.resetCounters();
+  const refusal = { status: 'error', code: 'exam_hours', retryable: false, live: { sessions: 2, examinees: 5 },
+    message: examHoursMessage(5, 2) };
+  assert.deepEqual(commanderDash(e), refusal);
+  assert.ok(marks.includes('sheet:live-exams'), 'the guard marks its reads: ' + marks.join(' '));
+  assert.deepEqual(centerReport(e), refusal);
+  assert.ok(!marks.some(m => /commander|center-report/.test(m)), 'no read of either report began: ' + marks.join(' '));
+  const c = e.counters();
+  for (const name of ['תוצאות', 'תוצאות תרגול', 'תוצאות_ארכיון', 'ממתינים_ארכיון', 'כיתות']) {
+    const s = c.perSheet[name];
+    assert.ok(!s || s.fullReads + s.rangeReads === 0, name + ' was read: ' + JSON.stringify(s));
+  }
+  assert.equal(c.appends + c.setValues, 0, 'a refusal writes nothing');
+  assert.equal(noteRows(e).length, 0, 'and records nothing');
+});
+
+test('exam hours: nothing live — both reports run; with no session open ממתינים is not even read', () => {
+  const idle = guardEnv({ 'סשנים': [SESSIONS_HEADER, openSession('LIVE0001')],   // open, nobody registered yet
+    'תוצאות': [RESULTS_HEADER, resultRow('LIVE0001', idOf(6), NOW - 40 * MIN)] });
+  const cmd = commanderDash(idle);
+  assert.equal(cmd.status, 'ok');
+  assert.equal(cmd.data.overall.total, 1, 'the report really ran');
+  const center = centerReport(idle);
+  assert.equal(center.status, 'ok');
+  assert.equal(center.overall.total, 1);
+
+  const closed = guardEnv({ 'סשנים': [SESSIONS_HEADER, openSession('CLOSED01', { 10: false })],
+    'ממתינים': [PENDING_HEADER, liveRow('CLOSED01', idOf(1), 'in_exam', NOW - 20 * MIN, NOW - 10 * MIN)] });
+  closed.resetCounters();
+  assert.deepEqual(plainOf(closed.ctx.liveExamActivity()), { sessions: 0, examinees: 0 });
+  const pend = closed.counters().perSheet['ממתינים'];
+  assert.equal(pend.fullReads + pend.rangeReads, 0, 'no open session: the tail read is skipped');
+  assert.equal(commanderDash(closed).status, 'ok');
+});
+
+test('exam hours: a row whose start — or its registration, when it never started — is over two hours old does not block', () => {
+  const e = guardEnv({ 'סשנים': [SESSIONS_HEADER, openSession('LIVE0001')],
+    'ממתינים': [PENDING_HEADER,
+      liveRow('LIVE0001', idOf(1), 'in_exam', NOW - 3 * HOUR, NOW - 2 * HOUR - MIN),
+      liveRow('LIVE0001', idOf(2), 'approved', NOW - 2 * HOUR - MIN),
+      liveRow('LIVE0001', idOf(3), 'waiting', NOW - 5 * HOUR)] });
+  assert.deepEqual(plainOf(e.ctx.liveExamActivity()), { sessions: 0, examinees: 0 });
+  assert.equal(commanderDash(e).status, 'ok');
+  assert.equal(centerReport(e).status, 'ok');
+  // One minute inside the window it counts again — whichever form Sheets hands
+  // the time back in: ISO text (what nowISO() writes), a Date, or DD/MM/YYYY HH:MM.
+  const rows = e.rows('ממתינים');
+  rows[1][11] = at(NOW - 2 * HOUR + MIN);
+  assert.deepEqual(plainOf(e.ctx.liveExamActivity()), { sessions: 1, examinees: 1 });
+  rows[1][11] = new Date(NOW - 2 * HOUR + MIN);
+  assert.equal(e.ctx.liveExamActivity().examinees, 1, 'a Date');
+  rows[2][4] = sheetDateOf(NOW - 30 * MIN);
+  assert.equal(e.ctx.liveExamActivity().examinees, 2, 'DD/MM/YYYY HH:MM');
+  assert.equal(commanderDash(e).code, 'exam_hours');
+});
+
+test('exam hours: only an open session counts — K TRUE (or the text TRUE) and J not passed; an empty J is no expiry', () => {
+  const cases = [
+    [{ 10: false }, 0], [{ 10: 'FALSE' }, 0], [{ 10: '' }, 0], [{ 9: at(NOW - MIN) }, 0],
+    [{ 10: 'TRUE' }, 1], [{ 9: '' }, 1], [{}, 1]
+  ];
+  for (const [over, expected] of cases) {
+    const e = guardEnv({ 'סשנים': [SESSIONS_HEADER, openSession('S0000001', over)],
+      'ממתינים': [PENDING_HEADER, liveRow('S0000001', idOf(1), 'in_exam', NOW - 20 * MIN, NOW - 10 * MIN)] });
+    const label = JSON.stringify(over);
+    assert.equal(e.ctx.liveExamActivity().examinees, expected, label);
+    assert.equal(commanderDash(e).code === 'exam_hours', expected === 1, label);
+  }
+});
+
+test('exam hours: force=1 runs the report anyway and leaves one NOTE row per override in אבחון', () => {
+  const e = guardEnv(examMorning());
+  const cmd = commanderDash(e, { force: '1' });
+  assert.equal(cmd.status, 'ok');
+  assert.equal(cmd.data.overall.total, 1);
+  assert.equal(centerReport(e, CENTER, { force: '1' }).status, 'ok');
+  assert.deepEqual(plainOf(noteRows(e).map(r => r.slice(1))), [
+    ['NOTE', 'GET', 'commanderDashboard', '', 'force=1', 'exam_hours override by 999999999: 5 examinees in 2 sessions'],
+    ['NOTE', 'GET', 'centerManagerReport', '', 'force=1', 'exam_hours override by 999999998: 5 examinees in 2 sessions']]);
+  for (const force of ['true', 'yes', '0', '11', ' 1']) assert.equal(commanderDash(e, { force }).code, 'exam_hours', 'force=' + force);
+  // With nothing live, force=1 is an ordinary request: there is nothing to record.
+  const quiet = guardEnv({ 'סשנים': [SESSIONS_HEADER, openSession('LIVE0001')] });
+  assert.equal(commanderDash(quiet, { force: '1' }).status, 'ok');
+  assert.equal(noteRows(quiet).length, 0);
+});
+
+test('exam hours: whoever may not see the report gets the same answer as before, and the guard is not asked', () => {
+  const e = guardEnv(examMorning());
+  e.resetCounters();
+  assert.deepEqual(get(e, Object.assign({ action: 'commanderDashboard', origin: 'examiner-app' }, PLAIN_EXAMINER, RANGE)),
+    { status: 'error', message: 'אין הרשאת מפקד' });
+  assert.deepEqual(centerReport(e, PLAIN_EXAMINER), { status: 'error', message: 'פעולה זו זמינה רק למפקד' });
+  assert.deepEqual(centerReport(e, COMMANDER), { status: 'error', message: 'פעולה זו זמינה רק למפקד' }, 'a מפקד is not a center commander');
+  const pend = e.counters().perSheet['ממתינים'];
+  assert.equal(pend.fullReads + pend.rangeReads, 0, 'a refused role never reaches the guard\'s read');
+  assert.equal(commanderDash(e, { token: 'stolen' }).tokenExpired, true, 'the router\'s token check is first, as always');
+  e.rows('בוחנים')[2][10] = '';   // a center commander with no sites keeps his configuration error
+  assert.deepEqual(centerReport(e), { status: 'error', message: 'לא הוקצו אתרים מנוהלים — פנה למנהל המערכת' });
+});
+
+test('exam hours: the guard fails OPEN — when its own read throws, the report runs', () => {
+  const e = guardEnv(examMorning());
+  e.ctx.readPendingTail = () => { throw new Error('Service Spreadsheets timed out while accessing document'); };
+  assert.deepEqual(plainOf(e.ctx.liveExamActivity()), { sessions: 0, examinees: 0, error: true });
+  assert.equal(commanderDash(e).status, 'ok');
+  assert.equal(centerReport(e).status, 'ok');
+  const e2 = guardEnv(examMorning());
+  e2.ctx.sessionRows = () => { throw new Error('Service Spreadsheets failed'); };
+  assert.equal(e2.ctx.liveExamActivity().error, true);
+  assert.equal(centerReport(e2).status, 'ok');
+  assert.equal(commanderDash(e2).status, 'ok');
+});
+
+// Yossi, 24/09: the commander's own tab — "📂 הצג כל הסשנים הפעילים" → enter a
+// session → view it → correct a score — is used exactly while exams run and
+// must never be blocked. Those are exam actions; this proves they answer as
+// always at the same moment the report is refused.
+test('exam hours: at the same moment a commander still lists the live sessions, enters one and corrects a score', () => {
+  for (const file of [EXAM_BUILD, MONOLITH_BUILD]) {
+    const e = guardEnv(examMorning(), file);
+    assert.equal(commanderDash(e).code, file === EXAM_BUILD ? 'wrong_deployment' : 'exam_hours', file);
+    const listed = get(e, Object.assign({ action: 'listAllSessions', origin: 'examiner-app' }, COMMANDER));
+    assert.equal(listed.status, 'ok', file);
+    assert.deepEqual(listed.sessions.map(s => s.code).sort(), ['LIVE0001', 'LIVE0002'], file);
+    const board = get(e, Object.assign({ action: 'examinerDashboard', origin: 'examiner-app', sessionCode: 'LIVE0001' }, COMMANDER));
+    assert.equal(board.status, 'ok', file);
+    assert.deepEqual(board.active.map(a => String(a.idNumber)).sort(), [idOf(1), idOf(2)], file);
+    const corrected = e.json(e.ctx.doPost({ postData: { contents: JSON.stringify(Object.assign({ action: 'commanderCorrectResult',
+      origin: 'examiner-app', sessionCode: 'LIVE0001', idNumber: idOf(6), newScore: 27, newTotal: 30, newStatus: 'עבר',
+      reason: 'ועדת ערר' }, COMMANDER)) } }));
+    assert.deepEqual(corrected, { status: 'ok' }, file);
+    const row = e.rows('תוצאות').find(r => String(r[1]) === idOf(6));
+    assert.deepEqual([row[5], row[7], row[20]], ['27/30', 'עבר', true], file);
+  }
 });

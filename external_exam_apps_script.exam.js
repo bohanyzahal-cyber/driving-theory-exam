@@ -1000,7 +1000,7 @@ function handleBankGrant(p) {
 }
 var API_DEPLOYMENT = "exam";
 
-var THEORY_API_BUILD = '2026-09-24-r33.1';
+var THEORY_API_BUILD = '2026-09-27-r34';
 var API_STARTED_AT = 0;
 
 function apiActionList() {
@@ -2434,6 +2434,13 @@ function handleDisqualify(p) {
 
   var dqReason = p.examinerId ? '' : selfDqReason(p.reason);
 
+  var dqEventId = String(p.dqEventId || '');
+  var sheet = getSheet('תוצאות');
+  var data = readResultsTail().rows;
+  if (dqEventId && dqEventAlreadyRecorded(data, p.sessionCode, p.idNumber, dqEventId)) {
+    return jsonResponse({ status: 'ok', duplicate: true });
+  }
+
   if (pendRowIdx !== -1) {
     var prevCount = (pendData[pendRowIdx].length > 13) ? (Number(pendData[pendRowIdx][13]) || 0) : 0;
     var dqExtras = { dqCount: prevCount + 1 };
@@ -2449,16 +2456,10 @@ function handleDisqualify(p) {
     }
   }
 
-  var dqEventId = String(p.dqEventId || '');
-  var sheet = getSheet('תוצאות');
-  var data = readResultsTail().rows;
   var nowMs = Date.now();
   for (var i = data.length - 1; i >= 1; i--) {
     if (String(data[i][13]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
       var rowStatus = String(data[i][7]).trim();
-      if ((rowStatus === 'פסול' || rowStatus === 'בוטל') && dqEventId && String(data[i][24] || '') === dqEventId) {
-        return jsonResponse({ status: 'ok' });
-      }
       if (rowStatus === 'פסול') {
         var rowDateRaw = data[i][0];
         var rowDate = null;
@@ -2497,6 +2498,17 @@ function handleDisqualify(p) {
   ]);
   SpreadsheetApp.flush();
   return jsonResponse({ status: 'ok' });
+}
+
+function dqEventAlreadyRecorded(rows, sessionCode, idNumber, dqEventId) {
+  var want = String(sessionCode), id = normalizeId(idNumber);
+  for (var i = rows.length - 1; i >= 1; i--) {
+    if (String(rows[i][13]) !== want || normalizeId(rows[i][1]) !== id) continue;
+    if (String(rows[i][24] || '') !== dqEventId) continue;
+    var status = String(rows[i][7]).trim();
+    if (status === 'פסול' || status === 'בוטל') return true;
+  }
+  return false;
 }
 
 function selfDqReason(raw) {

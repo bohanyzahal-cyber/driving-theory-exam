@@ -649,7 +649,17 @@ function envWith(extra, properties) {
   const env = createEnv({ sheets: fixture, now: NOW });
   const range = { dateFrom: '01/09/2026', dateTo: '22/09/2026' };
 
-  const cmd = env.json(env.ctx.handleCommanderDashboard(Object.assign({ examinerId: '999999999', token: 'tokC' }, range)));
+  // This fixture IS an exam morning (SESSION: 3 + 1 waiting, 2 in the exam), so
+  // since 24/09/2026 the two heavy reports refuse it (examHoursRefusal,
+  // 86_commander.js; the rule is tested in api_reliability, its cost in 11b).
+  // This section is about the readers, so it asks with the emergency override.
+  const refused = env.json(env.ctx.handleCommanderDashboard(Object.assign({ examinerId: '999999999', token: 'tokC' }, range)));
+  check('on this exam-morning fixture the commander dashboard is refused (exam_hours) without the override', () => {
+    assert.equal(refused.code, 'exam_hours');
+    assert.deepEqual(refused.live, { sessions: 1, examinees: 6 });
+  });
+  const force = { force: '1' };
+  const cmd = env.json(env.ctx.handleCommanderDashboard(Object.assign({ examinerId: '999999999', token: 'tokC' }, range, force)));
   check('commanderDashboard runs with no question bank at all', () => {
     assert.equal(cmd.status, 'ok');
     assert.ok(cmd.data.overall.total > 0);
@@ -672,7 +682,7 @@ function envWith(extra, properties) {
   });
 
   check('centerManagerReport runs', () => {
-    const rep = env.json(env.ctx.handleCenterManagerReport(Object.assign({ examinerId: '999999998', token: 'tokM' }, range)));
+    const rep = env.json(env.ctx.handleCenterManagerReport(Object.assign({ examinerId: '999999998', token: 'tokM' }, range, force)));
     assert.equal(rep.status, 'ok');
     assert.ok(rep.overall.total > 0);
     assert.ok(rep.results.length > 0);
@@ -724,6 +734,56 @@ function envWith(extra, properties) {
     assert.equal(row[2], SESSION);
     assert.ok(String(row[6]).length <= 2048);
     assert.equal(env.ctx.diagRecordClientLog(SESSION, '400000000', null), 'empty');
+  });
+}
+
+// ---- 11b. a refused report costs about one examiner poll, never the history ---
+// 24/09/2026: three commander-dashboard opens (60 s, 55 s, 42 s) on an exam
+// morning, then a 243 s hang of the exam project's own spreadsheet open. The two
+// heavy reports now refuse while exams are running — and the refusal is only
+// worth having if it is cheap: the role, 'סשנים' and ONE tail of 'ממתינים', in
+// the REPORTS build that serves them, and not one cell of what the report itself
+// would have read ('תוצאות', its archive, the practice sheet).
+{
+  const fixture = buildFixture({});
+  fixture['בוחנים'].push(['מפקד', '999999999', 'pw', 'כן', '99', 'מפקד', 'tokC', iso(NOW + DAY), 0, '', '']);
+  fixture['בוחנים'].push(['מפקד מרכז', '999999998', 'pw', 'כן', '98', 'מפקד מרכז', 'tokM', iso(NOW + DAY), 0, '', 'בסיס 6']);
+  fixture['תוצאות_ארכיון'] = [RES_HEADER, resRow({ at: NOW - 60 * DAY, id: '910000001' })];
+  fixture['ממתינים_ארכיון'] = [PEND_HEADER];
+  fixture['תוצאות תרגול'] = [['תאריך', 'מזהה תלמיד', 'שם תלמיד', 'קוד כיתה', 'מצב', 'דרגה', 'ציון', 'סה"כ', 'אחוז',
+    'עבר/נכשל', 'זמן', 'נושא', 'שפה', 'פירוט שגויות', 'פירוט לפי נושא', 'טלפון']];
+  const env = createEnv({ sheets: fixture, now: NOW, serverFile: 'external_exam_apps_script.reports.js' });
+  const reports = [
+    ['commanderDashboard', 'handleCommanderDashboard', { examinerId: '999999999', token: 'tokC', dateFrom: '01/09/2026', dateTo: '22/09/2026' }],
+    ['centerManagerReport', 'handleCenterManagerReport', { examinerId: '999999998', token: 'tokM' }]
+  ];
+  for (const [action, handler, params] of reports) {
+    env.ctx._sessionRowsMemo = null;   // each request is its own execution in production; the vm context lives on
+    env.resetCounters();
+    const out = env.json(env.ctx[handler](params));
+    const c = env.counters();
+    check(action + ' refused during exams: the role, סשנים and one ממתינים tail — nothing of the history', () => {
+      assert.equal(out.code, 'exam_hours');
+      assert.deepEqual(out.live, { sessions: 1, examinees: 5 });
+      for (const name of ['תוצאות', 'תוצאות_ארכיון', 'ממתינים_ארכיון', 'תוצאות תרגול', 'כיתות', 'מבחנים']) {
+        const s = c.perSheet[name];
+        assert.ok(!s || s.fullReads + s.rangeReads === 0, name + ' was read: ' + JSON.stringify(s));
+      }
+      assert.equal(c.perSheet['ממתינים'].fullReads, 0, 'never a full read of ממתינים');
+      assert.equal(c.perSheet['ממתינים'].rangeReads, 2, 'one tail read = header + tail');
+      assert.equal(c.perSheet['סשנים'].fullReads, 1, 'the per-execution סשנים memo');
+      assert.ok(c.cellsRead <= 30000, 'cells=' + c.cellsRead);
+      assert.equal(c.appends + c.setValues, 0, 'a refusal writes nothing');
+    });
+  }
+  // With no session open the guard does not even read 'ממתינים'.
+  for (const row of env.rows('סשנים')) if (row[0] === SESSION) row[10] = false;
+  env.ctx._sessionRowsMemo = null;
+  env.resetCounters();
+  const idle = env.ctx.liveExamActivity();
+  check('no open session: the guard costs the סשנים read alone', () => {
+    assert.deepEqual({ sessions: idle.sessions, examinees: idle.examinees, error: idle.error }, { sessions: 0, examinees: 0, error: undefined });
+    assert.equal(env.counters().reads, 1, 'reads=' + env.counters().reads);
   });
 }
 

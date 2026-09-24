@@ -3,6 +3,21 @@
   "main": "worker.js",
   "compatibility_date": "2026-09-01",
 
+  // r34 (24/09/2026): the same Worker under our own domain too. On 24/09, 19
+  // phones got nothing at all back from *.workers.dev for 30-60 minutes (no
+  // answer, no error) while Google answered them in 3-5 s; examinee.html now
+  // knocks once on this name as well and reports whether it answers
+  // (GW_ALT_URL). The zone is ours (Cloudflare Registrar, this account), so its
+  // security settings and Security Events are ours to read and change —
+  // workers.dev's are not. workers_dev stays ON, explicitly: the live
+  // GATEWAY_URL is still the workers.dev address, and turning it off would stop
+  // every exam. Switching the system over is the Script Property GATEWAY_URL in
+  // BOTH Apps Script projects — never a change here.
+  "workers_dev": true,
+  "routes": [
+    { "pattern": "api.teoria-digital-vitaly.com", "custom_domain": true }
+  ],
+
   // The Apps Script deployment the gateway reads the session snapshot from.
   // A new Apps Script deployment URL means editing this and re-deploying.
   // 22/09/2026 11:00-11:20: a separate "Worker" deployment of the same project was

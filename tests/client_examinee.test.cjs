@@ -799,6 +799,11 @@ test('confirm: the watcher stops for the next examinee, and gives up after ten m
 });
 
 // ===================== 4. anti-cheat =====================
+// r34 (24/09/2026): a disqualification the page decides is a confirmed POST;
+// only a page on its way out (onBeforeUnload) still sends it as a beacon.
+// Either way it is ONE disqualification — this counts both channels.
+const dqsOf = page => page.beacons.filter(b => b.action === 'disqualify').concat(page.sent('disqualify'));
+
 test('D9: the first hidden event on a desktop starts a 2 s grace instead of disqualifying', async () => {
   const page = completePage();
   await register(page);
@@ -810,7 +815,7 @@ test('D9: the first hidden event on a desktop starts a 2 s grace instead of disq
   await drain();
   assert.equal(page.t.state().dq, false, 'returning within the grace keeps the exam');
   assert.equal(page.t.state().screen, 'screenExam');
-  assert.equal(page.beacons.filter(b => b.action === 'disqualify').length, 0);
+  assert.equal(dqsOf(page).length, 0);
 });
 
 test('D9: staying away past the grace still disqualifies, and the second event is immediate', async () => {
@@ -820,7 +825,7 @@ test('D9: staying away past the grace still disqualifies, and the second event i
   page.setVisibility('hidden');
   await page.timer.advance(2100);
   assert.equal(page.t.state().dq, true, 'the grace is a grace, not an amnesty');
-  assert.equal(page.beacons.filter(b => b.action === 'disqualify').length, 1);
+  assert.equal(dqsOf(page).length, 1);
 
   const second = completePage();
   await register(second); await startExam(second);
@@ -845,22 +850,126 @@ test('D9: a phone keeps exactly its three warned chances', async () => {
   assert.equal(page.t.state().dq, true, 'the fourth switch disqualifies, exactly as before');
 });
 
-test('D10: a disqualification costs ONE execution — the beacon, with the fetch only as a fallback', async () => {
+test('D10 / r34: a disqualification is ONE confirmed POST while the page lives — never a beacon, never twice', async () => {
+  // 24/09/2026: the beacon (application/json) never left an Android phone, and
+  // even one that lands gives the page no moment at which the server has it.
   const page = completePage();
   await register(page);
   await startExam(page);
   const before = page.requests.length;
   page.setVisibility('hidden');
   await page.timer.advance(2100);
-  assert.equal(page.beacons.filter(b => b.action === 'disqualify').length, 1);
-  assert.equal(page.requests.slice(before).filter(r => r.action === 'disqualify').length, 0, 'no duplicate fetch');
+  const posts = page.requests.slice(before).filter(r => r.action === 'disqualify');
+  assert.equal(posts.length, 1, 'one request');
+  assert.equal(posts[0].__method, 'POST');
+  assert.match(posts[0].reason, /^hidden-/, 'with the detector that fired');
+  assert.equal(page.beacons.filter(b => b.action === 'disqualify').length, 0, 'no beacon beside it — that doubled every DQ');
+  await page.timer.advance(120000);
+  assert.equal(page.sent('disqualify').length, 1, 'confirmed, so never sent again');
 
   const noBeacon = completePage();
   noBeacon.ctx.navigator.sendBeacon = null;
   await register(noBeacon); await startExam(noBeacon);
   noBeacon.setVisibility('hidden');
   await noBeacon.timer.advance(2100);
-  assert.equal(noBeacon.sent('disqualify').length, 1, 'a browser without sendBeacon still reports it');
+  assert.equal(noBeacon.sent('disqualify').length, 1, 'a browser without sendBeacon reports it the same way');
+});
+
+test('r34: every beacon this page sends is TEXT — Chromium preflights application/json and the POST never leaves', async () => {
+  // Reproduced in Chromium 152 on 24/09/2026: sendBeacon(url, Blob{type:
+  // 'application/json'}) returns true, sends an OPTIONS that Apps Script never
+  // answers, and never sends the POST. text/plain is CORS-safelisted.
+  const types = [];
+  const page = completePage();
+  const realBlob = page.ctx.Blob;
+  page.ctx.Blob = class extends realBlob { constructor(parts, opts) { super(parts); types.push((opts && opts.type) || ''); } };
+  await register(page);
+  await startExam(page);
+  page.t.finish();                                   // the markFinished beacon
+  await drain();
+  page.t.cancelDQ();                                 // the cancelDisqualify beacon
+  page.dispatch('beforeunload', { preventDefault() {}, returnValue: '' });
+  await drain();
+  assert.ok(types.length >= 2, 'beacons were sent: ' + types.join(','));
+  assert.deepEqual([...new Set(types)], ['text/plain']);
+  const src = examinee.replace(/\r/g, '');
+  assert.ok(!/application\/json/.test(section(src, '  function beaconToApi(payload) {', '\n  }\n')), 'and the source says so');
+});
+
+test('r34: a self-DQ the server has not confirmed is sent again until it has — and nothing resumes meanwhile', async () => {
+  let serverUp = false;
+  const page = completePage({ reply(r) {
+    if (r.action === 'disqualify') return serverUp ? { status: 'ok' } : { __network: true };
+    if (r.kind === 'approval') return { status: 'ok', approval: 'in_exam', audioMode: 'off' };   // the row as it was
+    return undefined;
+  } });
+  await register(page);
+  await startExam(page);
+  page.setVisibility('hidden');
+  await page.timer.advance(2100);
+  page.setVisibility('visible');
+  await drain();
+  assert.equal(page.t.state().dq, true);
+  await page.timer.advance(30000);
+  assert.ok(page.sent('disqualify').length >= 4, 'retried 3 → 6 → 12 s: ' + page.sent('disqualify').length);
+  assert.equal(page.t.state().inProgress, false, 'an in_exam the server gave BEFORE it has the DQ is not an overturn');
+  assert.ok(new Set(page.sent('disqualify').map(r => r.dqEventId)).size === 1, 'one event id, so the server skips repeats');
+  serverUp = true;
+  await page.timer.advance(20000);                     // the next retry lands
+  const sent = page.sent('disqualify').length;
+  await page.timer.advance(60000);
+  assert.equal(page.sent('disqualify').length, sent, 'confirmed: the retries stop');
+});
+
+test('r34: after a self-DQ, in_exam resumes the exam only once the server has SHOWN the DQ', async () => {
+  // All 8 self-DQs of 24/09 resumed 2.7-25 s after they were sent: the overturn
+  // poll's first answer came from a copy taken before the DQ reached Google.
+  let approval = { status: 'ok', approval: 'in_exam', audioMode: 'off' };   // the pre-DQ copy
+  const page = completePage({ reply: r => r.kind === 'approval' ? approval : undefined });
+  await register(page);
+  await startExam(page);
+  page.t.answerCurrent(1);
+  page.setVisibility('hidden');
+  await page.timer.advance(2100);
+  page.setVisibility('visible');
+  await drain();
+  assert.equal(page.t.state().dq, true);
+  await page.timer.advance(20000);
+  assert.equal(page.t.state().inProgress, false, 'the copy from before the DQ resumed nothing');
+
+  approval = { status: 'error', message: 'לא נמצא רישום' };   // how the server answers a disqualified row
+  await page.timer.advance(10000);
+  assert.equal(page.t.state().inProgress, false, 'still waiting for the examiner');
+
+  approval = { status: 'ok', approval: 'in_exam', audioMode: 'off' };   // the examiner overturns
+  await page.timer.advance(10000);
+  assert.equal(page.t.state().inProgress, true, 'now in_exam is a decision, and the exam resumes');
+});
+
+test('r34: a confirmed self-DQ the server never shows is trusted after 45 s — an examiner who overturned at once is not ignored forever', async () => {
+  const page = completePage({ reply: r => r.kind === 'approval' ? { status: 'ok', approval: 'in_exam', audioMode: 'off' } : undefined });
+  await register(page);
+  await startExam(page);
+  page.setVisibility('hidden');
+  await page.timer.advance(2100);
+  page.setVisibility('visible');
+  await drain();
+  await page.timer.advance(40000);
+  assert.equal(page.t.state().inProgress, false, 'not before the trust delay');
+  await page.timer.advance(15000);
+  assert.equal(page.t.state().inProgress, true, 'but not forever either');
+});
+
+test('r34: a STALE in_exam never resumes a self-disqualified exam', async () => {
+  const page = completePage({ reply: r => r.kind === 'approval' ? { status: 'ok', approval: 'in_exam', audioMode: 'off', stale: true } : undefined });
+  await register(page);
+  await startExam(page);
+  page.setVisibility('hidden');
+  await page.timer.advance(2100);
+  page.setVisibility('visible');
+  await drain();
+  await page.timer.advance(120000);
+  assert.equal(page.t.state().inProgress, false);
 });
 
 test('D14: an examinee whose row is already in_exam is told, not left polling forever', async () => {
@@ -968,7 +1077,7 @@ test('DQ: an examiner-initiated disqualification reaches the examinee through th
   await page.timer.advance(30000);
   assert.equal(page.t.state().dq, true, 'the exam runs locally — without this poll the examinee kept answering');
   assert.match(page.el('examArea').innerHTML, /נפסל/);
-  assert.equal(page.beacons.filter(b => b.action === 'disqualify').length, 0, 'no self-DQ: the server already knows');
+  assert.equal(dqsOf(page).length, 0, 'no self-DQ: the server already knows');
 });
 
 test('DQ: an overturned disqualification resumes the exam with its questions and its clock', async () => {
@@ -1052,7 +1161,7 @@ async function watchSplit(page, maxMs) {
     if (promptAt < 0 && page.ui.byId.get('mobileSplitPrompt')) promptAt = page.timer.now - t0;
     if (dqAt < 0 && page.t.state().dq) { dqAt = page.timer.now - t0; break; }
   }
-  return { promptAt, dqAt, reasons: page.beacons.filter(b => b.action === 'disqualify').map(b => b.reason) };
+  return { promptAt, dqAt, reasons: dqsOf(page).map(b => b.reason) };
 }
 
 test('phone: an iPhone at 125% Safari page zoom is never shown "split screen" and never disqualified for it', async () => {
@@ -1092,7 +1201,7 @@ test('phone: an iPhone overturned back into the exam is not disqualified again 1
   assert.equal(page.t.state().inProgress, true, 'resumed');
   const r = await watchSplit(page, 40000);
   assert.equal(r.dqAt, -1, 'and it stays in the exam');
-  assert.equal(page.beacons.filter(b => b.action === 'disqualify').length, 0, 'the page never disqualified it itself');
+  assert.equal(dqsOf(page).length, 0, 'the page never disqualified it itself');
 });
 
 test('phone: the same shrunken viewport on an ANDROID phone is a real split screen — prompt, then DQ with its reason', async () => {
@@ -1115,7 +1224,7 @@ test('phone: an iPhone that leaves Safari is still caught, with the reason on th
   await page.timer.advance(11000);                  // past the 10 s grace
   page.setVisibility('visible'); await drain();
   assert.equal(page.t.state().dq, true);
-  const reasons = page.beacons.filter(b => b.action === 'disqualify').map(b => b.reason);
+  const reasons = dqsOf(page).map(b => b.reason);
   assert.ok(reasons.length >= 1 && /^hidden-/.test(reasons[reasons.length - 1]), 'reason: ' + reasons.join(','));
 });
 
@@ -1129,7 +1238,7 @@ test('phone: a start while pinch-zoomed in is not a "zoom-out" when the examinee
   assert.equal(page.t.state().dq, false);
   vv.scale = 0.8; vv.fire(); await drain();         // a real zoom-OUT below normal is still not allowed
   assert.equal(page.t.state().dq, true);
-  assert.deepEqual(page.beacons.filter(b => b.action === 'disqualify').map(b => b.reason), ['zoom-out']);
+  assert.deepEqual(dqsOf(page).map(b => b.reason), ['zoom-out']);
 });
 
 // ===================== 5. images =====================
@@ -1638,21 +1747,27 @@ test('nudge: an exam start the server did not complete pushes nothing', async ()
   }
 });
 
-test('nudge: a disqualification is pushed 2 s after it is sent — the examiner must see "needs decision"', async () => {
-  const page = completePage({ gateway: 'https://gw.example/' });
+test('nudge: a disqualification is pushed the moment the server CONFIRMS it — the examiner must see "needs decision"', async () => {
+  // r34: the DQ is a confirmed write now (like registration and start), so its
+  // push waits for the server's answer, not for a guessed 2 s.
+  let confirm = false;
+  const page = completePage({ gateway: 'https://gw.example/',
+    reply: r => r.action === 'disqualify' ? (confirm ? { status: 'ok' } : { __network: true }) : undefined });
   await register(page);
   await startExam(page);
   const before = nudges(page).length;
   page.setVisibility('hidden');
-  await page.timer.advance(2000);                // the desktop grace expires: the DQ beacon goes out
-  assert.equal(page.beacons.filter(b => b.action === 'disqualify').length, 1);
-  assert.equal(nudges(page).length, before, 'nothing is pushed while the beacon is still in the air');
-  await page.timer.advance(NUDGE_DELAY - 1);
-  assert.equal(nudges(page).length, before, 'still not');
-  await page.timer.advance(1);
+  await page.timer.advance(2000);                // the desktop grace expires: the DQ goes out, and is lost
+  assert.equal(page.sent('disqualify').length, 1);
+  await page.timer.advance(NUDGE_DELAY);
+  assert.equal(nudges(page).length, before, 'nothing is announced before the server has it');
+  confirm = true;
+  await page.timer.advance(3000);                // the first retry, and this time Google answers
+  assert.equal(page.sent('disqualify').length, 2);
   const pushed = nudges(page).slice(before);
-  assert.equal(pushed.length, 1);
+  assert.equal(pushed.length, 1, 'announced exactly once, at the confirmation');
   assertNudgeShape(pushed[0]);
+  assert.equal(pushed[0].__at, page.sent('disqualify')[1].__at, 'at once');
 });
 
 test('nudge: a disqualification sent while the page is UNLOADING pushes nothing', async () => {
@@ -1993,6 +2108,46 @@ test('fallback r33.3: a Worker that is black-holed from the start is still caugh
   assert.match(diag, /trace=timeout/, 'and says nothing answered at that address in time');
 });
 
+test('r34: every phone knocks ONCE on the same Worker under our own domain — a diagnosis on its submit, never a route', async () => {
+  // 24/09/2026: 19 of 21 phones on Google had trace=timeout at workers.dev for
+  // 30-60 minutes while Google answered them in 3-5 s. Whether the SAME phones
+  // reach api.teoria-digital-vitaly.com decides whether switching GATEWAY_URL fixes them.
+  const ALT = 'https://api.teoria-digital-vitaly.com/';
+  const altCalls = p => p.requests.filter(r => String(r.__url).indexOf(ALT) === 0);
+  const page = completePage();
+  await register(page);
+  assert.equal(altCalls(page).length, 1, 'one knock, when the session code is accepted');
+  assert.equal(altCalls(page)[0].__method, 'GET');
+  await startExam(page);
+  await page.timer.advance(60000);
+  assert.equal(altCalls(page).length, 1, 'and never a route: polls, texts and pushes stay on the session gateway');
+  page.t.finish();
+  await drain();
+  const log = plain(page.sent('submitResult')[0].clientLog || []).filter(e => e.e === 'gw_alt');
+  assert.equal(log.length, 1, 'the answer rides on the submit to אבחון');
+  assert.match(log[0].d, /^ok@\d+$/);
+
+  // A phone black-holed at workers.dev: its fallback diagnosis carries the other answer too.
+  const stuck = completePage({ reply: r => String(r.__url).indexOf('https://gw.example/') === 0 ? { __hang: true } : undefined });
+  stuck.el('sessionCodeInput').value = 'ABC12345';
+  stuck.el('codeSubmitBtn').click(); await drain();
+  await stuck.timer.advance(30000);
+  for (const [id, value] of [['idNumber', '123456789'], ['firstName', 'א'], ['lastName', 'ב'], ['phoneNumber', '0501234567']]) stuck.el(id).value = value;
+  stuck.el('registerBtn').click(); await drain();
+  await stuck.timer.advance(100);
+  assert.match(String(stuck.sent('registerExaminee')[0].gwDiag || ''), /\|alt=ok@\d+\|/, 'the gw row says whether our own domain answered');
+
+  // …and one that cannot reach our domain either says that.
+  const both = completePage({ reply: r => /^https:\/\/(gw\.example|api\.teoria-digital-vitaly\.com)\//.test(String(r.__url)) ? { __hang: true } : undefined });
+  both.el('sessionCodeInput').value = 'ABC12345';
+  both.el('codeSubmitBtn').click(); await drain();
+  await both.timer.advance(30000);
+  for (const [id, value] of [['idNumber', '123456789'], ['firstName', 'א'], ['lastName', 'ב'], ['phoneNumber', '0501234567']]) both.el(id).value = value;
+  both.el('registerBtn').click(); await drain();
+  await both.timer.advance(100);
+  assert.match(String(both.sent('registerExaminee')[0].gwDiag || ''), /\|alt=timeout@\d+\|/);
+});
+
 test('fallback: an upstream_unavailable ANSWER is the Worker talking — no change of route', async () => {
   const page = completePage({ reply: r => String(r.__url).includes('/v1/poll') ? { status: 'error', code: 'upstream_unavailable', retryable: true } : undefined });
   await register(page);
@@ -2323,19 +2478,23 @@ test('source: the re-arm and the device push are wired exactly where §13.4/§13
     'the submit push carries the payload\'s own identity');
   assert.match(src, /nudgeGatewayAfterWrite\(attempt\.sessionCode, attempt\.idNumber, attempt\.examineeToken\);/,
     'and the startExam push carries the attempt\'s');
-  // Every write this page makes is announced: three confirmed ones push at once,
-  // four fire-and-forget ones push NUDGE_AFTER_BEACON_MS later. One declaration,
+  // Every write this page makes is announced: four confirmed ones push at once
+  // (registration, start, result and — since r34 — the disqualification), three
+  // fire-and-forget ones push NUDGE_AFTER_BEACON_MS later. One declaration,
   // seven call sites, and no bare millisecond anywhere.
   assert.equal((src.match(/\bnudgeGatewayAfterWrite\b/g) || []).length, 8, 'declared once, reached from seven writes');
-  assert.equal((src.match(/setTimeout\(nudgeGatewayAfterWrite, NUDGE_AFTER_BEACON_MS\)/g) || []).length, 4,
-    'markFinished, disqualify, cancelDisqualify, reportWarning');
+  assert.equal((src.match(/setTimeout\(nudgeGatewayAfterWrite, NUDGE_AFTER_BEACON_MS\)/g) || []).length, 3,
+    'markFinished, cancelDisqualify, reportWarning');
   assert.ok(!/nudgeGatewayAfterWrite,\s*\d/.test(src), 'the delay is the named constant, never a number');
   // ONE helper sends every disqualification, so a path cannot be added without
-  // its push — and the unload path opts out explicitly, because nothing it
-  // schedules would ever run.
+  // its push. While the page lives it is a confirmed POST that pushes on the
+  // server's answer; the unload path opts out explicitly — a beacon, and nothing
+  // scheduled behind a page that is gone.
   assert.equal((src.match(/action: 'disqualify'/g) || []).length, 1, 'one payload builder, one literal');
   assert.match(src, /function sendDQToServer\(unloading\)/);
-  assert.match(src, /if \(!unloading\) setTimeout\(nudgeGatewayAfterWrite, NUDGE_AFTER_BEACON_MS\);/);
+  assert.match(src, /if \(unloading\) \{ beaconToApi\(payload\); return; \}/);
+  assert.match(section(src, '  function postDQUntilConfirmed(', '\n  }\n'), /resp\.status === 'ok'[\s\S]*nudgeGatewayAfterWrite\(\);/,
+    'the push follows the server\'s confirmation');
   assert.match(src, /sendDQToServer\(true\);/, 'and onBeforeUnload is the only caller that opts out');
   // never a decision, and never an examiner's grant, from this page
   const fn = section(src, 'function nudgeGatewayAfterWrite(', '\n  }\n');

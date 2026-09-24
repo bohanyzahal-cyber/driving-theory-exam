@@ -1282,7 +1282,7 @@ function handleBankGrant(p) {
 }
 var API_DEPLOYMENT = "all";
 
-var THEORY_API_BUILD = '2026-09-24-r33.1';
+var THEORY_API_BUILD = '2026-09-27-r34';
 var API_STARTED_AT = 0;
 
 function apiActionList() {
@@ -1700,6 +1700,8 @@ function handleCenterManagerReport(p) {
   if (!managedSites.length) {
     return jsonResponse({ status: 'error', message: 'לא הוקצו אתרים מנוהלים — פנה למנהל המערכת' });
   }
+  var examHours = examHoursRefusal(p, 'centerManagerReport');
+  if (examHours) return examHours;
   function normalizeSiteName(s) {
     return String(s || '').replace(/\s+/g, '').toLowerCase();
   }
@@ -3017,6 +3019,13 @@ function handleDisqualify(p) {
 
   var dqReason = p.examinerId ? '' : selfDqReason(p.reason);
 
+  var dqEventId = String(p.dqEventId || '');
+  var sheet = getSheet('תוצאות');
+  var data = readResultsTail().rows;
+  if (dqEventId && dqEventAlreadyRecorded(data, p.sessionCode, p.idNumber, dqEventId)) {
+    return jsonResponse({ status: 'ok', duplicate: true });
+  }
+
   if (pendRowIdx !== -1) {
     var prevCount = (pendData[pendRowIdx].length > 13) ? (Number(pendData[pendRowIdx][13]) || 0) : 0;
     var dqExtras = { dqCount: prevCount + 1 };
@@ -3032,16 +3041,10 @@ function handleDisqualify(p) {
     }
   }
 
-  var dqEventId = String(p.dqEventId || '');
-  var sheet = getSheet('תוצאות');
-  var data = readResultsTail().rows;
   var nowMs = Date.now();
   for (var i = data.length - 1; i >= 1; i--) {
     if (String(data[i][13]) === String(p.sessionCode) && normalizeId(data[i][1]) === normalizeId(p.idNumber)) {
       var rowStatus = String(data[i][7]).trim();
-      if ((rowStatus === 'פסול' || rowStatus === 'בוטל') && dqEventId && String(data[i][24] || '') === dqEventId) {
-        return jsonResponse({ status: 'ok' });
-      }
       if (rowStatus === 'פסול') {
         var rowDateRaw = data[i][0];
         var rowDate = null;
@@ -3080,6 +3083,17 @@ function handleDisqualify(p) {
   ]);
   SpreadsheetApp.flush();
   return jsonResponse({ status: 'ok' });
+}
+
+function dqEventAlreadyRecorded(rows, sessionCode, idNumber, dqEventId) {
+  var want = String(sessionCode), id = normalizeId(idNumber);
+  for (var i = rows.length - 1; i >= 1; i--) {
+    if (String(rows[i][13]) !== want || normalizeId(rows[i][1]) !== id) continue;
+    if (String(rows[i][24] || '') !== dqEventId) continue;
+    var status = String(rows[i][7]).trim();
+    if (status === 'פסול' || status === 'בוטל') return true;
+  }
+  return false;
 }
 
 function selfDqReason(raw) {
@@ -4458,6 +4472,60 @@ function parseSheetDate(val) {
   return null;
 }
 
+var LIVE_EXAM_WINDOW_MS = 2 * 60 * 60 * 1000;
+var LIVE_EXAM_STATUSES = { waiting: 1, approved: 1, in_exam: 1 };
+function liveExamActivity() {
+  try {
+    diagMark('sheet:live-exams');
+    var now = Date.now(), open = {}, anyOpen = false;
+    var sess = sessionRows();
+    for (var s = 1; s < sess.length; s++) {
+      var active = sess[s][10] === true || String(sess[s][10]).toUpperCase() === 'TRUE';
+      if (!active) continue;
+      var until = parseSheetDateTime(sess[s][9]);
+      if (until && until.getTime() <= now) continue;
+      var code = String(sess[s][0] || '').trim();
+      if (code) { open[code] = true; anyOpen = true; }
+    }
+    if (!anyOpen) return { sessions: 0, examinees: 0 };
+    var rows = readPendingTail().rows, since = now - LIVE_EXAM_WINDOW_MS;
+    var seen = {}, sessions = 0, examinees = 0;
+    for (var i = 1; i < rows.length; i++) {
+      var sc = String(rows[i][0] || '').trim();
+      if (open[sc] !== true) continue;
+      if (LIVE_EXAM_STATUSES[String(rows[i][5] || '').trim()] !== 1) continue;
+      var started = rows[i][11];
+      var hasStart = String(started === null || started === undefined ? '' : started).trim() !== '';
+      var at = parseSheetDateTime(hasStart ? started : rows[i][4]);
+      if (!at || at.getTime() < since) continue;
+      examinees++;
+      if (seen[sc] !== true) { seen[sc] = true; sessions++; }
+    }
+    return { sessions: sessions, examinees: examinees };
+  } catch (e) {
+    return { sessions: 0, examinees: 0, error: true };
+  }
+}
+
+function examHoursRefusal(p, action) {
+  var live = liveExamActivity();
+  if (!(live.examinees > 0)) return null;
+  if (String(p.force || '') === '1') {
+    try {
+      var noteId = '';
+      try { noteId = Utilities.getUuid(); } catch (eId) { noteId = 'note_' + Date.now(); }
+      diagRecordRow(noteId, [nowISO(), 'NOTE', (DIAG_EXEC && DIAG_EXEC.method) || '', action, '', 'force=1',
+        'exam_hours override by ' + normalizeId(p.examinerId) + ': ' + live.examinees + ' examinees in ' +
+        live.sessions + ' sessions']);
+    } catch (eNote) {  }
+    return null;
+  }
+  return jsonResponse({ status: 'error', code: 'exam_hours', retryable: false,
+    live: { sessions: live.sessions, examinees: live.examinees },
+    message: 'יש עכשיו בחינות פעילות — ' + live.examinees + ' נבחנים ב-' + live.sessions +
+      ' סשנים. הדוחות נחסמים בזמן בחינות כדי לא להאט את המבחנים. נסה שוב כשהבחינות יסתיימו.' });
+}
+
 function handleCommanderDashboard(p) {
   var exSheet = getSheet('בוחנים');
   var exData = exSheet.getDataRange().getValues();
@@ -4471,6 +4539,8 @@ function handleCommanderDashboard(p) {
   if (role !== 'מפקד') {
     return jsonResponse({ status: 'error', message: 'אין הרשאת מפקד' });
   }
+  var examHours = examHoursRefusal(p, 'commanderDashboard');
+  if (examHours) return examHours;
 
   var dateFrom = parseDateParam(p.dateFrom);
   var dateTo = parseDateParam(p.dateTo);

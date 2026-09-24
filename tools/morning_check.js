@@ -26,6 +26,11 @@
 'use strict';
 
 const WORKER = 'https://session-gateway.bohanyzahal.workers.dev/';
+// r34 (24/09/2026): the SAME Worker under our own domain (wrangler.jsonc routes).
+// Not a route of the live system yet — the pages only knock on it to learn
+// whether the phones that get nothing from workers.dev reach it — so a failure
+// here is reported, not counted against the morning.
+const WORKER_ALT = 'https://api.teoria-digital-vitaly.com/';
 const TARGETS = {
   exam: 'https://script.google.com/macros/s/AKfycbzOI0zrDEngP-GvlRblhOk8tQsYBvWZ2gGliIQHTpS67WrDZl4la8NPpwtJr_Vjsh3Gzg/exec',
   reports: 'https://script.google.com/macros/s/AKfycbw7FwTioHoEMvl6Plk-IlHii1rb3FSs9CXan-8lCVP5K7FTuz594rsEOc2y6LDVS-DXcQ/exec'
@@ -60,13 +65,13 @@ function parseJson(text) {
   try { const v = JSON.parse(text); return v && typeof v === 'object' ? v : null; } catch (e) { return null; }
 }
 
-async function checkWorker() {
-  const r = await timedFetch(WORKER);
+async function checkWorker(url, label) {
+  const r = await timedFetch(url);
   const body = parseJson(r.text);
   const ok = Boolean(r.status === 200 && body && body.status === 'ok' && body.bank);
-  console.log(pad('Worker /', 14) + pad(ok ? 'OK' : 'DOWN', 15) + ms(r.ms) +
+  console.log(pad(label, 14) + pad(ok ? 'OK' : 'DOWN', 15) + ms(r.ms) +
     (body ? '  build=' + body.build + '  bank=' + String(body.bank || '').slice(0, 10) + (body.bank ? '' : '  <-- bank EMPTY: assets not deployed') : '  ' + (r.error || 'HTTP ' + r.status)));
-  return ok;
+  return ok ? body : null;
 }
 
 /** hop 1 = /exec (302 with Location), hop 2 = the echo that carries the body. */
@@ -103,7 +108,11 @@ async function twoHop(name, base) {
 
 (async () => {
   console.log('morning check ' + new Date().toISOString() + (deep ? ' (deep)' : '') + ' — nothing here writes anything');
-  const worker = await checkWorker();
+  const main = await checkWorker(WORKER, 'Worker /');
+  const alt = await checkWorker(WORKER_ALT, 'Worker alt /');
+  if (!alt) console.log('  (the own-domain address is diagnostic only today: see wrangler.jsonc routes and the zone settings)');
+  else if (main && (alt.build !== main.build || alt.bank !== main.bank)) console.log('  <-- the two addresses answer DIFFERENT builds: they must be one Worker');
+  const worker = Boolean(main);
   const verdicts = { worker };
   for (let round = 1; round <= rounds; round++) {
     if (rounds > 1) console.log('-- round ' + round + '/' + rounds);
