@@ -268,6 +268,20 @@ test('r31: teacher.html carries the reports deployment url as a line of its own,
   assert.equal(reportsUrlOf(examPage, "\r\n  var REPORTS_API_URL = '@@';\r\n"), reports);
 });
 
+// 23/09/2026: admin.html kept the EXAM url through the split, so both of its
+// actions came back wrong_deployment and the admin could not log in at all.
+test('r33.2: admin.html sends its two actions to the reports deployment', () => {
+  const admin = fs.readFileSync(path.join(app, 'admin.html'), 'utf8');
+  const reports = reportsUrlOf(teacher, "\r\nvar REPORTS_API_URL = '@@';\r\n");
+  assert.equal(examUrlOf(admin, 'API_URL'), reports);
+  const listed = /var REPORTS_ACTIONS = \[([\s\S]*?)\];/.exec(transportSrc);
+  assert.ok(listed, 'transport.js lists the reports actions');
+  const reportsActions = listed[1].match(/'[A-Za-z]+'/g).map(s => s.slice(1, -1));
+  const sent = [...admin.matchAll(/action(?:: '|=)([A-Za-z]+)/g)].map(m => m[1]);
+  assert.deepEqual(sent.sort(), ['adminDashboard', 'teacherLogin']);
+  for (const action of sent) assert.ok(reportsActions.includes(action), action + ' is a reports action');
+});
+
 test('D6: no raw fetch survives in teacher.html', () => {
   const code = section(teacher, '<script>\r\n(function(){', '</script>');
   const offenders = code.split('\r\n')
