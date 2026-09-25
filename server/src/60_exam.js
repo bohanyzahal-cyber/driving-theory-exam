@@ -80,7 +80,7 @@ function parseExamRegistrationRow(cells) {
     // An empty array IS a readable map — and a refusable one (review E S1).
     // Only unparseable JSON leaves map null, i.e. "registered but unreadable".
     if (Array.isArray(map)) record.map = map;
-  } catch (e) { /* record.map stays null → the result is stored unverified */ }
+  } catch (e) { /* record.map stays null → the submit is refused (invalid_registration, r35) */ }
   return record;
 }
 function examRegistrationAgeMs(record) {
@@ -113,7 +113,13 @@ function handleStartExam(data) {
 
   var row = ctx.active.row;
   var lang = String(data.language || row[6] || 'he').toLowerCase();
-  var license = String(data.license || row[8] || 'B').trim();
+  // r35 (review 09 F-05 / 01 D5): the licence is the one REGISTERED on the row
+  // the examiner approved (column I), never the one the start request names —
+  // a C candidate could otherwise start, and pass, the B blueprint. The page
+  // sends the very same value, so nothing legitimate changes. A row without a
+  // licence (written by a page that sent none) takes the session's licence,
+  // the examiner's own setting.
+  var license = registeredLicense(row, sessionCode);
   if (!EXAM_STRUCTURE_SERVER[license]) {
     return jsonResponse({ status: 'error', code: 'unknown_license', message: 'דרגה לא מוכרת: ' + license });
   }
@@ -161,6 +167,17 @@ function handleStartExam(data) {
     bank: bank,
     questions: examQuestionsForClient(record.map)
   });
+}
+
+// The licence of an attempt, decided on the server: column I of the examinee's
+// 'ממתינים' row, else the session's licence (column F of 'סשנים'). startExam
+// draws the blueprint of this licence and submitResult stamps the result with
+// it, so the two can never disagree with each other or with the board.
+function registeredLicense(pendingRow, sessionCode) {
+  var own = String((pendingRow && pendingRow[8]) || '').trim();
+  if (own) return own;
+  var session = sessionRowByCode(sessionCode);
+  return String((session && session[5]) || 'B').trim();
 }
 
 // The ids of a stored map, in map order — that is the order the client shows
@@ -418,11 +435,12 @@ function handleSubmitResult(data) {
   var guard = submitRegistrationGuard(registration, data);
   if (guard) return guard;
 
-  var scored = registration && registration.map && registration.map.length
-    ? scoreRegisteredExam(registration.map, data.answers, registration.lang)
-    : null;
-  applyScore(data, scored, registration, !!(data.answers && data.answers.length));
-  var wrongAnswers = scored ? wrongAnswerItems(scored, data.license) : [];
+  // r35 (review 09 F-05): the licence on the result row is the registered one —
+  // the licence whose blueprint startExam drew — not the one this request names.
+  if (gate.ctx.latest) data.license = registeredLicense(gate.ctx.latest.row, data.sessionCode);
+  var scored = scoreRegisteredExam(registration.map, data.answers, registration.lang);
+  applyScore(data, scored, registration);
+  var wrongAnswers = wrongAnswerItems(scored, data.license);
 
   // 'תוצאות' is read ONCE, as late as possible: supersede, duplicate, פסול and
   // idempotency all decide from the same snapshot. Three full reads of a sheet
@@ -432,26 +450,30 @@ function handleSubmitResult(data) {
   var tail = readTail(sheet, RESULT_COL.date);
   supersedeFabricatedFails(sheet, tail, data);
 
+  // r35 (review 09 F-17): no answer to the EXAMINEE carries the WhatsApp link.
+  // It holds the verdict, the score and every wrong question with its correct
+  // answer; the page never read it, but devtools did. The link stays in the
+  // row (column S), where the examiner's board takes it from.
   var duplicate = findDuplicateResult(tail, data, gate);
   if (duplicate) {
     markPendingCompleted(data.sessionCode, data.idNumber, gate.pending);
-    return jsonResponse({ status: 'ok', waLink: duplicate[RESULT_COL.waLink] || '', duplicate: true });
+    return jsonResponse({ status: 'ok', duplicate: true });
   }
   // Counted BEFORE the פסול rows are voided below: a disqualified exam was
   // still an attempt, and voiding it is only about not leaving two live rows.
   var attemptNum = countAttempts(data.idNumber, data.license, attemptRows(tail)) + 1;
   supersedeDisqualifications(sheet, tail, data);
 
-  var waLink = buildResultWaLink(data, wrongAnswers, attemptNum);
   if (findIdenticalResult(tail, data)) {
     markPendingCompleted(data.sessionCode, data.idNumber, gate.pending);
-    return jsonResponse({ status: 'ok', duplicate: true, waLink: waLink });
+    return jsonResponse({ status: 'ok', duplicate: true });
   }
 
+  var waLink = buildResultWaLink(data, wrongAnswers, attemptNum);
   sheet.appendRow(buildResultRow(data, wrongAnswers, attemptNum, waLink));
   markPendingCompleted(data.sessionCode, data.idNumber, gate.pending);
   diagMark('compute:submit-done');
-  return jsonResponse({ status: 'ok', waLink: waLink });
+  return jsonResponse({ status: 'ok' });
 }
 
 // Rate limit, examinee token and "is this person actually in this exam".
@@ -491,16 +513,30 @@ function recordSubmitClientLog(data) {
   } catch (e) { /* a diagnostic must never cost a result */ }
 }
 
-// A registered exam MUST come with answers (otherwise a forged score would skip
-// the re-score entirely), and a map that is empty or shorter than a real exam is
-// a data fault — refuse it loudly instead of scoring 3 questions out of 30 and
-// possibly declaring a pass (review E S1).
+// r35 (review 09 F-04 / 01 D2, KNOWN_ISSUES #43): a result is recorded ONLY
+// against the question map startExam stored, and scored ONLY by this server.
+// Until r35 a submit with no 'מבחנים' row skipped the re-score and the row took
+// the client's own score and verdict — an approved examinee who never started
+// could POST {score:30, passed:true} and be stored as עבר 30/30. Now:
+//   no map at all        → no_exam_registration (nothing is written)
+//   no answers           → refused, as before
+//   unreadable / short   → invalid_registration (was: "unverified", client score)
+// The page keeps a refused result on the device and retries it (the examiner
+// sees the red banner), so a real result is never lost by a refusal. A paper
+// or otherwise off-system result goes through submitManualResult (examiner
+// token + session ownership, column W 'ידני') — a separate handler this does
+// not touch. Known cost: a map is archived after 2 days (14_pending_archive), so
+// a result that reaches the server more than 2 days after its start is refused
+// too, and the examiner enters it by hand.
 function submitRegistrationGuard(registration, data) {
-  if (!registration) return null;
+  if (!registration) {
+    return jsonResponse({ status: 'error', code: 'no_exam_registration',
+      message: 'לא נמצא רישום של מבחן שהתחיל — לא ניתן לקלוט את התוצאה. פנה לבוחן.' });
+  }
   if (!data.answers || !Array.isArray(data.answers) || data.answers.length === 0) {
     return jsonResponse({ status: 'error', message: 'הגשה לא תקינה — חסרות תשובות למבחן רשום' });
   }
-  if (registration.map && registration.map.length < EXAM_MIN_QUESTIONS) {
+  if (!registration.map || registration.map.length < EXAM_MIN_QUESTIONS) {
     return jsonResponse({ status: 'error', code: 'invalid_registration',
       message: 'רישום המבחן פגום — לא ניתן לנקד. פנה לבוחן.' });
   }
@@ -555,36 +591,19 @@ function scoreRegisteredExam(map, answers, registeredLang) {
   return scored;
 }
 
-// The server's tally replaces whatever the client claimed. Without a readable
-// registration nothing can be verified, so the row is stored with the unverified
-// marker and the examiner reviews it — never silently trusted.
-function applyScore(data, scored, registration, hasAnswers) {
-  if (!scored) {
-    data.verified = false;
-    // Without answers there was nothing to verify in the first place (an
-    // examiner-entered or legacy row) — only a real submission is flagged.
-    if (hasAnswers) {
-      data.scoreUnverified = true;
-      data.unverifiedReason = registration ? 'רישום מבחן פגום' : 'רישום מבחן חסר';
-    }
-    // The new client sends no score at all (it never holds the key); an old one
-    // sent its own tally. Either way an unverifiable result is stored as what it
-    // is — a number the examiner must review — and never as a pass by default.
-    data.total = Number(data.total) || (Array.isArray(data.answers) ? data.answers.length : 0) || 30;
-    data.score = Math.max(0, Math.min(data.total, Number(data.score) || 0));
-    data.percent = Number(data.percent) || Math.round((data.score / data.total) * 100);
-    data.passed = data.passed === true || data.passed === 'true';
-    return;
-  }
+// The server's tally replaces whatever the client claimed — score, total,
+// percent and verdict are ALWAYS computed here. There is no branch that takes
+// them from the request any more (r35): submitRegistrationGuard refuses every
+// submit this function could not score.
+function applyScore(data, scored, registration) {
   data.score = scored.correct;
   data.total = scored.total;
   data.percent = Math.round((scored.correct / scored.total) * 100);
   data.passed = scored.correct >= Math.ceil(scored.total * RESULT_PASS_RATIO);
   data.verified = scored.verified;
-  if (!scored.verified) {
-    data.scoreUnverified = true;
-    data.unverifiedReason = 'שאלות ללא מפתח תשובות';
-  }
+  // Set both ways: a flag the request itself carried must not reach the row.
+  data.scoreUnverified = !scored.verified;
+  data.unverifiedReason = scored.verified ? '' : 'שאלות ללא מפתח תשובות';
   data.suspicious = registration && examRegistrationAgeMs(registration) > 0 &&
     examRegistrationAgeMs(registration) < EXAM_SUSPICIOUS_SEC * 1000;
 }
@@ -676,38 +695,41 @@ function languagePath(data) {
   return data.language || 'he';
 }
 
+// r35: every text the device sent goes through cellSafe (22_util.js), so a
+// value that starts with '=' is stored as text and never runs as a formula in
+// the results sheet. Server-computed cells (date, score, verdict) need none.
 function buildResultRow(data, wrongAnswers, attemptNum, waLink) {
   var row = [];
   row[RESULT_COL.date] = todayStr();
-  row[RESULT_COL.id] = data.idNumber;
-  row[RESULT_COL.name] = data.fullName;
-  row[RESULT_COL.phone] = data.phone;
-  row[RESULT_COL.license] = data.license;
+  row[RESULT_COL.id] = cellSafe(data.idNumber);
+  row[RESULT_COL.name] = cellSafe(data.fullName);
+  row[RESULT_COL.phone] = cellSafe(data.phone);
+  row[RESULT_COL.license] = cellSafe(data.license);
   row[RESULT_COL.score] = data.score + '/' + data.total;
   row[RESULT_COL.percent] = data.percent + '%';
   row[RESULT_COL.verdict] = resultVerdict(data);
-  row[RESULT_COL.time] = data.time;
-  row[RESULT_COL.examiner] = data.examinerName || '';
-  row[RESULT_COL.site] = data.site || '';
-  row[RESULT_COL.classroom] = data.classroom || '';
-  row[RESULT_COL.language] = data.language || 'he';
+  row[RESULT_COL.time] = cellSafe(data.time);
+  row[RESULT_COL.examiner] = cellSafe(data.examinerName || '');
+  row[RESULT_COL.site] = cellSafe(data.site || '');
+  row[RESULT_COL.classroom] = cellSafe(data.classroom || '');
+  row[RESULT_COL.language] = cellSafe(data.language || 'he');
   row[RESULT_COL.session] = data.sessionCode || '';
   row[RESULT_COL.attempt] = attemptNum;
   row[RESULT_COL.wrongDetails] = formatWrongDetails(wrongAnswers, data);
   row[RESULT_COL.sent] = false;
   row[RESULT_COL.dq] = false;
   row[RESULT_COL.waLink] = waLink;
-  row[RESULT_COL.population] = data.population || '';
+  row[RESULT_COL.population] = cellSafe(data.population || '');
   row[RESULT_COL.corrected] = false;
-  row[RESULT_COL.audio] = data.audioMode || 'off';
+  row[RESULT_COL.audio] = cellSafe(data.audioMode || 'off');
   row[RESULT_COL.verified] = data.verified ? 'מאומת' : '';
   row[RESULT_COL.suspicious] = data.suspicious ? 'חשוד' : '';
   row[RESULT_COL.dqEventId] = '';
   row[RESULT_COL.correctedBy] = '';
   row[RESULT_COL.correctionReason] = '';
   row[RESULT_COL.correctionDate] = '';
-  row[RESULT_COL.langPath] = languagePath(data);
-  row[RESULT_COL.device] = String(data.device || '');
+  row[RESULT_COL.langPath] = cellSafe(String(languagePath(data)));
+  row[RESULT_COL.device] = cellSafe(String(data.device || ''));
   return row;
 }
 
@@ -831,16 +853,18 @@ function handleSubmitFailOnClose(data) {
     return jsonResponse({ status: 'ok', duplicate: true });
   }
 
-  var attemptNum = countAttempts(data.idNumber, data.license || '', attemptRows(tail)) + 1;
+  // r35: the registered licence, as on a real submit (registeredLicense).
+  var license = ctx.latest ? registeredLicense(ctx.latest.row, data.sessionCode) : String(data.license || '');
+  var attemptNum = countAttempts(data.idNumber, license, attemptRows(tail)) + 1;
   var row = buildResultRow({
-    idNumber: data.idNumber, fullName: data.fullName, phone: data.phone, license: data.license || '',
+    idNumber: data.idNumber, fullName: data.fullName, phone: data.phone, license: license,
     score: 0, total: data.totalQuestions || 30, percent: 0, passed: false, time: data.time || '00:00',
     examinerName: data.examinerName, site: data.site, classroom: data.classroom,
     language: data.language || 'he', sessionCode: data.sessionCode, population: data.population,
     audioMode: data.audioMode, device: data.device, languageHistory: null, verified: false
   }, [], attemptNum, '');
   row[RESULT_COL.wrongDetails] = 'סגירת דפדפן באמצע מבחן (נענו ' + (data.answeredCount || 0) + ' שאלות)';
-  row[RESULT_COL.audio] = data.audioMode || 'off';
+  row[RESULT_COL.audio] = cellSafe(data.audioMode || 'off');
   row[RESULT_COL.verified] = '';
   row[RESULT_COL.langPath] = '';      // a close-fail has no language path to report
   sheet.appendRow(row);

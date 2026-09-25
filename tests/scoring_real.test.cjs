@@ -157,7 +157,25 @@ test('the draw follows the blueprint for every license and language', () => {
 test('an unknown license is refused rather than drawn from', () => {
   const e = env();
   assert.throws(() => e.ctx.drawExamIds('X', 'he'), err => err.code === 'bank_unavailable');
-  assert.equal(startExam(e, { license: 'X' }).code, 'unknown_license');
+  // r35: the licence is the REGISTERED one (column I), so an unknown one on
+  // the row is what is refused...
+  const bad = env({ pending: [pendingRow({ 8: 'X' })] });
+  assert.equal(startExam(bad).code, 'unknown_license');
+  assert.equal(bad.rows('מבחנים').length, 1, 'nothing drawn');
+});
+
+test('r35: startExam draws the REGISTERED licence, whatever the request names (review 09 F-05)', () => {
+  const e = env({ pending: [pendingRow({ 8: 'C' })] });
+  const reply = startExam(e, { license: 'B' });
+  assert.equal(reply.status, 'ok');
+  assert.equal(reply.license, 'C', 'the C candidate gets the C blueprint');
+  const topics = {};
+  for (const q of reply.questions) topics[q.topic] = (topics[q.topic] || 0) + 1;
+  assert.deepEqual(topics, BLUEPRINT.C);
+  // A row that carries no licence takes the session's — the examiner's setting.
+  const bare = env({ pending: [pendingRow({ 8: '' })],
+    sheets: { 'סשנים': [Array(15).fill('h'), [SESSION, '111111111', 'בוחן', 'אתר', '1', 'D', 'he', 'off', '', '', true, '', '', '', '']] } });
+  assert.equal(startExam(bare, { license: 'B' }).license, 'D');
 });
 
 // ---- startExam -------------------------------------------------------------
@@ -368,13 +386,15 @@ test('an entry the key cannot verify leaves the whole result unverified', () => 
   assert.match(row[15], /^⚠️ ציון לא אומת/, 'the certificate says so');
 });
 
-test('a submit with no registration at all is stored for manual review', () => {
+// r35 (review 09 F-04): this used to be "stored for manual review" — with the
+// CLIENT's score and verdict in the row. That was the forged-pass hole.
+test('a submit with no registration at all is refused, and nothing is written', () => {
   const e = env({ pending: [pendingRow({ 5: 'in_exam' })] });
   const reply = submit(e, [{ qIdx: 0, selected: 0, langAtAnswer: 'he' }], { score: 28, total: 30, percent: 93, passed: true });
-  assert.equal(reply.status, 'ok');
-  const row = lastResult(e);
-  assert.equal(row[22], '', 'never מאומת');
-  assert.match(row[15], /^⚠️ ציון לא אומת/);
+  assert.equal(reply.status, 'error');
+  assert.equal(reply.code, 'no_exam_registration');
+  assert.equal(e.rows('תוצאות').length, 1, 'no row');
+  assert.equal(e.rows('ממתינים')[1][5], 'in_exam', 'the attempt stays open');
 });
 
 // ---- the certificate -------------------------------------------------------
@@ -393,7 +413,8 @@ test('the texts the examinee saw reach the certificate and the WhatsApp link', (
   assert.ok(details.includes(chosen), 'what the examinee chose');
   assert.ok(details.includes(correct), 'what was correct');
   assert.ok(details.includes('קטגוריה: ' + wrongEntry.topic), 'the blueprint topic');
-  const waText = decodeURIComponent(reply.waLink.split('?text=')[1]);
+  assert.equal(reply.waLink, undefined, 'r35 (F-17): the examinee is not handed the link');
+  const waText = decodeURIComponent(String(lastResult(e)[18]).split('?text=')[1]);
   assert.ok(waText.includes(question.text) && waText.includes(correct), 'the WhatsApp message carries them too');
   assert.equal(details.split('מזהה שאלה:').length - 1, 1, 'only the wrong answer is listed');
 });
@@ -490,7 +511,7 @@ test('a genuine earlier result is returned instead of a second row', () => {
   const map = mapOf(e.rows('מבחנים')[1]);
   const reply = submit(e, answersFor(map, 'he', { correctCount: 30 }));
   assert.equal(reply.duplicate, true);
-  assert.equal(reply.waLink, 'https://wa.me/existing');
+  assert.equal(reply.waLink, undefined, 'r35 (F-17): the examinee is not handed the link');
   assert.equal(e.rows('תוצאות').length, 2, 'no second row');
   assert.equal(e.rows('ממתינים')[1][5], 'completed');
 });
@@ -674,7 +695,7 @@ test('health reports the build and the size of the deployed index', () => {
   const e = env();
   const health = get(e, { action: 'health' });
   assert.equal(health.status, 'ok');
-  assert.equal(health.build, '2026-09-27-r34');
+  assert.equal(health.build, '2026-09-27-r35');
   assert.equal(health.indexIds, 1700);
   assert.equal(Object.keys(INDEX).length, 1700, 'the generated index still holds every question');
   assert.equal(e.counters().fullReads, 0, 'health reads nothing');

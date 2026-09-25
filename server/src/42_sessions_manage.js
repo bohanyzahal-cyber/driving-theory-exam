@@ -67,6 +67,14 @@ function handleCreateSession(p) {
     return jsonResponse({ status: 'error', message: quotas.error });
   }
 
+  // r35 (KNOWN_ISSUES #44): a site that moved to the new system opens no new
+  // session here — neither as the host site nor as a guest site in the quotas.
+  // Checked before anything is written; open sessions are not affected.
+  var sessionSites = [p.site || ''];
+  for (var qs = 0; qs < quotas.rows.length; qs++) sessionSites.push(quotas.rows[qs].site || '');
+  var movedErr = movedSiteRefusal(sessionSites);
+  if (movedErr) return movedErr;
+
   // Column N (13): בוחן אחראי — name of the senior/responsible examiner when
   // multiple examiners work the same site/day per the פקודת עבודה. When the
   // session is opened by a solo examiner this can equal the examiner himself,

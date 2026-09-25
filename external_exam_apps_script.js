@@ -778,6 +778,7 @@ function verifyToken(examinerId, token) {
       if (!expiry) break;
       var expiryDate = expiry instanceof Date ? expiry : new Date(expiry);
       if (new Date() > expiryDate) break;
+      if (!(data[i][3] === 'כן' || data[i][3] === true || data[i][3] === 'TRUE')) break;
       valid = true;
       break;
     }
@@ -937,6 +938,21 @@ function getExaminerRole(examinerId) {
   return '';
 }
 
+var SESSION_VIEWER_CACHE_SEC = 300;
+function mayViewSession(sessionCode, examinerId) {
+  var code = String(sessionCode || '').trim();
+  if (!code || !examinerId) return false;
+  var key = CACHE_KEY_PREFIX + 'sview_' + normalizeId(examinerId) + '_' + code.slice(0, 40), cache = null;
+  try { cache = CacheService.getScriptCache(); if (cache.get(key) === '1') return true; } catch (eGet) { cache = null; }
+  var allowed = examinerOwnsSession(code, examinerId) || getExaminerRole(examinerId) === 'מפקד';
+  if (allowed) { try { if (!cache) cache = CacheService.getScriptCache(); cache.put(key, '1', SESSION_VIEWER_CACHE_SEC); } catch (ePut) {} }
+  return allowed;
+}
+function requireSessionViewer(p) {
+  if (mayViewSession(p.sessionCode, p.examinerId)) return null;
+  return jsonResponse({ status: 'error', code: 'not_session_owner', message: 'אין הרשאה — בוחן לא תואם לסשן' });
+}
+
 function verifyExaminerForSession(sessionCode, examinerId) {
   return examinerOwnsSession(sessionCode, examinerId);
 }
@@ -1026,6 +1042,48 @@ function bankNotConfiguredResponse() {
     message: 'מאגר השאלות אינו מוגדר בשרת — פנה למנהל המערכת' });
 }
 
+var MOVED_SITES_PROPERTY = 'MOVED_SITES';
+var MOVED_SITES_URL_PROPERTY = 'MOVED_SITES_URL';
+function normalizeSiteName(name) { return String(name === null || name === undefined ? '' : name).trim().replace(/\s+/g, ' '); }
+function movedSitesSetting() {
+  var raw = String(PropertiesService.getScriptProperties().getProperty(MOVED_SITES_PROPERTY) || '').trim();
+  if (!raw) return { sites: [], invalid: false };
+  var parsed = null;
+  try { parsed = JSON.parse(raw); } catch (eParse) { return { sites: [], invalid: true }; }
+  if (!Array.isArray(parsed)) return { sites: [], invalid: true };
+  var sites = [];
+  for (var i = 0; i < parsed.length; i++) {
+    if (typeof parsed[i] !== 'string') return { sites: [], invalid: true };
+    var name = normalizeSiteName(parsed[i]);
+    if (name) sites.push(name);
+  }
+  return { sites: sites, invalid: false };
+}
+function movedSiteRefusal(siteNames) {
+  var moved = movedSitesSetting();
+  if (moved.invalid) {
+    return jsonResponse({ status: 'error', code: 'moved_sites_invalid',
+      message: 'הגדרת MOVED_SITES בשרת אינה תקינה (צריך מערך JSON של שמות אתרים) — פנה למנהל המערכת' });
+  }
+  if (!moved.sites.length) return null;
+  for (var i = 0; i < siteNames.length; i++) {
+    var name = normalizeSiteName(siteNames[i]);
+    if (!name || moved.sites.indexOf(name) === -1) continue;
+    var url = String(PropertiesService.getScriptProperties().getProperty(MOVED_SITES_URL_PROPERTY) || '').trim();
+    var body = { status: 'error', code: 'site_moved', site: name,
+      message: 'האתר "' + name + '" עבר למערכת החדשה — יש להשתמש בקישור החדש' + (url ? ': ' + url : '') };
+    if (url) body.url = url;
+    return jsonResponse(body);
+  }
+  return null;
+}
+function movedSitesHealth() {
+  try {
+    var moved = movedSitesSetting();
+    return moved.invalid ? 'invalid' : moved.sites.length;
+  } catch (e) { return 'error'; }
+}
+
 function gatewayUrl() {
   try { return String(PropertiesService.getScriptProperties().getProperty('GATEWAY_URL') || '').trim(); }
   catch (e) { return ''; }
@@ -1075,6 +1133,11 @@ function normalizeId(val) {
   var s = String(val || '').replace(/[^0-9]/g, '');
   while (s.length < 9) s = '0' + s;
   return s;
+}
+
+function cellSafe(value) {
+  if (typeof value !== 'string') return value;
+  return /^[=+\-@\t\r]/.test(value) ? "'" + value : value;
 }
 
 function isKdtzRole(role) {
@@ -1282,7 +1345,7 @@ function handleBankGrant(p) {
 }
 var API_DEPLOYMENT = "all";
 
-var THEORY_API_BUILD = '2026-09-27-r34';
+var THEORY_API_BUILD = '2026-09-27-r35';
 var API_STARTED_AT = 0;
 
 function apiActionList() {
@@ -1330,6 +1393,7 @@ function dispatchApiAction(method, action, p) {
 
 function requireActionAuth(auth, p) {
   if (auth === 'examiner') return requireToken(p);
+  if (auth === 'examinerSession') return requireToken(p) || requireSessionViewer(p);
   if (auth === 'teacher') {
     var teacherCheck = globalFunction('requireTeacherToken');
     return teacherCheck ? teacherCheck(p) : jsonResponse({ status: 'error', code: 'wrong_deployment',
@@ -1386,7 +1450,7 @@ function legacyActionTable() {
     ['closeSession', 'GET', 'examiner', 'handleCloseSession'],
     ['approveExaminee', 'GET', 'examiner', 'handleApproveExaminee'],
     ['rejectExaminee', 'GET', 'examiner', 'handleRejectExaminee'],
-    ['examinerDashboard', 'GET', 'examiner', 'handleExaminerDashboard'],
+    ['examinerDashboard', 'GET', 'examinerSession', 'handleExaminerDashboard'],
     ['resetExaminee', 'GET', 'examiner', 'handleResetExaminee'],
     ['correctToPass', 'GET', 'examiner', 'handleCorrectToPass'],
     ['overturnDQ', 'GET', 'examiner', 'handleOverturnDQ'],
@@ -1426,7 +1490,6 @@ function legacyActionTable() {
     ['markFinished', 'GET,POST', 'none', 'handleMarkFinished'],
     ['disqualify', 'GET,POST', 'none', 'handleDisqualify'],
     ['reportWarning', 'GET,POST', 'none', 'handleReportWarning'],
-    ['cancelDisqualify', 'GET,POST', 'none', 'handleCancelDisqualify'],
     ['studentJoinClass', 'GET', 'none', 'handleStudentJoinClass'],
     ['submitPracticeResult', 'GET,POST', 'none', 'handleSubmitPracticeResult'],
     ['loadStudentProgress', 'GET', 'none', 'handleLoadStudentProgress'],
@@ -1484,7 +1547,8 @@ function handleGetOfficeNumber() {
 function handleHealth(p) {
   var body = { status: 'ok', build: THEORY_API_BUILD, deployment: API_DEPLOYMENT,
     indexIds: questionIndexCount(),
-    gateway: { url: Boolean(gatewayUrl()), key: Boolean(gatewayKey()) } };
+    gateway: { url: Boolean(gatewayUrl()), key: Boolean(gatewayKey()) },
+    movedSites: movedSitesHealth() };
   if (String(p.deep || '') !== '1') return jsonResponse(body);
   var deepT0 = Date.now(), sheetMs = -1, sheetError = '';
   try { getSheet('אתרים').getRange(1, 1).getValue(); sheetMs = Date.now() - deepT0; }
@@ -1923,6 +1987,11 @@ function handleCreateSession(p) {
   if (quotas.error) {
     return jsonResponse({ status: 'error', message: quotas.error });
   }
+
+  var sessionSites = [p.site || ''];
+  for (var qs = 0; qs < quotas.rows.length; qs++) sessionSites.push(quotas.rows[qs].site || '');
+  var movedErr = movedSiteRefusal(sessionSites);
+  if (movedErr) return movedErr;
 
   var responsibleExaminer = String(p.responsibleExaminer || '').trim();
 
@@ -2376,15 +2445,15 @@ function registerExamineeLocked(p, regKey, outcome) {
   var gwDiag = sanitizeGatewayDiag(p.gwDiag);
   pendSheet.appendRow([
     p.sessionCode,
-    p.idNumber,
-    p.fullName || '',
-    p.phone || '',
+    cellSafe(p.idNumber),
+    cellSafe(p.fullName || ''),
+    cellSafe(p.phone || ''),
     nowISO(),
     'waiting',
-    p.language || '',
-    p.population || '',
-    p.license || '',
-    p.audioMode || 'off',
+    cellSafe(p.language || ''),
+    cellSafe(p.population || ''),
+    cellSafe(p.license || ''),
+    cellSafe(p.audioMode || 'off'),
     '',
     '',
     examineeToken,
@@ -2392,7 +2461,7 @@ function registerExamineeLocked(p, regKey, outcome) {
     hasExtendedScreen ? 'כן' : '',
     0,
     gwDiag ? GATEWAY_LABEL_GOOGLE : '',
-    p.site || ''
+    cellSafe(p.site || '')
   ]);
   if (outcome && gwDiag) outcome.gwDiag = gwDiag;
   invalidatePendingSnapshot(p.sessionCode);
@@ -2417,6 +2486,10 @@ function handleCancelRegistration(p) {
   var data = sheet.getDataRange().getValues();
   var hit = findLatestPendingRow(data, p.sessionCode, p.idNumber, ['waiting', 'approved']);
   if (hit.idx === -1) return jsonResponse({ status: 'error', message: 'לא נמצא רישום פעיל לביטול' });
+  var tokenCheck = examineeTokenVerdict(hit.row, p.examineeToken);
+  if (!tokenCheck.valid) {
+    return jsonResponse({ status: 'error', message: 'טוקן נבחן לא תקין', examineeTokenError: tokenCheck.reason });
+  }
   var storedPhone = String(hit.row[3] || '').replace(/[^0-9]/g, '');
   var givenPhone = String(p.phone || '').replace(/[^0-9]/g, '');
   if (storedPhone && givenPhone && storedPhone.slice(-7) !== givenPhone.slice(-7)) {
@@ -2882,13 +2955,34 @@ function handleAddExamTime(p) {
   if (hit.idx === -1) return jsonResponse({ status: 'error', message: 'נבחן לא נמצא בסשן' });
   var name = hit.row[2] || '';
 
+  var extSheet = getSheet('הארכות זמן');
+  if (recentIdenticalExamTime(extSheet, p.sessionCode, p.idNumber, minutes, reason)) {
+    return jsonResponse({ status: 'ok', duplicate: true, addedMinutes: minutes,
+      totalExtraMinutes: sumExtraMinutes(p.sessionCode, p.idNumber) });
+  }
+
   var sessionRow = sessionRowByCode(p.sessionCode);
   var examinerName = sessionRow ? (sessionRow[2] || '') : '';
 
-  getSheet('הארכות זמן').appendRow([new Date(), p.sessionCode, p.idNumber, name, minutes, reason, examinerName]);
+  extSheet.appendRow([new Date(), p.sessionCode, p.idNumber, name, minutes, reason, examinerName]);
   invalidateExtraMinutes(p.sessionCode);
 
   return jsonResponse({ status: 'ok', addedMinutes: minutes, totalExtraMinutes: sumExtraMinutes(p.sessionCode, p.idNumber) });
+}
+
+var EXAM_TIME_DEDUPE_MS = 2 * 60 * 1000;
+function recentIdenticalExamTime(sheet, sessionCode, idNumber, minutes, reason) {
+  var rows = readTail(sheet, 0).rows, now = Date.now();
+  var code = String(sessionCode || '').trim(), id = normalizeId(idNumber), why = String(reason || '').trim();
+  for (var i = rows.length - 1; i >= 1; i--) {
+    var at = parseSheetDateTime(rows[i][0]);
+    if (!at) continue;
+    if (now - at.getTime() > EXAM_TIME_DEDUPE_MS) break;
+    if (String(rows[i][1]).trim() !== code || normalizeId(rows[i][2]) !== id) continue;
+    if (Number(rows[i][4]) !== Number(minutes) || String(rows[i][5] || '').trim() !== why) continue;
+    return true;
+  }
+  return false;
 }
 
 function handleMarkFinished(p) {
@@ -2897,9 +2991,9 @@ function handleMarkFinished(p) {
   var data = pendSheet.getDataRange().getValues();
   var hit = findLatestPendingRow(data, p.sessionCode, p.idNumber);
   if (hit.idx === -1) return jsonResponse({ status: 'ok' });
-  var storedToken = String((hit.row.length > 12 ? hit.row[12] : '') || '').trim();
-  if (storedToken && p.examineeToken && String(p.examineeToken).trim() !== storedToken) {
-    return jsonResponse({ status: 'error', examineeTokenError: 'mismatch' });
+  var markVerdict = examineeTokenVerdict(hit.row, p.examineeToken);
+  if (!markVerdict.valid) {
+    return jsonResponse({ status: 'error', examineeTokenError: markVerdict.reason });
   }
   if (hit.status === 'in_exam') {
     if (pendSheet.getMaxColumns() < 19) pendSheet.insertColumnsAfter(pendSheet.getMaxColumns(), 19 - pendSheet.getMaxColumns());
@@ -3101,30 +3195,10 @@ function selfDqReason(raw) {
   return /^[a-z0-9-]{1,24}$/.test(reason) ? reason : '';
 }
 
-function handleCancelDisqualify(p) {
-  var cdTokenErr = requireExamineeToken(p);
-  if (cdTokenErr) return cdTokenErr;
-  var sc = String(p.sessionCode || '');
-  var id = normalizeId(p.idNumber || '');
-  if (!sc || !id) return jsonResponse({ status: 'ok' });
-
-  var pendSheet = getSheet('ממתינים');
-  var pendData = pendSheet.getDataRange().getValues();
-  var pendHit = findLatestPendingRow(pendData, sc, id);
-  if (pendHit.idx !== -1 && pendHit.status === 'disqualified') {
-    setPendingStatus(pendSheet, pendHit.idx + 1, sc, 'in_exam');
-  }
-
-  var dqEventId = String(p.dqEventId || '');
-  var resSheet = getSheet('תוצאות');
-  var resRead = readResultsTail();
-  var resHit = findLatestResultRow(resRead.rows, sc, id, false);
-  if (resHit.idx !== -1 && resHit.status === 'פסול' &&
-      (!dqEventId || String(resHit.row[24] || '') === dqEventId)) {
-    resSheet.getRange(resHit.idx + 1 + resRead.off, 8).setValue('בוטל');
-    SpreadsheetApp.flush();
-  }
-  return jsonResponse({ status: 'ok' });
+defineAction('cancelDisqualify', { methods: ['GET', 'POST'], auth: 'none', handler: handleCancelDisqualifyRemoved });
+function handleCancelDisqualifyRemoved() {
+  return jsonResponse({ status: 'error', code: 'action_removed',
+    message: 'ביטול פסילה נעשה רק על ידי הבוחן' });
 }
 
 function handleResetExaminee(p) {
@@ -3561,7 +3635,7 @@ function handleStartExam(data) {
 
   var row = ctx.active.row;
   var lang = String(data.language || row[6] || 'he').toLowerCase();
-  var license = String(data.license || row[8] || 'B').trim();
+  var license = registeredLicense(row, sessionCode);
   if (!EXAM_STRUCTURE_SERVER[license]) {
     return jsonResponse({ status: 'error', code: 'unknown_license', message: 'דרגה לא מוכרת: ' + license });
   }
@@ -3598,6 +3672,13 @@ function handleStartExam(data) {
     bank: bank,
     questions: examQuestionsForClient(record.map)
   });
+}
+
+function registeredLicense(pendingRow, sessionCode) {
+  var own = String((pendingRow && pendingRow[8]) || '').trim();
+  if (own) return own;
+  var session = sessionRowByCode(sessionCode);
+  return String((session && session[5]) || 'B').trim();
 }
 
 function examMapIds(map) {
@@ -3799,11 +3880,10 @@ function handleSubmitResult(data) {
   var guard = submitRegistrationGuard(registration, data);
   if (guard) return guard;
 
-  var scored = registration && registration.map && registration.map.length
-    ? scoreRegisteredExam(registration.map, data.answers, registration.lang)
-    : null;
-  applyScore(data, scored, registration, !!(data.answers && data.answers.length));
-  var wrongAnswers = scored ? wrongAnswerItems(scored, data.license) : [];
+  if (gate.ctx.latest) data.license = registeredLicense(gate.ctx.latest.row, data.sessionCode);
+  var scored = scoreRegisteredExam(registration.map, data.answers, registration.lang);
+  applyScore(data, scored, registration);
+  var wrongAnswers = wrongAnswerItems(scored, data.license);
 
   diagMark('sheet:results-submit');
   var sheet = getSheet('תוצאות');
@@ -3813,21 +3893,21 @@ function handleSubmitResult(data) {
   var duplicate = findDuplicateResult(tail, data, gate);
   if (duplicate) {
     markPendingCompleted(data.sessionCode, data.idNumber, gate.pending);
-    return jsonResponse({ status: 'ok', waLink: duplicate[RESULT_COL.waLink] || '', duplicate: true });
+    return jsonResponse({ status: 'ok', duplicate: true });
   }
   var attemptNum = countAttempts(data.idNumber, data.license, attemptRows(tail)) + 1;
   supersedeDisqualifications(sheet, tail, data);
 
-  var waLink = buildResultWaLink(data, wrongAnswers, attemptNum);
   if (findIdenticalResult(tail, data)) {
     markPendingCompleted(data.sessionCode, data.idNumber, gate.pending);
-    return jsonResponse({ status: 'ok', duplicate: true, waLink: waLink });
+    return jsonResponse({ status: 'ok', duplicate: true });
   }
 
+  var waLink = buildResultWaLink(data, wrongAnswers, attemptNum);
   sheet.appendRow(buildResultRow(data, wrongAnswers, attemptNum, waLink));
   markPendingCompleted(data.sessionCode, data.idNumber, gate.pending);
   diagMark('compute:submit-done');
-  return jsonResponse({ status: 'ok', waLink: waLink });
+  return jsonResponse({ status: 'ok' });
 }
 
 function submitGate(data) {
@@ -3858,11 +3938,14 @@ function recordSubmitClientLog(data) {
 }
 
 function submitRegistrationGuard(registration, data) {
-  if (!registration) return null;
+  if (!registration) {
+    return jsonResponse({ status: 'error', code: 'no_exam_registration',
+      message: 'לא נמצא רישום של מבחן שהתחיל — לא ניתן לקלוט את התוצאה. פנה לבוחן.' });
+  }
   if (!data.answers || !Array.isArray(data.answers) || data.answers.length === 0) {
     return jsonResponse({ status: 'error', message: 'הגשה לא תקינה — חסרות תשובות למבחן רשום' });
   }
-  if (registration.map && registration.map.length < EXAM_MIN_QUESTIONS) {
+  if (!registration.map || registration.map.length < EXAM_MIN_QUESTIONS) {
     return jsonResponse({ status: 'error', code: 'invalid_registration',
       message: 'רישום המבחן פגום — לא ניתן לנקד. פנה לבוחן.' });
   }
@@ -3909,28 +3992,14 @@ function scoreRegisteredExam(map, answers, registeredLang) {
   return scored;
 }
 
-function applyScore(data, scored, registration, hasAnswers) {
-  if (!scored) {
-    data.verified = false;
-    if (hasAnswers) {
-      data.scoreUnverified = true;
-      data.unverifiedReason = registration ? 'רישום מבחן פגום' : 'רישום מבחן חסר';
-    }
-    data.total = Number(data.total) || (Array.isArray(data.answers) ? data.answers.length : 0) || 30;
-    data.score = Math.max(0, Math.min(data.total, Number(data.score) || 0));
-    data.percent = Number(data.percent) || Math.round((data.score / data.total) * 100);
-    data.passed = data.passed === true || data.passed === 'true';
-    return;
-  }
+function applyScore(data, scored, registration) {
   data.score = scored.correct;
   data.total = scored.total;
   data.percent = Math.round((scored.correct / scored.total) * 100);
   data.passed = scored.correct >= Math.ceil(scored.total * RESULT_PASS_RATIO);
   data.verified = scored.verified;
-  if (!scored.verified) {
-    data.scoreUnverified = true;
-    data.unverifiedReason = 'שאלות ללא מפתח תשובות';
-  }
+  data.scoreUnverified = !scored.verified;
+  data.unverifiedReason = scored.verified ? '' : 'שאלות ללא מפתח תשובות';
   data.suspicious = registration && examRegistrationAgeMs(registration) > 0 &&
     examRegistrationAgeMs(registration) < EXAM_SUSPICIOUS_SEC * 1000;
 }
@@ -4018,35 +4087,35 @@ function languagePath(data) {
 function buildResultRow(data, wrongAnswers, attemptNum, waLink) {
   var row = [];
   row[RESULT_COL.date] = todayStr();
-  row[RESULT_COL.id] = data.idNumber;
-  row[RESULT_COL.name] = data.fullName;
-  row[RESULT_COL.phone] = data.phone;
-  row[RESULT_COL.license] = data.license;
+  row[RESULT_COL.id] = cellSafe(data.idNumber);
+  row[RESULT_COL.name] = cellSafe(data.fullName);
+  row[RESULT_COL.phone] = cellSafe(data.phone);
+  row[RESULT_COL.license] = cellSafe(data.license);
   row[RESULT_COL.score] = data.score + '/' + data.total;
   row[RESULT_COL.percent] = data.percent + '%';
   row[RESULT_COL.verdict] = resultVerdict(data);
-  row[RESULT_COL.time] = data.time;
-  row[RESULT_COL.examiner] = data.examinerName || '';
-  row[RESULT_COL.site] = data.site || '';
-  row[RESULT_COL.classroom] = data.classroom || '';
-  row[RESULT_COL.language] = data.language || 'he';
+  row[RESULT_COL.time] = cellSafe(data.time);
+  row[RESULT_COL.examiner] = cellSafe(data.examinerName || '');
+  row[RESULT_COL.site] = cellSafe(data.site || '');
+  row[RESULT_COL.classroom] = cellSafe(data.classroom || '');
+  row[RESULT_COL.language] = cellSafe(data.language || 'he');
   row[RESULT_COL.session] = data.sessionCode || '';
   row[RESULT_COL.attempt] = attemptNum;
   row[RESULT_COL.wrongDetails] = formatWrongDetails(wrongAnswers, data);
   row[RESULT_COL.sent] = false;
   row[RESULT_COL.dq] = false;
   row[RESULT_COL.waLink] = waLink;
-  row[RESULT_COL.population] = data.population || '';
+  row[RESULT_COL.population] = cellSafe(data.population || '');
   row[RESULT_COL.corrected] = false;
-  row[RESULT_COL.audio] = data.audioMode || 'off';
+  row[RESULT_COL.audio] = cellSafe(data.audioMode || 'off');
   row[RESULT_COL.verified] = data.verified ? 'מאומת' : '';
   row[RESULT_COL.suspicious] = data.suspicious ? 'חשוד' : '';
   row[RESULT_COL.dqEventId] = '';
   row[RESULT_COL.correctedBy] = '';
   row[RESULT_COL.correctionReason] = '';
   row[RESULT_COL.correctionDate] = '';
-  row[RESULT_COL.langPath] = languagePath(data);
-  row[RESULT_COL.device] = String(data.device || '');
+  row[RESULT_COL.langPath] = cellSafe(String(languagePath(data)));
+  row[RESULT_COL.device] = cellSafe(String(data.device || ''));
   return row;
 }
 
@@ -4148,16 +4217,17 @@ function handleSubmitFailOnClose(data) {
     return jsonResponse({ status: 'ok', duplicate: true });
   }
 
-  var attemptNum = countAttempts(data.idNumber, data.license || '', attemptRows(tail)) + 1;
+  var license = ctx.latest ? registeredLicense(ctx.latest.row, data.sessionCode) : String(data.license || '');
+  var attemptNum = countAttempts(data.idNumber, license, attemptRows(tail)) + 1;
   var row = buildResultRow({
-    idNumber: data.idNumber, fullName: data.fullName, phone: data.phone, license: data.license || '',
+    idNumber: data.idNumber, fullName: data.fullName, phone: data.phone, license: license,
     score: 0, total: data.totalQuestions || 30, percent: 0, passed: false, time: data.time || '00:00',
     examinerName: data.examinerName, site: data.site, classroom: data.classroom,
     language: data.language || 'he', sessionCode: data.sessionCode, population: data.population,
     audioMode: data.audioMode, device: data.device, languageHistory: null, verified: false
   }, [], attemptNum, '');
   row[RESULT_COL.wrongDetails] = 'סגירת דפדפן באמצע מבחן (נענו ' + (data.answeredCount || 0) + ' שאלות)';
-  row[RESULT_COL.audio] = data.audioMode || 'off';
+  row[RESULT_COL.audio] = cellSafe(data.audioMode || 'off');
   row[RESULT_COL.verified] = '';
   row[RESULT_COL.langPath] = '';
   sheet.appendRow(row);
@@ -4220,6 +4290,9 @@ function handleStartPractice(p) {
   var picked;
   try { picked = practiceSelection(mode, license, lang, p); }
   catch (err) {
+    if (err && err.code === 'practice_ids_refused') {
+      return jsonResponse({ status: 'error', code: 'practice_ids_refused', message: 'תרגול לפי רשימת שאלות אינו זמין כעת' });
+    }
     if (!err || err.code !== 'bank_unavailable') throw err;
     return jsonResponse({ status: 'error', code: 'bank_unavailable', detail: err.detail, message: 'אין מספיק שאלות לתרגול' });
   }
@@ -4241,7 +4314,10 @@ function practiceSubject(p) {
 }
 
 function practiceSelection(mode, license, lang, p) {
-  if (mode === 'ids') return practiceByIds(p.ids, license, lang);
+  if (mode === 'ids') {
+    if (practiceCallerInLiveExam(p)) throw practiceIdsRefused();
+    return practiceByIds(p.ids, license, lang);
+  }
   if (mode === 'category' && p.categoryFilter) return practiceByCategory(String(p.categoryFilter), license, lang, practiceCount(p));
   return drawExamIds(license, lang);
 }
@@ -4255,6 +4331,44 @@ function practiceByCategory(topic, license, lang, maxCount) {
   var byTopic = indexIdsByTopic(license, lang), pool = shuffleArrayServer(byTopic[topic] || []), out = [];
   for (var i = 0; i < pool.length && out.length < maxCount; i++) out.push({ id: pool[i], topic: topic });
   return out;
+}
+
+function practiceIdsRefused() {
+  var err = new Error('practice_ids_refused');
+  err.code = 'practice_ids_refused';
+  return err;
+}
+
+function practiceCallerNationalIds(p) {
+  var out = [], raw = [p.idNumber, p.standaloneIdNumber, p.studentId];
+  for (var i = 0; i < raw.length; i++) {
+    var s = String(raw[i] === undefined || raw[i] === null ? '' : raw[i]).trim();
+    if (/^\d{5,10}$/.test(s)) out.push(normalizeId(s));
+  }
+  return out;
+}
+
+var PRACTICE_LIVE_EXAM_WINDOW_MS = 8 * 3600 * 1000;
+function practiceCallerInLiveExam(p) {
+  var ids = practiceCallerNationalIds(p);
+  if (!ids.length) return false;
+  var want = {};
+  for (var k = 0; k < ids.length; k++) want[ids[k]] = true;
+  var sheet = getSheet('ממתינים'), lastRow = sheet.getLastRow();
+  if (lastRow < 2) return false;
+  var count = Math.min(TAIL_ROWS, lastRow - 1), first = lastRow - count + 1;
+  diagMark('sheet:practice-live-exam');
+  var rows = sheet.getRange(first, 2, count, 5).getValues();
+  var now = Date.now();
+  for (var i = rows.length - 1; i >= 0; i--) {
+    if (!want[normalizeId(rows[i][0])]) continue;
+    var status = String(rows[i][4] || '').trim();
+    if (status !== 'approved' && status !== 'in_exam') continue;
+    var at = parseSheetDateTime(rows[i][3]);
+    if (at && now - at.getTime() > PRACTICE_LIVE_EXAM_WINDOW_MS) continue;
+    return true;
+  }
+  return false;
 }
 
 function practiceByIds(raw, license, lang) {
@@ -4315,7 +4429,7 @@ function diagFinish(action, startedAt) {
       try { PropertiesService.getScriptProperties().deleteProperty(CACHE_KEY_PREFIX + 'diag_' + DIAG_EXEC.id); } catch (eDel) {}
     }
     if (elapsed >= DIAG_SLOW_MS) {
-      diagRecordRow(DIAG_EXEC.id, [nowISO(), 'SLOW', DIAG_EXEC.method, action || DIAG_EXEC.action || '', elapsed,
+      diagRecordRow(DIAG_EXEC.id, [nowISO(), 'SLOW', DIAG_EXEC.method, cellSafe(String(action || DIAG_EXEC.action || '')), elapsed,
         DIAG_EXEC.phase || '', DIAG_EXEC.notes.join(' ')]);
     }
   } catch (e) {  }
@@ -4379,7 +4493,7 @@ function diagRecordClientLog(sessionCode, idNumber, entries) {
     if (text.length > DIAG_CLIENT_LOG_MAX_CHARS) text = text.slice(0, DIAG_CLIENT_LOG_MAX_CHARS - 1) + '…';
     var id = '';
     try { id = Utilities.getUuid(); } catch (eId) { id = 'client_' + Date.now(); }
-    return diagRecordRow(id, [nowISO(), 'CLIENT', String(sessionCode || ''), normalizeId(idNumber), '', '', text]);
+    return diagRecordRow(id, [nowISO(), 'CLIENT', cellSafe(String(sessionCode || '')), normalizeId(idNumber), '', '', cellSafe(text)]);
   } catch (e) { return 'error'; }
 }
 
@@ -4429,7 +4543,7 @@ function diagSweep(summary) {
       if (entry && entry.t && Date.now() - entry.t < DIAG_STALE_MS) continue;
       if (entry) {
         if (!sheet) sheet = getDiagnosticsSheet();
-        sheet.appendRow([nowISO(), 'KILLED', entry.m || '', entry.a || '', '', entry.ph || '',
+        sheet.appendRow([nowISO(), 'KILLED', entry.m || '', cellSafe(String(entry.a || '')), '', entry.ph || '',
           'started ' + new Date(entry.t).toISOString()]);
       }
       props.deleteProperty(key);
@@ -6779,7 +6893,7 @@ function handleStudentJoinClass(p) {
     }
   }
 
-  studSheet.appendRow([classCode, studentName, studentId, nowISO()]);
+  studSheet.appendRow([classCode, cellSafe(studentName), cellSafe(studentId), nowISO()]);
   return jsonResponse({ status: 'ok', message: 'הצטרפת לכיתה בהצלחה!', className: classInfo.name, teacherName: classInfo.teacherName, license: classInfo.license });
 }
 
@@ -6805,6 +6919,7 @@ function practiceClassCodeFor(classCode, studentId) {
   return '';
 }
 
+var PRACTICE_RESULT_MODES = ['exam', 'category'];
 function handleSubmitPracticeResult(p) {
   var maintenance = practiceWriteGuard(); if (maintenance) return maintenance;
   var studentId = String(p.studentId || '').trim();
@@ -6813,9 +6928,12 @@ function handleSubmitPracticeResult(p) {
   if (prRlErr) return prRlErr;
   var storedClass = practiceClassCodeFor(classCode, studentId);
   var classUnknown = !!classCode && !storedClass;
-  var sheet = getSheet('תוצאות תרגול');
   var mode = String(p.mode || 'exam');
   var license = String(p.license || 'B');
+  if (PRACTICE_RESULT_MODES.indexOf(mode) === -1 || !EXAM_STRUCTURE_SERVER.hasOwnProperty(license)) {
+    return jsonResponse({ status: 'error', code: 'invalid_practice_result', message: 'נתוני תרגול לא תקינים' });
+  }
+  var sheet = getSheet('תוצאות תרגול');
   var score = Number(p.score) || 0;
   var total = Number(p.total) || 0;
   var percent = Number(p.percent) || 0;
@@ -6828,7 +6946,9 @@ function handleSubmitPracticeResult(p) {
   var categoryBreakdown = '';
   try { categoryBreakdown = typeof p.categoryBreakdown === 'string' ? p.categoryBreakdown : JSON.stringify(p.categoryBreakdown || ''); } catch(e) {}
 
-  sheet.appendRow([todayStr(), studentId, String(p.studentName || ''), storedClass, mode, license, score, total, percent, passed, time, category, language, wrongDetails, categoryBreakdown, String(p.phone || '')]);
+  sheet.appendRow([todayStr(), cellSafe(studentId), cellSafe(String(p.studentName || '')), storedClass, mode, license,
+    score, total, percent, passed, cellSafe(time), cellSafe(category), cellSafe(language), cellSafe(wrongDetails),
+    cellSafe(categoryBreakdown), cellSafe(String(p.phone || ''))]);
   if (classUnknown) return jsonResponse({ status: 'ok', classUnknown: true });
   return jsonResponse({ status: 'ok' });
 }
@@ -6869,10 +6989,11 @@ function handleSaveStudentProgress(p) {
   var history = String(p.history || '[]');
   var sheet = getSheet('התקדמות תלמידים');
   var row = findRow(sheet, 2, key);
+  var progressRow = [cellSafe(name), cellSafe(classCode), cellSafe(key), cellSafe(streak), cellSafe(wrongQs), cellSafe(history), nowISO()];
   if (row === -1) {
-    sheet.appendRow([name, classCode, key, streak, wrongQs, history, nowISO()]);
+    sheet.appendRow(progressRow);
   } else {
-    sheet.getRange(row, 1, 1, 7).setValues([[name, classCode, key, streak, wrongQs, history, nowISO()]]);
+    sheet.getRange(row, 1, 1, 7).setValues([progressRow]);
   }
   return jsonResponse({ status: 'ok' });
 }

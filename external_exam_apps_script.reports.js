@@ -782,6 +782,7 @@ function verifyToken(examinerId, token) {
       if (!expiry) break;
       var expiryDate = expiry instanceof Date ? expiry : new Date(expiry);
       if (new Date() > expiryDate) break;
+      if (!(data[i][3] === 'כן' || data[i][3] === true || data[i][3] === 'TRUE')) break;
       valid = true;
       break;
     }
@@ -941,6 +942,21 @@ function getExaminerRole(examinerId) {
   return '';
 }
 
+var SESSION_VIEWER_CACHE_SEC = 300;
+function mayViewSession(sessionCode, examinerId) {
+  var code = String(sessionCode || '').trim();
+  if (!code || !examinerId) return false;
+  var key = CACHE_KEY_PREFIX + 'sview_' + normalizeId(examinerId) + '_' + code.slice(0, 40), cache = null;
+  try { cache = CacheService.getScriptCache(); if (cache.get(key) === '1') return true; } catch (eGet) { cache = null; }
+  var allowed = examinerOwnsSession(code, examinerId) || getExaminerRole(examinerId) === 'מפקד';
+  if (allowed) { try { if (!cache) cache = CacheService.getScriptCache(); cache.put(key, '1', SESSION_VIEWER_CACHE_SEC); } catch (ePut) {} }
+  return allowed;
+}
+function requireSessionViewer(p) {
+  if (mayViewSession(p.sessionCode, p.examinerId)) return null;
+  return jsonResponse({ status: 'error', code: 'not_session_owner', message: 'אין הרשאה — בוחן לא תואם לסשן' });
+}
+
 function verifyExaminerForSession(sessionCode, examinerId) {
   return examinerOwnsSession(sessionCode, examinerId);
 }
@@ -1030,6 +1046,48 @@ function bankNotConfiguredResponse() {
     message: 'מאגר השאלות אינו מוגדר בשרת — פנה למנהל המערכת' });
 }
 
+var MOVED_SITES_PROPERTY = 'MOVED_SITES';
+var MOVED_SITES_URL_PROPERTY = 'MOVED_SITES_URL';
+function normalizeSiteName(name) { return String(name === null || name === undefined ? '' : name).trim().replace(/\s+/g, ' '); }
+function movedSitesSetting() {
+  var raw = String(PropertiesService.getScriptProperties().getProperty(MOVED_SITES_PROPERTY) || '').trim();
+  if (!raw) return { sites: [], invalid: false };
+  var parsed = null;
+  try { parsed = JSON.parse(raw); } catch (eParse) { return { sites: [], invalid: true }; }
+  if (!Array.isArray(parsed)) return { sites: [], invalid: true };
+  var sites = [];
+  for (var i = 0; i < parsed.length; i++) {
+    if (typeof parsed[i] !== 'string') return { sites: [], invalid: true };
+    var name = normalizeSiteName(parsed[i]);
+    if (name) sites.push(name);
+  }
+  return { sites: sites, invalid: false };
+}
+function movedSiteRefusal(siteNames) {
+  var moved = movedSitesSetting();
+  if (moved.invalid) {
+    return jsonResponse({ status: 'error', code: 'moved_sites_invalid',
+      message: 'הגדרת MOVED_SITES בשרת אינה תקינה (צריך מערך JSON של שמות אתרים) — פנה למנהל המערכת' });
+  }
+  if (!moved.sites.length) return null;
+  for (var i = 0; i < siteNames.length; i++) {
+    var name = normalizeSiteName(siteNames[i]);
+    if (!name || moved.sites.indexOf(name) === -1) continue;
+    var url = String(PropertiesService.getScriptProperties().getProperty(MOVED_SITES_URL_PROPERTY) || '').trim();
+    var body = { status: 'error', code: 'site_moved', site: name,
+      message: 'האתר "' + name + '" עבר למערכת החדשה — יש להשתמש בקישור החדש' + (url ? ': ' + url : '') };
+    if (url) body.url = url;
+    return jsonResponse(body);
+  }
+  return null;
+}
+function movedSitesHealth() {
+  try {
+    var moved = movedSitesSetting();
+    return moved.invalid ? 'invalid' : moved.sites.length;
+  } catch (e) { return 'error'; }
+}
+
 function gatewayUrl() {
   try { return String(PropertiesService.getScriptProperties().getProperty('GATEWAY_URL') || '').trim(); }
   catch (e) { return ''; }
@@ -1079,6 +1137,11 @@ function normalizeId(val) {
   var s = String(val || '').replace(/[^0-9]/g, '');
   while (s.length < 9) s = '0' + s;
   return s;
+}
+
+function cellSafe(value) {
+  if (typeof value !== 'string') return value;
+  return /^[=+\-@\t\r]/.test(value) ? "'" + value : value;
 }
 
 function isKdtzRole(role) {
@@ -1286,7 +1349,7 @@ function handleBankGrant(p) {
 }
 var API_DEPLOYMENT = "reports";
 
-var THEORY_API_BUILD = '2026-09-27-r34';
+var THEORY_API_BUILD = '2026-09-27-r35';
 var API_STARTED_AT = 0;
 
 function apiActionList() {
@@ -1334,6 +1397,7 @@ function dispatchApiAction(method, action, p) {
 
 function requireActionAuth(auth, p) {
   if (auth === 'examiner') return requireToken(p);
+  if (auth === 'examinerSession') return requireToken(p) || requireSessionViewer(p);
   if (auth === 'teacher') {
     var teacherCheck = globalFunction('requireTeacherToken');
     return teacherCheck ? teacherCheck(p) : jsonResponse({ status: 'error', code: 'wrong_deployment',
@@ -1390,7 +1454,7 @@ function legacyActionTable() {
     ['closeSession', 'GET', 'examiner', 'handleCloseSession'],
     ['approveExaminee', 'GET', 'examiner', 'handleApproveExaminee'],
     ['rejectExaminee', 'GET', 'examiner', 'handleRejectExaminee'],
-    ['examinerDashboard', 'GET', 'examiner', 'handleExaminerDashboard'],
+    ['examinerDashboard', 'GET', 'examinerSession', 'handleExaminerDashboard'],
     ['resetExaminee', 'GET', 'examiner', 'handleResetExaminee'],
     ['correctToPass', 'GET', 'examiner', 'handleCorrectToPass'],
     ['overturnDQ', 'GET', 'examiner', 'handleOverturnDQ'],
@@ -1430,7 +1494,6 @@ function legacyActionTable() {
     ['markFinished', 'GET,POST', 'none', 'handleMarkFinished'],
     ['disqualify', 'GET,POST', 'none', 'handleDisqualify'],
     ['reportWarning', 'GET,POST', 'none', 'handleReportWarning'],
-    ['cancelDisqualify', 'GET,POST', 'none', 'handleCancelDisqualify'],
     ['studentJoinClass', 'GET', 'none', 'handleStudentJoinClass'],
     ['submitPracticeResult', 'GET,POST', 'none', 'handleSubmitPracticeResult'],
     ['loadStudentProgress', 'GET', 'none', 'handleLoadStudentProgress'],
@@ -1488,7 +1551,8 @@ function handleGetOfficeNumber() {
 function handleHealth(p) {
   var body = { status: 'ok', build: THEORY_API_BUILD, deployment: API_DEPLOYMENT,
     indexIds: questionIndexCount(),
-    gateway: { url: Boolean(gatewayUrl()), key: Boolean(gatewayKey()) } };
+    gateway: { url: Boolean(gatewayUrl()), key: Boolean(gatewayKey()) },
+    movedSites: movedSitesHealth() };
   if (String(p.deep || '') !== '1') return jsonResponse(body);
   var deepT0 = Date.now(), sheetMs = -1, sheetError = '';
   try { getSheet('אתרים').getRange(1, 1).getValue(); sheetMs = Date.now() - deepT0; }
@@ -1870,6 +1934,9 @@ function handleStartPractice(p) {
   var picked;
   try { picked = practiceSelection(mode, license, lang, p); }
   catch (err) {
+    if (err && err.code === 'practice_ids_refused') {
+      return jsonResponse({ status: 'error', code: 'practice_ids_refused', message: 'תרגול לפי רשימת שאלות אינו זמין כעת' });
+    }
     if (!err || err.code !== 'bank_unavailable') throw err;
     return jsonResponse({ status: 'error', code: 'bank_unavailable', detail: err.detail, message: 'אין מספיק שאלות לתרגול' });
   }
@@ -1891,7 +1958,10 @@ function practiceSubject(p) {
 }
 
 function practiceSelection(mode, license, lang, p) {
-  if (mode === 'ids') return practiceByIds(p.ids, license, lang);
+  if (mode === 'ids') {
+    if (practiceCallerInLiveExam(p)) throw practiceIdsRefused();
+    return practiceByIds(p.ids, license, lang);
+  }
   if (mode === 'category' && p.categoryFilter) return practiceByCategory(String(p.categoryFilter), license, lang, practiceCount(p));
   return drawExamIds(license, lang);
 }
@@ -1905,6 +1975,44 @@ function practiceByCategory(topic, license, lang, maxCount) {
   var byTopic = indexIdsByTopic(license, lang), pool = shuffleArrayServer(byTopic[topic] || []), out = [];
   for (var i = 0; i < pool.length && out.length < maxCount; i++) out.push({ id: pool[i], topic: topic });
   return out;
+}
+
+function practiceIdsRefused() {
+  var err = new Error('practice_ids_refused');
+  err.code = 'practice_ids_refused';
+  return err;
+}
+
+function practiceCallerNationalIds(p) {
+  var out = [], raw = [p.idNumber, p.standaloneIdNumber, p.studentId];
+  for (var i = 0; i < raw.length; i++) {
+    var s = String(raw[i] === undefined || raw[i] === null ? '' : raw[i]).trim();
+    if (/^\d{5,10}$/.test(s)) out.push(normalizeId(s));
+  }
+  return out;
+}
+
+var PRACTICE_LIVE_EXAM_WINDOW_MS = 8 * 3600 * 1000;
+function practiceCallerInLiveExam(p) {
+  var ids = practiceCallerNationalIds(p);
+  if (!ids.length) return false;
+  var want = {};
+  for (var k = 0; k < ids.length; k++) want[ids[k]] = true;
+  var sheet = getSheet('ממתינים'), lastRow = sheet.getLastRow();
+  if (lastRow < 2) return false;
+  var count = Math.min(TAIL_ROWS, lastRow - 1), first = lastRow - count + 1;
+  diagMark('sheet:practice-live-exam');
+  var rows = sheet.getRange(first, 2, count, 5).getValues();
+  var now = Date.now();
+  for (var i = rows.length - 1; i >= 0; i--) {
+    if (!want[normalizeId(rows[i][0])]) continue;
+    var status = String(rows[i][4] || '').trim();
+    if (status !== 'approved' && status !== 'in_exam') continue;
+    var at = parseSheetDateTime(rows[i][3]);
+    if (at && now - at.getTime() > PRACTICE_LIVE_EXAM_WINDOW_MS) continue;
+    return true;
+  }
+  return false;
 }
 
 function practiceByIds(raw, license, lang) {
@@ -1965,7 +2073,7 @@ function diagFinish(action, startedAt) {
       try { PropertiesService.getScriptProperties().deleteProperty(CACHE_KEY_PREFIX + 'diag_' + DIAG_EXEC.id); } catch (eDel) {}
     }
     if (elapsed >= DIAG_SLOW_MS) {
-      diagRecordRow(DIAG_EXEC.id, [nowISO(), 'SLOW', DIAG_EXEC.method, action || DIAG_EXEC.action || '', elapsed,
+      diagRecordRow(DIAG_EXEC.id, [nowISO(), 'SLOW', DIAG_EXEC.method, cellSafe(String(action || DIAG_EXEC.action || '')), elapsed,
         DIAG_EXEC.phase || '', DIAG_EXEC.notes.join(' ')]);
     }
   } catch (e) {  }
@@ -2029,7 +2137,7 @@ function diagRecordClientLog(sessionCode, idNumber, entries) {
     if (text.length > DIAG_CLIENT_LOG_MAX_CHARS) text = text.slice(0, DIAG_CLIENT_LOG_MAX_CHARS - 1) + '…';
     var id = '';
     try { id = Utilities.getUuid(); } catch (eId) { id = 'client_' + Date.now(); }
-    return diagRecordRow(id, [nowISO(), 'CLIENT', String(sessionCode || ''), normalizeId(idNumber), '', '', text]);
+    return diagRecordRow(id, [nowISO(), 'CLIENT', cellSafe(String(sessionCode || '')), normalizeId(idNumber), '', '', cellSafe(text)]);
   } catch (e) { return 'error'; }
 }
 
@@ -2079,7 +2187,7 @@ function diagSweep(summary) {
       if (entry && entry.t && Date.now() - entry.t < DIAG_STALE_MS) continue;
       if (entry) {
         if (!sheet) sheet = getDiagnosticsSheet();
-        sheet.appendRow([nowISO(), 'KILLED', entry.m || '', entry.a || '', '', entry.ph || '',
+        sheet.appendRow([nowISO(), 'KILLED', entry.m || '', cellSafe(String(entry.a || '')), '', entry.ph || '',
           'started ' + new Date(entry.t).toISOString()]);
       }
       props.deleteProperty(key);
@@ -4429,7 +4537,7 @@ function handleStudentJoinClass(p) {
     }
   }
 
-  studSheet.appendRow([classCode, studentName, studentId, nowISO()]);
+  studSheet.appendRow([classCode, cellSafe(studentName), cellSafe(studentId), nowISO()]);
   return jsonResponse({ status: 'ok', message: 'הצטרפת לכיתה בהצלחה!', className: classInfo.name, teacherName: classInfo.teacherName, license: classInfo.license });
 }
 
@@ -4455,6 +4563,7 @@ function practiceClassCodeFor(classCode, studentId) {
   return '';
 }
 
+var PRACTICE_RESULT_MODES = ['exam', 'category'];
 function handleSubmitPracticeResult(p) {
   var maintenance = practiceWriteGuard(); if (maintenance) return maintenance;
   var studentId = String(p.studentId || '').trim();
@@ -4463,9 +4572,12 @@ function handleSubmitPracticeResult(p) {
   if (prRlErr) return prRlErr;
   var storedClass = practiceClassCodeFor(classCode, studentId);
   var classUnknown = !!classCode && !storedClass;
-  var sheet = getSheet('תוצאות תרגול');
   var mode = String(p.mode || 'exam');
   var license = String(p.license || 'B');
+  if (PRACTICE_RESULT_MODES.indexOf(mode) === -1 || !EXAM_STRUCTURE_SERVER.hasOwnProperty(license)) {
+    return jsonResponse({ status: 'error', code: 'invalid_practice_result', message: 'נתוני תרגול לא תקינים' });
+  }
+  var sheet = getSheet('תוצאות תרגול');
   var score = Number(p.score) || 0;
   var total = Number(p.total) || 0;
   var percent = Number(p.percent) || 0;
@@ -4478,7 +4590,9 @@ function handleSubmitPracticeResult(p) {
   var categoryBreakdown = '';
   try { categoryBreakdown = typeof p.categoryBreakdown === 'string' ? p.categoryBreakdown : JSON.stringify(p.categoryBreakdown || ''); } catch(e) {}
 
-  sheet.appendRow([todayStr(), studentId, String(p.studentName || ''), storedClass, mode, license, score, total, percent, passed, time, category, language, wrongDetails, categoryBreakdown, String(p.phone || '')]);
+  sheet.appendRow([todayStr(), cellSafe(studentId), cellSafe(String(p.studentName || '')), storedClass, mode, license,
+    score, total, percent, passed, cellSafe(time), cellSafe(category), cellSafe(language), cellSafe(wrongDetails),
+    cellSafe(categoryBreakdown), cellSafe(String(p.phone || ''))]);
   if (classUnknown) return jsonResponse({ status: 'ok', classUnknown: true });
   return jsonResponse({ status: 'ok' });
 }
@@ -4519,10 +4633,11 @@ function handleSaveStudentProgress(p) {
   var history = String(p.history || '[]');
   var sheet = getSheet('התקדמות תלמידים');
   var row = findRow(sheet, 2, key);
+  var progressRow = [cellSafe(name), cellSafe(classCode), cellSafe(key), cellSafe(streak), cellSafe(wrongQs), cellSafe(history), nowISO()];
   if (row === -1) {
-    sheet.appendRow([name, classCode, key, streak, wrongQs, history, nowISO()]);
+    sheet.appendRow(progressRow);
   } else {
-    sheet.getRange(row, 1, 1, 7).setValues([[name, classCode, key, streak, wrongQs, history, nowISO()]]);
+    sheet.getRange(row, 1, 1, 7).setValues([progressRow]);
   }
   return jsonResponse({ status: 'ok' });
 }

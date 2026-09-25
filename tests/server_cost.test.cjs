@@ -564,7 +564,7 @@ function envWith(extra, properties) {
   const examiner = { examinerId: '111111111', token: 'tokX' };
   writesSnapshot('approve', env => env.ctx.handleApproveExaminee(Object.assign({ sessionCode: SESSION, idNumber: waitingId }, examiner)));
   writesSnapshot('reject', env => env.ctx.handleRejectExaminee(Object.assign({ sessionCode: SESSION, idNumber: waitingId }, examiner)));
-  writesSnapshot('cancelRegistration', env => env.ctx.handleCancelRegistration({ sessionCode: SESSION, idNumber: waitingId, phone: '0500000000' }));
+  writesSnapshot('cancelRegistration', env => env.ctx.handleCancelRegistration({ sessionCode: SESSION, idNumber: waitingId, phone: '0500000000', examineeToken: 'tok-' + waitingId }));
   writesSnapshot('startExam (approved → in_exam)', env => {
     env.ctx.handleApproveExaminee(Object.assign({ sessionCode: SESSION, idNumber: waitingId }, examiner));
     removedKeys.length = 0;
@@ -572,12 +572,6 @@ function envWith(extra, properties) {
     env.ctx.handleStartExam({ sessionCode: SESSION, idNumber: waitingId, examineeToken: 'tok-' + waitingId });
   });
   writesSnapshot('disqualify', env => env.ctx.handleDisqualify(Object.assign({ sessionCode: SESSION, idNumber: inExamId, dqEventId: 'e1' }, examiner)));
-  writesSnapshot('cancelDisqualify', env => {
-    env.ctx.handleDisqualify(Object.assign({ sessionCode: SESSION, idNumber: inExamId, dqEventId: 'e1' }, examiner));
-    removedKeys.length = 0;
-    env.ctx.pendingRowsForSession(SESSION);
-    env.ctx.handleCancelDisqualify({ sessionCode: SESSION, idNumber: inExamId, examineeToken: 'tok-' + inExamId, dqEventId: 'e1' });
-  });
   writesSnapshot('confirmDQ', env => {
     env.ctx.handleDisqualify(Object.assign({ sessionCode: SESSION, idNumber: inExamId, dqEventId: 'e2' }, examiner));
     removedKeys.length = 0;

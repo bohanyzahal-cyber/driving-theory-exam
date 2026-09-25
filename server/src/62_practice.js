@@ -29,6 +29,9 @@ function handleStartPractice(p) {
   var picked;
   try { picked = practiceSelection(mode, license, lang, p); }
   catch (err) {
+    if (err && err.code === 'practice_ids_refused') {
+      return jsonResponse({ status: 'error', code: 'practice_ids_refused', message: 'תרגול לפי רשימת שאלות אינו זמין כעת' });
+    }
     if (!err || err.code !== 'bank_unavailable') throw err;
     return jsonResponse({ status: 'error', code: 'bank_unavailable', detail: err.detail, message: 'אין מספיק שאלות לתרגול' });
   }
@@ -51,8 +54,20 @@ function practiceSubject(p) {
   return 'guest';
 }
 
+// r35 (review 09 F-02c, 01 D1, KNOWN_ISSUES #43): mode=ids answers the correct
+// index of ANY ids the caller names — during an exam, the 30 ids startExam
+// handed out. It is refused for a national ID that has a LIVE exam attempt
+// right now (an 'approved' or 'in_exam' row in 'ממתינים' registered within the
+// session lifetime). student.html never sends a national ID with mode=ids (its
+// studentId is 'S' + a hash), so ordinary practice never pays the read below
+// and never meets the refusal. What this does NOT do: stop a caller who simply
+// leaves the ID out — only authenticated practice closes the oracle (rebuild,
+// review_plan_v1_security S12). The refusal text is deliberately generic.
 function practiceSelection(mode, license, lang, p) {
-  if (mode === 'ids') return practiceByIds(p.ids, license, lang);
+  if (mode === 'ids') {
+    if (practiceCallerInLiveExam(p)) throw practiceIdsRefused();
+    return practiceByIds(p.ids, license, lang);
+  }
   if (mode === 'category' && p.categoryFilter) return practiceByCategory(String(p.categoryFilter), license, lang, practiceCount(p));
   return drawExamIds(license, lang);   // full 30-question blueprint
 }
@@ -66,6 +81,51 @@ function practiceByCategory(topic, license, lang, maxCount) {
   var byTopic = indexIdsByTopic(license, lang), pool = shuffleArrayServer(byTopic[topic] || []), out = [];
   for (var i = 0; i < pool.length && out.length < maxCount; i++) out.push({ id: pool[i], topic: topic });
   return out;
+}
+
+function practiceIdsRefused() {
+  var err = new Error('practice_ids_refused');
+  err.code = 'practice_ids_refused';
+  return err;
+}
+
+// The national ID a mode=ids caller names, if any: idNumber, standaloneIdNumber
+// (exam.html's field), or a studentId made of digits only. '' = none named.
+function practiceCallerNationalIds(p) {
+  var out = [], raw = [p.idNumber, p.standaloneIdNumber, p.studentId];
+  for (var i = 0; i < raw.length; i++) {
+    var s = String(raw[i] === undefined || raw[i] === null ? '' : raw[i]).trim();
+    if (/^\d{5,10}$/.test(s)) out.push(normalizeId(s));
+  }
+  return out;
+}
+
+// ONE range read — columns B:F (id … status) of the last TAIL_ROWS rows of
+// 'ממתינים', 5 cells a row instead of the 19 a full tail read moves — and only
+// when a national ID was named at all. An attempt counts while its row is
+// 'approved' or 'in_exam' and was registered within the session lifetime (8 h),
+// so a row the dashboard never reconciled does not block practice forever.
+var PRACTICE_LIVE_EXAM_WINDOW_MS = 8 * 3600 * 1000;
+function practiceCallerInLiveExam(p) {
+  var ids = practiceCallerNationalIds(p);
+  if (!ids.length) return false;
+  var want = {};
+  for (var k = 0; k < ids.length; k++) want[ids[k]] = true;
+  var sheet = getSheet('ממתינים'), lastRow = sheet.getLastRow();
+  if (lastRow < 2) return false;
+  var count = Math.min(TAIL_ROWS, lastRow - 1), first = lastRow - count + 1;
+  diagMark('sheet:practice-live-exam');
+  var rows = sheet.getRange(first, 2, count, 5).getValues();   // B ת.ז. · C · D · E זמן הרשמה · F סטטוס
+  var now = Date.now();
+  for (var i = rows.length - 1; i >= 0; i--) {
+    if (!want[normalizeId(rows[i][0])]) continue;
+    var status = String(rows[i][4] || '').trim();
+    if (status !== 'approved' && status !== 'in_exam') continue;
+    var at = parseSheetDateTime(rows[i][3]);
+    if (at && now - at.getTime() > PRACTICE_LIVE_EXAM_WINDOW_MS) continue;
+    return true;
+  }
+  return false;
 }
 
 // Spaced repetition: the client names the ids it wants back. Unknown ids and ids

@@ -26,6 +26,11 @@ function verifyToken(examinerId, token) {
       if (!expiry) break;
       var expiryDate = expiry instanceof Date ? expiry : new Date(expiry);
       if (new Date() > expiryDate) break;
+      // r35 (review 09 F-10 / 01 D23): the same "active" rule login and
+      // verifyLogin apply. Without it an examiner disabled in the sheet kept
+      // full API access until the 12 h expiry; now at most the 60 s verdict
+      // cache below.
+      if (!(data[i][3] === 'כן' || data[i][3] === true || data[i][3] === 'TRUE')) break;
       valid = true;
       break;
     }
@@ -233,6 +238,35 @@ function getExaminerRole(examinerId) {
   return '';
 }
 
+// ---- Who may READ a session's board (r35, KNOWN_ISSUES #43) ----------------
+// examinerDashboard returned every name, phone, ID number and score of ANY
+// session to ANY valid examiner token (review 09 F-06, 01 D16) — and ran the
+// board's reconciliation writes for it too. The rule is now the one the rest of
+// the system already has: the session's own examiner (examinerOwnsSession — the
+// creator in 'סשנים' column B; there is no co-examiner concept in the data), or
+// the role 'מפקד', which is exactly who listAllSessions shows every live
+// session to (examiner.html "📂 הצג כל הסשנים הפעילים" → loadForeignSession).
+// A guest SITE of a multi-site session is a row in the quotas, not a second
+// examiner, so nothing changes for it. The Worker does not come through here:
+// it reads sessionSnapshot with GATEWAY_KEY.
+// Only a positive verdict is cached — ownership of a session never changes, and
+// a role taken away costs at most SESSION_VIEWER_CACHE_SEC of grace — so a
+// board that re-reads itself pays for 'סשנים' once, not on every read.
+var SESSION_VIEWER_CACHE_SEC = 300;
+function mayViewSession(sessionCode, examinerId) {
+  var code = String(sessionCode || '').trim();
+  if (!code || !examinerId) return false;
+  var key = CACHE_KEY_PREFIX + 'sview_' + normalizeId(examinerId) + '_' + code.slice(0, 40), cache = null;
+  try { cache = CacheService.getScriptCache(); if (cache.get(key) === '1') return true; } catch (eGet) { cache = null; }
+  var allowed = examinerOwnsSession(code, examinerId) || getExaminerRole(examinerId) === 'מפקד';
+  if (allowed) { try { if (!cache) cache = CacheService.getScriptCache(); cache.put(key, '1', SESSION_VIEWER_CACHE_SEC); } catch (ePut) {} }
+  return allowed;
+}
+function requireSessionViewer(p) {
+  if (mayViewSession(p.sessionCode, p.examinerId)) return null;
+  return jsonResponse({ status: 'error', code: 'not_session_owner', message: 'אין הרשאה — בוחן לא תואם לסשן' });
+}
+
 // Verify examiner owns the session (for sensitive actions)
 function verifyExaminerForSession(sessionCode, examinerId) {
   // One rule, one read: examinerOwnsSession (44_sessions_misc.js) serves the
@@ -368,6 +402,65 @@ function bankGrantFor(scope, ids, sub) {
 function bankNotConfiguredResponse() {
   return jsonResponse({ status: 'error', code: 'bank_not_configured',
     message: 'מאגר השאלות אינו מוגדר בשרת — פנה למנהל המערכת' });
+}
+
+// ---- Sites that moved to the new system (r35, KNOWN_ISSUES #44) -------------
+// Script Property MOVED_SITES = a JSON array of site names, e.g.
+//   ["בסיס 6","בח\"א 6"]
+// Missing or empty = nothing moved and nothing changes. A listed site can no
+// longer OPEN a session here — createSession answers site_moved (with the
+// address in MOVED_SITES_URL, when that property is set) — whether it is the
+// session's host site or a guest site of a multi-site session. Sessions that
+// are already open are not touched and finish normally: registration, the
+// exam and the result never look at this list. No redirect, no fallback.
+// A value that is not a JSON array of strings refuses every new session with
+// moved_sites_invalid: a typo must be seen the first time anyone opens a
+// session, not silently read as "nothing moved". health reports the count.
+// One property read per request (MOVED_SITES_URL only on an actual refusal),
+// through the same PropertiesService every other setting here uses.
+var MOVED_SITES_PROPERTY = 'MOVED_SITES';
+var MOVED_SITES_URL_PROPERTY = 'MOVED_SITES_URL';
+function normalizeSiteName(name) { return String(name === null || name === undefined ? '' : name).trim().replace(/\s+/g, ' '); }
+// { sites: [normalized names], invalid: bool }
+function movedSitesSetting() {
+  var raw = String(PropertiesService.getScriptProperties().getProperty(MOVED_SITES_PROPERTY) || '').trim();
+  if (!raw) return { sites: [], invalid: false };
+  var parsed = null;
+  try { parsed = JSON.parse(raw); } catch (eParse) { return { sites: [], invalid: true }; }
+  if (!Array.isArray(parsed)) return { sites: [], invalid: true };
+  var sites = [];
+  for (var i = 0; i < parsed.length; i++) {
+    if (typeof parsed[i] !== 'string') return { sites: [], invalid: true };
+    var name = normalizeSiteName(parsed[i]);
+    if (name) sites.push(name);
+  }
+  return { sites: sites, invalid: false };
+}
+// null = every name may open a session; otherwise the refusal to answer with.
+function movedSiteRefusal(siteNames) {
+  var moved = movedSitesSetting();
+  if (moved.invalid) {
+    return jsonResponse({ status: 'error', code: 'moved_sites_invalid',
+      message: 'הגדרת MOVED_SITES בשרת אינה תקינה (צריך מערך JSON של שמות אתרים) — פנה למנהל המערכת' });
+  }
+  if (!moved.sites.length) return null;
+  for (var i = 0; i < siteNames.length; i++) {
+    var name = normalizeSiteName(siteNames[i]);
+    if (!name || moved.sites.indexOf(name) === -1) continue;
+    var url = String(PropertiesService.getScriptProperties().getProperty(MOVED_SITES_URL_PROPERTY) || '').trim();
+    var body = { status: 'error', code: 'site_moved', site: name,
+      message: 'האתר "' + name + '" עבר למערכת החדשה — יש להשתמש בקישור החדש' + (url ? ': ' + url : '') };
+    if (url) body.url = url;
+    return jsonResponse(body);
+  }
+  return null;
+}
+// For health: how many sites are listed, or 'invalid' — never the names.
+function movedSitesHealth() {
+  try {
+    var moved = movedSitesSetting();
+    return moved.invalid ? 'invalid' : moved.sites.length;
+  } catch (e) { return 'error'; }
 }
 
 // Address of the polling Worker (DESIGN §3.4). Empty = examinees poll this

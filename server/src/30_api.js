@@ -6,7 +6,7 @@
 // @@API_DEPLOYMENT@@
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-27-r34';
+var THEORY_API_BUILD = '2026-09-27-r35';
 // When the current request entered the script — health&deep=1 reports the whole
 // request against it, so a watchdog can separate our time from Google's.
 var API_STARTED_AT = 0;
@@ -72,6 +72,9 @@ function dispatchApiAction(method, action, p) {
 
 function requireActionAuth(auth, p) {
   if (auth === 'examiner') return requireToken(p);
+  // r35 (KNOWN_ISSUES #43): a valid examiner token AND the right to read THIS
+  // session's board — its own examiner or a 'מפקד' (20_auth.js mayViewSession).
+  if (auth === 'examinerSession') return requireToken(p) || requireSessionViewer(p);
   // requireTeacherToken lives in 90_teacher.js, which the exam deployment does
   // not carry. Every teacher action is a `reports` action, so the target check
   // above already refused it and this line is unreachable there — but resolving
@@ -169,7 +172,8 @@ function legacyActionTable() {
     ['closeSession', 'GET', 'examiner', 'handleCloseSession'],
     ['approveExaminee', 'GET', 'examiner', 'handleApproveExaminee'],
     ['rejectExaminee', 'GET', 'examiner', 'handleRejectExaminee'],
-    ['examinerDashboard', 'GET', 'examiner', 'handleExaminerDashboard'],
+    // r35: the board of ONE session — token + owner or מפקד (review 09 F-06)
+    ['examinerDashboard', 'GET', 'examinerSession', 'handleExaminerDashboard'],
     ['resetExaminee', 'GET', 'examiner', 'handleResetExaminee'],
     ['correctToPass', 'GET', 'examiner', 'handleCorrectToPass'],
     ['overturnDQ', 'GET', 'examiner', 'handleOverturnDQ'],
@@ -205,6 +209,7 @@ function legacyActionTable() {
     ['siteCombinedReport', 'GET', 'none', 'handleSiteCombinedReport'],
     ['getSessionInfo', 'GET', 'none', 'handleGetSessionInfo'],
     ['registerExaminee', 'GET', 'none', 'handleRegisterExaminee'],
+    // r35: the handler requires the examinee token of the row it cancels
     ['cancelRegistration', 'GET', 'none', 'handleCancelRegistration'],
     // Retired 21/09/2026 evening (the page polled ONLY through the session
     // gateway) and SERVED AGAIN in r33 (24/09/2026, KNOWN_ISSUES #38): on 23/09
@@ -227,7 +232,6 @@ function legacyActionTable() {
     // pending row of that examinee.
     ['disqualify', 'GET,POST', 'none', 'handleDisqualify'],
     ['reportWarning', 'GET,POST', 'none', 'handleReportWarning'],
-    ['cancelDisqualify', 'GET,POST', 'none', 'handleCancelDisqualify'],
     ['studentJoinClass', 'GET', 'none', 'handleStudentJoinClass'],
     ['submitPracticeResult', 'GET,POST', 'none', 'handleSubmitPracticeResult'],
     ['loadStudentProgress', 'GET', 'none', 'handleLoadStudentProgress'],
@@ -308,9 +312,12 @@ function handleHealth(p) {
   // deployment: which of the three pasted files this is (DESIGN §13.3). It is
   // the whole verification of a split paste — "did the right file land in the
   // right project" — and it costs nothing to read.
+  // movedSites (r35, KNOWN_ISSUES #44): how many sites MOVED_SITES lists, or
+  // 'invalid' — the check after editing that property. Never the names.
   var body = { status: 'ok', build: THEORY_API_BUILD, deployment: API_DEPLOYMENT,
     indexIds: questionIndexCount(),
-    gateway: { url: Boolean(gatewayUrl()), key: Boolean(gatewayKey()) } };
+    gateway: { url: Boolean(gatewayUrl()), key: Boolean(gatewayKey()) },
+    movedSites: movedSitesHealth() };
   if (String(p.deep || '') !== '1') return jsonResponse(body);
   var deepT0 = Date.now(), sheetMs = -1, sheetError = '';
   try { getSheet('אתרים').getRange(1, 1).getValue(); sheetMs = Date.now() - deepT0; }

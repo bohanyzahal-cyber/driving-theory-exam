@@ -163,14 +163,49 @@ function handleAddExamTime(p) {
   if (hit.idx === -1) return jsonResponse({ status: 'error', message: 'נבחן לא נמצא בסשן' });
   var name = hit.row[2] || '';
 
+  // r35 (01 D9, KNOWN_ISSUES #43): a retry is not a second grant. See
+  // recentIdenticalExamTime.
+  var extSheet = getSheet('הארכות זמן');
+  if (recentIdenticalExamTime(extSheet, p.sessionCode, p.idNumber, minutes, reason)) {
+    return jsonResponse({ status: 'ok', duplicate: true, addedMinutes: minutes,
+      totalExtraMinutes: sumExtraMinutes(p.sessionCode, p.idNumber) });
+  }
+
   // Examiner display name for the audit row — from the same memo as the auth check.
   var sessionRow = sessionRowByCode(p.sessionCode);
   var examinerName = sessionRow ? (sessionRow[2] || '') : '';
 
-  getSheet('הארכות זמן').appendRow([new Date(), p.sessionCode, p.idNumber, name, minutes, reason, examinerName]);
+  extSheet.appendRow([new Date(), p.sessionCode, p.idNumber, name, minutes, reason, examinerName]);
   invalidateExtraMinutes(p.sessionCode);   // r23: the next status poll must see the grant
 
   return jsonResponse({ status: 'ok', addedMinutes: minutes, totalExtraMinutes: sumExtraMinutes(p.sessionCode, p.idNumber) });
+}
+
+// ---- addExamTime idempotency (r35, review 01 D9) ----------------------------
+// The examiner page sends no idempotency key (examiner.html examinerDecision is
+// a plain GET), and on a stalling morning Google delivers the answer 25-60 s
+// late or not at all (KNOWN_ISSUES #35): the examiner sees an error, presses
+// "הוסף זמן" again, and the examinee got the minutes TWICE — two audit rows,
+// double extra time. So the same grant — same session, same examinee, same
+// number of minutes, same reason — recorded within EXAM_TIME_DEDUPE_MS is that
+// retry, and it is answered with the existing grant instead of a new row. An
+// examiner who really means a second, identical grant inside two minutes
+// changes the minutes or the reason; the dialog's toast shows the running total
+// either way. Two executions racing inside the same instant can still both
+// append — that needs a lock and is left to the rebuild.
+var EXAM_TIME_DEDUPE_MS = 2 * 60 * 1000;
+function recentIdenticalExamTime(sheet, sessionCode, idNumber, minutes, reason) {
+  var rows = readTail(sheet, 0).rows, now = Date.now();
+  var code = String(sessionCode || '').trim(), id = normalizeId(idNumber), why = String(reason || '').trim();
+  for (var i = rows.length - 1; i >= 1; i--) {
+    var at = parseSheetDateTime(rows[i][0]);
+    if (!at) continue;
+    if (now - at.getTime() > EXAM_TIME_DEDUPE_MS) break;   // appended in time order: nothing older can match
+    if (String(rows[i][1]).trim() !== code || normalizeId(rows[i][2]) !== id) continue;
+    if (Number(rows[i][4]) !== Number(minutes) || String(rows[i][5] || '').trim() !== why) continue;
+    return true;
+  }
+  return false;
 }
 
 // The examinee's device reports it FINISHED the exam — a tiny keepalive ping fired at
@@ -186,9 +221,14 @@ function handleMarkFinished(p) {
   var data = pendSheet.getDataRange().getValues();
   var hit = findLatestPendingRow(data, p.sessionCode, p.idNumber);
   if (hit.idx === -1) return jsonResponse({ status: 'ok' });   // no matching row — harmless no-op
-  var storedToken = String((hit.row.length > 12 ? hit.row[12] : '') || '').trim();
-  if (storedToken && p.examineeToken && String(p.examineeToken).trim() !== storedToken) {
-    return jsonResponse({ status: 'error', examineeTokenError: 'mismatch' });
+  // r35 (review 09 F-16 / 01 D8): the token is REQUIRED when the row has one.
+  // A missing token used to be accepted, so anyone with the session code and an
+  // ID number could put "סיים — מסנכרן תוצאה" on a classmate's row — the flag
+  // that tells the examiner NOT to order a redo. examinee.html has always sent
+  // the token in this beacon.
+  var markVerdict = examineeTokenVerdict(hit.row, p.examineeToken);
+  if (!markVerdict.valid) {
+    return jsonResponse({ status: 'error', examineeTokenError: markVerdict.reason });
   }
   if (hit.status === 'in_exam') {
     // Older sheets stop at 18 columns (SHEET_HEADERS now declares 19).

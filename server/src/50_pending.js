@@ -197,17 +197,19 @@ function registerExamineeLocked(p, regKey, outcome) {
   // gwDiag, and its row carries the '📡' badge from the very first render
   // (column Q, see reportGateway in 52_pending_status.js).
   var gwDiag = sanitizeGatewayDiag(p.gwDiag);
+  // r35: every field the examinee typed goes through cellSafe (22_util.js) — a
+  // name that starts with '=' must land as text, never as a formula.
   pendSheet.appendRow([
     p.sessionCode,
-    p.idNumber,
-    p.fullName || '',
-    p.phone || '',
+    cellSafe(p.idNumber),
+    cellSafe(p.fullName || ''),
+    cellSafe(p.phone || ''),
     nowISO(),
     'waiting',
-    p.language || '',
-    p.population || '',
-    p.license || '',
-    p.audioMode || 'off',
+    cellSafe(p.language || ''),
+    cellSafe(p.population || ''),
+    cellSafe(p.license || ''),
+    cellSafe(p.audioMode || 'off'),
     '',                       // K (10): הארכת זמן — נקבע ע"י הבוחן בעת אישור
     '',                       // L (11): התחלת מבחן — נקבע ע"י markExamStarted
     examineeToken,            // M (12): טוקן נבחן — מוחזר ללקוח, נדרש בקריאות עוקבות
@@ -215,7 +217,7 @@ function registerExamineeLocked(p, regKey, outcome) {
     hasExtendedScreen ? 'כן' : '', // O (14): מסך נוסף — סימן אזהרה
     0,                        // P (15): ספירת אזהרות — מאותחל ל-0 (נכתב ע"י warning)
     gwDiag ? GATEWAY_LABEL_GOOGLE : '', // Q (16): אזהרה אחרונה — נכתב ע"י warning / r33: '📡' של גיבוי גוגל
-    p.site || ''              // R (17): אתר — האתר שהנבחן בחר (מארח/אורח), לתצוגה חיה לבוחן
+    cellSafe(p.site || '')    // R (17): אתר — האתר שהנבחן בחר (מארח/אורח), לתצוגה חיה לבוחן
   ]);
   if (outcome && gwDiag) outcome.gwDiag = gwDiag;
   invalidatePendingSnapshot(p.sessionCode);   // r23: the first poll must find the new row
@@ -240,11 +242,22 @@ function writePendingCells(sheet, rowNumber, sessionCode, extras) {
   invalidatePendingSnapshot(sessionCode);
 }
 
+// r35 (review 09 F-16 / 01 D7, KNOWN_ISSUES #43): the examinee token of the
+// registration being cancelled is REQUIRED. Until now anyone with the session
+// code and a classmate's ID number could cancel that classmate's waiting or
+// approved registration — the phone check below was skipped whenever `phone`
+// was simply left out. examinee.html sends the token on this call (its api
+// decorator attaches it to every action but registerExaminee). A row written
+// before tokens existed (empty column M) is still accepted, as everywhere.
 function handleCancelRegistration(p) {
   var sheet = getSheet('ממתינים');
   var data = sheet.getDataRange().getValues();
   var hit = findLatestPendingRow(data, p.sessionCode, p.idNumber, ['waiting', 'approved']);
   if (hit.idx === -1) return jsonResponse({ status: 'error', message: 'לא נמצא רישום פעיל לביטול' });
+  var tokenCheck = examineeTokenVerdict(hit.row, p.examineeToken);
+  if (!tokenCheck.valid) {
+    return jsonResponse({ status: 'error', message: 'טוקן נבחן לא תקין', examineeTokenError: tokenCheck.reason });
+  }
   // Verify phone matches to prevent unauthorized cancellation
   var storedPhone = String(hit.row[3] || '').replace(/[^0-9]/g, '');
   var givenPhone = String(p.phone || '').replace(/[^0-9]/g, '');

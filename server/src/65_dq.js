@@ -74,8 +74,8 @@ function handleDisqualify(p) {
 
   // Update pending status to 'disqualified' (only if a row exists) AND increment
   // the DQ-event counter in column N so the examiner can see how many times this
-  // examinee triggered an anti-cheat event — even if some were auto-reverted in
-  // grace period via cancelDisqualify.
+  // examinee triggered an anti-cheat event — even if the examiner later
+  // overturned some of them (overturnDQ).
   if (pendRowIdx !== -1) {
     var prevCount = (pendData[pendRowIdx].length > 13) ? (Number(pendData[pendRowIdx][13]) || 0) : 0;
     var dqExtras = { dqCount: prevCount + 1 };
@@ -170,35 +170,18 @@ function selfDqReason(raw) {
   return /^[a-z0-9-]{1,24}$/.test(reason) ? reason : '';
 }
 
-// Cancel a provisional disqualification — called when examinee returns within grace period
-function handleCancelDisqualify(p) {
-  // Only the examinee whose token matches the row may cancel their provisional DQ.
-  var cdTokenErr = requireExamineeToken(p);
-  if (cdTokenErr) return cdTokenErr;
-  var sc = String(p.sessionCode || '');
-  var id = normalizeId(p.idNumber || '');
-  if (!sc || !id) return jsonResponse({ status: 'ok' });
-
-  // 1. Revert pending status from 'disqualified' back to 'in_exam'
-  var pendSheet = getSheet('ממתינים');
-  var pendData = pendSheet.getDataRange().getValues();
-  var pendHit = findLatestPendingRow(pendData, sc, id);
-  if (pendHit.idx !== -1 && pendHit.status === 'disqualified') {
-    setPendingStatus(pendSheet, pendHit.idx + 1, sc, 'in_exam');
-  }
-
-  // 2. Cancel the DQ result row matching this dqEventId (or the latest פסול).
-  // The row was written seconds ago, inside the grace period — tail is enough.
-  var dqEventId = String(p.dqEventId || '');
-  var resSheet = getSheet('תוצאות');
-  var resRead = readResultsTail();
-  var resHit = findLatestResultRow(resRead.rows, sc, id, false);
-  if (resHit.idx !== -1 && resHit.status === 'פסול' &&
-      (!dqEventId || String(resHit.row[24] || '') === dqEventId)) {
-    resSheet.getRange(resHit.idx + 1 + resRead.off, 8).setValue('בוטל');
-    SpreadsheetApp.flush();
-  }
-  return jsonResponse({ status: 'ok' });
+// ---- cancelDisqualify: REMOVED in r35 (review 09 F-03, 01 D6, KNOWN_ISSUES #43)
+// It let the EXAMINEE token undo a disqualification — any of them, the
+// examiner's own included, with no time limit, even after confirmDQ (it voided
+// the result row too). No page calls it: examinee.html clears the grace timer
+// locally when the examinee comes back in time, BEFORE any DQ is sent, and its
+// sendCancelDQToServer has no caller; the Worker never sends it. Undoing a DQ is
+// the examiner's decision — overturnDQ (examiner token + session ownership).
+// The name stays registered only to say so clearly instead of "Unknown action".
+defineAction('cancelDisqualify', { methods: ['GET', 'POST'], auth: 'none', handler: handleCancelDisqualifyRemoved });
+function handleCancelDisqualifyRemoved() {
+  return jsonResponse({ status: 'error', code: 'action_removed',
+    message: 'ביטול פסילה נעשה רק על ידי הבוחן' });
 }
 
 function handleResetExaminee(p) {

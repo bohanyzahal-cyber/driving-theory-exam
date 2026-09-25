@@ -56,7 +56,7 @@ function diagFinish(action, startedAt) {
       try { PropertiesService.getScriptProperties().deleteProperty(CACHE_KEY_PREFIX + 'diag_' + DIAG_EXEC.id); } catch (eDel) {}
     }
     if (elapsed >= DIAG_SLOW_MS) {
-      diagRecordRow(DIAG_EXEC.id, [nowISO(), 'SLOW', DIAG_EXEC.method, action || DIAG_EXEC.action || '', elapsed,
+      diagRecordRow(DIAG_EXEC.id, [nowISO(), 'SLOW', DIAG_EXEC.method, cellSafe(String(action || DIAG_EXEC.action || '')), elapsed,
         DIAG_EXEC.phase || '', DIAG_EXEC.notes.join(' ')]);
     }
   } catch (e) { /* never throw into the response path */ }
@@ -138,7 +138,8 @@ function diagRecordClientLog(sessionCode, idNumber, entries) {
     if (text.length > DIAG_CLIENT_LOG_MAX_CHARS) text = text.slice(0, DIAG_CLIENT_LOG_MAX_CHARS - 1) + '…';
     var id = '';
     try { id = Utilities.getUuid(); } catch (eId) { id = 'client_' + Date.now(); }
-    return diagRecordRow(id, [nowISO(), 'CLIENT', String(sessionCode || ''), normalizeId(idNumber), '', '', text]);
+    // r35: the text and the session code are the device's — cellSafe (22_util.js).
+    return diagRecordRow(id, [nowISO(), 'CLIENT', cellSafe(String(sessionCode || '')), normalizeId(idNumber), '', '', cellSafe(text)]);
   } catch (e) { return 'error'; }
 }
 
@@ -203,7 +204,7 @@ function diagSweep(summary) {
       if (entry && entry.t && Date.now() - entry.t < DIAG_STALE_MS) continue; // still running, leave it
       if (entry) {
         if (!sheet) sheet = getDiagnosticsSheet();
-        sheet.appendRow([nowISO(), 'KILLED', entry.m || '', entry.a || '', '', entry.ph || '',
+        sheet.appendRow([nowISO(), 'KILLED', entry.m || '', cellSafe(String(entry.a || '')), '', entry.ph || '',
           'started ' + new Date(entry.t).toISOString()]);
       }
       props.deleteProperty(key);

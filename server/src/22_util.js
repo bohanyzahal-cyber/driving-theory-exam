@@ -62,6 +62,20 @@ function normalizeId(val) {
   return s;
 }
 
+// r35 (25/09/2026, KNOWN_ISSUES #43, review 09 F-15 / 01 D24): a string that a
+// caller typed and that starts with = + - @ (or a tab / CR) is written by
+// appendRow as a FORMULA, not as text — and a formula like IMPORTXML or IMAGE
+// in the owner's spreadsheet can send other cells (the teachers' sheet holds
+// passwords) to any address the moment somebody opens the document. A leading
+// apostrophe is Sheets' own "this is text" marker: the cell keeps the text
+// exactly and a read returns it without the apostrophe. Used on every sheet
+// write of text that an examinee, a student or an anonymous caller controls;
+// numbers, booleans, dates and ordinary text pass through untouched.
+function cellSafe(value) {
+  if (typeof value !== 'string') return value;
+  return /^[=+\-@\t\r]/.test(value) ? "'" + value : value;
+}
+
 // "מפקד קד״ץ" gets typed in many forms: with Hebrew gershayim ״, ASCII " or ',
 // no separator at all ("מפקד קדץ"), with extra spaces. Match all of them so a
 // sheet entry typed casually still resolves to the role.

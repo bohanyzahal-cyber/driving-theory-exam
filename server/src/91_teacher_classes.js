@@ -356,7 +356,7 @@ function handleStudentJoinClass(p) {
     }
   }
 
-  studSheet.appendRow([classCode, studentName, studentId, nowISO()]);
+  studSheet.appendRow([classCode, cellSafe(studentName), cellSafe(studentId), nowISO()]);   // r35: cellSafe
   return jsonResponse({ status: 'ok', message: 'הצטרפת לכיתה בהצלחה!', className: classInfo.name, teacherName: classInfo.teacherName, license: classInfo.license });
 }
 
@@ -400,6 +400,7 @@ function practiceClassCodeFor(classCode, studentId) {
   return '';
 }
 
+var PRACTICE_RESULT_MODES = ['exam', 'category'];
 function handleSubmitPracticeResult(p) {
   var maintenance = practiceWriteGuard(); if (maintenance) return maintenance;   // r24
   var studentId = String(p.studentId || '').trim();
@@ -411,9 +412,19 @@ function handleSubmitPracticeResult(p) {
   // A class code the student is not enrolled in never reaches the statistics.
   var storedClass = practiceClassCodeFor(classCode, studentId);
   var classUnknown = !!classCode && !storedClass;
-  var sheet = getSheet('תוצאות תרגול');
+  // r35 (review 09 F-08, KNOWN_ISSUES #43): this action has no login, and
+  // adminDashboard groups by `mode` and `license` — admin.html rendered those
+  // group names as HTML, so any caller could plant a script in the admin page.
+  // admin.html now escapes everything; the server also stops storing anything
+  // but the values student.html actually sends (startExam / startCategoryQuiz /
+  // the spaced-repetition card all send 'exam' or 'category'; the licence comes
+  // from the page's licence select). Refused loudly, never rewritten.
   var mode = String(p.mode || 'exam');
   var license = String(p.license || 'B');
+  if (PRACTICE_RESULT_MODES.indexOf(mode) === -1 || !EXAM_STRUCTURE_SERVER.hasOwnProperty(license)) {
+    return jsonResponse({ status: 'error', code: 'invalid_practice_result', message: 'נתוני תרגול לא תקינים' });
+  }
+  var sheet = getSheet('תוצאות תרגול');
   var score = Number(p.score) || 0;
   var total = Number(p.total) || 0;
   var percent = Number(p.percent) || 0;
@@ -426,7 +437,12 @@ function handleSubmitPracticeResult(p) {
   var categoryBreakdown = '';
   try { categoryBreakdown = typeof p.categoryBreakdown === 'string' ? p.categoryBreakdown : JSON.stringify(p.categoryBreakdown || ''); } catch(e) {}
 
-  sheet.appendRow([todayStr(), studentId, String(p.studentName || ''), storedClass, mode, license, score, total, percent, passed, time, category, language, wrongDetails, categoryBreakdown, String(p.phone || '')]);
+  // r35: every caller-typed text through cellSafe (22_util.js) — this sheet sits
+  // in the practice spreadsheet next to 'מורים', and a formula typed as a name
+  // would run there.
+  sheet.appendRow([todayStr(), cellSafe(studentId), cellSafe(String(p.studentName || '')), storedClass, mode, license,
+    score, total, percent, passed, cellSafe(time), cellSafe(category), cellSafe(language), cellSafe(wrongDetails),
+    cellSafe(categoryBreakdown), cellSafe(String(p.phone || ''))]);
   if (classUnknown) return jsonResponse({ status: 'ok', classUnknown: true });
   return jsonResponse({ status: 'ok' });
 }
@@ -467,10 +483,12 @@ function handleSaveStudentProgress(p) {
   var history = String(p.history || '[]');
   var sheet = getSheet('התקדמות תלמידים');
   var row = findRow(sheet, 2, key);
+  // r35: cellSafe on every caller-typed cell (no login on this action).
+  var progressRow = [cellSafe(name), cellSafe(classCode), cellSafe(key), cellSafe(streak), cellSafe(wrongQs), cellSafe(history), nowISO()];
   if (row === -1) {
-    sheet.appendRow([name, classCode, key, streak, wrongQs, history, nowISO()]);
+    sheet.appendRow(progressRow);
   } else {
-    sheet.getRange(row, 1, 1, 7).setValues([[name, classCode, key, streak, wrongQs, history, nowISO()]]);
+    sheet.getRange(row, 1, 1, 7).setValues([progressRow]);
   }
   return jsonResponse({ status: 'ok' });
 }
