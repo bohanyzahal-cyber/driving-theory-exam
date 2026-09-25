@@ -249,13 +249,28 @@ function writePendingCells(sheet, rowNumber, sessionCode, extras) {
 // was simply left out. examinee.html sends the token on this call (its api
 // decorator attaches it to every action but registerExaminee). A row written
 // before tokens existed (empty column M) is still accepted, as everywhere.
+//
+// r35.1 (review_r35 F1): the regKey is accepted as the same proof when the
+// token is MISSING. On a slow morning the row lands and the token answer does
+// not reach the phone for 25-60 s or longer (KNOWN_ISSUES #34/#35) — the page
+// sits on the waiting screen without a token, and "טעיתי? לחזרה ולתיקון
+// הפרטים" in that window was refused. The page then re-registered with the
+// same regKey, got the OLD row back ({resumed:true}), and the correction was
+// silently lost (a corrected licence was even enforced as the old one at
+// startExam). The regKey is random, generated and kept on the device, never
+// shown to anyone; the server remembers regKey → token for REG_KEY_MEMO_SEC, so
+// "this regKey's memo holds exactly the token of the row being cancelled"
+// proves it is the device that created that row. It never rescues a token that
+// is present and wrong ('mismatch'), and a claim ('pending') is not a token.
+// examinee.html starts sending regKey on this call in a Pages push (KNOWN_ISSUES
+// #45) — until then the window stays as it is.
 function handleCancelRegistration(p) {
   var sheet = getSheet('ממתינים');
   var data = sheet.getDataRange().getValues();
   var hit = findLatestPendingRow(data, p.sessionCode, p.idNumber, ['waiting', 'approved']);
   if (hit.idx === -1) return jsonResponse({ status: 'error', message: 'לא נמצא רישום פעיל לביטול' });
   var tokenCheck = examineeTokenVerdict(hit.row, p.examineeToken);
-  if (!tokenCheck.valid) {
+  if (!tokenCheck.valid && !(tokenCheck.reason === 'missing' && regKeyProvesRow(hit.row, p))) {
     return jsonResponse({ status: 'error', message: 'טוקן נבחן לא תקין', examineeTokenError: tokenCheck.reason });
   }
   // Verify phone matches to prevent unauthorized cancellation
@@ -266,6 +281,15 @@ function handleCancelRegistration(p) {
   }
   setPendingStatus(sheet, hit.idx + 1, p.sessionCode, 'cancelled');
   return jsonResponse({ status: 'ok' });
+}
+
+// True when p.regKey is the key this device registered this very row with: the
+// regKey memo (registerExaminee) holds exactly the row's token. One cache read.
+function regKeyProvesRow(row, p) {
+  var key = validRegKey(p.regKey);
+  var rowToken = String((row.length > 12 ? row[12] : '') || '').trim();
+  if (!key || !rowToken) return false;
+  return recallRegistrationToken(p.sessionCode, p.idNumber, key) === rowToken;
 }
 
 function handleCheckApproval(p) {

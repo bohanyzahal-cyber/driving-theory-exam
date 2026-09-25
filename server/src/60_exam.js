@@ -53,20 +53,42 @@ function writeExamMapCache(sessionCode, idNumber, attemptKey, record) {
 // must find its own registration however long the exam ran).
 // Returns null when there is no row, or { map: null } when the row cannot be
 // parsed — "a registration exists but is unreadable" is not "no registration".
+//
+// r35.1 (review_r35 F2): with maxAgeMs 0 the lookup runs over live 'מבחנים'
+// AND its archive 'מבחנים_ארכיון', because that is where a map lives after 2
+// days (14_pending_archive.js, retainDays 2) — a result that reached the server
+// 2+ days after its start (kept on the device, resent until accepted) was
+// refused no_exam_registration forever, and nobody but this server can score
+// its answers. The archive holds the same six columns in the same order, and
+// every archived row is older than every live one, so "live bottom-up, then
+// archive bottom-up" is the newest registration overall. The archive is read
+// ONLY on a live miss (A:B, then the one matching row's C:F) — never on a
+// normal submit. startExam (maxAgeMs = 8 h) stays live-only: an archived map is
+// older than any session code.
 function readExamRegistration(sessionCode, idNumber, maxAgeMs) {
-  var sheet = getSheet('מבחנים'), lastRow = sheet.getLastRow();
-  if (lastRow < 2) return null;
-  diagMark('sheet:exam-keys');
+  var found = findExamRegistrationRow(getSheet('מבחנים'), sessionCode, idNumber, 'exam');
+  if (found === undefined && !maxAgeMs) {
+    var archive = getSheetIfExists(EXAMS_ARCHIVE_SHEET);
+    if (archive) found = findExamRegistrationRow(archive, sessionCode, idNumber, 'exam-archive');
+  }
+  if (!found) return null;
+  if (maxAgeMs && examRegistrationAgeMs(found) > maxAgeMs) return null;
+  return found;
+}
+// The newest row of (sessionCode, idNumber) in one sheet of the 'מבחנים'
+// layout, parsed — or undefined when the sheet has none.
+function findExamRegistrationRow(sheet, sessionCode, idNumber, diagName) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return undefined;
+  diagMark('sheet:' + diagName + '-keys');
   var keys = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
   for (var i = keys.length - 1; i >= 0; i--) {
     if (String(keys[i][0]) !== String(sessionCode)) continue;
     if (normalizeId(keys[i][1]) !== normalizeId(idNumber)) continue;
-    diagMark('sheet:exam-row');
-    var record = parseExamRegistrationRow(sheet.getRange(i + 2, 3, 1, 4).getValues()[0]);
-    if (maxAgeMs && examRegistrationAgeMs(record) > maxAgeMs) return null;
-    return record;
+    diagMark('sheet:' + diagName + '-row');
+    return parseExamRegistrationRow(sheet.getRange(i + 2, 3, 1, 4).getValues()[0]);
   }
-  return null;
+  return undefined;
 }
 function parseExamRegistrationRow(cells) {
   var record = {
@@ -525,9 +547,12 @@ function recordSubmitClientLog(data) {
 // sees the red banner), so a real result is never lost by a refusal. A paper
 // or otherwise off-system result goes through submitManualResult (examiner
 // token + session ownership, column W 'ידני') — a separate handler this does
-// not touch. Known cost: a map is archived after 2 days (14_pending_archive), so
-// a result that reaches the server more than 2 days after its start is refused
-// too, and the examiner enters it by hand.
+// not touch. A map archived after 2 days is still found (readExamRegistration
+// reads 'מבחנים_ארכיון' on a live miss, r35.1). The limit that remains is the
+// token check before it: the examinee's 'ממתינים' row must still be in the
+// pending tail (the last TAIL_ROWS registrations, at least 48 h), or the submit
+// is refused there — and such a result needs a retake: the device holds only
+// answer indexes, never the key, so no one can enter it by hand.
 function submitRegistrationGuard(registration, data) {
   if (!registration) {
     return jsonResponse({ status: 'error', code: 'no_exam_registration',

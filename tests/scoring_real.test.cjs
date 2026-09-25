@@ -695,7 +695,7 @@ test('health reports the build and the size of the deployed index', () => {
   const e = env();
   const health = get(e, { action: 'health' });
   assert.equal(health.status, 'ok');
-  assert.equal(health.build, '2026-09-27-r35');
+  assert.equal(health.build, '2026-09-27-r35.1');
   assert.equal(health.indexIds, 1700);
   assert.equal(Object.keys(INDEX).length, 1700, 'the generated index still holds every question');
   assert.equal(e.counters().fullReads, 0, 'health reads nothing');

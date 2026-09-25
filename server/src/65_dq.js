@@ -141,12 +141,18 @@ function handleDisqualify(p) {
   }
   if (!license) license = examineeLicense;
   var attemptNum = countAttempts(String(p.idNumber), license) + 1;
+  // r35.1 (review_r35 L1, F-15): the request's idNumber and dqEventId go through
+  // cellSafe — a self-DQ holds only the examinee token, and normalizeId matching
+  // keeps only the digits, so '=…("<own id>")' passed auth and landed as a
+  // formula in 'תוצאות'. Name, phone and population are read back from
+  // 'ממתינים', where Sheets returns them WITHOUT the protecting apostrophe, so
+  // they are escaped again on the way into this row.
   sheet.appendRow([
-    todayStr(), p.idNumber, name, phone, license,
+    todayStr(), cellSafe(String(p.idNumber)), cellSafe(name), cellSafe(phone), license,
     '0/30', '0%', 'פסול', '', examinerName,
     site, classroom, language, String(p.sessionCode),
     attemptNum, '', false, true, '',
-    population, false, examineeAudio, '', '', dqEventId
+    cellSafe(population), false, examineeAudio, '', '', cellSafe(dqEventId)
   ]);
   SpreadsheetApp.flush();
   return jsonResponse({ status: 'ok' });

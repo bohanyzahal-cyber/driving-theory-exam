@@ -65,7 +65,9 @@ function env(spec) {
     sheets: {
       'ממתינים': [PENDING_HEADER, ...(s.pending || [pendingRow()])],
       'מבחנים': [EXAMS_HEADER, ...(s.exams || [examRow()])],
-      'תוצאות': [RESULTS_HEADER, ...(s.results || [])]
+      'תוצאות': [RESULTS_HEADER, ...(s.results || [])],
+      // The nightly archive's copy of 'מבחנים' (same six columns), when a test needs one.
+      ...(s.archive ? { 'מבחנים_ארכיון': [EXAMS_HEADER, ...s.archive] } : {})
     },
     // startExam refuses to write anything when the Worker that serves the
     // question texts is unset (DESIGN §11.2), so the fixture is configured.
@@ -198,6 +200,52 @@ test('a missing or malformed registration is refused, and nothing is written', (
   assert.equal(results(malformed).length, 1);
   assert.equal(submit(env({ exams: [examRow({ 2: '{bad-json' })] }), { answers: [] }).status, 'error',
     'a registration that exists still makes answers mandatory');
+});
+
+// r35.1 (review_r35 F2): the nightly archive moves a map to 'מבחנים_ארכיון'
+// after 2 days while the 'ממתינים' row and its token stay live. A result kept
+// on the device and resent later was refused no_exam_registration forever, and
+// no one but the server can score it (the device holds indexes, not the key).
+test('r35.1 F2: a result that arrives after its map was archived is scored from מבחנים_ארכיון', () => {
+  const e = env({ exams: [], archive: [examRow()] });
+  const reply = submit(e);
+  assert.equal(reply.status, 'ok');
+  const row = results(e)[1];
+  assert.equal(row[5], '30/30', 'scored by the server against the archived map');
+  assert.equal(row[7], 'עבר');
+  assert.equal(row[22], 'מאומת');
+  assert.equal(pendingStatuses(e)[0], 'completed');
+});
+
+test('r35.1 F2: live beats archive, the newest archived row wins, and the archive is read only on a live miss', () => {
+  const stale = JSON.stringify(questionMap().map(entry => Object.assign({}, entry, { shuffleOrder: [3, 2, 1, 0] })));
+  const liveFirst = env({ exams: [examRow()], archive: [examRow({ 2: stale })] });
+  liveFirst.resetCounters();
+  submit(liveFirst);
+  assert.equal(results(liveFirst)[1][5], '30/30', 'the live map, not the archived one');
+  const arch = liveFirst.counters().perSheet['מבחנים_ארכיון'];
+  assert.equal(arch.rangeReads + arch.fullReads, 0, 'a normal submit never touches the archive');
+
+  const newest = env({ exams: [], archive: [examRow({ 2: stale, 3: '2026-09-19T06:00:00Z' }), examRow()] });
+  submit(newest);
+  assert.equal(results(newest)[1][5], '30/30', 'the bottom (newest) archived row');
+
+  const miss = env({ exams: [], archive: [examRow({ 1: '900000999' })] });
+  miss.resetCounters();
+  const refused = submit(miss);
+  assert.equal(refused.code, 'no_exam_registration', 'another person\'s archived map is still no registration');
+  assert.equal(results(miss).length, 1);
+  const missArch = miss.counters().perSheet['מבחנים_ארכיון'];
+  assert.equal(missArch.fullReads, 0, 'targeted: columns A:B, never the whole archive');
+  assert.equal(missArch.rangeReads, 1);
+
+  // startExam's lookup (maxAgeMs = 8 h) stays live-only: an archived map is
+  // older than any session code.
+  const start = env({ exams: [], archive: [examRow()] });
+  start.resetCounters();
+  assert.equal(start.ctx.readExamRegistration(SESSION, ID, 8 * 3600 * 1000), null);
+  const startArch = start.counters().perSheet['מבחנים_ארכיון'];
+  assert.equal(startArch.rangeReads + startArch.fullReads, 0);
 });
 
 test('r35: the forged pass — approved, never started, {score:30, passed:true}, no answers — is refused', () => {

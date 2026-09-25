@@ -165,10 +165,20 @@ function handleAddExamTime(p) {
 
   // r35 (01 D9, KNOWN_ISSUES #43): a retry is not a second grant. See
   // recentIdenticalExamTime.
+  // r35.1 (review_r35 L2): and the examiner is TOLD so. The r35 answer was
+  // {status:'ok', addedMinutes: <minutes>}, and the dialog's toast said "נוספו 5
+  // דקות" for minutes that were not added — a deliberate second +5 was swallowed
+  // behind a success message. Now it is a refusal with its own code: the dialog
+  // (examiner.html, the non-ok branch) shows this message and stays open, so the
+  // examiner reads that the grant is already recorded, the running total, and
+  // how to add a real second one. Nothing is nudged: the first grant did that.
   var extSheet = getSheet('הארכות זמן');
   if (recentIdenticalExamTime(extSheet, p.sessionCode, p.idNumber, minutes, reason)) {
-    return jsonResponse({ status: 'ok', duplicate: true, addedMinutes: minutes,
-      totalExtraMinutes: sumExtraMinutes(p.sessionCode, p.idNumber) });
+    var recordedTotal = sumExtraMinutes(p.sessionCode, p.idNumber);
+    return jsonResponse({ status: 'error', code: 'time_already_added', alreadyRecorded: true,
+      addedMinutes: 0, totalExtraMinutes: recordedTotal,
+      message: 'תוספת זהה של ' + minutes + ' דקות מאותה סיבה כבר נרשמה לנבחן לפני פחות מ-2 דקות, ולא נוספה שוב. ' +
+        'סך תוספת הזמן: ' + recordedTotal + ' דקות. לתוספת נוספת — לשנות את מספר הדקות או את הסיבה.' });
   }
 
   // Examiner display name for the audit row — from the same memo as the auth check.
@@ -188,10 +198,10 @@ function handleAddExamTime(p) {
 // "הוסף זמן" again, and the examinee got the minutes TWICE — two audit rows,
 // double extra time. So the same grant — same session, same examinee, same
 // number of minutes, same reason — recorded within EXAM_TIME_DEDUPE_MS is that
-// retry, and it is answered with the existing grant instead of a new row. An
-// examiner who really means a second, identical grant inside two minutes
-// changes the minutes or the reason; the dialog's toast shows the running total
-// either way. Two executions racing inside the same instant can still both
+// retry, and it is answered 'time_already_added' (with the running total)
+// instead of a new row. An examiner who really means a second, identical grant
+// inside two minutes changes the minutes or the reason — the refusal says so.
+// Two executions racing inside the same instant can still both
 // append — that needs a lock and is left to the rebuild.
 var EXAM_TIME_DEDUPE_MS = 2 * 60 * 1000;
 function recentIdenticalExamTime(sheet, sessionCode, idNumber, minutes, reason) {

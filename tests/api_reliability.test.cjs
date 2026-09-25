@@ -261,7 +261,7 @@ test('health&deep=1 times one cell of our own document and reports a failure ins
   const e = runtime();
   const ok = get(e, { action: 'health', deep: '1' });
   assert.equal(ok.status, 'ok');
-  assert.equal(ok.build, '2026-09-27-r35');
+  assert.equal(ok.build, '2026-09-27-r35.1');
   assert.equal(ok.deep, true);
   assert.equal(ok.indexIds, 1700);
   assert.ok(typeof ok.sheetMs === 'number' && ok.sheetMs >= 0);
@@ -279,7 +279,7 @@ test('health identifies build without Sheets, Drive or private parameters', () =
   e.ctx.getSheet = () => { throw new Error('health must not access Sheets'); };
   const result = get(e, { action: 'health', token: 'DO_NOT_LOG_ME' });
   assert.equal(result.status, 'ok');
-  assert.equal(result.build, '2026-09-27-r35');
+  assert.equal(result.build, '2026-09-27-r35.1');
   assert.equal(e.logs.length, 2);
   assert.ok(e.logs[0].includes('"phase":"start"'));
   assert.ok(e.logs[1].includes('"phase":"end"'));
@@ -1443,6 +1443,46 @@ test('r35 D7: cancelRegistration needs the examinee token of the row it cancels'
   assert.equal(pendingStatusOf(e, idOf(4)), 'cancelled');
 });
 
+// r35.1 (review_r35 F1): the row landed, the answer carrying the token did not
+// (KNOWN_ISSUES #34/#35) — the phone holds only its regKey. r35 refused the
+// cancel, the page re-registered with the same regKey, got the OLD row back
+// (resumed) and the correction was silently lost.
+test('r35.1 F1: cancelRegistration — the regKey of the device that made the row stands in for a token that has not arrived', () => {
+  const e = r35Env();
+  const KEY = 'regkeydevice0009', OTHER_KEY = 'regkeydevice0008';
+  const register = (n, regKey, license) => get(e, { action: 'registerExaminee', sessionCode: 'LIVE0001', idNumber: idOf(n),
+    fullName: 'נבחן', phone: '050000000' + n, license: license || 'B', language: 'he', regKey });
+  const token9 = register(9, KEY).examineeToken;
+  assert.ok(token9);
+  assert.ok(register(8, OTHER_KEY).examineeToken);
+  const cancel = (n, extra) => get(e, Object.assign({ action: 'cancelRegistration', sessionCode: 'LIVE0001', idNumber: idOf(n) }, extra));
+
+  assert.equal(cancel(9, {}).examineeTokenError, 'missing', 'no token, no regKey: refused, as in r35');
+  assert.equal(cancel(9, { regKey: 'regkeyguessed0000' }).examineeTokenError, 'missing', 'a regKey this row was not made with');
+  assert.equal(cancel(9, { regKey: OTHER_KEY }).examineeTokenError, 'missing', 'a classmate\'s regKey is remembered for HIS id only');
+  assert.equal(cancel(9, { regKey: 'short' }).examineeTokenError, 'missing', 'not a valid key at all');
+  assert.equal(cancel(9, { regKey: KEY, examineeToken: 'token-' + idOf(1) }).examineeTokenError, 'mismatch',
+    'a token that is present and wrong is never rescued by a regKey');
+  e.ctx.claimRegistration('LIVE0001', idOf(4), 'regkeyclaimed0004');
+  assert.equal(cancel(4, { regKey: 'regkeyclaimed0004' }).examineeTokenError, 'missing', 'a claim ("pending") is not a token');
+  assert.equal(pendingStatusOf(e, idOf(9)), 'waiting', 'nothing was cancelled');
+  assert.equal(pendingStatusOf(e, idOf(4)), 'waiting');
+
+  assert.equal(cancel(9, { regKey: KEY }).status, 'ok', 'the device that registered the row, before its token arrived');
+  assert.equal(pendingStatusOf(e, idOf(9)), 'cancelled');
+  const corrected = register(9, KEY, 'C');
+  assert.equal(corrected.status, 'ok');
+  assert.equal(corrected.resumed, undefined, 'the corrected details are a NEW row, not the old one resumed');
+  assert.notEqual(corrected.examineeToken, token9);
+  const rows9 = e.rows('ממתינים').filter(r => String(r[1]) === idOf(9));
+  assert.deepEqual(rows9.map(r => [r[5], r[8]]), [['cancelled', 'B'], ['waiting', 'C']]);
+
+  // The memo lives REG_KEY_MEMO_SEC (30 min): after that only the token cancels.
+  e.clock.t += 31 * MIN;
+  assert.equal(cancel(8, { regKey: OTHER_KEY }).examineeTokenError, 'missing');
+  assert.equal(pendingStatusOf(e, idOf(8)), 'waiting');
+});
+
 test('r35 D8: markFinished needs the token when the row has one', () => {
   const e = r35Env();
   const mark = extra => postJson(e, Object.assign({ action: 'markFinished', sessionCode: 'LIVE0001', idNumber: idOf(1) }, extra));
@@ -1461,11 +1501,19 @@ test('r35 D9: addExamTime — the same grant again within two minutes is the ret
   const first = add();
   assert.equal(first.status, 'ok');
   assert.equal(first.totalExtraMinutes, 10);
+  // r35.1 (review_r35 L2): the retry is TOLD it added nothing — r35 answered
+  // {status:'ok', addedMinutes:10} and the dialog's toast said "נוספו 10 דקות".
+  // A refusal with its own code: examiner.html shows the message and keeps the
+  // dialog open (the non-ok branch), and decisionOutcomeUnknown is false for it.
   const retry = add();
-  assert.equal(retry.status, 'ok');
-  assert.equal(retry.duplicate, true);
-  assert.equal(retry.addedMinutes, 10);
+  assert.equal(retry.status, 'error');
+  assert.equal(retry.code, 'time_already_added');
+  assert.equal(retry.alreadyRecorded, true);
+  assert.equal(retry.addedMinutes, 0);
+  assert.equal(retry.retryable, undefined, 'a definitive answer, not an unknown outcome');
   assert.equal(retry.totalExtraMinutes, 10, 'the examinee got the ten minutes once');
+  assert.equal(retry.message, 'תוספת זהה של 10 דקות מאותה סיבה כבר נרשמה לנבחן לפני פחות מ-2 דקות, ולא נוספה שוב. ' +
+    'סך תוספת הזמן: 10 דקות. לתוספת נוספת — לשנות את מספר הדקות או את הסיבה.');
   assert.equal(e.rows('הארכות זמן').length, 2, 'one audit row');
   // Another amount, another reason or another examinee is a new grant.
   assert.equal(add({ minutes: '5' }).totalExtraMinutes, 15);
@@ -1594,4 +1642,120 @@ test('r35 MOVED_SITES: a moved site opens no new session, its open session runs 
     assert.equal(health(e).movedSites, 'invalid', typo);
   }
   assert.equal(e.rows('סשנים').filter(r => r[3] === 'בסיס 6' && r[0] !== 'LIVE0001').length, 0, 'no new session of the moved site at any point');
+});
+
+// A PropertiesService whose getProperty(name) throws, like a quota or a
+// transient service error — every other property still reads.
+function failPropertyRead(e, name) {
+  const real = e.ctx.PropertiesService.getScriptProperties;
+  e.ctx.PropertiesService.getScriptProperties = () => {
+    const props = real();
+    return Object.assign({}, props, { getProperty: k => {
+      if (k === name) throw new Error('Service invoked too many times: properties');
+      return props.getProperty(k);
+    } });
+  };
+}
+
+test('r35.1 L3: MOVED_SITES that cannot be read is refused loudly (moved_sites_invalid), not a crash and not "nothing moved"', () => {
+  const e = r35Env();
+  failPropertyRead(e, 'MOVED_SITES');
+  const before = e.rows('סשנים').length;
+  const reply = get(e, Object.assign({ action: 'createSession', origin: 'examiner-app', site: 'בסיס 7', classroom: '1',
+    license: 'B', language: 'he', audioMode: 'off', quotas: JSON.stringify([{ license: 'B', requested: 5, approved: 5 }]) }, PLAIN_EXAMINER));
+  assert.deepEqual(reply, { status: 'error', code: 'moved_sites_invalid',
+    message: 'לא ניתן לקרוא כרגע את הגדרת MOVED_SITES בשרת — נסה שוב בעוד דקה; אם זה חוזר, פנה למנהל המערכת' });
+  assert.equal(e.rows('סשנים').length, before, 'no session row');
+  const health = get(e, { action: 'health' });
+  assert.equal(health.status, 'ok', 'health itself still answers');
+  assert.equal(health.movedSites, 'error');
+});
+
+test('r35.1 L1: a self-DQ writes the request\'s ID and event id — and the name read back from ממתינים — as text', () => {
+  const row = liveRow('LIVE0001', idOf(1), 'in_exam', NOW - 20 * MIN, NOW - 10 * MIN);
+  row[2] = '=HYPERLINK("https://x.invalid","x")'; row[3] = '+972500000001'; row[7] = '@pop';
+  const e = r35Env({ 'ממתינים': [PENDING_HEADER, row] });
+  // normalizeId keeps only the digits, so an ID wrapped in a formula passes the
+  // examinee-token check of the examinee's own row.
+  const reply = postJson(e, { action: 'disqualify', sessionCode: 'LIVE0001', idNumber: '=T("' + idOf(1) + '")',
+    examineeToken: 'token-' + idOf(1), dqEventId: '=1+1', reason: 'hidden-10s' });
+  assert.equal(reply.status, 'ok');
+  const dq = e.rows('תוצאות').at(-1);
+  assert.equal(dq[7], 'פסול');
+  assert.deepEqual([dq[1], dq[2], dq[3], dq[19], dq[24]],
+    ['\'=T("' + idOf(1) + '")', '\'=HYPERLINK("https://x.invalid","x")', '\'+972500000001', '\'@pop', '\'=1+1']);
+  const plainDq = postJson(r35Env(), { action: 'disqualify', sessionCode: 'LIVE0001', idNumber: idOf(1),
+    examineeToken: 'token-' + idOf(1), dqEventId: 'ev-plain' });
+  assert.equal(plainDq.status, 'ok', 'an ordinary self-DQ is unchanged');
+});
+
+// r35.1 (MASTER_PLAN v2 §9.2 step P, §10.3; KNOWN_ISSUES #45): practice moves to
+// the new system as one flow. Script Property PRACTICE_MOVED of the REPORTS
+// project; PRACTICE_MOVED_URL is quoted in the notice.
+test('r35.1 PRACTICE_MOVED: every practice-flow action answers with the notice; unset changes nothing; a typo is loud', () => {
+  const reportsEnv = props => createEnv({ serverFile: REPORTS_BUILD, now: NOW, sources: ['deployment/answer_key.gs'],
+    properties: Object.assign({}, GATEWAY_PROPS, props || {}),
+    sheets: { 'בוחנים': staff(), 'מורים': [Array(10).fill('h')], 'ממתינים': [PENDING_HEADER],
+      'סשנים': [SESSIONS_HEADER], 'תוצאות': [RESULTS_HEADER] } });
+  const startP = e => get(e, { action: 'startPractice', origin: 'student-app', mode: 'exam', license: 'B', studentId: 'S-1' });
+  const submitP = e => postJson(e, { action: 'submitPracticeResult', origin: 'student-app', studentId: 'S-1',
+    studentName: 'תלמיד', mode: 'exam', license: 'B', score: 10, total: 30, percent: 33, time: '10:00' });
+  const health = e => get(e, { action: 'health' });
+
+  const unset = reportsEnv();
+  assert.equal(startP(unset).status, 'ok', 'no property: behaviour unchanged');
+  assert.equal(submitP(unset).status, 'ok');
+  assert.equal(health(unset).practiceMoved, false);
+  for (const off of ['', ' ', 'false', 'FALSE', '{"moved":false}']) {
+    unset.properties.set('PRACTICE_MOVED', off);
+    assert.equal(startP(unset).status, 'ok', 'off: ' + JSON.stringify(off));
+  }
+
+  const e = reportsEnv({ PRACTICE_MOVED: 'true' });
+  const notice = { status: 'error', code: 'practice_moved', message: 'התרגול עבר למערכת החדשה — יש להשתמש בקישור החדש' };
+  e.resetCounters();
+  for (const action of e.ctx.PRACTICE_FLOW_ACTIONS) {
+    assert.deepEqual(get(e, { action, origin: 'student-app' }), notice, action);
+  }
+  assert.deepEqual(submitP(e), notice, 'POST as well');
+  assert.deepEqual(postJson(e, { action: 'teacherLogin', origin: 'teacher-app', idNumber: '123456789', password: 'x' }), notice,
+    'refused before any credential is looked at');
+  const c = e.counters();
+  assert.equal(c.appends + c.setValues + c.fullReads + c.rangeReads, 0, 'a notice reads and writes no sheet');
+  assert.equal(e.sheets.has('תוצאות תרגול'), false, 'no practice result was stored');
+  const examReport = get(e, Object.assign({ action: 'commanderDashboard', origin: 'examiner-app',
+    dateFrom: '01/09/2026', dateTo: '22/09/2026' }, COMMANDER));
+  assert.notEqual(examReport.code, 'practice_moved', 'the exam reports of the same project are not practice');
+  assert.equal(health(e).practiceMoved, true);
+
+  e.properties.set('PRACTICE_MOVED_URL', 'https://new.example.invalid/practice');
+  const withUrl = startP(e);
+  assert.equal(withUrl.url, 'https://new.example.invalid/practice');
+  assert.equal(withUrl.message, 'התרגול עבר למערכת החדשה — יש להשתמש בקישור החדש: https://new.example.invalid/practice');
+  for (const on of ['TRUE', ' true ', '{"moved":true}']) {
+    e.properties.set('PRACTICE_MOVED', on);
+    assert.equal(startP(e).code, 'practice_moved', 'on: ' + JSON.stringify(on));
+  }
+
+  // Not true/false or {"moved":<boolean>}: refused loudly, never read as "not moved".
+  for (const typo of ['yes', '1', '"true"', '{"moved":"true"}', '{"moved":true,"url":"x"}', '[true]', '{', 'null']) {
+    e.properties.set('PRACTICE_MOVED', typo);
+    assert.deepEqual(startP(e), { status: 'error', code: 'practice_moved_invalid',
+      message: 'הגדרת PRACTICE_MOVED בשרת אינה תקינה (צריך true, false או {"moved":true}) — פנה למנהל המערכת' }, typo);
+    assert.equal(submitP(e).code, 'practice_moved_invalid', typo);
+    assert.equal(health(e).practiceMoved, 'invalid', typo);
+  }
+  const unreadable = reportsEnv({ PRACTICE_MOVED: 'true' });
+  failPropertyRead(unreadable, 'PRACTICE_MOVED');
+  assert.equal(startP(unreadable).code, 'practice_moved_invalid');
+  assert.match(startP(unreadable).message, /^לא ניתן לקרוא כרגע את הגדרת PRACTICE_MOVED/);
+  assert.equal(health(unreadable).practiceMoved, 'error');
+
+  // Every practice-flow action is a reports action: the exam project never
+  // reaches the check, so it never reads the property — even a malformed one.
+  for (const action of e.ctx.PRACTICE_FLOW_ACTIONS) assert.equal(e.ctx.ACTION_TARGETS[action], 'reports', action);
+  const exam = r35Env();
+  exam.properties.set('PRACTICE_MOVED', 'yes');
+  assert.equal(get(exam, { action: 'startPractice', mode: 'exam', license: 'B' }).code, 'wrong_deployment');
+  assert.equal(get(exam, { action: 'getSessionInfo', sessionCode: 'LIVE0001' }).status, 'ok');
 });

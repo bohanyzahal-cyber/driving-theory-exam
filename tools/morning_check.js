@@ -65,6 +65,21 @@ function parseJson(text) {
   try { const v = JSON.parse(text); return v && typeof v === 'object' ? v : null; } catch (e) { return null; }
 }
 
+// r35.1: health's movedSites / practiceMoved say 'invalid' (malformed Script
+// Property) or 'error' (unreadable). Either one = a loud refusal for every new
+// session (moved_sites_invalid) or every practice action (practice_moved_invalid).
+function propertyAlarms(body) {
+  const out = [];
+  if (body && (body.movedSites === 'invalid' || body.movedSites === 'error')) out.push('MOVED_SITES-' + String(body.movedSites).toUpperCase());
+  if (body && (body.practiceMoved === 'invalid' || body.practiceMoved === 'error')) out.push('PRACTICE_MOVED-' + String(body.practiceMoved).toUpperCase());
+  return out;
+}
+function withAlarms(verdict, body) {
+  const alarms = propertyAlarms(body);
+  if (!alarms.length) return verdict;
+  return (verdict === 'OK' ? '' : verdict + '+') + alarms.join('+');
+}
+
 async function checkWorker(url, label) {
   const r = await timedFetch(url);
   const body = parseJson(r.text);
@@ -84,8 +99,9 @@ async function twoHop(name, base) {
     // Google answered the body straight from /exec (it does that sometimes),
     // or refused. Judge what we have.
     const body = parseJson(hop1.text);
-    const verdict = hop1.status === 0 ? 'DOWN' : body && body.status === 'ok' ? 'OK' : 'DOWN';
-    console.log(line + '  ' + verdict + (body ? '  build=' + body.build + ' deployment=' + body.deployment : '  ' + (hop1.error || 'no JSON, HTTP ' + hop1.status)));
+    const verdict = withAlarms(hop1.status === 0 ? 'DOWN' : body && body.status === 'ok' ? 'OK' : 'DOWN', body);
+    console.log(line + '  ' + verdict + (body ? '  build=' + body.build + ' deployment=' + body.deployment +
+      ' movedSites=' + body.movedSites + ' practiceMoved=' + body.practiceMoved : '  ' + (hop1.error || 'no JSON, HTTP ' + hop1.status)));
     return verdict;
   }
   console.log(line);
@@ -96,10 +112,12 @@ async function twoHop(name, base) {
   if (hop1.ms > 8000) verdict = 'SLOW-FRONT';
   else if (!isJson || hop2.ms > 8000) verdict = isJson ? 'SLOW-DELIVERY' : 'SLOW-DELIVERY (no JSON: HTTP ' + hop2.status + ')';
   else verdict = 'OK';
+  verdict = withAlarms(verdict, body);
   const detail = body
     ? '  build=' + body.build + ' deployment=' + body.deployment +
       (deep ? ' sheetMs=' + body.sheetMs + (body.sheetError ? ' sheetError=' + body.sheetError : '') : '') +
       ' gateway=' + (body.gateway ? body.gateway.url + '/' + body.gateway.key : '?') +
+      ' movedSites=' + body.movedSites + ' practiceMoved=' + body.practiceMoved +
       (String(body.build || '').indexOf(EXPECT_BUILD_PREFIX) === 0 ? '' : '  <-- unexpected build')
     : '  ' + (hop2.error || ('HTTP ' + hop2.status + ' ' + (hop2.text || '').replace(/\s+/g, ' ').slice(0, 60)));
   console.log(pad(name + ' hop2', 14) + pad(verdict, 15) + ms(hop2.ms) + detail);
@@ -122,6 +140,8 @@ async function twoHop(name, base) {
   console.log(bad.length ? '\nATTENTION: ' + bad.map(([k, v]) => k + '=' + v).join(', ') +
     '\n  SLOW-DELIVERY with a fast hop1 = Google (#35): do not deploy, do not refresh, do not re-click.' +
     '\n  SLOW-FRONT = hop1 itself slow: open Executions - a run of 0.6-4 s there means Google queued/delivered it, not us.' +
-    '\n  DOWN on the Worker = cloudflarestatus.com, then DEPLOY_2026-09-22.md §8 if it stays down.'
+    '\n  DOWN on the Worker = cloudflarestatus.com, then DEPLOY_2026-09-22.md §8 if it stays down.' +
+    '\n  MOVED_SITES-INVALID/-ERROR = no new session opens (moved_sites_invalid): fix MOVED_SITES in the exam project (OPERATIONS §11).' +
+    '\n  PRACTICE_MOVED-INVALID/-ERROR = all practice refused (practice_moved_invalid): fix PRACTICE_MOVED in the reports project (OPERATIONS §11).'
     : '\nAll good: run the exams. Do not deploy anything today (OPERATIONS §10).');
 })();

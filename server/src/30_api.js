@@ -6,7 +6,7 @@
 // @@API_DEPLOYMENT@@
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-27-r35';
+var THEORY_API_BUILD = '2026-09-27-r35.1';
 // When the current request entered the script — health&deep=1 reports the whole
 // request against it, so a watchdog can separate our time from Google's.
 var API_STARTED_AT = 0;
@@ -55,6 +55,10 @@ function dispatchApiAction(method, action, p) {
     return jsonResponse({ status: 'error', code: 'wrong_deployment',
       message: 'הפעולה שייכת לשרת אחר — יש לרענן את הדף' });
   }
+  // r35.1: practice moved to the new system (20_auth.js PRACTICE_MOVED). Only
+  // the practice-flow actions read the property, and before any auth.
+  var movedErr = practiceMovedRefusal(action);
+  if (movedErr) return movedErr;
   var spec = apiRegistry()[action];
   if (!spec) return jsonResponse({ status: 'error', message: 'Unknown action: ' + action });
   if (spec.methods.indexOf(method) === -1) {
@@ -313,11 +317,13 @@ function handleHealth(p) {
   // the whole verification of a split paste — "did the right file land in the
   // right project" — and it costs nothing to read.
   // movedSites (r35, KNOWN_ISSUES #44): how many sites MOVED_SITES lists, or
-  // 'invalid' — the check after editing that property. Never the names.
+  // 'invalid' / 'error' — the check after editing that property. Never the names.
+  // practiceMoved (r35.1, #45): true / false / 'invalid' / 'error' — the same
+  // check for PRACTICE_MOVED (set in the reports project).
   var body = { status: 'ok', build: THEORY_API_BUILD, deployment: API_DEPLOYMENT,
     indexIds: questionIndexCount(),
     gateway: { url: Boolean(gatewayUrl()), key: Boolean(gatewayKey()) },
-    movedSites: movedSitesHealth() };
+    movedSites: movedSitesHealth(), practiceMoved: practiceMovedHealth() };
   if (String(p.deep || '') !== '1') return jsonResponse(body);
   var deepT0 = Date.now(), sheetMs = -1, sheetError = '';
   try { getSheet('אתרים').getRange(1, 1).getValue(); sheetMs = Date.now() - deepT0; }

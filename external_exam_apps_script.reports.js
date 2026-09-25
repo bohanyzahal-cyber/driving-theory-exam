@@ -1050,7 +1050,9 @@ var MOVED_SITES_PROPERTY = 'MOVED_SITES';
 var MOVED_SITES_URL_PROPERTY = 'MOVED_SITES_URL';
 function normalizeSiteName(name) { return String(name === null || name === undefined ? '' : name).trim().replace(/\s+/g, ' '); }
 function movedSitesSetting() {
-  var raw = String(PropertiesService.getScriptProperties().getProperty(MOVED_SITES_PROPERTY) || '').trim();
+  var raw = '';
+  try { raw = String(PropertiesService.getScriptProperties().getProperty(MOVED_SITES_PROPERTY) || '').trim(); }
+  catch (eRead) { return { sites: [], invalid: true, unreadable: true }; }
   if (!raw) return { sites: [], invalid: false };
   var parsed = null;
   try { parsed = JSON.parse(raw); } catch (eParse) { return { sites: [], invalid: true }; }
@@ -1067,13 +1069,15 @@ function movedSiteRefusal(siteNames) {
   var moved = movedSitesSetting();
   if (moved.invalid) {
     return jsonResponse({ status: 'error', code: 'moved_sites_invalid',
-      message: 'הגדרת MOVED_SITES בשרת אינה תקינה (צריך מערך JSON של שמות אתרים) — פנה למנהל המערכת' });
+      message: moved.unreadable
+        ? 'לא ניתן לקרוא כרגע את הגדרת MOVED_SITES בשרת — נסה שוב בעוד דקה; אם זה חוזר, פנה למנהל המערכת'
+        : 'הגדרת MOVED_SITES בשרת אינה תקינה (צריך מערך JSON של שמות אתרים) — פנה למנהל המערכת' });
   }
   if (!moved.sites.length) return null;
   for (var i = 0; i < siteNames.length; i++) {
     var name = normalizeSiteName(siteNames[i]);
     if (!name || moved.sites.indexOf(name) === -1) continue;
-    var url = String(PropertiesService.getScriptProperties().getProperty(MOVED_SITES_URL_PROPERTY) || '').trim();
+    var url = movedUrlProperty(MOVED_SITES_URL_PROPERTY);
     var body = { status: 'error', code: 'site_moved', site: name,
       message: 'האתר "' + name + '" עבר למערכת החדשה — יש להשתמש בקישור החדש' + (url ? ': ' + url : '') };
     if (url) body.url = url;
@@ -1081,11 +1085,58 @@ function movedSiteRefusal(siteNames) {
   }
   return null;
 }
+function movedUrlProperty(propertyName) {
+  try { return String(PropertiesService.getScriptProperties().getProperty(propertyName) || '').trim(); }
+  catch (e) { return ''; }
+}
 function movedSitesHealth() {
-  try {
-    var moved = movedSitesSetting();
-    return moved.invalid ? 'invalid' : moved.sites.length;
-  } catch (e) { return 'error'; }
+  var moved = movedSitesSetting();
+  if (moved.unreadable) return 'error';
+  return moved.invalid ? 'invalid' : moved.sites.length;
+}
+
+var PRACTICE_MOVED_PROPERTY = 'PRACTICE_MOVED';
+var PRACTICE_MOVED_URL_PROPERTY = 'PRACTICE_MOVED_URL';
+var PRACTICE_FLOW_ACTIONS = ['startPractice', 'submitPracticeResult', 'studentJoinClass',
+  'loadStudentProgress', 'saveStudentProgress',
+  'teacherLogin', 'teacherVerifyLogin', 'teacherDashboard', 'teacherCreateClass', 'teacherCloseClass',
+  'teacherDeleteClass', 'teacherRemoveStudent', 'teacherGetClasses', 'teacherClassDetails',
+  'teacherExportData', 'teacherCommanderDashboard', 'teacherAtRiskList', 'adminDashboard'];
+function practiceMovedSetting() {
+  var raw = '';
+  try { raw = String(PropertiesService.getScriptProperties().getProperty(PRACTICE_MOVED_PROPERTY) || '').trim(); }
+  catch (eRead) { return { moved: false, invalid: true, unreadable: true }; }
+  if (!raw) return { moved: false, invalid: false };
+  var lower = raw.toLowerCase();
+  if (lower === 'true') return { moved: true, invalid: false };
+  if (lower === 'false') return { moved: false, invalid: false };
+  var parsed = null;
+  try { parsed = JSON.parse(raw); } catch (eParse) { return { moved: false, invalid: true }; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { moved: false, invalid: true };
+  var keys = Object.keys(parsed);
+  if (keys.length !== 1 || keys[0] !== 'moved' || typeof parsed.moved !== 'boolean') return { moved: false, invalid: true };
+  return { moved: parsed.moved, invalid: false };
+}
+function practiceMovedRefusal(action) {
+  if (PRACTICE_FLOW_ACTIONS.indexOf(action) === -1) return null;
+  var setting = practiceMovedSetting();
+  if (setting.invalid) {
+    return jsonResponse({ status: 'error', code: 'practice_moved_invalid',
+      message: setting.unreadable
+        ? 'לא ניתן לקרוא כרגע את הגדרת PRACTICE_MOVED בשרת — נסה שוב בעוד דקה; אם זה חוזר, פנה למנהל המערכת'
+        : 'הגדרת PRACTICE_MOVED בשרת אינה תקינה (צריך true, false או {"moved":true}) — פנה למנהל המערכת' });
+  }
+  if (!setting.moved) return null;
+  var url = movedUrlProperty(PRACTICE_MOVED_URL_PROPERTY);
+  var body = { status: 'error', code: 'practice_moved',
+    message: 'התרגול עבר למערכת החדשה — יש להשתמש בקישור החדש' + (url ? ': ' + url : '') };
+  if (url) body.url = url;
+  return jsonResponse(body);
+}
+function practiceMovedHealth() {
+  var setting = practiceMovedSetting();
+  if (setting.unreadable) return 'error';
+  return setting.invalid ? 'invalid' : setting.moved;
 }
 
 function gatewayUrl() {
@@ -1349,7 +1400,7 @@ function handleBankGrant(p) {
 }
 var API_DEPLOYMENT = "reports";
 
-var THEORY_API_BUILD = '2026-09-27-r35';
+var THEORY_API_BUILD = '2026-09-27-r35.1';
 var API_STARTED_AT = 0;
 
 function apiActionList() {
@@ -1380,6 +1431,8 @@ function dispatchApiAction(method, action, p) {
     return jsonResponse({ status: 'error', code: 'wrong_deployment',
       message: 'הפעולה שייכת לשרת אחר — יש לרענן את הדף' });
   }
+  var movedErr = practiceMovedRefusal(action);
+  if (movedErr) return movedErr;
   var spec = apiRegistry()[action];
   if (!spec) return jsonResponse({ status: 'error', message: 'Unknown action: ' + action });
   if (spec.methods.indexOf(method) === -1) {
@@ -1552,7 +1605,7 @@ function handleHealth(p) {
   var body = { status: 'ok', build: THEORY_API_BUILD, deployment: API_DEPLOYMENT,
     indexIds: questionIndexCount(),
     gateway: { url: Boolean(gatewayUrl()), key: Boolean(gatewayKey()) },
-    movedSites: movedSitesHealth() };
+    movedSites: movedSitesHealth(), practiceMoved: practiceMovedHealth() };
   if (String(p.deep || '') !== '1') return jsonResponse(body);
   var deepT0 = Date.now(), sheetMs = -1, sheetError = '';
   try { getSheet('אתרים').getRange(1, 1).getValue(); sheetMs = Date.now() - deepT0; }

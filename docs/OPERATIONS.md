@@ -338,5 +338,34 @@ git push origin master
    curl.exe -s -L "https://script.google.com/macros/s/AKfycbzOI0zrDEngP-GvlRblhOk8tQsYBvWZ2gGliIQHTpS67WrDZl4la8NPpwtJr_Vjsh3Gzg/exec?action=health&origin=examiner-app"
    ```
    `"movedSites":<מספר האתרים ברשימה>`. אם יוצא `"movedSites":"invalid"`, הערך אינו מערך JSON של מחרוזות. **כל עוד הוא לא תקין, אף סשן חדש לא נפתח** (`moved_sites_invalid`) — בכוונה, כדי שטעות הקלדה לא תתפרש בשקט כ"אף אתר לא עבר". לתקן מיד.
+   `"movedSites":"error"` (מ-r35.1): גוגל לא הצליח לקרוא את המאפיין (תקלה רגעית או מכסה). גם אז סשן חדש נדחה (`moved_sites_invalid`, עם "נסה שוב בעוד דקה"). לבדוק שוב אחרי דקה.
+5. לשנות את המאפיין **רק מחוץ לשעות מבחן**. `node tools/morning_check.js` מסמן `MOVED_SITES-INVALID` / `MOVED_SITES-ERROR` בבדיקת הבוקר.
 
 **להחזיר אתר למערכת הישנה:** להוריד אותו מהמערך (או למחוק את המאפיין כשאין אף אתר). הסשן הבא ייפתח כרגיל.
+
+## 12. התרגול עבר למערכת החדשה — `PRACTICE_MOVED` (מ-r35.1, KNOWN_ISSUES #45)
+
+**מה זה:** התרגול עובר למערכת החדשה בבת אחת, לכל הכיתות (תוכנית העבודה, שלב P). מהרגע שהמאפיין מוגדר, כל פעולה של התרגול בפרויקט **הדו"חות** עונה:
+
+> התרגול עבר למערכת החדשה — יש להשתמש בקישור החדש: <הקישור>
+
+(קוד `practice_moved`). הפעולות: דף התלמיד (`startPractice`, `submitPracticeResult`, `studentJoinClass`, `loadStudentProgress`, `saveStudentProgress`), דף המורה (כל פעולות `teacher*`, כולל הכניסה) ו-`admin.html` (`adminDashboard`). אין הפניה ואין מסלול עוקף, ושום דבר לא נכתב לגיליון.
+- דף התלמיד מציג את ההודעה בחלון (`alert`) כשמתחילים תרגול. דף המורה מציג אותה במסך הכניסה. הודעה ייעודית בדפים עצמם מגיעה עם דחיפת Pages.
+
+**מה לא משתנה:**
+- המבחנים. פרויקט המבחנים לא קורא את המאפיין בכלל.
+- דוחות הבחינות של פרויקט הדו"חות: `commanderDashboard`, `centerManagerReport`, `siteCombinedReport`, `examinerForecast`.
+- כשהמאפיין חסר, ריק או `false`, אין שום שינוי.
+
+**איך מפעילים** (בלי הדבקה ובלי גרסה חדשה — מאפיין בלבד; נכנס לתוקף מהבקשה הבאה; **רק ביום בלי תרגול מתוכנן**):
+1. בעורך Apps Script של **פרויקט הדו"חות** (הפרויקט העצמאי): הגדרות הפרויקט ← מאפייני סקריפט. בפרויקט המבחנים אין צורך.
+2. `PRACTICE_MOVED` = `true`. מותר גם `{"moved":true}`. כל ערך אחר (למשל `yes`, `1`, `"true"` עם גרשיים) הוא טעות.
+3. (אופציונלי) `PRACTICE_MOVED_URL` = הכתובת של התרגול במערכת החדשה. היא מופיעה בהודעה ובשדה `url` של התשובה.
+4. **לבדוק מיד:**
+   ```
+   curl.exe -s -L "https://script.google.com/macros/s/AKfycbw7FwTioHoEMvl6Plk-IlHii1rb3FSs9CXan-8lCVP5K7FTuz594rsEOc2y6LDVS-DXcQ/exec?action=health&origin=examiner-app"
+   ```
+   `"practiceMoved":true`. אם יוצא `"practiceMoved":"invalid"`, הערך לא תקין, ו**כל התרגול נדחה** (`practice_moved_invalid`) — בכוונה, כמו ב-`MOVED_SITES`: טעות הקלדה לא תתפרש בשקט כ"לא עבר". לתקן מיד. `"error"` = גוגל לא הצליח לקרוא את המאפיין; לבדוק שוב אחרי דקה.
+5. `node tools/morning_check.js` מסמן `PRACTICE_MOVED-INVALID` / `PRACTICE_MOVED-ERROR`.
+
+**לבטל:** `PRACTICE_MOVED` = `false`, או למחוק את המאפיין. התרגול הבא עובד כרגיל. לפי התוכנית זה לא אמור לקרות אחרי שלב P.

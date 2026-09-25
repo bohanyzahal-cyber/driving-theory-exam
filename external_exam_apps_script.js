@@ -1046,7 +1046,9 @@ var MOVED_SITES_PROPERTY = 'MOVED_SITES';
 var MOVED_SITES_URL_PROPERTY = 'MOVED_SITES_URL';
 function normalizeSiteName(name) { return String(name === null || name === undefined ? '' : name).trim().replace(/\s+/g, ' '); }
 function movedSitesSetting() {
-  var raw = String(PropertiesService.getScriptProperties().getProperty(MOVED_SITES_PROPERTY) || '').trim();
+  var raw = '';
+  try { raw = String(PropertiesService.getScriptProperties().getProperty(MOVED_SITES_PROPERTY) || '').trim(); }
+  catch (eRead) { return { sites: [], invalid: true, unreadable: true }; }
   if (!raw) return { sites: [], invalid: false };
   var parsed = null;
   try { parsed = JSON.parse(raw); } catch (eParse) { return { sites: [], invalid: true }; }
@@ -1063,13 +1065,15 @@ function movedSiteRefusal(siteNames) {
   var moved = movedSitesSetting();
   if (moved.invalid) {
     return jsonResponse({ status: 'error', code: 'moved_sites_invalid',
-      message: 'הגדרת MOVED_SITES בשרת אינה תקינה (צריך מערך JSON של שמות אתרים) — פנה למנהל המערכת' });
+      message: moved.unreadable
+        ? 'לא ניתן לקרוא כרגע את הגדרת MOVED_SITES בשרת — נסה שוב בעוד דקה; אם זה חוזר, פנה למנהל המערכת'
+        : 'הגדרת MOVED_SITES בשרת אינה תקינה (צריך מערך JSON של שמות אתרים) — פנה למנהל המערכת' });
   }
   if (!moved.sites.length) return null;
   for (var i = 0; i < siteNames.length; i++) {
     var name = normalizeSiteName(siteNames[i]);
     if (!name || moved.sites.indexOf(name) === -1) continue;
-    var url = String(PropertiesService.getScriptProperties().getProperty(MOVED_SITES_URL_PROPERTY) || '').trim();
+    var url = movedUrlProperty(MOVED_SITES_URL_PROPERTY);
     var body = { status: 'error', code: 'site_moved', site: name,
       message: 'האתר "' + name + '" עבר למערכת החדשה — יש להשתמש בקישור החדש' + (url ? ': ' + url : '') };
     if (url) body.url = url;
@@ -1077,11 +1081,58 @@ function movedSiteRefusal(siteNames) {
   }
   return null;
 }
+function movedUrlProperty(propertyName) {
+  try { return String(PropertiesService.getScriptProperties().getProperty(propertyName) || '').trim(); }
+  catch (e) { return ''; }
+}
 function movedSitesHealth() {
-  try {
-    var moved = movedSitesSetting();
-    return moved.invalid ? 'invalid' : moved.sites.length;
-  } catch (e) { return 'error'; }
+  var moved = movedSitesSetting();
+  if (moved.unreadable) return 'error';
+  return moved.invalid ? 'invalid' : moved.sites.length;
+}
+
+var PRACTICE_MOVED_PROPERTY = 'PRACTICE_MOVED';
+var PRACTICE_MOVED_URL_PROPERTY = 'PRACTICE_MOVED_URL';
+var PRACTICE_FLOW_ACTIONS = ['startPractice', 'submitPracticeResult', 'studentJoinClass',
+  'loadStudentProgress', 'saveStudentProgress',
+  'teacherLogin', 'teacherVerifyLogin', 'teacherDashboard', 'teacherCreateClass', 'teacherCloseClass',
+  'teacherDeleteClass', 'teacherRemoveStudent', 'teacherGetClasses', 'teacherClassDetails',
+  'teacherExportData', 'teacherCommanderDashboard', 'teacherAtRiskList', 'adminDashboard'];
+function practiceMovedSetting() {
+  var raw = '';
+  try { raw = String(PropertiesService.getScriptProperties().getProperty(PRACTICE_MOVED_PROPERTY) || '').trim(); }
+  catch (eRead) { return { moved: false, invalid: true, unreadable: true }; }
+  if (!raw) return { moved: false, invalid: false };
+  var lower = raw.toLowerCase();
+  if (lower === 'true') return { moved: true, invalid: false };
+  if (lower === 'false') return { moved: false, invalid: false };
+  var parsed = null;
+  try { parsed = JSON.parse(raw); } catch (eParse) { return { moved: false, invalid: true }; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { moved: false, invalid: true };
+  var keys = Object.keys(parsed);
+  if (keys.length !== 1 || keys[0] !== 'moved' || typeof parsed.moved !== 'boolean') return { moved: false, invalid: true };
+  return { moved: parsed.moved, invalid: false };
+}
+function practiceMovedRefusal(action) {
+  if (PRACTICE_FLOW_ACTIONS.indexOf(action) === -1) return null;
+  var setting = practiceMovedSetting();
+  if (setting.invalid) {
+    return jsonResponse({ status: 'error', code: 'practice_moved_invalid',
+      message: setting.unreadable
+        ? 'לא ניתן לקרוא כרגע את הגדרת PRACTICE_MOVED בשרת — נסה שוב בעוד דקה; אם זה חוזר, פנה למנהל המערכת'
+        : 'הגדרת PRACTICE_MOVED בשרת אינה תקינה (צריך true, false או {"moved":true}) — פנה למנהל המערכת' });
+  }
+  if (!setting.moved) return null;
+  var url = movedUrlProperty(PRACTICE_MOVED_URL_PROPERTY);
+  var body = { status: 'error', code: 'practice_moved',
+    message: 'התרגול עבר למערכת החדשה — יש להשתמש בקישור החדש' + (url ? ': ' + url : '') };
+  if (url) body.url = url;
+  return jsonResponse(body);
+}
+function practiceMovedHealth() {
+  var setting = practiceMovedSetting();
+  if (setting.unreadable) return 'error';
+  return setting.invalid ? 'invalid' : setting.moved;
 }
 
 function gatewayUrl() {
@@ -1345,7 +1396,7 @@ function handleBankGrant(p) {
 }
 var API_DEPLOYMENT = "all";
 
-var THEORY_API_BUILD = '2026-09-27-r35';
+var THEORY_API_BUILD = '2026-09-27-r35.1';
 var API_STARTED_AT = 0;
 
 function apiActionList() {
@@ -1376,6 +1427,8 @@ function dispatchApiAction(method, action, p) {
     return jsonResponse({ status: 'error', code: 'wrong_deployment',
       message: 'הפעולה שייכת לשרת אחר — יש לרענן את הדף' });
   }
+  var movedErr = practiceMovedRefusal(action);
+  if (movedErr) return movedErr;
   var spec = apiRegistry()[action];
   if (!spec) return jsonResponse({ status: 'error', message: 'Unknown action: ' + action });
   if (spec.methods.indexOf(method) === -1) {
@@ -1548,7 +1601,7 @@ function handleHealth(p) {
   var body = { status: 'ok', build: THEORY_API_BUILD, deployment: API_DEPLOYMENT,
     indexIds: questionIndexCount(),
     gateway: { url: Boolean(gatewayUrl()), key: Boolean(gatewayKey()) },
-    movedSites: movedSitesHealth() };
+    movedSites: movedSitesHealth(), practiceMoved: practiceMovedHealth() };
   if (String(p.deep || '') !== '1') return jsonResponse(body);
   var deepT0 = Date.now(), sheetMs = -1, sheetError = '';
   try { getSheet('אתרים').getRange(1, 1).getValue(); sheetMs = Date.now() - deepT0; }
@@ -2487,7 +2540,7 @@ function handleCancelRegistration(p) {
   var hit = findLatestPendingRow(data, p.sessionCode, p.idNumber, ['waiting', 'approved']);
   if (hit.idx === -1) return jsonResponse({ status: 'error', message: 'לא נמצא רישום פעיל לביטול' });
   var tokenCheck = examineeTokenVerdict(hit.row, p.examineeToken);
-  if (!tokenCheck.valid) {
+  if (!tokenCheck.valid && !(tokenCheck.reason === 'missing' && regKeyProvesRow(hit.row, p))) {
     return jsonResponse({ status: 'error', message: 'טוקן נבחן לא תקין', examineeTokenError: tokenCheck.reason });
   }
   var storedPhone = String(hit.row[3] || '').replace(/[^0-9]/g, '');
@@ -2497,6 +2550,13 @@ function handleCancelRegistration(p) {
   }
   setPendingStatus(sheet, hit.idx + 1, p.sessionCode, 'cancelled');
   return jsonResponse({ status: 'ok' });
+}
+
+function regKeyProvesRow(row, p) {
+  var key = validRegKey(p.regKey);
+  var rowToken = String((row.length > 12 ? row[12] : '') || '').trim();
+  if (!key || !rowToken) return false;
+  return recallRegistrationToken(p.sessionCode, p.idNumber, key) === rowToken;
 }
 
 function handleCheckApproval(p) {
@@ -2957,8 +3017,11 @@ function handleAddExamTime(p) {
 
   var extSheet = getSheet('הארכות זמן');
   if (recentIdenticalExamTime(extSheet, p.sessionCode, p.idNumber, minutes, reason)) {
-    return jsonResponse({ status: 'ok', duplicate: true, addedMinutes: minutes,
-      totalExtraMinutes: sumExtraMinutes(p.sessionCode, p.idNumber) });
+    var recordedTotal = sumExtraMinutes(p.sessionCode, p.idNumber);
+    return jsonResponse({ status: 'error', code: 'time_already_added', alreadyRecorded: true,
+      addedMinutes: 0, totalExtraMinutes: recordedTotal,
+      message: 'תוספת זהה של ' + minutes + ' דקות מאותה סיבה כבר נרשמה לנבחן לפני פחות מ-2 דקות, ולא נוספה שוב. ' +
+        'סך תוספת הזמן: ' + recordedTotal + ' דקות. לתוספת נוספת — לשנות את מספר הדקות או את הסיבה.' });
   }
 
   var sessionRow = sessionRowByCode(p.sessionCode);
@@ -3169,11 +3232,11 @@ function handleDisqualify(p) {
   if (!license) license = examineeLicense;
   var attemptNum = countAttempts(String(p.idNumber), license) + 1;
   sheet.appendRow([
-    todayStr(), p.idNumber, name, phone, license,
+    todayStr(), cellSafe(String(p.idNumber)), cellSafe(name), cellSafe(phone), license,
     '0/30', '0%', 'פסול', '', examinerName,
     site, classroom, language, String(p.sessionCode),
     attemptNum, '', false, true, '',
-    population, false, examineeAudio, '', '', dqEventId
+    cellSafe(population), false, examineeAudio, '', '', cellSafe(dqEventId)
   ]);
   SpreadsheetApp.flush();
   return jsonResponse({ status: 'ok' });
@@ -3585,19 +3648,27 @@ function writeExamMapCache(sessionCode, idNumber, attemptKey, record) {
 }
 
 function readExamRegistration(sessionCode, idNumber, maxAgeMs) {
-  var sheet = getSheet('מבחנים'), lastRow = sheet.getLastRow();
-  if (lastRow < 2) return null;
-  diagMark('sheet:exam-keys');
+  var found = findExamRegistrationRow(getSheet('מבחנים'), sessionCode, idNumber, 'exam');
+  if (found === undefined && !maxAgeMs) {
+    var archive = getSheetIfExists(EXAMS_ARCHIVE_SHEET);
+    if (archive) found = findExamRegistrationRow(archive, sessionCode, idNumber, 'exam-archive');
+  }
+  if (!found) return null;
+  if (maxAgeMs && examRegistrationAgeMs(found) > maxAgeMs) return null;
+  return found;
+}
+function findExamRegistrationRow(sheet, sessionCode, idNumber, diagName) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return undefined;
+  diagMark('sheet:' + diagName + '-keys');
   var keys = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
   for (var i = keys.length - 1; i >= 0; i--) {
     if (String(keys[i][0]) !== String(sessionCode)) continue;
     if (normalizeId(keys[i][1]) !== normalizeId(idNumber)) continue;
-    diagMark('sheet:exam-row');
-    var record = parseExamRegistrationRow(sheet.getRange(i + 2, 3, 1, 4).getValues()[0]);
-    if (maxAgeMs && examRegistrationAgeMs(record) > maxAgeMs) return null;
-    return record;
+    diagMark('sheet:' + diagName + '-row');
+    return parseExamRegistrationRow(sheet.getRange(i + 2, 3, 1, 4).getValues()[0]);
   }
-  return null;
+  return undefined;
 }
 function parseExamRegistrationRow(cells) {
   var record = {
