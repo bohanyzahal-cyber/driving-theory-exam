@@ -3254,15 +3254,20 @@ test('r35.1: a refused cancel keeps the examinee waiting, says "ask for אפס",
   assert.equal(saved.screen, 'screenInstructions');
 });
 
-test('r35.1: a cancel with no answer keeps the screen alive — polling again, no second registration', async () => {
+// r35.2 (review_r35_1_examinee m1/m2): no answer is not a dead end — the same
+// cancel goes again by itself until the server answers, and the screen says so
+// in the examinee's language (no alert).
+const CHANGE_NO_ANSWER_HE = 'שולחים לשרת את הבקשה לתיקון הפרטים — ממשיכים לנסות אוטומטית עד שתתקבל תשובה. אם זה נמשך, פנה לבוחן.';
+test('r35.2: a cancel with no answer is sent again by itself — the screen says so, polls, and never re-registers', async () => {
   let cancelTries = 0;
   const page = completePage({ reply: r => {
     if (r.action === 'registerExaminee') return { __hang: true };
-    if (r.action === 'cancelRegistration') { cancelTries++; return { __network: true }; }
+    if (r.action === 'cancelRegistration') { cancelTries++; return cancelTries < 3 ? { __network: true } : { status: 'ok' }; }
     return approvalWaits(r);
   } });
   const alerts = withDialogs(page);
   await register(page);
+  const regKey = page.sent('registerExaminee')[0].regKey;
   const pollsBefore = approvalPolls(page).length;
   page.el('changeSelectionWaiting').click();
   await drain();
@@ -3270,10 +3275,258 @@ test('r35.1: a cancel with no answer keeps the screen alive — polling again, n
   await drain();
   assert.equal(cancelTries, 1);
   assert.equal(page.t.state().screen, 'screenInstructions');
-  assert.deepEqual(alerts, ['שגיאת תקשורת. נסה שוב.']);
+  assert.deepEqual(alerts, [], 'on screen, not in an alert');
+  assert.equal(page.el('regStatus').textContent, CHANGE_NO_ANSWER_HE);
   assert.ok(approvalPolls(page).length > pollsBefore, 'until r35.1 the poll stayed stopped here for good');
+  await page.timer.advance(3000); await drain();
+  assert.equal(cancelTries, 2, 'the same cancel again after 3 s');
+  assert.equal(page.sent('cancelRegistration')[1].regKey, regKey);
+  await page.timer.advance(6000); await drain();
+  assert.equal(cancelTries, 3, 'and after 6 more');
+  assert.equal(page.t.state().screen, 'screenIdForm', 'the definite answer ends it: back to the form');
   await page.timer.advance(60000);
+  assert.equal(cancelTries, 3, 'nothing is sent after the answer');
   assert.equal(page.sent('registerExaminee').length, 1, 'a series that reached a row this cancel did cancel would append a new one');
+});
+
+const EXCEPTION_JSON = { status: 'error', message: 'Exception: Service Spreadsheets timed out while accessing document' };
+for (const [label, shape] of [
+  ['retryable', { status: 'error', code: 'retry_later', retryable: true, waitSec: 3, message: 'המערכת עמוסה' }],
+  ['rateLimited', { status: 'error', rateLimited: true, waitSec: 5, message: 'יותר מדי בקשות' }],
+  ['an HTML page', { __raw: '<html>Google is having trouble</html>' }],
+  ['HTTP 500', { __status: 500, status: 'error' }],
+  ['a server exception (no retryable)', EXCEPTION_JSON],
+  ['wrong_deployment', { status: 'error', code: 'wrong_deployment', message: 'הפעולה שייכת לשרת אחר — יש לרענן את הדף' }],
+  ['an empty object', {}]
+]) {
+  test('r35.2: cancel answered with ' + label + ' is NO answer — stay, say so, send it again', async () => {
+    let cancelTries = 0;
+    const page = completePage({ reply: r => {
+      if (r.action === 'registerExaminee') return { __hang: true };
+      if (r.action === 'cancelRegistration') { cancelTries++; return shape; }
+      return approvalWaits(r);
+    } });
+    const alerts = withDialogs(page);
+    await register(page);
+    page.el('changeSelectionWaiting').click();
+    await drain(); await page.timer.advance(100); await drain();
+    assert.equal(page.t.state().screen, 'screenInstructions', 'the row may still stand: NOT the form');
+    assert.equal(page.el('regStatus').textContent, CHANGE_NO_ANSWER_HE);
+    assert.deepEqual(alerts, []);
+    await page.timer.advance(6000); await drain();
+    assert.ok(cancelTries >= 2, 'sent again');
+    assert.equal(page.sent('registerExaminee').length, 1);
+  });
+}
+
+test('r35.2: a cancel that hangs past its deadline is no answer too — sent again, never the form', async () => {
+  let cancelTries = 0;
+  const page = completePage({ reply: r => {
+    if (r.action === 'registerExaminee') return { __hang: true };
+    if (r.action === 'cancelRegistration') { cancelTries++; return cancelTries === 1 ? { __hang: true } : { status: 'ok' }; }
+    return approvalWaits(r);
+  } });
+  withDialogs(page);
+  await register(page);
+  page.el('changeSelectionWaiting').click();
+  await drain();
+  await page.timer.advance(31000); await drain();    // the 30 s deadline has passed
+  assert.equal(cancelTries, 1);
+  assert.equal(page.t.state().screen, 'screenInstructions');
+  assert.equal(page.el('regStatus').textContent, CHANGE_NO_ANSWER_HE);
+  await page.timer.advance(3500); await drain();
+  assert.equal(cancelTries, 2);
+  assert.equal(page.t.state().screen, 'screenIdForm');
+});
+
+for (const [label, shape] of [
+  ['missing', { status: 'error', message: 'טוקן נבחן לא תקין', examineeTokenError: 'missing' }],
+  ['mismatch', { status: 'error', message: 'טוקן נבחן לא תקין', examineeTokenError: 'mismatch' }],
+  ['"פרטים לא תואמים"', { status: 'error', message: 'פרטים לא תואמים' }]
+]) {
+  test('r35.2: a refusal (' + label + ') keeps the waiting screen and says "ask for אפס"', async () => {
+    const page = completePage({ reply: r => r.action === 'registerExaminee' ? { __hang: true }
+      : r.action === 'cancelRegistration' ? shape : approvalWaits(r) });
+    const alerts = withDialogs(page);
+    await register(page);
+    page.el('changeSelectionWaiting').click();
+    await drain(); await page.timer.advance(100); await drain();
+    assert.equal(page.t.state().screen, 'screenInstructions');
+    assert.equal(page.el('regStatus').textContent, CHANGE_REFUSED_HE);
+    assert.deepEqual(alerts, [CHANGE_REFUSED_HE]);
+    await page.timer.advance(60000);
+    assert.equal(page.sent('cancelRegistration').length, 1, 'a refusal is definite: not sent again');
+  });
+}
+
+test('r35.2: after a refusal the examiner\'s אפס reaches the screen, and the form opens by itself — fresh', async () => {
+  let reset = false;
+  const page = completePage({ reply: r => {
+    if (r.action === 'registerExaminee') return { __hang: true };
+    if (r.action === 'cancelRegistration') return { status: 'error', message: 'טוקן נבחן לא תקין', examineeTokenError: 'missing' };
+    if (r.kind === 'approval') return { status: 'ok', approval: reset ? 'cancelled' : 'waiting', audioMode: 'off' };
+    return undefined;
+  } });
+  withDialogs(page);
+  await register(page);
+  const regKey = page.sent('registerExaminee')[0].regKey;
+  page.el('changeSelectionWaiting').click();
+  await drain(); await page.timer.advance(100); await drain();
+  assert.equal(page.t.state().screen, 'screenInstructions');
+  reset = true;                                   // the examiner presses 'אפס'
+  await page.timer.advance(30000); await drain();
+  assert.equal(page.t.state().screen, 'screenIdForm', 'the reset IS what this examinee asked for');
+  assert.notEqual(page.el('rejectedMsg').style.display, 'block');
+  assert.notEqual(page.el('backToRegisterBtn').style.display, 'block');
+  const saved = JSON.parse(page.session.getItem('ext_examinee_state'));
+  assert.notEqual(saved.examineeData.regKey, regKey, 'the old key is gone');
+});
+
+// review M3: a confirmed cancel forgets the old registration — token AND regKey.
+async function reRegister(page) {
+  page.el('registerBtn').click();
+  await drain(); await page.timer.advance(100); await drain();
+}
+test('r35.2: a confirmed cancel forgets the token and the regKey — the corrected registration is a fresh one', async () => {
+  let second = false;
+  const page = completePage({ reply: r => {
+    if (r.action === 'cancelRegistration') return { status: 'ok' };
+    if (r.action === 'registerExaminee' && second) return { __hang: true };
+    return undefined;
+  } });
+  withDialogs(page);
+  await register(page);
+  assert.equal(page.t.state().token, 'tok-1');
+  const firstKey = page.sent('registerExaminee')[0].regKey;
+  page.el('changeSelectionInstructions').click();
+  await drain();
+  assert.equal(page.t.state().screen, 'screenIdForm');
+  assert.equal(page.t.state().token, '', 'the old token is gone');
+  second = true;
+  page.el('licenseSelect').value = 'C';
+  await reRegister(page);
+  const reg = page.sent('registerExaminee');
+  assert.equal(reg.length, 2);
+  assert.notEqual(reg[1].regKey, firstKey, 'a NEW key: the old row can never come back as "resumed"');
+  const polls = approvalPolls(page).filter(r => r.__at >= reg[1].__at);
+  assert.ok(polls.length > 0 && polls.every(r => !r.examineeToken), 'no poll carries the cancelled row\'s token');
+  page.el('changeSelectionWaiting').click();
+  await drain();
+  const again = page.sent('cancelRegistration')[1];
+  assert.ok(!again.examineeToken, 'a second cancel carries no stale token (it would be refused as mismatch)');
+  assert.equal(again.regKey, reg[1].regKey);
+});
+
+// review M1: the approval poll in flight is retired when the cancel starts.
+test('r35.2: a held poll that answers "cancelled" while the cancel is out paints nothing', async () => {
+  let held = false;
+  const page = completePage({ reply: r => {
+    if (r.action === 'registerExaminee') return { __hang: true };
+    if (r.action === 'cancelRegistration') return { __delay: 10000, status: 'ok' };
+    if (r.kind === 'approval') return held ? { __delay: 4000, status: 'ok', approval: 'cancelled', audioMode: 'off' } : approvalWaits(r);
+    return undefined;
+  } });
+  withDialogs(page);
+  await register(page);
+  held = true;
+  await page.timer.advance(2500); await drain();     // a held poll is now in flight
+  page.el('changeSelectionWaiting').click();
+  await drain();
+  await page.timer.advance(5000); await drain();     // the held poll answers 'cancelled'
+  assert.equal(page.t.state().screen, 'screenInstructions');
+  assert.notEqual(page.el('rejectedMsg').style.display, 'block', 'the in-flight answer was retired');
+  await page.timer.advance(6000); await drain();     // the cancel's own 'ok'
+  assert.equal(page.t.state().screen, 'screenIdForm');
+  assert.notEqual(page.el('rejectedMsg').style.display, 'block');
+  assert.notEqual(page.el('backToRegisterBtn').style.display, 'block');
+});
+
+test('r35.2: no exam can start while a cancel is out, and no cancel once the exam runs', async () => {
+  const page = completePage({ reply: r => r.action === 'cancelRegistration' ? { __hang: true } : undefined });
+  withDialogs(page);
+  await register(page);                             // approved, token tok-1
+  page.el('airplaneCheckbox').checked = true;
+  page.el('airplaneCheckbox').fire('change');
+  assert.equal(page.el('startExamBtn').disabled, false);
+  page.el('changeSelectionInstructions').click();
+  await drain();
+  assert.equal(page.el('startExamBtn').disabled, true, 'locked while the cancel is out');
+  assert.equal(page.el('startWaitToken').textContent, CHANGE_NO_ANSWER_HE, 'and the note says why');
+  page.el('startExamBtn').disabled = false;         // even a forced click
+  page.el('startExamBtn').click();
+  await drain();
+  assert.equal(page.sent('startExam').length, 0, 'startExam was never sent');
+
+  const running = completePage();
+  withDialogs(running);
+  await register(running);
+  running.el('airplaneCheckbox').checked = true;
+  running.el('airplaneCheckbox').fire('change');
+  running.el('startExamBtn').click();
+  await drain(); await running.timer.advance(1000); await drain();
+  assert.equal(running.t.state().inProgress, true);
+  running.el('changeSelectionInstructions').click();
+  await drain();
+  assert.equal(running.sent('cancelRegistration').length, 0, 'a running exam is never cancelled from the device');
+  assert.equal(running.t.state().inProgress, true);
+});
+
+// review m3: a refused cancel on the approved screen does not chime again.
+test('r35.2: refused on the approved screen — no second chime, start locked, waiting for אפס', async () => {
+  const page = completePage({ reply: r => r.action === 'cancelRegistration'
+    ? { status: 'error', message: 'טוקן נבחן לא תקין', examineeTokenError: 'mismatch' } : undefined });
+  const alerts = withDialogs(page);
+  let chimes = 0;
+  page.ctx.navigator.vibrate = () => { chimes++; return true; };
+  await register(page);
+  assert.equal(chimes, 1, 'the approval itself');
+  page.el('changeSelectionInstructions').click();
+  await drain(); await page.timer.advance(10000); await drain();
+  assert.equal(chimes, 1, 'the approval that the poll brings back again is no news');
+  assert.deepEqual(alerts, [CHANGE_REFUSED_HE]);
+  assert.equal(page.el('startExamBtn').disabled, true);
+  assert.equal(page.el('startWaitToken').textContent, CHANGE_REFUSED_HE);
+  assert.ok(approvalPolls(page).filter(r => r.__at > 0).length > 1, 'still polling — the reset has to reach this screen');
+});
+
+test('r35.2: no token and no answer — approved meanwhile: the start note is the truth, not "opens by itself"', async () => {
+  let approved = false, answer = null;
+  const page = completePage({ reply: r => {
+    if (r.action === 'registerExaminee') return { __hang: true };
+    if (r.action === 'cancelRegistration') return answer || { __network: true };
+    if (r.kind === 'approval') return { status: 'ok', approval: approved ? 'approved' : 'waiting', audioMode: 'off', examMinutes: 40 };
+    return undefined;
+  } });
+  withDialogs(page);
+  await register(page);
+  page.el('changeSelectionWaiting').click();
+  await drain(); await page.timer.advance(100); await drain();
+  approved = true;
+  await page.timer.advance(2500); await drain();
+  assert.equal(page.el('instructionsPhase').style.display, 'block', 'the approval reaches the screen');
+  assert.equal(page.el('startExamBtn').disabled, true);
+  assert.equal(page.el('startWaitToken').textContent, CHANGE_NO_ANSWER_HE);
+  answer = { status: 'ok' };
+  await page.timer.advance(20000); await drain();
+  assert.equal(page.t.state().screen, 'screenIdForm', 'the retried cancel lands: the form');
+});
+
+test('r35.2: the cancel messages follow the examinee\'s language', async () => {
+  const page = completePage({ reply: r => r.action === 'registerExaminee' ? { __hang: true }
+    : r.action === 'cancelRegistration' ? { __network: true } : approvalWaits(r) });
+  withDialogs(page);
+  await register(page, { language: 'ru' });
+  page.el('changeSelectionWaiting').click();
+  await drain(); await page.timer.advance(100); await drain();
+  assert.match(page.el('regStatus').textContent, /^Отправляем на сервер запрос/);
+  const refused = completePage({ reply: r => r.action === 'registerExaminee' ? { __hang: true }
+    : r.action === 'cancelRegistration' ? { status: 'error', examineeTokenError: 'missing' } : approvalWaits(r) });
+  const alerts = withDialogs(refused);
+  await register(refused, { language: 'ru' });
+  refused.el('changeSelectionWaiting').click();
+  await drain(); await refused.timer.advance(100); await drain();
+  assert.match(alerts[0], /^Отменить регистрацию с этого устройства нельзя/);
+  assert.equal(refused.el('regStatus').textContent, alerts[0]);
 });
 
 test('r35.1: nothing to cancel ("לא נמצא רישום פעיל לביטול") still goes back to the form', async () => {

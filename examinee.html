@@ -867,6 +867,15 @@
   UI_STRINGS['fr'].changeRefused = "L'inscription ne peut pas être annulée depuis cet appareil. Demandez à l'examinateur d'appuyer sur « אפס » (réinitialiser) sur votre ligne, puis inscrivez-vous à nouveau avec les bonnes informations.";
   UI_STRINGS['es'].changeRefused = 'No se puede cancelar el registro desde este dispositivo. Pide al examinador que pulse "אפס" (restablecer) en tu fila y luego regístrate de nuevo con los datos correctos.';
   UI_STRINGS['am'].changeRefused = 'ምዝገባውን ከዚህ መሣሪያ መሰረዝ አይቻልም። ፈታኙ በመስመርህ ላይ "אפס" (ዳግም አስጀምር) እንዲጫን ጠይቅ፣ ከዚያም በትክክለኛ ዝርዝሮች እንደገና ተመዝገብ።';
+  // r35.2 (KNOWN_ISSUES #46): the cancel has no definite answer yet — it is sent
+  // again by itself. On screen (status line / start note), never an alert.
+  UI_STRINGS['he'].changeNoAnswer = 'שולחים לשרת את הבקשה לתיקון הפרטים — ממשיכים לנסות אוטומטית עד שתתקבל תשובה. אם זה נמשך, פנה לבוחן.';
+  UI_STRINGS['ru'].changeNoAnswer = 'Отправляем на сервер запрос на исправление данных — продолжаем попытки автоматически, пока не придёт ответ. Если это затянется, обратитесь к экзаменатору.';
+  UI_STRINGS['en'].changeNoAnswer = 'Sending your request to fix your details to the server — we keep trying automatically until it answers. If this goes on, ask the examiner.';
+  UI_STRINGS['ar'].changeNoAnswer = 'نرسل إلى الخادم طلب تصحيح بياناتك — نواصل المحاولة تلقائيًا حتى يصل الرد. إذا استمر ذلك، توجّه إلى الفاحص.';
+  UI_STRINGS['fr'].changeNoAnswer = "Envoi au serveur de votre demande de correction — nous réessayons automatiquement jusqu'à la réponse. Si cela dure, adressez-vous à l'examinateur.";
+  UI_STRINGS['es'].changeNoAnswer = 'Enviando al servidor tu solicitud para corregir los datos — seguimos intentándolo automáticamente hasta recibir respuesta. Si se prolonga, acude al examinador.';
+  UI_STRINGS['am'].changeNoAnswer = 'ዝርዝሮችህን ለማስተካከል ያቀረብከውን ጥያቄ ወደ አገልጋዩ በመላክ ላይ — መልስ እስኪመጣ ድረስ በራስ-ሰር መሞከራችንን እንቀጥላለን። ይህ ከቀጠለ፣ ፈታኙን ጠይቅ።';
 
   UI_STRINGS['he'].startWaitToken = 'ממתין לאישור ההרשמה מהשרת… (המבחן ייפתח אוטומטית כשיגיע)';
   UI_STRINGS['ru'].startWaitToken = 'Ожидаем подтверждения регистрации от сервера… (экзамен откроется автоматически)';
@@ -1380,6 +1389,8 @@
     stopTimer(); // clears interval, removes visibilitychange listener, resets examDeadline
     stopApprovalPolling();
     abandonPendingRegistration();
+    endCancel();              // r35.2: nothing of the previous examinee's cancel may act on the next one
+    awaitingReset = false;
     reanswerAt = {};
     examineeData = { idNumber: '', fullName: '', phone: '', population: '', license: '', language: '' };
     examineeToken = '';
@@ -2270,6 +2281,13 @@
   var registrationTimer = null;
   var registrationTries = 0;
   var regStatusKey = '', regStatusAttempt = 0;
+  // r35.2 (review_r35_1_examinee): the "טעיתי? לחזרה ולתיקון הפרטים" cancel.
+  var cancelGen = 0;           // a new cancel, a decision, a restart or the next examinee retires the running one
+  var cancelPending = false;   // a cancel is out and has no definite answer yet (it retries by itself)
+  var cancelRetryTimer = null;
+  var cancelTries = 0;
+  var awaitingReset = false;   // the server refused the cancel: this device waits for the examiner's 'אפס'
+  var CANCEL_RETRY_MS = [3000, 6000, 12000, 20000];   // then 20 s, while this screen is open
 
   function registrationIsPending() { return !!(examineeData && examineeData.registrationPending); }
 
@@ -2295,7 +2313,9 @@
   function refreshStartButtonState() {
     var cb = document.getElementById('airplaneCheckbox');
     var btn = document.getElementById('startExamBtn');
-    var ready = !!(cb && cb.checked) && !!examineeToken;
+    // r35.2: never while a cancel of this registration is open or was refused —
+    // an exam must not start under a registration the examinee asked to drop.
+    var ready = !!(cb && cb.checked) && !!examineeToken && !cancelPending && !awaitingReset;
     if (btn) {
       btn.disabled = !ready;
       btn.style.opacity = ready ? '1' : '0.5';
@@ -2307,8 +2327,15 @@
     if (!note) return;
     // It lives inside #instructionsPhase, so it is on screen only once the
     // examiner has approved — which is exactly when a missing token matters.
-    note.textContent = examineeToken ? '' : getUIString('startWaitToken');
-    note.style.display = examineeToken ? 'none' : 'block';
+    // r35.2 (review m2): it says what is TRUE. "The exam opens by itself when
+    // the token arrives" only while a registration series is actually running;
+    // with no series and no token, the way out is the examiner's 'אפס'.
+    var key = '';
+    if (cancelPending) key = 'changeNoAnswer';
+    else if (awaitingReset) key = 'changeRefused';
+    else if (!examineeToken) key = registrationIsPending() ? 'startWaitToken' : 'regAlready';
+    note.textContent = key ? getUIString(key) : '';
+    note.style.display = key ? 'block' : 'none';
   }
 
   function stopRegistrationLoop() {
@@ -2551,13 +2578,22 @@
           setRegStatus('regLanded');
         }
         if (data.approval === 'approved') {
-          stopApprovalPolling();
           if (data.examMinutes && data.examMinutes > 0) {
             examTimeMinutes = data.examMinutes;
           }
-          notifyApprovedToExaminee();
-          showInstructions();
+          // r35.2: a device the server refused a cancel to keeps polling — the
+          // examiner's 'אפס' has to reach it — and the approval is no news to a
+          // screen that already shows the instructions (review m3: no second
+          // chime), nor to one whose cancel is still open.
+          var instrAlreadyShown = instructionsShown();
+          if (!awaitingReset) stopApprovalPolling();
+          if (instrAlreadyShown || cancelPending || awaitingReset) teardownWaitingProtections();
+          else notifyApprovedToExaminee();
+          if (!instrAlreadyShown) showInstructions();
+          else refreshStartButtonState();
         } else if (data.approval === 'in_exam') {
+          endCancel();
+          awaitingReset = false;
           abandonPendingRegistration();
           // D14: the row says this examinee is already testing while this device
           // is still on the instructions screen (re-registered after a reload,
@@ -2631,6 +2667,16 @@
   // not reach this at all: the server skipped finished rows, so a rejected
   // examinee sat in front of 'שגיאת שרת: לא נמצא רישום' with no way out.
   function showApprovalDecision(decision) {
+    // r35.2: 'cancelled' is exactly what a device that asked to fix its details
+    // was waiting for — its own cancel landed (the answer was lost), or the
+    // examiner pressed 'אפס' after a refusal. Straight back to the form.
+    if (decision === 'cancelled' && (cancelPending || awaitingReset)) {
+      endCancel();
+      backToFormAfterCancel();
+      return;
+    }
+    endCancel();                    // a late cancel answer must not act on this screen
+    awaitingReset = false;
     stopApprovalPolling();
     abandonPendingRegistration();   // the examiner decided; there is no registration left to chase
     teardownWaitingProtections();
@@ -2653,6 +2699,8 @@
     stopApprovalPolling();
     approvalPollGen++;   // an answer still in flight must not paint the screen we just left
     abandonPendingRegistration();
+    endCancel();
+    forgetRegistration();   // r35.2: the next registration is a fresh one — new regKey, no old token
     try { clearExamineeState(); } catch (e) {}
     var backBtn = document.getElementById('backToRegisterBtn');
     if (backBtn) backBtn.style.display = 'none';
@@ -3017,78 +3065,147 @@
   }
 
   // ========== Change Selection (cancel + go back to registration) ==========
-  // r35.1 (KNOWN_ISSUES #45): the cancel carries the regKey of THIS registration
-  // (the token still rides along through the decorator whenever the page holds
-  // it). Since r35 the server cancels only for the row's own device, and on a
-  // slow morning the row lands long before the answer with the token reaches the
-  // phone (#34/#35) — the regKey is what proves it is this device then. And the
-  // answer is READ now: until r35.1 every answer, a refusal included, went back
-  // to the form, the re-registration got the OLD row back (same regKey →
-  // 'resumed'), and the correction was lost without a word.
-  //   ok                   → back to the form, as before
-  //   examineeTokenError   → the row stands: stay here, say "ask the examiner
-  //                          for אפס" (status line + alert), keep polling — the
-  //                          reset reaches this screen as 'cancelled'
-  //   no answer / retryable → unknown: stay here and keep polling, so whichever
-  //                          it was reaches the screen; the registration series
-  //                          is NOT restarted (it would re-append a row this
-  //                          cancel may have cancelled)
-  //   anything else ('לא נמצא רישום פעיל לביטול') → nothing to cancel: the form
+  // "טעיתי? לחזרה ולתיקון הפרטים". Since r35 the server cancels a registration
+  // only for the row's own device: the token, or — when the answer carrying the
+  // token has not reached the phone (#34/#35) — the regKey the row was
+  // registered with (r35.1, KNOWN_ISSUES #45). r35.2 (#46, review_r35_1_examinee)
+  // closes the races around it:
+  //   • nothing may paint while the cancel is out: the approval poll in flight
+  //     is retired (approvalPollGen), and the start button is locked
+  //     (cancelPending) — an exam can never start under a cancel, and a cancel
+  //     can never be sent once the exam is starting or running;
+  //   • only a CONFIRMED cancel goes back to the form: 'ok', or the server's
+  //     truthful "לא נמצא רישום פעיל לביטול" (nothing to cancel);
+  //   • a refusal (examineeTokenError, "פרטים לא תואמים") keeps the waiting
+  //     screen, says "ask the examiner for אפס", and keeps polling until that
+  //     reset arrives — then the form opens by itself;
+  //   • anything else is NO ANSWER (network, timeout, an HTML page, 5xx,
+  //     retryable, a server exception): the same cancel is sent again, 3 → 6 →
+  //     12 → 20 → 20 s, until a definite answer — a cancel is idempotent. The
+  //     screen says so in the examinee's language, and polls meanwhile;
+  //   • a confirmed cancel forgets the old registration — token AND regKey — so
+  //     the corrected one is a fresh registration and can never be answered
+  //     with the old row ('resumed').
+  // The registration series is never restarted from here: a series that
+  // reached a row this cancel did cancel would append it again.
+  var CANCEL_NOTHING_TO_CANCEL = 'לא נמצא רישום פעיל לביטול';
+  var CANCEL_DETAILS_MISMATCH = 'פרטים לא תואמים';
   function currentRegistrationKey() {
     var keyed = String(sessionCode || '') + ':' + String((examineeData && examineeData.idNumber) || '');
     return (examineeData && examineeData.regKey && examineeData.regKeyFor === keyed) ? examineeData.regKey : '';
+  }
+  function instructionsShown() {
+    var phase = document.getElementById('instructionsPhase');
+    return !!(phase && phase.style.display === 'block');
+  }
+  // Retire the running cancel: no late answer or scheduled retry acts any more.
+  function endCancel() {
+    cancelGen++;
+    cancelPending = false;
+    if (cancelRetryTimer !== null) { clearTimeout(cancelRetryTimer); cancelRetryTimer = null; }
+  }
+  // Everything that belonged to the registration just cancelled.
+  function forgetRegistration() {
+    examineeToken = '';
+    if (examineeData) {
+      delete examineeData.regKey;
+      delete examineeData.regKeyFor;
+      examineeData.registrationPending = false;
+    }
+    awaitingReset = false;
+    setRegStatus('');
+  }
+  function cancelIsStale(myCancel) {
+    return myCancel !== cancelGen || examLoadInFlight || examInProgress || examSubmitted;
   }
   function resumeWaitingAfterCancel(statusKey) {
     saveExamineeState('screenInstructions');
     setRegStatus(statusKey || '');
     refreshStartButtonState();
     startApprovalPolling();
+    // review m3: on the approved screen the title flash / wake lock belong to
+    // the waiting screen no more.
+    if (instructionsShown()) teardownWaitingProtections();
+  }
+  function backToFormAfterCancel() {
+    stopApprovalPolling();
+    approvalPollGen++;
+    teardownWaitingProtections();
+    forgetRegistration();
+    // A decision banner or a server-error banner of the cancelled registration
+    // must not greet the corrected one (review M1a).
+    document.getElementById('rejectedMsg').style.display = 'none';
+    document.getElementById('backToRegisterBtn').style.display = 'none';
+    var errBanner = document.getElementById('approvalError');
+    if (errBanner) errBanner.style.display = 'none';
+    // Restore session defaults
+    sessionData.language = sessionData._defaultLanguage || 'he';
+    sessionData.license = sessionData._defaultLicense || 'B';
+    // Reset UI and go back to registration form
+    document.getElementById('waitingPhase').style.display = 'block';
+    document.getElementById('instructionsPhase').style.display = 'none';
+    document.getElementById('audioModeNotice').style.display = 'none';
+    // Restore RTL direction for Hebrew registration form
+    var instrScreen = document.getElementById('screenInstructions');
+    if (instrScreen) instrScreen.dir = 'rtl';
+    var langSel = document.getElementById('langSelect');
+    if (langSel) langSel.value = sessionData._defaultLanguage || 'he';
+    var licSel = document.getElementById('licenseSelect');
+    if (licSel) licSel.value = sessionData._defaultLicense || 'B';
+    showScreen('screenIdForm');
+    saveExamineeState('screenIdForm');
   }
   function cancelAndChangeSelection(e) {
     e.preventDefault();
+    if (examLoadInFlight || examInProgress || examSubmitted) return;   // never once the exam is starting or running
+    if (cancelPending) return;                                         // one cancel; it retries by itself
     if (!confirm(getUIString('changeConfirm'))) return;
     stopApprovalPolling();
+    approvalPollGen++;   // review M1: a held poll that answers now must not paint anything
     // A registration still in flight is dropped first: nothing may adopt a token
-    // for a row this examinee is walking away from. Best-effort by design — if
-    // the row lands afterwards the examiner sees "ממתין" and presses 'אפס'.
+    // for a row this examinee is walking away from.
     abandonPendingRegistration();
+    endCancel();
+    cancelPending = true;
+    cancelTries = 0;
+    refreshStartButtonState();
+    sendCancel(cancelGen);
+  }
+  function sendCancel(myCancel) {
+    if (cancelIsStale(myCancel)) return;
+    cancelTries++;
     var cancelParams = { action: 'cancelRegistration', sessionCode: sessionCode, idNumber: examineeData.idNumber, phone: examineeData.phone || '' };
     var regKey = currentRegistrationKey();
     if (regKey) cancelParams.regKey = regKey;
-    apiGet(cancelParams).then(function(data) {
-      if (data && data.examineeTokenError) {
-        logEvent('cancel_registration_refused', String(data.examineeTokenError));
-        resumeWaitingAfterCancel('changeRefused');
-        alert(getUIString('changeRefused'));
-        return;
-      }
-      if (!data || typeof data.status !== 'string' || data.retryable || data.rateLimited) {
-        resumeWaitingAfterCancel('');
-        alert('שגיאת תקשורת. נסה שוב.');
-        return;
-      }
-      // Restore session defaults
-      sessionData.language = sessionData._defaultLanguage || 'he';
-      sessionData.license = sessionData._defaultLicense || 'B';
-      // Reset UI and go back to registration form
-      document.getElementById('waitingPhase').style.display = 'block';
-      document.getElementById('instructionsPhase').style.display = 'none';
-      document.getElementById('audioModeNotice').style.display = 'none';
-      // Restore RTL direction for Hebrew registration form
-      var instrScreen = document.getElementById('screenInstructions');
-      if (instrScreen) instrScreen.dir = 'rtl';
-      var langSel = document.getElementById('langSelect');
-      if (langSel) langSel.value = sessionData._defaultLanguage || 'he';
-      var licSel = document.getElementById('licenseSelect');
-      if (licSel) licSel.value = sessionData._defaultLicense || 'B';
-      showScreen('screenIdForm');
-      saveExamineeState('screenIdForm');
-    }).catch(function() {
-      // Until r35.1 the waiting screen was left here with its poll stopped:
-      // an approval or a reset never reached it again.
-      resumeWaitingAfterCancel('');
-      alert('שגיאת תקשורת. נסה שוב.');
-    });
+    apiGet(cancelParams).then(function(data) { onCancelAnswer(data, myCancel); },
+      function() { onCancelAnswer(null, myCancel); });
+  }
+  function onCancelAnswer(data, myCancel) {
+    if (cancelIsStale(myCancel)) return;
+    var msg = String((data && data.message) || '');
+    if ((data && data.status === 'ok') || msg === CANCEL_NOTHING_TO_CANCEL) {
+      endCancel();
+      backToFormAfterCancel();
+      return;
+    }
+    if (data && (data.examineeTokenError || msg === CANCEL_DETAILS_MISMATCH)) {
+      endCancel();
+      awaitingReset = true;
+      logEvent('cancel_registration_refused', String(data.examineeTokenError || 'details'));
+      resumeWaitingAfterCancel('changeRefused');
+      alert(getUIString('changeRefused'));
+      return;
+    }
+    // No definite answer: stay, say so on screen, poll, and send the same cancel again.
+    logEvent('cancel_registration_retry', String((data && (data.code || data.message)) || 'no_answer').slice(0, 60));
+    if (cancelTries === 1) resumeWaitingAfterCancel('changeNoAnswer');
+    else { setRegStatus('changeNoAnswer'); refreshStartButtonState(); }
+    var step = Math.min(cancelTries - 1, CANCEL_RETRY_MS.length - 1);
+    var waitMs = Math.max(CANCEL_RETRY_MS[step], ((data && Number(data.waitSec)) || 0) * 1000);
+    cancelRetryTimer = setTimeout(function() {
+      cancelRetryTimer = null;
+      sendCancel(myCancel);
+    }, waitMs);
   }
   document.getElementById('changeSelectionWaiting').addEventListener('click', cancelAndChangeSelection);
   document.getElementById('changeSelectionInstructions').addEventListener('click', cancelAndChangeSelection);
@@ -3164,7 +3281,9 @@
     // answer is back. Without the token startExam can only fail with 'טוקן נבחן
     // לא תקין' (#34), which is not an error the examinee can act on: the button
     // lights up by itself when the token lands, and the note under it says so.
-    if (!examineeData.idNumber || !examineeToken || examLoadInFlight || examInProgress || examSubmitted) {
+    // r35.2: nor while a cancel of this registration is open or was refused.
+    if (!examineeData.idNumber || !examineeToken || examLoadInFlight || examInProgress || examSubmitted ||
+        cancelPending || awaitingReset) {
       console.log('[EXAM] doStartExam blocked — no registered examinee');
       return;
     }
