@@ -1050,7 +1050,9 @@ test('D13: the timer-expiry extension check waits the full poll deadline', async
   // auto-submit an exam whose extension was already granted), and noWait keeps
   // the Worker from HOLDING this one answer: the examinee is watching a timer
   // that just hit zero, so it must come back at once, not in up to 25 s.
-  assert.match(section(src, '  function onTimerExpired()', '  function updateTimerDisplay()'),
+  // (E3 gave onTimerExpired an optional onExtended argument; the anchor is the
+  // name, not the empty parameter list.)
+  assert.match(section(src, '  function onTimerExpired(', '  function updateTimerDisplay()'),
     /statusPollCall\(\{ noWait: true \}\)/,
     'the 30 s default would auto-submit an exam whose extension was already granted');
 });
@@ -1558,12 +1560,16 @@ test('long poll: the DQ-overturn wait is held too, starting from the decision as
   assert.match(page.el('dqWaitingMsg').innerHTML, /הבוחן אישר את הפסילה/);
 });
 
-test('the DQ-overturn wait ignores a rejected/cancelled answer instead of acting on it', async () => {
-  // Both chains speak to the same route. A decision about a REGISTRATION
-  // cannot happen while that registration is mid-exam, so the only requirement
-  // here is that one would do nothing at all — no resume, no final DQ screen.
+// E22 (25/09/2026). This test used to pin the opposite ("a decision about a
+// REGISTRATION cannot happen while that registration is mid-exam, so ignore
+// it"). It can: the server's resetExaminee turns a disqualified / dq_confirmed
+// row into 'cancelled' on purpose, so an examiner's "אפס" can clear a soldier
+// stuck on a pending DQ — and the phone ignored it and stayed on the DQ screen
+// for good.
+test('E22: an examiner reset on the DQ-wait screen is shown, the wait stops, and one button leads back to registration', async () => {
   let approval = 'approved';
-  const page = completePage({ reply: r => r.kind === 'approval'
+  const local = memoryStore();
+  const page = completePage({ local, reply: r => r.kind === 'approval'
     ? { status: 'ok', approval: approval, audioMode: 'off', examMinutes: 40 } : undefined });
   await register(page);
   await startExam(page);
@@ -1572,17 +1578,51 @@ test('the DQ-overturn wait ignores a rejected/cancelled answer instead of acting
   await page.timer.advance(2100);
   page.setVisibility('visible'); await drain();
   assert.equal(page.t.state().dq, true);
+  assert.ok(local.getItem('examSuspended_ABC12345_123456789'), 'the suspended exam is on the device');
 
-  const before = pollsOf(page, 'approval').length;
   approval = 'cancelled';
   await page.timer.advance(10000);
-  assert.ok(pollsOf(page, 'approval').length > before, 'it kept waiting for the examiner');
-  assert.equal(page.t.state().screen, 'screenExam', 'nothing moved');
-  assert.ok(!/הבוחן אישר את הפסילה/.test(page.el('dqWaitingMsg').innerHTML));
-  approval = 'rejected';
-  await page.timer.advance(10000);
-  assert.equal(page.t.state().screen, 'screenExam');
-  assert.equal(page.t.state().inProgress, false, 'and the suspended exam is still suspended');
+  assert.equal(page.t.state().inProgress, false, 'nothing resumes');
+  assert.ok(!/הבוחן אישר את הפסילה/.test(page.el('dqWaitingMsg').innerHTML), 'and it is not a confirmed DQ');
+  assert.match(page.el('dqWaitingMsg').innerHTML, /ההרשמה בוטלה על ידי הבוחן/, 'the reset is named');
+  const back = page.el('examArea').querySelector('#dqLeaveBtnSlot');
+  assert.match(back.innerHTML, /חזרה להרשמה/);
+  assert.match(back.innerHTML, /resetForNextExaminee\(\)/, 'the full reset, on the same session');
+  assert.equal(local.getItem('examSuspended_ABC12345_123456789'), null, 'a cancelled row can never resume it');
+  assert.equal(local.getItem('examEnded_ABC12345_123456789'), null);
+  const stopped = pollsOf(page, 'approval').length;
+  await page.timer.advance(120000);
+  assert.equal(pollsOf(page, 'approval').length, stopped, 'the wait stopped');
+
+  page.ctx.resetForNextExaminee();
+  await drain();
+  assert.equal(page.t.state().screen, 'screenIdForm', 'the examinee registers again');
+  assert.equal(page.t.state().id, '');
+});
+
+test('E22: a rejection is named the same way, and a STALE cancelled decides nothing', async () => {
+  let answer = { status: 'ok', approval: 'approved', audioMode: 'off', examMinutes: 40 };
+  const page = completePage({ reply: r => r.kind === 'approval' ? answer : undefined });
+  await register(page);
+  await startExam(page);
+  answer = { status: 'error', message: 'לא נמצא רישום' };
+  page.setVisibility('hidden');
+  await page.timer.advance(2100);
+  page.setVisibility('visible'); await drain();
+  assert.equal(page.t.state().dq, true);
+
+  answer = { status: 'ok', approval: 'cancelled', stale: true };
+  const before = pollsOf(page, 'approval').length;
+  await page.timer.advance(20000);
+  // (this DOM does not parse nested markup: an untouched message is still '')
+  assert.equal(page.el('dqWaitingMsg').innerHTML, '', 'a stale copy is not the examiner: the waiting message stands');
+  assert.equal(page.el('dqLeaveBtnSlot').innerHTML, '', 'and no way out is offered');
+  assert.ok(pollsOf(page, 'approval').length > before, 'the wait goes on');
+
+  answer = { status: 'ok', approval: 'rejected' };
+  await page.timer.advance(20000);
+  assert.match(page.el('dqWaitingMsg').innerHTML, /הבוחן דחה את הכניסה שלך/);
+  assert.equal(page.t.state().inProgress, false);
 });
 
 // ===================== 6c. re-arm: "why not 0" (r31, DESIGN §13.4) =====================
@@ -2814,4 +2854,154 @@ test('r32: a rate-limited registration waits what the server asked and tries aga
   assert.equal(sent[1].regKey, sent[0].regKey, 'with the same registration key');
   assert.equal(page.t.state().token, 'tok-after-limit', 'and the row is this device\'s');
   assert.match(page.el('regStatus').textContent, /נרשמת/);
+});
+
+// ---- 25/09/2026: the shared device ("נבחן הבא") and a reload past the deadline ----
+// Research report 02 §2.7: E1, E2, E11 (shared device) and E3 (reload).
+
+test('E1: the next examinee on a shared device keeps their own time extension', async () => {
+  const page = completePage({ reply: r => r.action === 'startExam'
+    ? { status: 'ok', examMinutes: 40, extraMinutes: 10, audioMode: 'off', questions: SERVER_QUESTIONS, bank: EXAM_BANK } : undefined });
+  await register(page);
+  await startExam(page);
+  assert.ok(Math.abs(page.t.state().deadline - page.timer.now - 50 * 60 * 1000) < 1000, 'the first examinee: 40 + 10');
+  page.t.finish();
+  await drain(); await page.timer.advance(5000);
+  page.ctx.resetForNextExaminee();
+  await drain();
+
+  await register(page);
+  await startExam(page);
+  assert.equal(page.t.state().inProgress, true);
+  assert.ok(Math.abs(page.t.state().deadline - page.timer.now - 50 * 60 * 1000) < 1000,
+    'the second examinee\'s 10 minutes are not "nothing new" just because the first one had 10 too');
+});
+
+test('E2: after "נבחן הבא" the resize / zoom / fullscreen detectors are armed again', async () => {
+  const page = completePage();
+  await register(page);
+  await startExam(page);
+  page.t.finish();
+  await drain(); await page.timer.advance(5000);
+  page.ctx.resetForNextExaminee();
+  await drain();
+  assert.equal((page.ui.docHandlers.get('fullscreenchange') || []).length, 0, 'the teardown unbound the fullscreen handler');
+
+  await register(page);
+  page.ctx.innerHeight = 700;                        // a windowed browser: not fullscreen
+  await startExam(page);
+  await page.timer.advance(400);
+  assert.ok(page.el('fsResumePrompt'), 'the second examinee gets the "enter fullscreen" prompt the first one got');
+  assert.equal((page.ui.docHandlers.get('fullscreenchange') || []).length, 1, 'bound once, not stacked');
+  page.ctx.innerHeight = 1080;                       // back in fullscreen: the prompt goes, no DQ
+  for (const cb of page.ui.docHandlers.get('fullscreenchange')) cb();
+  await drain();
+  assert.ok(!page.el('fsResumePrompt'));
+  await page.timer.advance(1000);                    // past the one-shot start check (not gated by the flag)
+  assert.equal(page.t.state().dq, false);
+
+  page.ctx.outerWidth = 900;                         // snapped to half the screen
+  page.dispatch('resize');
+  await page.timer.advance(600);
+  assert.equal(page.t.state().dq, true, 'the resize detector is live for the second examinee');
+  assert.deepEqual(page.sent('disqualify').map(r => r.reason), ['split-resize']);
+});
+
+test('E11: a re-test on the same device gets a NEW DQ event id, and the pre-DQ copy does not resume it', async () => {
+  let approval = 'approved';
+  const page = completePage({ reply: r => r.kind === 'approval' ? { status: 'ok', approval: approval, audioMode: 'off' } : undefined });
+  await register(page);
+  await startExam(page);
+  page.setVisibility('hidden');
+  await page.timer.advance(2100);                    // self-DQ #1, confirmed by the server
+  approval = 'dq_confirmed';
+  page.setVisibility('visible'); await drain();
+  await page.timer.advance(5000);
+  assert.match(page.el('dqWaitingMsg').innerHTML, /הבוחן אישר את הפסילה/);
+  await page.timer.advance(60000);                   // long past the 45 s trust window of DQ #1
+  page.ctx.resetForNextExaminee();                   // "נבחן הבא"
+  await drain();
+
+  approval = 'approved';                             // the examiner lets the same soldier re-test
+  await register(page);
+  await startExam(page);
+  assert.equal(page.t.state().inProgress, true);
+  page.setVisibility('hidden');
+  await page.timer.advance(2100);                    // self-DQ #2
+  approval = 'in_exam';                              // the copy from before DQ #2 reached Google
+  page.setVisibility('visible'); await drain();
+  const ids = page.sent('disqualify').map(r => r.dqEventId);
+  assert.equal(ids.length, 2);
+  assert.notEqual(ids[1], ids[0], 'a reused id is answered "ok" without reaching ממתינים — the examiner would never see DQ #2');
+  await page.timer.advance(20000);
+  assert.equal(page.t.state().inProgress, false, 'DQ #1\'s old confirmation does not make the pre-DQ copy an overturn');
+});
+
+/** An exam left in the tab past its deadline: the blob as the unload wrote it. */
+function expireBlob(session, { closing = true } = {}) {
+  const blob = activeBlob(session);
+  // The next page's clock starts at 0: a deadline one second ago, a start 40 min + 1 s ago.
+  blob.examDeadline = -1000;
+  blob.examStartTime = -(40 * 60 * 1000) - 1000;
+  session.setItem('ext_exam_active', JSON.stringify(blob));
+  if (closing) session.setItem('ext_exam_closing', '1');   // onBeforeUnload sent the close-fail beacon
+}
+
+test('E3: a reload past the deadline SUBMITS the saved answers instead of dropping them', async () => {
+  const { local, session, savedAnswer } = await examInProgressStores();
+  expireBlob(session);
+  const second = completePage({ local, session });
+  await drain(); await second.timer.advance(1000); await drain();
+  const sent = second.sent('submitResult');
+  assert.equal(sent.length, 1, 'the answers are the result');
+  assert.equal(sent[0].answers.length, TOTAL);
+  assert.equal(sent[0].answers[0].selected, savedAnswer.chosenIndex, 'with the answer as it was given');
+  assert.equal(sent[0].answers[0].q, savedAnswer.q);
+  assert.equal(sent[0].answers[1].q, BANK_FILES.he[1].t, 'an unanswered question carries its texts from the device');
+  assert.equal(sent[0].examineeToken, 'tok-1');
+  assert.equal(second.sent('cancelFailOnClose').length, 0, 'the real result supersedes the close-fail; nothing reopens the row');
+  const statusAt = second.requests.findIndex(r => r.kind === 'status');
+  assert.ok(statusAt >= 0 && statusAt < second.requests.indexOf(sent[0]), 'the D13 look for extra time came first');
+  assert.equal(second.t.state().screen, 'screenDone');
+  assert.equal(second.t.state().inProgress, false);
+  assert.equal(second.t.hasPending(), false, 'confirmed, so the local copy is gone');
+  assert.equal(session.getItem('ext_exam_active'), null);
+});
+
+test('E3: a reload past the deadline with no network keeps the result on the device until the server has it', async () => {
+  const { local, session } = await examInProgressStores();
+  expireBlob(session);
+  let online = false;
+  const second = completePage({ local, session, reply: r => online ? undefined : { __network: true } });
+  await drain(); await second.timer.advance(65000); await drain();
+  assert.equal(second.t.state().screen, 'screenDone', 'offline: the extension check gives up and the exam is submitted');
+  assert.ok(second.sent('submitResult').length >= 1);
+  assert.ok([...local.entries.keys()].some(k => k.indexOf('pendingResult_') === 0), 'stored before it was sent');
+  online = true;
+  await second.timer.advance(120000);
+  assert.equal(second.t.hasPending(), false, 'and removed only once the server confirmed it');
+});
+
+test('E3: extra minutes granted while the page was away resume the exam instead of submitting it', async () => {
+  const { local, session, savedAnswer } = await examInProgressStores();
+  expireBlob(session);
+  const second = completePage({ local, session, reply: r => r.kind === 'status' ? { status: 'ok', examStatus: 'in_exam', extraMinutes: 10 } : undefined });
+  await drain(); await second.timer.advance(1000); await drain();
+  const state = second.t.state();
+  assert.equal(state.inProgress, true, 'the exam goes on');
+  assert.deepEqual(plain(state.answers[0]), savedAnswer);
+  assert.ok(Math.abs(state.deadline - (-(40 * 60 * 1000) - 1000 + 50 * 60 * 1000)) < 1000, 'to start + 40 + 10');
+  assert.equal(second.sent('submitResult').length, 0);
+  assert.equal(second.sent('cancelFailOnClose').length, 1, 'and the close-fail is cancelled, as on any reload before the deadline');
+  assert.equal(second.el('examArea').querySelector('.q-text').textContent, BANK_FILES.he[0].t);
+});
+
+test('E3: an exam the device had already disqualified before the reload stays a disqualification', async () => {
+  const { local, session } = await examInProgressStores();
+  expireBlob(session);
+  local.setItem('examEnded_ABC12345_123456789', 'dq');
+  const second = completePage({ local, session });
+  await drain(); await second.timer.advance(1000); await drain();
+  assert.equal(second.sent('submitResult').length, 0, 'the DQ is the outcome, not the answers');
+  assert.match(second.el('examArea').innerHTML, /המבחן נפסל/);
 });

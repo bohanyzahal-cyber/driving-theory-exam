@@ -1202,6 +1202,16 @@
     tabSwitchDQConfirmed = false;
     tabSwitchWarnings = 0;
     if (tabSwitchGraceTimer) { clearTimeout(tabSwitchGraceTimer); tabSwitchGraceTimer = null; }
+    // E11 (25/09/2026): the previous examinee's DQ event is not the next one's.
+    // A leftover id was reused by the next DQ on this device; the server answers
+    // 'ok' for an id it already has WITHOUT touching ממתינים, so the examiner
+    // never saw the new DQ, and 45 s later the phone resumed by itself.
+    forgetDQEvent();
+    // E1: extra minutes are per examinee. A leftover total made the next
+    // examinee's grant look like "nothing new" and it was silently dropped.
+    appliedExtraMinutes = 0;
+    // E2: the teardowns below also re-arm the detectors (their bound flags),
+    // so the next examinee's exam binds resize / blur / zoom / fullscreen again.
     teardownSplitScreenDetection();
     teardownFullscreenEnforcement();
     examStartTime = null;
@@ -3092,6 +3102,10 @@
     examStartTime = Date.now();
     examInProgress = true;
     examSubmitted = false;
+    // A new attempt starts with nothing applied and no DQ event of its own yet
+    // (E1, E11) — whatever path led here, nothing of an earlier attempt counts.
+    appliedExtraMinutes = 0;
+    forgetDQEvent();
     startDevToolsTrap();
 
     // Seed the language history with the initial exam language so we can
@@ -3308,6 +3322,20 @@
     dqSeenOnServer = false;
     dqOverturnIgnoredLogged = false;
     if (dqRetryTimer) { clearTimeout(dqRetryTimer); dqRetryTimer = null; }
+  }
+
+  // E11 (25/09/2026): no DQ event outlives the exam attempt it belongs to.
+  // newDQEventId() mints an id only when none is set, so an id left over from an
+  // earlier attempt on this page ("נבחן הבא", or a re-test on the same device)
+  // was sent again as if it were new — and trackDQEvent(sameId) kept the OLD
+  // event's ack and dqSeenOnServer, so overturnIsReal() could say yes to the
+  // pre-DQ copy at once. Called where an attempt begins and where the device
+  // is handed on; the overturn path clears the same four fields itself.
+  function forgetDQEvent() {
+    currentDQEventId = '';
+    currentDQReason = '';
+    provisionalDQSent = false;
+    trackDQEvent('');
   }
 
   function sendDQToServer(unloading) {
@@ -3579,6 +3607,16 @@
           // Examiner confirmed DQ — show final screen
           stopDQOverturnPolling();
           showFinalDQScreen();
+        } else if ((data.approval === 'cancelled' || data.approval === 'rejected') && !data.stale) {
+          // E22 (25/09/2026): the examiner pressed "אפס". resetExaminee turns a
+          // disqualified / dq_confirmed row into 'cancelled' precisely so a
+          // soldier stuck on a pending DQ can be cleared, and both routes then
+          // answer approval:'cancelled' — which this screen used to ignore,
+          // leaving the phone on "ממתין להחלטת הבוחן" for good (Back blocked, a
+          // close prompt, no button). Same decision, same way out as the
+          // waiting screen (showApprovalDecision); a stale copy decides nothing.
+          stopDQOverturnPolling();
+          showDQRegistrationClosed(data.approval);
         }
       } else if (isNoLiveRowAnswer(data)) {
         // How the server answers a DISQUALIFIED row: the DQ is there now, and the
@@ -3620,6 +3658,34 @@
     var slot = document.getElementById('dqLeaveBtnSlot');
     if (slot && !slot.firstChild) {
       slot.innerHTML = '<button onclick="resetForNextExaminee()" style="margin-top:24px; display:block; width:100%; padding:14px; font-size:17px; background:#0f172a; color:white; border:none; border-radius:10px; cursor:pointer; font-weight:700;">' + escHtml(getUIString('nextExaminee')) + '</button>';
+    }
+  }
+
+  // E22: the examiner reset (or rejected) this registration while the phone
+  // waited for a DQ decision. The attempt is closed on the server — a
+  // suspended exam can never resume from a 'cancelled' row, and a self-DQ to it
+  // is refused — so the close lock comes off, the DQ markers go, and the examinee is
+  // told in their own language and given the one way on: register again
+  // (resetForNextExaminee keeps the session and still sends, never drops, any
+  // unsent result on this device).
+  function showDQRegistrationClosed(decision) {
+    trackDQEvent('');                 // a queued DQ retry would only be refused by the closed row
+    dqScreenActive = false;           // the close prompt was guarding a decision that is now made
+    try { window.removeEventListener('beforeunload', dqBeforeUnload); } catch(e) {}
+    try { localStorage.removeItem('examSuspended_' + sessionCode + '_' + examineeData.idNumber); } catch(e) {}
+    try { localStorage.removeItem('examEnded_' + sessionCode + '_' + examineeData.idNumber); } catch(e) {}
+    document.title = origTitle || 'מבחן עיוני — מערכת בחינות צה"ל';
+    var waitMsg = document.getElementById('dqWaitingMsg');
+    if (waitMsg) {
+      waitMsg.style.background = '#e0f2fe';
+      waitMsg.innerHTML = '<p style="color:#075985; font-size:15px; font-weight:700; margin:0;">' +
+        escHtml(getUIString(decision === 'cancelled' ? 'cancelled' : 'rejected')) + '</p>';
+    }
+    // The page reloaded during the wait has its own "נבחן הבא" button (and no
+    // slot), which already runs the same reset.
+    var slot = document.getElementById('dqLeaveBtnSlot');
+    if (slot) {
+      slot.innerHTML = '<button onclick="resetForNextExaminee()" style="margin-top:24px; display:block; width:100%; padding:14px; font-size:17px; background:#0f172a; color:white; border:none; border-radius:10px; cursor:pointer; font-weight:700;">' + escHtml(getUIString('backToRegister')) + '</button>';
     }
   }
 
@@ -3780,6 +3846,31 @@
     }, FULLSCREEN_GRACE_MS);
   }
 
+  // A named handler (E2, 25/09/2026): it used to be an anonymous function bound
+  // once per page and never removed, so fullscreenBound could never be reset —
+  // re-binding would have stacked a second copy. Now teardown removes it and
+  // drops the flag, and the next exam on this page binds it (and its 300 ms
+  // "enter fullscreen" prompt) exactly as the first exam did.
+  function onFullscreenChange() {
+    if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
+    if (isFullscreenActive()) {
+      // Returned to (or entered) fullscreen — cancel any pending DQ, and remove
+      // the "fullscreen required" prompt if it's up (covers fullscreen engaging
+      // on its own or right after a split-triggered prompt, so it never lingers).
+      if (fullscreenGraceTimer) {
+        clearTimeout(fullscreenGraceTimer);
+        fullscreenGraceTimer = null;
+      }
+      if (fsResumeDQTimer) { clearTimeout(fsResumeDQTimer); fsResumeDQTimer = null; }
+      var _fsResumeEl = document.getElementById('fsResumePrompt');
+      if (_fsResumeEl && _fsResumeEl.parentNode) _fsResumeEl.parentNode.removeChild(_fsResumeEl);
+      return;
+    }
+    // Exited fullscreen — start short grace timer (allows accidental Esc bumps)
+    triggerFullscreenDQGrace();
+  }
+  var FULLSCREEN_EVENTS = ['fullscreenchange', 'webkitfullscreenchange', 'mozfullscreenchange', 'MSFullscreenChange'];
+
   function setupFullscreenEnforcement() {
     if (isMobileDevice()) return; // Phone uses screen-level lockdown, not browser fullscreen
     if (fullscreenBound) return;
@@ -3787,29 +3878,7 @@
 
     requestFullscreen(); // Enter fullscreen as exam starts (requires user gesture — works on button click)
 
-    var handler = function() {
-      if (!examInProgress || examSubmitted || tabSwitchDQConfirmed) return;
-      if (isFullscreenActive()) {
-        // Returned to (or entered) fullscreen — cancel any pending DQ, and remove
-        // the "fullscreen required" prompt if it's up (covers fullscreen engaging
-        // on its own or right after a split-triggered prompt, so it never lingers).
-        if (fullscreenGraceTimer) {
-          clearTimeout(fullscreenGraceTimer);
-          fullscreenGraceTimer = null;
-        }
-        if (fsResumeDQTimer) { clearTimeout(fsResumeDQTimer); fsResumeDQTimer = null; }
-        var _fsResumeEl = document.getElementById('fsResumePrompt');
-        if (_fsResumeEl && _fsResumeEl.parentNode) _fsResumeEl.parentNode.removeChild(_fsResumeEl);
-        return;
-      }
-      // Exited fullscreen — start short grace timer (allows accidental Esc bumps)
-      triggerFullscreenDQGrace();
-    };
-
-    document.addEventListener('fullscreenchange', handler);
-    document.addEventListener('webkitfullscreenchange', handler);
-    document.addEventListener('mozfullscreenchange', handler);
-    document.addEventListener('MSFullscreenChange', handler);
+    for (var fe = 0; fe < FULLSCREEN_EVENTS.length; fe++) document.addEventListener(FULLSCREEN_EVENTS[fe], onFullscreenChange);
 
     // If requestFullscreen failed (no user gesture, e.g. page reload resume) — show a prompt
     // requiring a single click to enter fullscreen. If user dismisses or ignores, grace timer DQs.
@@ -3869,6 +3938,9 @@
     }
     var el = document.getElementById('fsResumePrompt');
     if (el && el.parentNode) el.parentNode.removeChild(el);
+    // E2: unbind, and let the next setup bind again (see onFullscreenChange).
+    for (var fe = 0; fe < FULLSCREEN_EVENTS.length; fe++) document.removeEventListener(FULLSCREEN_EVENTS[fe], onFullscreenChange);
+    fullscreenBound = false;
     // Try to exit fullscreen on DQ/finish
     try {
       if (isFullscreenActive()) {
@@ -4075,6 +4147,11 @@
     if (window.visualViewport && typeof window.visualViewport.removeEventListener === 'function') {
       try { window.visualViewport.removeEventListener('resize', onVisualViewportResize); } catch (e) {}
     }
+    // E2 (25/09/2026): the listeners are gone, so the flag has to say so. It
+    // stayed true, and setupSplitScreenDetection skipped binding them again:
+    // after "נבחן הבא" on a shared device the next examinee sat the whole exam
+    // with no resize, blur or zoom detection. Only the overturn path reset it.
+    splitScreenBound = false;
     if (splitScreenBlurTimer) { clearTimeout(splitScreenBlurTimer); splitScreenBlurTimer = null; }
     stopMobileSplitMonitor();
     stopExamStatusPoll();
@@ -4706,8 +4783,11 @@
   // backgrounded (poll throttled) and the alarm sounded near the end. If extra time
   // now pushes the deadline out, resume; otherwise submit (offline → submit too,
   // since the result is saved locally and retried).
+  // onExtended: what "keep going" means for the caller. The running timer only
+  // restarts itself; a page that reloaded after the deadline (E3,
+  // resumeExpiredExamAfterReload) has no exam on screen yet and resumes it.
   var timerExpiryChecking = false;
-  function onTimerExpired() {
+  function onTimerExpired(onExtended) {
     if (timerExpiryChecking || examSubmitted) return;
     timerExpiryChecking = true;
     // D13: the 30 s default meant that during a slow spell the exam auto-
@@ -4722,7 +4802,7 @@
       .then(function() {
         timerExpiryChecking = false;
         if (examSubmitted) return;
-        if (examDeadline && Date.now() < examDeadline) startResumedTimer();  // extra time granted — keep going
+        if (examDeadline && Date.now() < examDeadline) (onExtended || startResumedTimer)();  // extra time granted — keep going
         else { stopSpeaking(); renderExamDone(); }
       });
   }
@@ -6113,7 +6193,10 @@
     var linked = sessionCodeFromUrl();
     if (linked && linked !== String(saved.sessionCode || '').toUpperCase()) {
       var live = loadActiveExam();
-      var midExam = !!(live && live.examDeadline && live.examDeadline > Date.now());
+      // E3: an exam whose deadline passed while the page was away still holds
+      // unsent answers (adoptRestoredState submits them), so it counts too —
+      // any saved exam blob is an attempt that has not been submitted yet.
+      var midExam = !!(live && live.examDeadline);
       if (!midExam) { discardSavedState(saved); logEvent('saved_state_dropped_for_link', linked); return; }
     }
     hasRestoredSession = true;
@@ -6157,21 +6240,18 @@
     var activeExam = loadActiveExam();
     if (activeExam && activeExam.examDeadline && examineeData.idNumber) {
       var msLeft = activeExam.examDeadline - Date.now();
+      var dqOnDevice = false;
+      try { dqOnDevice = localStorage.getItem('examEnded_' + saved.sessionCode + '_' + examineeData.idNumber) === 'dq'; } catch(ex) {}
+      if (msLeft <= 0 && !dqOnDevice) {
+        // E3 (25/09/2026): the deadline passed while the page was away. These
+        // answers are the result — submit them; never drop them (see below).
+        restoreActiveExamState(activeExam);
+        resumeExpiredExamAfterReload(activeExam);
+        return;
+      }
       if (msLeft > 0) {
         // Resume exam!
-        activeQuestions = activeExam.activeQuestions;
-        currentIndex = activeExam.currentIndex;
-        userAnswers = activeExam.userAnswers;
-        shuffledOrders = activeExam.shuffledOrders;
-        examDeadline = activeExam.examDeadline;
-        examStartTime = activeExam.examStartTime;
-        appliedExtraMinutes = activeExam.appliedExtraMinutes || 0;
-        autoReadEnabled = activeExam.autoReadEnabled || false;
-        if (activeExam.examTimeMinutes) examTimeMinutes = activeExam.examTimeMinutes;
-        if (activeExam.currentDQEventId) currentDQEventId = activeExam.currentDQEventId;
-        timeRemaining = Math.max(0, Math.ceil(msLeft / 1000));
-        examInProgress = true;
-        examSubmitted = false;
+        restoreActiveExamState(activeExam);
 
         // Cancel the fail-on-close that was sent during beforeunload
         // (page actually reloaded, so it was a refresh, not a real close)
@@ -6193,7 +6273,10 @@
         loadExamTextsForResume(activeExam.bank, activeExam.records, resumeExamUI);
         return; // done restoring
       } else {
-        // Exam time expired during refresh — end it
+        // Expired AND the device had already disqualified this exam before the
+        // page went away (onBeforeUnload wrote examEnded 'dq' and sent the DQ).
+        // The DQ is this attempt's outcome, not these answers: the ended /
+        // DQ screen below takes over, exactly as before E3.
         clearActiveExam();
       }
     }
@@ -6306,6 +6389,59 @@
       showScreen('screenIdForm');
     }
     // Note: we don't restore into exam — that would be cheating-prone
+  }
+
+  // The exam as ext_exam_active saved it, back into the page — for a reload
+  // before the deadline and (E3) after it alike.
+  function restoreActiveExamState(activeExam) {
+    activeQuestions = activeExam.activeQuestions;
+    currentIndex = activeExam.currentIndex;
+    userAnswers = activeExam.userAnswers;
+    shuffledOrders = activeExam.shuffledOrders;
+    examDeadline = activeExam.examDeadline;
+    examStartTime = activeExam.examStartTime;
+    appliedExtraMinutes = activeExam.appliedExtraMinutes || 0;
+    autoReadEnabled = activeExam.autoReadEnabled || false;
+    if (activeExam.examTimeMinutes) examTimeMinutes = activeExam.examTimeMinutes;
+    if (activeExam.currentDQEventId) currentDQEventId = activeExam.currentDQEventId;
+    timeRemaining = Math.max(0, Math.ceil((activeExam.examDeadline - Date.now()) / 1000));
+    examInProgress = true;
+    examSubmitted = false;
+  }
+
+  // E3 (25/09/2026): a reload that spanned the deadline threw the answers away.
+  // The blob was cleared, no branch below took 'screenExam', the page fell to
+  // the code screen — and the close beacon's 0/30 'סגירת דפדפן' row stood as
+  // the examinee's result. Now it is the timer's own expiry, one reload late:
+  // the same last look for extra time (onTimerExpired, D13), then either
+  //  - the extension outlived the reload: the exam goes on, exactly like a
+  //    reload before the deadline (the close-fail is cancelled, texts, UI); or
+  //  - renderExamDone: the result is stored on the device BEFORE it is sent,
+  //    resent until the server confirms, and the server lets it supersede the
+  //    close-fail row. The blob is cleared only inside renderExamDone — never
+  //    here, so a second reload during the check lands here again.
+  // The texts come from the blob, as on any reload; they are needed only for
+  // the questions left unanswered (an answered one carries its own texts), and
+  // the submit never waits on a network fetch for them.
+  function resumeExpiredExamAfterReload(activeExam) {
+    var wasClosing = false;
+    try { wasClosing = !!sessionStorage.getItem('ext_exam_closing'); sessionStorage.removeItem('ext_exam_closing'); } catch(ex) {}
+    logEvent('expired_on_reload', Math.round((Date.now() - activeExam.examDeadline) / 1000) + 's');
+    if (activeExam.records) { try { QuestionBank.importRecords(activeExam.records); } catch(ex) {} }
+    if (activeExam.bank) examBank = activeExam.bank;
+    showScreen('screenExam');
+    document.getElementById('examArea').innerHTML =
+      '<div id="expiredOnReload" style="text-align:center; padding:40px 20px;">' +
+        '<div style="font-size:50px; margin-bottom:12px;">⏳</div>' +
+        '<h2 style="color:#334155; margin:0 0 12px;">זמן המבחן הסתיים</h2>' +
+        '<p style="color:#64748b; font-size:15px;">התשובות שלך שמורות במכשיר. בודקים מול השרת ושולחים אותן — אל תסגור את הדף.</p>' +
+      '</div>';
+    onTimerExpired(function() {
+      if (wasClosing) {
+        apiPostNoWait({ action: 'cancelFailOnClose', sessionCode: sessionCode, idNumber: examineeData.idNumber });
+      }
+      loadExamTextsForResume(activeExam.bank, activeExam.records, resumeExamUI);
+    });
   }
 
   // Re-arm the exam screen after a reload or a DQ overturn: same listeners, same
