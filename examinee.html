@@ -858,6 +858,15 @@
   UI_STRINGS['fr'].regAlready  = "Ce numéro d'identité est déjà inscrit dans cette session. Si l'examen ne démarre pas, demandez à l'examinateur d'appuyer sur « אפס » (réinitialiser) et inscrivez-vous à nouveau.";
   UI_STRINGS['es'].regAlready  = 'Este número de identidad ya está registrado en esta sesión. Si el examen no comienza, pide al examinador que pulse "אפס" (restablecer) y regístrate de nuevo.';
   UI_STRINGS['am'].regAlready  = 'ይህ የማንነት ቁጥር በዚህ ክፍለ ጊዜ አስቀድሞ ተመዝግቧል። ፈተናው ካልጀመረ፣ ፈታኙ "אפס" (ዳግም አስጀምር) እንዲጫን ጠይቅና እንደገና ተመዝገብ።';
+  // r35.1 (KNOWN_ISSUES #45): "טעיתי? לחזרה ולתיקון הפרטים" that the server
+  // refused — the registration stands with the old details.
+  UI_STRINGS['he'].changeRefused = 'לא ניתן לבטל את הרישום מהמכשיר הזה. בקש מהבוחן ללחוץ "אפס" על השורה שלך, ואז תוכל להירשם מחדש עם הפרטים הנכונים.';
+  UI_STRINGS['ru'].changeRefused = 'Отменить регистрацию с этого устройства нельзя. Попросите экзаменатора нажать «אפס» (сброс) в вашей строке, затем зарегистрируйтесь заново с правильными данными.';
+  UI_STRINGS['en'].changeRefused = 'Your registration cannot be cancelled from this device. Ask the examiner to press "אפס" (reset) on your row, then register again with the correct details.';
+  UI_STRINGS['ar'].changeRefused = 'لا يمكن إلغاء التسجيل من هذا الجهاز. اطلب من الفاحص الضغط على "אפס" (إعادة تعيين) في سطرك، ثم سجِّل من جديد بالتفاصيل الصحيحة.';
+  UI_STRINGS['fr'].changeRefused = "L'inscription ne peut pas être annulée depuis cet appareil. Demandez à l'examinateur d'appuyer sur « אפס » (réinitialiser) sur votre ligne, puis inscrivez-vous à nouveau avec les bonnes informations.";
+  UI_STRINGS['es'].changeRefused = 'No se puede cancelar el registro desde este dispositivo. Pide al examinador que pulse "אפס" (restablecer) en tu fila y luego regístrate de nuevo con los datos correctos.';
+  UI_STRINGS['am'].changeRefused = 'ምዝገባውን ከዚህ መሣሪያ መሰረዝ አይቻልም። ፈታኙ በመስመርህ ላይ "אפס" (ዳግም አስጀምር) እንዲጫን ጠይቅ፣ ከዚያም በትክክለኛ ዝርዝሮች እንደገና ተመዝገብ።';
 
   UI_STRINGS['he'].startWaitToken = 'ממתין לאישור ההרשמה מהשרת… (המבחן ייפתח אוטומטית כשיגיע)';
   UI_STRINGS['ru'].startWaitToken = 'Ожидаем подтверждения регистрации от сервера… (экзамен откроется автоматически)';
@@ -3008,6 +3017,33 @@
   }
 
   // ========== Change Selection (cancel + go back to registration) ==========
+  // r35.1 (KNOWN_ISSUES #45): the cancel carries the regKey of THIS registration
+  // (the token still rides along through the decorator whenever the page holds
+  // it). Since r35 the server cancels only for the row's own device, and on a
+  // slow morning the row lands long before the answer with the token reaches the
+  // phone (#34/#35) — the regKey is what proves it is this device then. And the
+  // answer is READ now: until r35.1 every answer, a refusal included, went back
+  // to the form, the re-registration got the OLD row back (same regKey →
+  // 'resumed'), and the correction was lost without a word.
+  //   ok                   → back to the form, as before
+  //   examineeTokenError   → the row stands: stay here, say "ask the examiner
+  //                          for אפס" (status line + alert), keep polling — the
+  //                          reset reaches this screen as 'cancelled'
+  //   no answer / retryable → unknown: stay here and keep polling, so whichever
+  //                          it was reaches the screen; the registration series
+  //                          is NOT restarted (it would re-append a row this
+  //                          cancel may have cancelled)
+  //   anything else ('לא נמצא רישום פעיל לביטול') → nothing to cancel: the form
+  function currentRegistrationKey() {
+    var keyed = String(sessionCode || '') + ':' + String((examineeData && examineeData.idNumber) || '');
+    return (examineeData && examineeData.regKey && examineeData.regKeyFor === keyed) ? examineeData.regKey : '';
+  }
+  function resumeWaitingAfterCancel(statusKey) {
+    saveExamineeState('screenInstructions');
+    setRegStatus(statusKey || '');
+    refreshStartButtonState();
+    startApprovalPolling();
+  }
   function cancelAndChangeSelection(e) {
     e.preventDefault();
     if (!confirm(getUIString('changeConfirm'))) return;
@@ -3016,8 +3052,21 @@
     // for a row this examinee is walking away from. Best-effort by design — if
     // the row lands afterwards the examiner sees "ממתין" and presses 'אפס'.
     abandonPendingRegistration();
-    // Cancel registration on server
-    apiGet({ action: 'cancelRegistration', sessionCode: sessionCode, idNumber: examineeData.idNumber, phone: examineeData.phone || '' }).then(function() {
+    var cancelParams = { action: 'cancelRegistration', sessionCode: sessionCode, idNumber: examineeData.idNumber, phone: examineeData.phone || '' };
+    var regKey = currentRegistrationKey();
+    if (regKey) cancelParams.regKey = regKey;
+    apiGet(cancelParams).then(function(data) {
+      if (data && data.examineeTokenError) {
+        logEvent('cancel_registration_refused', String(data.examineeTokenError));
+        resumeWaitingAfterCancel('changeRefused');
+        alert(getUIString('changeRefused'));
+        return;
+      }
+      if (!data || typeof data.status !== 'string' || data.retryable || data.rateLimited) {
+        resumeWaitingAfterCancel('');
+        alert('שגיאת תקשורת. נסה שוב.');
+        return;
+      }
       // Restore session defaults
       sessionData.language = sessionData._defaultLanguage || 'he';
       sessionData.license = sessionData._defaultLicense || 'B';
@@ -3035,6 +3084,9 @@
       showScreen('screenIdForm');
       saveExamineeState('screenIdForm');
     }).catch(function() {
+      // Until r35.1 the waiting screen was left here with its poll stopped:
+      // an approval or a reset never reached it again.
+      resumeWaitingAfterCancel('');
       alert('שגיאת תקשורת. נסה שוב.');
     });
   }
