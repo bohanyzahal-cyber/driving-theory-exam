@@ -517,6 +517,19 @@ function handleCorrectExamineeMeta(p) {
   var newSite = (typeof p.site !== 'undefined' && p.site !== null) ? String(p.site).trim() : '';
   var newPop = (typeof p.population !== 'undefined' && p.population !== null) ? String(p.population).trim() : '';
   var newPhone = (typeof p.phone !== 'undefined' && p.phone !== null) ? String(p.phone).trim() : null;  // null = "not sent" → don't touch
+  // r35.2 (review r35.2 verification): the corrected phone is held to the rule
+  // registration holds it to (examinee.html validateIdForm: 9-10 digits once
+  // everything else is stripped), and refused BEFORE anything is written — it
+  // used to land as whatever the request said. Empty = leave the phone as it is:
+  // examiner.html pre-fills the field with the row's phone, which a manual row
+  // may not have, and an empty field must not block a site or ID correction.
+  if (newPhone === '') newPhone = null;
+  if (newPhone !== null) {
+    var phoneDigits = newPhone.replace(/[^0-9]/g, '');
+    if (phoneDigits.length < 9 || phoneDigits.length > 10) {
+      return jsonResponse({ status: 'error', code: 'invalid_phone', message: 'מספר טלפון לא תקין — נדרשות 9–10 ספרות' });
+    }
+  }
   var newId = (typeof p.newIdNumber !== 'undefined' && p.newIdNumber !== null) ? String(p.newIdNumber).trim() : '';
   // Only apply an id change when it's a valid digit string AND actually different.
   var applyId = (newId && /^\d{5,10}$/.test(newId) && normalizeId(newId) !== normalizeId(p.idNumber));
@@ -537,7 +550,7 @@ function handleCorrectExamineeMeta(p) {
       if (newPhone !== null) {
         var phoneCell = sheet.getRange(rowIdx, 4); // D (idx 3) = טלפון
         phoneCell.setNumberFormat('@');
-        phoneCell.setValue(newPhone);
+        phoneCell.setValue(cellSafe(newPhone));   // r35.2: '+972…' stays text, whatever the cell format
       }
       if (newSite) sheet.getRange(rowIdx, 11).setValue(cellSafe(newSite));   // K (idx 10) = אתר (r35.2: as text)
       if (newPop) sheet.getRange(rowIdx, 20).setValue(cellSafe(newPop));     // T (idx 19) = אוכלוסיה

@@ -1727,6 +1727,34 @@ test('r35.2 m1: rows copied from ממתינים — timeout fail, סיים יד�
   assert.equal(audit[4], 5, 'numbers stay numbers');
 });
 
+// r35.2 (the r35.2 verification's MINOR): the examiner's correction of an
+// examinee's details wrote the phone as the request sent it — no escape, no
+// content rule. Now: the registration rule (9-10 digits once everything else
+// is stripped), refused before any write, and written as text.
+test('r35.2: correctExamineeMeta — the phone follows the registration rule and is written as text', () => {
+  const row = resultRow('LIVE0001', idOf(6), NOW - MIN);
+  const e = r35Env({ 'תוצאות': [RESULTS_HEADER, row] });
+  const correct = extra => postJson(e, Object.assign({ action: 'correctExamineeMeta', origin: 'examiner-app',
+    sessionCode: 'LIVE0001', idNumber: idOf(6), newIdNumber: idOf(6) }, PLAIN_EXAMINER, extra));
+  const stored = () => e.rows('תוצאות')[1];
+  for (const bad of ['=HYPERLINK("https://x.invalid","x")', '12345678', '05012345678', '+972-50-123-45678', 'abc']) {
+    const reply = correct({ phone: bad, site: 'בסיס 7' });
+    assert.deepEqual(reply, { status: 'error', code: 'invalid_phone', message: 'מספר טלפון לא תקין — נדרשות 9–10 ספרות' }, bad);
+    assert.equal(stored()[3], '0500000000', 'nothing is written: ' + bad);
+    assert.equal(stored()[10], 'בסיס 6', 'not even the site of the same request');
+  }
+  assert.equal(correct({ phone: '+972501234567' }).code, 'invalid_phone', '12 digits is not a registration phone either');
+  assert.equal(correct({ phone: '050-1234567' }).status, 'ok');
+  assert.equal(stored()[3], '050-1234567');
+  assert.equal(correct({ phone: '+501234567' }).status, 'ok', 'nine digits behind a +');
+  assert.equal(stored()[3], '\'+501234567', 'and a leading + is stored as text, never a formula');
+  // An empty field leaves the phone alone — examiner.html pre-fills the row's
+  // phone, and a manual row may have none: it must not block a site correction.
+  assert.equal(correct({ phone: '', site: 'בסיס 7' }).status, 'ok');
+  assert.equal(stored()[3], '\'+501234567');
+  assert.equal(stored()[10], 'בסיס 7');
+});
+
 // r35.1 (MASTER_PLAN v2 §9.2 step P, §10.3; KNOWN_ISSUES #45): practice moves to
 // the new system as one flow. Script Property PRACTICE_MOVED of the REPORTS
 // project; PRACTICE_MOVED_URL is quoted in the notice.

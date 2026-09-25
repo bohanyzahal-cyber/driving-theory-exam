@@ -594,7 +594,8 @@
   - "סיים ידנית" (`forceComplete`);
   - שורת ההארכה (`addExamTime`: השם שנקרא, והסיבה החופשית של הבוחן);
   - שורת הפסילה, עכשיו כולה (גם דרגה ושמע).
-  - ובאותה הזדמנות, טקסט שהבוחן מקליד: `createSession`, `updateSession`, `submitManualResult`, `correctExamineeMeta` (אתר, אוכלוסייה), ותיקון המפקד (שם וסיבה).
+  - ובאותה הזדמנות, טקסט שהבוחן מקליד: `createSession`, `updateSession`, `submitManualResult`, `correctExamineeMeta` (אתר, אוכלוסייה, טלפון), ותיקון המפקד (שם וסיבה).
+  - **הטלפון בתיקון פרטי נבחן** (`correctExamineeMeta`, ממצא MINOR של אימות r35.2): נכתב כמו שנשלח, בלי escape ובלי בדיקת תוכן. עכשיו אותו כלל של ההרשמה (9–10 ספרות אחרי הסרת כל השאר), סירוב `invalid_phone` ("מספר טלפון לא תקין — נדרשות 9–10 ספרות") **לפני** כל כתיבה — גם האתר והאוכלוסייה של אותה בקשה לא נכתבים — ו-`cellSafe` בכתיבה. שדה ריק משאיר את הטלפון כמו שהוא (הדף ממלא מראש את הטלפון של השורה, ולשורה ידנית אולי אין). בדיקה: `api_reliability` "r35.2: correctExamineeMeta".
   - **הכלל עכשיו:** כל כתיבה של טקסט שמגיע מבקשה, **וכל כתיבה של ערך שנקרא מגיליון**, עוברת `cellSafe`. ערכים שהשרת בונה בעצמו (קוד סשן, חותמות זמן, JSON של מפה, טוקנים, קישור WhatsApp) לא צריכים.
 - **m2 — `exam.html` נחסם ב-`PRACTICE_MOVED`.** `exam.html` הוא **מבחן השמע** העצמאי (בלי בוחן; מנקד מקומית, שולח את התוצאה לפרויקט Apps Script משלו, ומפיק PDF ו-WhatsApp). הקריאה היחידה שלו לפרויקט הדו"חות היא `startPractice` עם `mode=exam` ו-`standaloneIdNumber` (`exam.html:685`). זה מבחן, לא תרגול, ולכן הקריאה הזו פטורה: `PRACTICE_MOVED` מוגדר, או אפילו שגוי, לא עוצר אותה, והיא לא קוראת את המאפיין בכלל (`isStandaloneAudioExamStart`, `20_auth.js`). `mode=category`, או `startPractice` בלי `standaloneIdNumber` (דף התלמיד), עדיין נחסמים. העברת מבחן השמע למערכת החדשה היא החלטה נפרדת, עם מתג משלה.
 - **m4:** `morning_check.js` מפנה ל-OPERATIONS §12 עבור `PRACTICE_MOVED`.

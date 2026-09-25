@@ -3535,6 +3535,13 @@ function handleCorrectExamineeMeta(p) {
   var newSite = (typeof p.site !== 'undefined' && p.site !== null) ? String(p.site).trim() : '';
   var newPop = (typeof p.population !== 'undefined' && p.population !== null) ? String(p.population).trim() : '';
   var newPhone = (typeof p.phone !== 'undefined' && p.phone !== null) ? String(p.phone).trim() : null;
+  if (newPhone === '') newPhone = null;
+  if (newPhone !== null) {
+    var phoneDigits = newPhone.replace(/[^0-9]/g, '');
+    if (phoneDigits.length < 9 || phoneDigits.length > 10) {
+      return jsonResponse({ status: 'error', code: 'invalid_phone', message: 'מספר טלפון לא תקין — נדרשות 9–10 ספרות' });
+    }
+  }
   var newId = (typeof p.newIdNumber !== 'undefined' && p.newIdNumber !== null) ? String(p.newIdNumber).trim() : '';
   var applyId = (newId && /^\d{5,10}$/.test(newId) && normalizeId(newId) !== normalizeId(p.idNumber));
   if (!newSite && !newPop && newPhone === null && !applyId) {
@@ -3554,7 +3561,7 @@ function handleCorrectExamineeMeta(p) {
       if (newPhone !== null) {
         var phoneCell = sheet.getRange(rowIdx, 4);
         phoneCell.setNumberFormat('@');
-        phoneCell.setValue(newPhone);
+        phoneCell.setValue(cellSafe(newPhone));
       }
       if (newSite) sheet.getRange(rowIdx, 11).setValue(cellSafe(newSite));
       if (newPop) sheet.getRange(rowIdx, 20).setValue(cellSafe(newPop));

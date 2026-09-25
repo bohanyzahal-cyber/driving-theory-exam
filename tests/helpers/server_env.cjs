@@ -95,6 +95,8 @@ function createEnv(options) {
             return this;
           },
           setFontWeight() { return this; },
+          // correctExamineeMeta formats the ID and phone cells as text first.
+          setNumberFormat() { return this; },
           getValue() { self.rangeReads++; self.cellsRead++; const row = self.rows[startRow - 1]; return row ? row[startCol - 1] : ''; },
           getValues() {
             self.rangeReads++;
