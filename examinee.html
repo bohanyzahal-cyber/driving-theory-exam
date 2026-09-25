@@ -1065,6 +1065,9 @@
         examineeData: examineeData,
         examineeToken: examineeToken,
         screen: screen || 'screenCode',
+        // r35.2 (n2): an open or refused "טעיתי?" cancel survives a reload — the
+        // start button must stay locked under a registration the examinee asked to drop.
+        cancel: { open: !!cancelPending, refused: !!awaitingReset },
         savedAt: Date.now()
       });
       sessionStorage.setItem(EXAMINEE_STATE_KEY, payload);
@@ -2586,7 +2589,9 @@
           // screen that already shows the instructions (review m3: no second
           // chime), nor to one whose cancel is still open.
           var instrAlreadyShown = instructionsShown();
-          if (!awaitingReset) stopApprovalPolling();
+          // (n1) nor while a cancel is still unanswered: the examiner's 'אפס'
+          // must reach this screen even when Google is the part that stalls.
+          if (!awaitingReset && !cancelPending) stopApprovalPolling();
           if (instrAlreadyShown || cancelPending || awaitingReset) teardownWaitingProtections();
           else notifyApprovedToExaminee();
           if (!instrAlreadyShown) showInstructions();
@@ -6606,6 +6611,10 @@
     if (sessionData.license) sessionData.license = String(sessionData.license);
     resetPollRoutes();          // the restored session may carry a gateway url
     restoreGatewayState();      // r33: a phone in the Google fallback stays there across a reload
+    // r35.2 (n2): the cancel flags come back BEFORE the re-save below writes them.
+    var savedCancel = (saved.screen === 'screenInstructions' && saved.cancel) || {};
+    cancelPending = !!savedCancel.open;
+    awaitingReset = !savedCancel.open && !!savedCancel.refused;
     saveExamineeState(saved.screen);   // this tab now owns the state
 
     // Recovery: if this examinee finished but their result never reached the
@@ -6738,6 +6747,28 @@
       // sending this examinee back to the code screen is how a stalling morning
       // used to lose a registration that was about to succeed. Resume the SAME
       // regKey series (the saved state carries it) and the poll instead.
+      // r35.2 (n2): a reload in the middle of an open or refused cancel comes
+      // back to exactly that: the open one is sent again by itself (no second
+      // confirm — the examinee already asked), the refused one keeps waiting
+      // for the examiner's 'אפס'; the start button stays locked in both, and the
+      // poll brings the reset (→ the form) or anything else.
+      if (cancelPending || awaitingReset) {
+        showScreen('screenInstructions');
+        applyUITranslations();
+        if (cancelPending) {
+          endCancel();
+          cancelPending = true;
+          cancelTries = 1;               // the resend is a retry, not a first attempt
+          setRegStatus('changeNoAnswer');
+        } else {
+          setRegStatus('changeRefused');
+        }
+        refreshStartButtonState();
+        startApprovalPolling();
+        if (instructionsShown()) teardownWaitingProtections();
+        if (cancelPending) sendCancel(cancelGen);
+        return;
+      }
       if (examineeData.registrationPending && !examineeToken) {
         showScreen('screenInstructions');
         applyUITranslations();

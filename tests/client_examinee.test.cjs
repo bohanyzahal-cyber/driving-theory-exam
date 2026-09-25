@@ -3511,6 +3511,85 @@ test('r35.2: no token and no answer — approved meanwhile: the start note is th
   assert.equal(page.t.state().screen, 'screenIdForm', 'the retried cancel lands: the form');
 });
 
+// r35.2 verification n1: an approval that arrives while the cancel is still
+// unanswered must not stop the poll — the examiner's אפס has to get through
+// even when it is Google (the cancel's route) that stalls.
+test('r35.2 n1: approved while the cancel is unanswered — the poll goes on, and the examiner\'s אפס opens the form', async () => {
+  let state = 'waiting';
+  const page = completePage({ reply: r => {
+    if (r.action === 'registerExaminee') return { __hang: true };
+    if (r.action === 'cancelRegistration') return { __network: true };          // Google never answers the cancel
+    if (r.kind === 'approval') return { status: 'ok', approval: state, audioMode: 'off', examMinutes: 40 };
+    return undefined;
+  } });
+  withDialogs(page);
+  await register(page);
+  page.el('changeSelectionWaiting').click();
+  await drain(); await page.timer.advance(100); await drain();
+  state = 'approved';
+  await page.timer.advance(3000); await drain();
+  assert.equal(page.el('instructionsPhase').style.display, 'block');
+  const approvedAt = page.timer.now;
+  await page.timer.advance(10000); await drain();
+  assert.ok(approvalPolls(page).filter(r => r.__at > approvedAt).length > 0, 'still polling after the approval');
+  state = 'cancelled';                                                           // the examiner presses 'אפס'
+  await page.timer.advance(10000); await drain();
+  assert.equal(page.t.state().screen, 'screenIdForm', 'the reset reached the phone, not only through the cancel');
+});
+
+// r35.2 verification n2: a reload must not forget an open or refused cancel.
+test('r35.2 n2: a reload during an unanswered cancel keeps the start locked and sends the cancel again', async () => {
+  const local = memoryStore(), session = memoryStore();
+  const first = completePage({ local, session, reply: r => r.action === 'cancelRegistration' ? { __network: true } : undefined });
+  withDialogs(first);
+  await register(first);                                                          // approved, token tok-1
+  first.el('changeSelectionInstructions').click();
+  await drain(); await first.timer.advance(100); await drain();
+  assert.equal(JSON.parse(session.getItem('ext_examinee_state')).cancel.open, true, 'the open cancel is in the saved state');
+  let cancels = 0;
+  const second = completePage({ local, session, reply: r => {
+    if (r.action === 'cancelRegistration') { cancels++; return { __network: true }; }
+    return undefined;                                                             // the poll: approved
+  } });
+  withDialogs(second);
+  await drain(); await second.timer.advance(3000); await drain();
+  assert.equal(second.t.state().screen, 'screenInstructions');
+  assert.equal(second.t.state().token, 'tok-1', 'a device that holds the token...');
+  second.el('airplaneCheckbox').checked = true;
+  second.el('airplaneCheckbox').fire('change');
+  assert.equal(second.el('startExamBtn').disabled, true, '...still cannot start under the open cancel');
+  assert.equal(second.el('startWaitToken').textContent, CHANGE_NO_ANSWER_HE);
+  assert.ok(cancels >= 1, 'the cancel is sent again after the reload, without a second confirm');
+  second.el('startExamBtn').disabled = false;
+  second.el('startExamBtn').click();
+  await drain();
+  assert.equal(second.sent('startExam').length, 0);
+});
+
+test('r35.2 n2: a reload after a "פרטים לא תואמים" refusal keeps waiting for אפס — then the form', async () => {
+  const local = memoryStore(), session = memoryStore();
+  const first = completePage({ local, session, reply: r => r.action === 'cancelRegistration' ? { status: 'error', message: 'פרטים לא תואמים' } : undefined });
+  withDialogs(first);
+  await register(first);                                                          // approved, token tok-1
+  first.el('changeSelectionInstructions').click();
+  await drain(); await first.timer.advance(100); await drain();
+  let reset = false;
+  const second = completePage({ local, session, reply: r => {
+    if (r.kind === 'approval') return { status: 'ok', approval: reset ? 'cancelled' : 'approved', audioMode: 'off', examMinutes: 40 };
+    return undefined;
+  } });
+  withDialogs(second);
+  await drain(); await second.timer.advance(3000); await drain();
+  second.el('airplaneCheckbox').checked = true;
+  second.el('airplaneCheckbox').fire('change');
+  assert.equal(second.el('startExamBtn').disabled, true, 'a valid token is not enough: the examinee asked to drop this registration');
+  assert.equal(second.el('startWaitToken').textContent, CHANGE_REFUSED_HE);
+  assert.equal(second.sent('cancelRegistration').length, 0, 'a refusal is not sent again');
+  reset = true;
+  await second.timer.advance(30000); await drain();
+  assert.equal(second.t.state().screen, 'screenIdForm', 'the examiner\'s אפס reaches the reloaded page');
+});
+
 test('r35.2: the cancel messages follow the examinee\'s language', async () => {
   const page = completePage({ reply: r => r.action === 'registerExaminee' ? { __hang: true }
     : r.action === 'cancelRegistration' ? { __network: true } : approvalWaits(r) });
