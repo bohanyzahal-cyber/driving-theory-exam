@@ -43,7 +43,6 @@
     .btn-login:hover { background: #0f172a; }
     .btn-login:disabled { opacity: 0.6; cursor: not-allowed; }
     .login-error { color: #dc2626; font-size: 0.9em; margin-top: 8px; text-align: center; display: none; }
-    .remember-row { display: flex; align-items: center; gap: 6px; margin-bottom: 14px; font-size: 0.9em; }
 
     /* Period buttons */
     .cmd-period-btn {
@@ -169,10 +168,6 @@
         <label for="loginPass">סיסמה</label>
         <input type="password" id="loginPass" placeholder="הזן סיסמה"/>
       </div>
-      <div class="remember-row">
-        <input type="checkbox" id="loginRemember"/>
-        <label for="loginRemember">זכור אותי</label>
-      </div>
       <button class="btn-login" id="btnLogin">התחבר</button>
       <div class="login-error" id="loginError"></div>
     </div>
@@ -279,6 +274,16 @@
 
   // ===== DOM helpers =====
   function $(id) { return document.getElementById(id); }
+  // r35 (KNOWN_ISSUES #43): EVERY value that reaches innerHTML goes through esc.
+  // The group names of adminDashboard are the `mode` / `license` strings that
+  // the no-login submitPracticeResult stored, so a caller could plant a script
+  // here (and read this origin's storage). Numbers are escaped too: one rule,
+  // no "this one is safe" exceptions.
+  function esc(v) {
+    return String(v === null || v === undefined ? '' : v).replace(/[&<>"']/g, function(c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
   function show(el) { if (typeof el === 'string') el = $(el); if (el) el.style.display = ''; }
   function hide(el) { if (typeof el === 'string') el = $(el); if (el) el.style.display = 'none'; }
 
@@ -374,13 +379,6 @@
 
         adminData = d.teacher;
         adminData.idNumber = idNumber;
-
-        // Remember me
-        if ($('loginRemember').checked) {
-          localStorage.setItem('admin_remember', JSON.stringify({ idNumber: idNumber, password: password }));
-        } else {
-          localStorage.removeItem('admin_remember');
-        }
 
         sessionStorage.setItem('admin_auth', JSON.stringify(adminData));
         enterDashboard();
@@ -488,10 +486,10 @@
     var deg = Math.round(pPct * 3.6);
 
     return '<div class="cmd-pie-wrap">'
-      + '<div class="cmd-pie" style="width:' + size + 'px;height:' + size + 'px;background:conic-gradient(#16a34a 0deg ' + deg + 'deg, #dc2626 ' + deg + 'deg 360deg);"></div>'
+      + '<div class="cmd-pie" style="width:' + esc(size) + 'px;height:' + esc(size) + 'px;background:conic-gradient(#16a34a 0deg ' + esc(deg) + 'deg, #dc2626 ' + esc(deg) + 'deg 360deg);"></div>'
       + '<div class="cmd-pie-legend">'
-      + '<div><span class="cmd-pie-legend-dot" style="background:#16a34a;"></span> עברו: ' + passed + ' (' + pPct + '%)</div>'
-      + '<div><span class="cmd-pie-legend-dot" style="background:#dc2626;"></span> נכשלו: ' + failed + ' (' + fPct + '%)</div>'
+      + '<div><span class="cmd-pie-legend-dot" style="background:#16a34a;"></span> עברו: ' + esc(passed) + ' (' + esc(pPct) + '%)</div>'
+      + '<div><span class="cmd-pie-legend-dot" style="background:#dc2626;"></span> נכשלו: ' + esc(failed) + ' (' + esc(fPct) + '%)</div>'
       + '</div></div>';
   }
 
@@ -543,26 +541,26 @@
       var key = tab + '_' + idx;
       var hasSubs = SUB_DIMS[tab] && Object.keys(SUB_DIMS[tab]).length > 0 && row.sub;
 
-      html += '<tr class="' + (hasSubs ? 'cmd-dd-toggle' : '') + '" ' + (hasSubs ? 'onclick="toggleDrilldown(\'' + key + '\')"' : '') + ' id="row_' + key + '">'
-        + '<td>' + (row.name || '-') + '</td>'
-        + '<td>' + (row.total || 0) + '</td>'
-        + '<td>' + (row.passed || 0) + '</td>'
-        + '<td>' + (row.failed || 0) + '</td>'
-        + '<td class="' + rateCls + '">' + passRate + '%</td>'
-        + '<td>' + (row.avgScore != null ? row.avgScore + '%' : '-') + '</td>'
-        + '<td>' + (row.students || 0) + '</td>'
+      html += '<tr class="' + (hasSubs ? 'cmd-dd-toggle' : '') + '" ' + (hasSubs ? 'onclick="toggleDrilldown(\'' + esc(key) + '\')"' : '') + ' id="row_' + esc(key) + '">'
+        + '<td>' + esc(row.name || '-') + '</td>'
+        + '<td>' + esc(row.total || 0) + '</td>'
+        + '<td>' + esc(row.passed || 0) + '</td>'
+        + '<td>' + esc(row.failed || 0) + '</td>'
+        + '<td class="' + rateCls + '">' + esc(passRate) + '%</td>'
+        + '<td>' + (row.avgScore != null ? esc(row.avgScore) + '%' : '-') + '</td>'
+        + '<td>' + esc(row.students || 0) + '</td>'
         + '</tr>';
 
       if (hasSubs) {
         var subDims = SUB_DIMS[tab];
         var firstSub = Object.keys(subDims)[0];
-        html += '<tr class="cmd-dd-panel" id="panel_' + key + '"><td colspan="7">';
+        html += '<tr class="cmd-dd-panel" id="panel_' + esc(key) + '"><td colspan="7">';
         html += '<div style="margin-bottom:6px;">';
         Object.keys(subDims).forEach(function(sd) {
-          html += '<button class="cmd-sub-tab-btn ' + (sd === firstSub ? 'active' : '') + '" onclick="event.stopPropagation();switchSubTab(\'' + key + '\',\'' + sd + '\')" data-sub="' + sd + '">' + subDims[sd] + '</button>';
+          html += '<button class="cmd-sub-tab-btn ' + (sd === firstSub ? 'active' : '') + '" onclick="event.stopPropagation();switchSubTab(\'' + esc(key) + '\',\'' + esc(sd) + '\')" data-sub="' + esc(sd) + '">' + esc(subDims[sd]) + '</button>';
         });
         html += '</div>';
-        html += '<div id="subtable_' + key + '">';
+        html += '<div id="subtable_' + esc(key) + '">';
         html += renderSubTable(row.sub ? row.sub[firstSub] : {});
         html += '</div>';
         html += '</td></tr>';
@@ -604,11 +602,11 @@
       } catch(e) {}
 
       html += '<tr>'
-        + '<td>' + dateStr + '</td>'
-        + '<td>' + (row.total || 0) + '</td>'
-        + '<td>' + (row.passed || 0) + '</td>'
-        + '<td>' + (row.failed || 0) + '</td>'
-        + '<td class="' + rateCls + '">' + passRate + '%</td>'
+        + '<td>' + esc(dateStr) + '</td>'
+        + '<td>' + esc(row.total || 0) + '</td>'
+        + '<td>' + esc(row.passed || 0) + '</td>'
+        + '<td>' + esc(row.failed || 0) + '</td>'
+        + '<td class="' + rateCls + '">' + esc(passRate) + '%</td>'
         + '</tr>';
     });
 
@@ -636,12 +634,12 @@
       var passRate = row.total ? Math.round((row.passed || 0) / row.total * 100) : 0;
       var rateCls = passRate >= 60 ? 'good' : 'bad';
       html += '<tr>'
-        + '<td>' + (row.name || row.label || '-') + '</td>'
-        + '<td>' + (row.total || 0) + '</td>'
-        + '<td>' + (row.passed || 0) + '</td>'
-        + '<td>' + (row.failed || 0) + '</td>'
-        + '<td class="' + rateCls + '">' + passRate + '%</td>'
-        + '<td>' + (row.avgScore != null ? row.avgScore + '%' : '-') + '</td>'
+        + '<td>' + esc(row.name || row.label || '-') + '</td>'
+        + '<td>' + esc(row.total || 0) + '</td>'
+        + '<td>' + esc(row.passed || 0) + '</td>'
+        + '<td>' + esc(row.failed || 0) + '</td>'
+        + '<td class="' + rateCls + '">' + esc(passRate) + '%</td>'
+        + '<td>' + (row.avgScore != null ? esc(row.avgScore) + '%' : '-') + '</td>'
         + '</tr>';
     });
 
@@ -740,16 +738,11 @@
       if (e.key === 'Enter') $('loginPass').focus();
     });
 
-    // Remember me - restore
-    try {
-      var rem = localStorage.getItem('admin_remember');
-      if (rem) {
-        var obj = JSON.parse(rem);
-        $('loginId').value = obj.idNumber || '';
-        $('loginPass').value = obj.password || '';
-        $('loginRemember').checked = true;
-      }
-    } catch(e) {}
+    // r35 (KNOWN_ISSUES #43): "זכור אותי" stored the admin ID AND PASSWORD in
+    // cleartext in localStorage, on an origin ~18 public sites share. It is
+    // gone; whatever an earlier version left in this browser is erased here.
+    // The login itself lasts the tab (sessionStorage 'admin_auth', the token).
+    try { localStorage.removeItem('admin_remember'); } catch(e) {}
 
     // Session restore
     try {

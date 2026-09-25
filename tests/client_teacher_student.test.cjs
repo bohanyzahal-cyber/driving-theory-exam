@@ -843,3 +843,80 @@ test('sw-student.js: parses, is GET-only and precaches the shared modules', () =
   assert.ok(!/bank\/manifest\.json/.test(src), 'no bank manifest in the shell');
   assert.ok(!/'\.\/bank\//.test(src), 'no bank file in the shell');
 });
+
+// r35 (25/09/2026, KNOWN_ISSUES #43, review 09 F-08): the no-login action
+// submitPracticeResult stored `mode` / `license` as sent, adminDashboard groups
+// by them, and admin.html put the group names into innerHTML as they were — an
+// anonymous caller could run script in the admin page, on the origin where
+// "זכור אותי" kept the admin's ID and PASSWORD in cleartext. The page is run
+// here for real against a fake DOM, with data that carries markup everywhere.
+function adminPage(answers) {
+  const admin = fs.readFileSync(path.join(app, 'admin.html'), 'utf8').replace(/\r\n/g, '\n');
+  const code = section(admin, '<script>\n(function() {', '</script>').slice('<script>'.length);
+  const els = {}, listeners = {};
+  const el = id => els[id] || (els[id] = { id, value: '', style: {}, textContent: '', innerHTML: '', checked: false, disabled: false,
+    classList: { add() {}, remove() {}, contains() { return false; }, toggle() {} },
+    addEventListener(type, fn) { listeners[id + ':' + type] = fn; }, setAttribute() {}, getAttribute() { return null; },
+    querySelectorAll() { return []; }, focus() {} });
+  const local = new Map([['admin_remember', JSON.stringify({ idNumber: '123456789', password: 'hunter2' })]]);
+  const session = new Map();
+  if (answers.loggedIn) session.set('admin_auth', JSON.stringify({ name: 'אדמין', idNumber: '123456789', token: 'tok-admin' }));
+  const storage = m => ({ getItem: k => (m.has(k) ? m.get(k) : null), setItem: (k, v) => { m.set(k, String(v)); }, removeItem: k => { m.delete(k); } });
+  const sent = [];
+  const ctx = {
+    console: quiet, document: { getElementById: el, querySelectorAll: () => [] },
+    localStorage: storage(local), sessionStorage: storage(session), navigator: {},
+    fetch: (url, opts) => {
+      sent.push({ url: String(url), body: opts && opts.body ? String(opts.body) : '' });
+      const answer = opts && opts.method === 'POST' ? answers.login : answers.dashboard;
+      return Promise.resolve({ json: () => Promise.resolve(JSON.parse(JSON.stringify(answer))) });
+    },
+    alert() {}, setTimeout, clearTimeout
+  };
+  ctx.window = ctx;
+  vm.createContext(ctx);
+  vm.runInContext(code, ctx, { filename: 'admin.html' });
+  return { ctx, el, listeners, local, session, sent };
+}
+const EVIL = '<img src=x onerror="alert(1)">';
+const EVIL_DASHBOARD = { status: 'ok', data: {
+  overall: { total: 2, passed: 1, failed: 1, passRate: 50, avgScore: 70, students: 2 },
+  byLicense: { [EVIL]: { total: 2, passed: 1, failed: 1, passRate: '<b>50</b>', avgScore: 70, students: 2,
+    sub: { byMode: { '<svg onload=alert(2)>': { total: 1, passed: 1, failed: 0, avgScore: '"><script>alert(3)</script>' } },
+      byEnrollment: {} } } },
+  byMode: {}, byEnrollment: {}, byClass: {}, byDay: { '<i>22/09/2026</i>': { total: 1, passed: 1, failed: '<u>0</u>' } } } };
+
+test('r35: admin.html escapes every value it renders — group names, sub-groups, days and numbers', async () => {
+  const page = adminPage({ loggedIn: true, dashboard: EVIL_DASHBOARD });
+  await drain();
+  const table = page.el('cmdBreakdownContent').innerHTML;
+  assert.ok(table.includes('&lt;img src=x onerror=&quot;alert(1)&quot;&gt;'), 'the group name is shown as text: ' + table.slice(0, 300));
+  assert.ok(table.includes('&lt;b&gt;50&lt;/b&gt;'), 'a number field is escaped too');
+  assert.ok(table.includes('&lt;svg onload=alert(2)&gt;'), 'the drill-down sub-table');
+  assert.ok(table.includes('&quot;&gt;&lt;script&gt;alert(3)&lt;/script&gt;'), 'and its numbers');
+  assert.doesNotMatch(table, /<(img|svg|script|b|i|u)[\s>]/i, 'no markup from the data survives');
+  page.ctx.switchSubTab('byLicense_0', 'byMode');
+  assert.doesNotMatch(page.el('subtable_byLicense_0').innerHTML, /<(svg|script)[\s>]/i, 'the sub-tab switch escapes as well');
+  page.ctx.selectTab({ classList: { add() {} }, getAttribute: () => 'byDay' });
+  const days = page.el('cmdBreakdownContent').innerHTML;
+  assert.ok(days.includes('&lt;i&gt;22/09/2026&lt;/i&gt;') && days.includes('&lt;u&gt;0&lt;/u&gt;'), days);
+  assert.doesNotMatch(days, /<(i|u)>/);
+});
+
+test('r35: admin.html stores no password — "זכור אותי" is gone and an old stored password is erased', async () => {
+  const page = adminPage({ loggedIn: false, dashboard: { status: 'ok', data: { overall: {} } },
+    login: { status: 'ok', teacher: { name: 'אדמין', role: 'אדמין', token: 'tok-new' } } });
+  assert.equal(page.local.has('admin_remember'), false, 'the cleartext password an earlier version saved is deleted on load');
+  assert.equal(page.el('loginPass').value, '', 'and never put back into the form');
+  page.el('loginId').value = '123456789';
+  page.el('loginPass').value = 'secret-pass';
+  page.listeners['btnLogin:click']();
+  await drain();
+  assert.ok(page.sent.some(s => s.body.includes('teacherLogin')), 'the login was sent');
+  const stored = [...page.local.values(), ...page.session.values()].join('\n');
+  assert.ok(stored.includes('tok-new'), 'the session keeps the token');
+  assert.equal(stored.indexOf('secret-pass'), -1, 'the password is in no storage at all');
+  const html = fs.readFileSync(path.join(app, 'admin.html'), 'utf8');
+  assert.equal(html.indexOf('loginRemember'), -1, 'no remember-me checkbox');
+  assert.doesNotMatch(html, /setItem\(\s*'admin_remember'/);
+});
