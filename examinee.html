@@ -1148,8 +1148,153 @@
       autoReadEnabled: autoReadEnabled,
       examTimeMinutes: examTimeMinutes,
       currentDQEventId: currentDQEventId,
-      appliedExtraMinutes: appliedExtraMinutes
+      appliedExtraMinutes: appliedExtraMinutes,
+      // Whose exam this is (review of E3, 25/09/2026). The blob used to carry
+      // no owner and no age, so one an earlier examinee left in the tab was
+      // restored — and SUBMITTED — as the exam of whoever registered next.
+      owner: activeExamOwner(),
+      savedAt: Date.now()
     });
+  }
+
+  // The identity the blob is matched on (session, id, token), plus what that
+  // examinee's result needs if it ever has to be sent without them on screen
+  // (rescueForeignActiveExam) — the same fields renderExamDone sends.
+  function activeExamOwner() {
+    return {
+      sessionCode: sessionCode,
+      idNumber: examineeData.idNumber,
+      examineeToken: examineeToken,
+      fullName: examineeData.fullName,
+      phone: examineeData.phone,
+      license: examineeData.license || sessionData.license || 'B',
+      language: examineeData.language || sessionData.language || 'he',
+      languageHistory: languageHistory.slice(),
+      examinerName: sessionData.examinerName || '',
+      site: examineeData.site || sessionData.site || '',
+      classroom: sessionData.classroom || '',
+      population: examineeData.population || '',
+      audioMode: sessionData.audioMode || 'off'
+    };
+  }
+
+  // Is this saved exam the restored examinee's own? An exact match of session,
+  // id and token. A blob written before owners were stamped (the r34 page)
+  // counts only when the restored state says the exam screen: _beginExam
+  // writes the two together, and any later registration in the tab rewrites
+  // the state to another screen.
+  function activeExamBelongsTo(blob, state) {
+    if (!blob || !state || !state.examineeData) return false;
+    var o = blob.owner;
+    if (!o) return state.screen === 'screenExam';
+    return String(o.sessionCode || '') === String(state.sessionCode || '') &&
+      String(o.idNumber || '') === String(state.examineeData.idNumber || '') &&
+      String(o.examineeToken || '') === String(state.examineeToken || '');
+  }
+
+  // The saved exam in this tab if it is `state`'s own (state null = nobody on
+  // this page). Any other blob is settled here, and null comes back:
+  //  - another examinee's exam is THEIR result, and it is never dropped: it is
+  //    stored and sent under their own session, id and token by the same rules
+  //    as any unsent result found on this device (rescueForeignActiveExam);
+  //  - unless the device disqualified that exam before the page went away —
+  //    the DQ is its outcome (the rule adoptRestoredState applies to its own);
+  //  - a blob that names no owner with a token (the r34 page, outside the exam
+  //    screen) cannot be attributed to anyone: it is dropped, and logged.
+  function settleActiveExam(state) {
+    var blob = loadActiveExam();
+    if (!blob) return null;
+    if (activeExamBelongsTo(blob, state)) return blob;
+    try { sessionStorage.removeItem('ext_exam_closing'); } catch (e) {}   // that exam's unload marker
+    var o = blob.owner;
+    var late = blob.examDeadline ? Math.round((Date.now() - blob.examDeadline) / 1000) + 's' : '?';
+    if (!o || !o.sessionCode || !o.idNumber || !o.examineeToken) {
+      logEvent('active_exam_unowned_dropped', late);
+      clearActiveExam();
+      return null;
+    }
+    var dqOnDevice = false;
+    try { dqOnDevice = localStorage.getItem('examEnded_' + o.sessionCode + '_' + o.idNumber) === 'dq'; } catch (e) {}
+    if (dqOnDevice) {
+      logEvent('active_exam_foreign_dq', late);
+      clearActiveExam();
+      return null;
+    }
+    logEvent('active_exam_rescued', late);
+    rescueForeignActiveExam(blob);
+    return null;
+  }
+
+  // Another examinee's saved exam, sent as their result: the payload
+  // renderExamDone would have built on their page (their answers exactly as
+  // displayed; an unanswered question with the texts the blob kept), stamped
+  // with THEIR identity — the page's own token is never attached, because the
+  // payload carries one. Stored before it is sent, the close guard armed, and
+  // then submitWithRetry: removed only once the server confirms it; a refusal
+  // as superseded keeps it for the examiner (showPendingRecoveryNotice). The
+  // blob goes only once the stored copy exists.
+  function rescueForeignActiveExam(blob) {
+    var o = blob.owner;
+    var questions = blob.activeQuestions || [], answers = blob.userAnswers || [], orders = blob.shuffledOrders || [];
+    var raw = [];
+    for (var i = 0; i < TOTAL_QUESTIONS; i++) {
+      var given = answers[i];
+      if (given) {
+        raw.push({ qIdx: i, selected: given.chosenIndex, langAtAnswer: given.langAtAnswer || o.language, q: given.q, a: given.a });
+        continue;
+      }
+      var order = (orders[i] && orders[i].order) || [0, 1, 2, 3];
+      var entry = savedRecordEntry(blob.records, questions[i], o.language, o.license);
+      var texts = entry ? entry.a : ['', '', '', ''];
+      raw.push({ qIdx: i, selected: -1, langAtAnswer: o.language,
+        q: entry ? entry.t : MISSING_QUESTION_TEXT,
+        a: order.map(function(idx) { return texts[idx]; }) });
+    }
+    var elapsed = blob.examStartTime ? Math.round((Date.now() - blob.examStartTime) / 1000) : 0;
+    var maxSec = (blob.examTimeMinutes || BASE_EXAM_MINUTES) * 60;
+    if (elapsed > maxSec) elapsed = maxSec;
+    var payload = {
+      action: 'submitResult',
+      examineeToken: o.examineeToken,
+      sessionCode: o.sessionCode,
+      idNumber: o.idNumber,
+      fullName: o.fullName || '',
+      phone: o.phone || '',
+      license: o.license,
+      language: o.language,
+      languageHistory: (o.languageHistory && o.languageHistory.length) ? o.languageHistory : [o.language],
+      total: TOTAL_QUESTIONS,
+      time: Math.floor(elapsed / 60) + ' דק\' ' + (elapsed % 60 < 10 ? '0' : '') + (elapsed % 60) + ' שנ\'',
+      examinerName: o.examinerName,
+      site: o.site,
+      classroom: o.classroom,
+      population: o.population,
+      audioMode: o.audioMode,
+      device: getDeviceClass(),
+      answers: raw
+    };
+    var stored = false;
+    try { stored = persistPendingResult(payload); } catch (e) {}
+    armPendingResultGuard();
+    submitWithRetry(payload, 3);
+    if (stored) clearActiveExam();
+  }
+
+  // One question's texts from a blob's saved records ([{id, l: {lang: {t, a, v}}}],
+  // QuestionBank.exportIds' shape), read in place: another examinee's texts
+  // are never imported into the bank of the page on screen. Hebrew when the
+  // language has none, null when neither is there.
+  function savedRecordEntry(records, q, lang, license) {
+    if (!Array.isArray(records) || !q || q.id == null) return null;
+    for (var i = 0; i < records.length; i++) {
+      var r = records[i];
+      if (!r || String(r.id) !== String(q.id) || !r.l) continue;
+      var e = r.l[lang] || r.l.he;
+      if (!e) return null;
+      var v = e.v && license ? e.v[String(license)] : null;
+      return { t: (v && v.t) || e.t, a: (v && v.a) || e.a };
+    }
+    return null;
   }
 
   function loadActiveExam() {
@@ -1206,6 +1351,8 @@
     // A leftover id was reused by the next DQ on this device; the server answers
     // 'ok' for an id it already has WITHOUT touching ממתינים, so the examiner
     // never saw the new DQ, and 45 s later the phone resumed by itself.
+    // Only the id goes: a DQ of theirs the server has not confirmed yet keeps
+    // being sent under its own id and identity (forgetDQEvent, dqHandedOff).
     forgetDQEvent();
     // E1: extra minutes are per examinee. A leftover total made the next
     // examinee's grant look like "nothing new" and it was silently dropped.
@@ -3312,6 +3459,14 @@
   var dqSeenOnServer = false;               // an answer showed the row out of in_exam after it — or the DQ came from the server
   var dqRetryTimer = null;
   var dqOverturnIgnoredLogged = false;
+  // Review of E11 (25/09/2026): DQ events of an EARLIER examinee on this page
+  // that the server has not confirmed yet. forgetDQEvent hands them over here,
+  // and postDQUntilConfirmed keeps delivering each one — its own id, its own
+  // examinee's session, id and token, all in the payload — until the server
+  // confirms or refuses it or DQ_RETRY_FOR_MS runs out. Nothing cancels them:
+  // an overturn or a reset can only reach the examinee whose DQ the page is
+  // showing, never one who has already handed the device on.
+  var dqHandedOff = {};
 
   // A new DQ event (or '' when the DQ is over): forget what the last one learned
   // and stop its retries.
@@ -3331,11 +3486,25 @@
   // event's ack and dqSeenOnServer, so overturnIsReal() could say yes to the
   // pre-DQ copy at once. Called where an attempt begins and where the device
   // is handed on; the overturn path clears the same four fields itself.
+  // Review (25/09/2026): what is forgotten is the page's DQ, NOT its delivery.
+  // This used to call trackDQEvent(''), which stops the retries — and the DQ
+  // screen after a reload offers "נבחן הבא" at once, so a DQ that had not
+  // reached the server yet never did (the examiner never saw it). An
+  // unconfirmed event goes to dqHandedOff and keeps being sent; the next
+  // examinee's first DQ is a fresh id that trackDQEvent tracks from zero.
   function forgetDQEvent() {
     currentDQEventId = '';
     currentDQReason = '';
     provisionalDQSent = false;
-    trackDQEvent('');
+    if (dqTrackedFor && !dqAckAt && dqTrackedFor.indexOf('server:') !== 0) {
+      dqHandedOff[dqTrackedFor] = true;
+      logEvent('dq_handed_off', dqTrackedFor);
+    }
+    dqTrackedFor = '';
+    dqAckAt = 0;
+    dqSeenOnServer = false;
+    dqOverturnIgnoredLogged = false;
+    dqRetryTimer = null;      // a pending retry is the handed-off event's now: it runs, and nothing may clear it
   }
 
   function sendDQToServer(unloading) {
@@ -3348,10 +3517,19 @@
 
   function postDQUntilConfirmed(payload, firstAt, attempt) {
     var eventId = payload.dqEventId;
-    dqRetryTimer = null;
+    if (!dqHandedOff[eventId]) dqRetryTimer = null;   // a handed-off retry never held the page's timer
     apiPost(payload, CRITICAL_POST_TIMEOUT_MS).then(function(resp) {
-      if (eventId !== dqTrackedFor) return;         // overturned, or a newer event owns the page now
+      var handedOff = !!dqHandedOff[eventId];
+      if (eventId !== dqTrackedFor && !handedOff) return;   // overturned, or a newer event owns the page now
       if (resp && resp.status === 'ok') {
+        if (handedOff) {
+          // The previous examinee's DQ is in Google now; the push names THEIR
+          // row (the payload's identity), not the examinee on screen.
+          delete dqHandedOff[eventId];
+          logEvent('dq_ack_handed_off', eventId);
+          nudgeGatewayAfterWrite(payload.sessionCode, payload.idNumber, payload.examineeToken);
+          return;
+        }
         dqAckAt = Date.now();
         logEvent('dq_ack', eventId);
         nudgeGatewayAfterWrite();                   // the row is disqualified in Google as of this answer
@@ -3361,17 +3539,20 @@
       // "too many requests" / "busy" is worth waiting out.
       logEvent('dq_refused', String((resp && (resp.message || resp.code)) || 'no answer').slice(0, 60));
       if (resp && (resp.rateLimited || resp.retryable)) scheduleDQRetry(payload, firstAt, attempt, (Number(resp.waitSec) || 0) * 1000);
+      else delete dqHandedOff[eventId];
     }, function() {
-      if (eventId !== dqTrackedFor) return;
+      if (eventId !== dqTrackedFor && !dqHandedOff[eventId]) return;
       scheduleDQRetry(payload, firstAt, attempt, 0);
     });
   }
 
   function scheduleDQRetry(payload, firstAt, attempt, atLeastMs) {
-    if (Date.now() - firstAt > DQ_RETRY_FOR_MS) { logEvent('dq_gave_up', payload.dqEventId); return; }
+    var eventId = payload.dqEventId;
+    if (Date.now() - firstAt > DQ_RETRY_FOR_MS) { logEvent('dq_gave_up', eventId); delete dqHandedOff[eventId]; return; }
     var ms = Math.max(DQ_RETRY_MS[Math.min(attempt, DQ_RETRY_MS.length - 1)], atLeastMs || 0);
     logEvent('dq_retry', attempt + 1);
-    dqRetryTimer = setTimeout(function() { postDQUntilConfirmed(payload, firstAt, attempt + 1); }, ms);
+    var retry = setTimeout(function() { postDQUntilConfirmed(payload, firstAt, attempt + 1); }, ms);
+    if (!dqHandedOff[eventId]) dqRetryTimer = retry;
   }
 
   // The answer Apps Script (scanApprovalRows) and the Worker (NOT_FOUND) give an
@@ -3613,8 +3794,10 @@
           // soldier stuck on a pending DQ can be cleared, and both routes then
           // answer approval:'cancelled' — which this screen used to ignore,
           // leaving the phone on "ממתין להחלטת הבוחן" for good (Back blocked, a
-          // close prompt, no button). Same decision, same way out as the
-          // waiting screen (showApprovalDecision); a stale copy decides nothing.
+          // close prompt, no button). The same decision text as the waiting
+          // screen (showApprovalDecision), but its way out is the full device
+          // reset on the SAME session (resetForNextExaminee → the ID form),
+          // not restartRegistration's code screen; a stale copy decides nothing.
           stopDQOverturnPolling();
           showDQRegistrationClosed(data.approval);
         }
@@ -4757,7 +4940,10 @@
     timeRemaining = Math.max(0, Math.ceil((examDeadline - Date.now()) / 1000));
     updateTimerDisplay();
     try { saveActiveExam(); } catch (e) {}                // persist the extended deadline
-    showExtraTimeNotice(delta, totalExtra);
+    // Minutes that end before now change nothing the examinee can use (the
+    // expiry check, or E3 after a reload, submits the exam next): "⏱ הבוחן
+    // הוסיף X דקות" over the done screen would only mislead.
+    if (!examDeadline || examDeadline > Date.now()) showExtraTimeNotice(delta, totalExtra);
   }
 
   // Green banner confirming the examinee received more time (auto-hides).
@@ -4786,8 +4972,10 @@
   // onExtended: what "keep going" means for the caller. The running timer only
   // restarts itself; a page that reloaded after the deadline (E3,
   // resumeExpiredExamAfterReload) has no exam on screen yet and resumes it.
+  // doneOpts: handed to renderExamDone when the exam ends here (E3 passes
+  // noWorkerConfirm — see renderExamDone).
   var timerExpiryChecking = false;
-  function onTimerExpired(onExtended) {
+  function onTimerExpired(onExtended, doneOpts) {
     if (timerExpiryChecking || examSubmitted) return;
     timerExpiryChecking = true;
     // D13: the 30 s default meant that during a slow spell the exam auto-
@@ -4803,7 +4991,7 @@
         timerExpiryChecking = false;
         if (examSubmitted) return;
         if (examDeadline && Date.now() < examDeadline) (onExtended || startResumedTimer)();  // extra time granted — keep going
-        else { stopSpeaking(); renderExamDone(); }
+        else { stopSpeaking(); renderExamDone(doneOpts); }
       });
   }
 
@@ -5476,7 +5664,8 @@
   }
 
   // ========== Exam done ==========
-  function renderExamDone() {
+  // opts.noWorkerConfirm: no Worker watcher for this result (E3, see below).
+  function renderExamDone(opts) {
     stopSpeaking(); stopTimer();
     teardownSplitScreenDetection();
     teardownFullscreenEnforcement();
@@ -5484,6 +5673,9 @@
     examInProgress = false;
     examSubmitted = true;
     clearActiveExam();
+    // The exam is over on this device: there is no close-fail left for a later
+    // reload to cancel (the E3 check leaves the marker until it has decided).
+    try { sessionStorage.removeItem('ext_exam_closing'); } catch(e) {}
 
     var answeredCount = getAnsweredCount();
     var timeStr = getElapsedTimeStr();
@@ -5572,7 +5764,13 @@
     // through the Worker (r32.1, TODO 0א.7). See the WHY at
     // startSubmitConfirmPoll: the POST’s HTTP answer can be two minutes
     // behind the row it already wrote.
-    startSubmitConfirmPoll(payload);
+    // Review of E3 (25/09/2026): NOT after a reload past the deadline. There
+    // the close beacon's submitFailOnClose has usually made the row
+    // 'completed' already (0/30 "סגירת דפדפן"), so the watcher's first tick
+    // painted "✓ התוצאה התקבלה ונשמרה בשרת" — and its flag then hid the red
+    // "not sent" banner — while our POST was still in the air. For that result
+    // only the server's own answer to the POST turns the screen green.
+    if (!(opts && opts.noWorkerConfirm)) startSubmitConfirmPoll(payload);
 
     // Show done screen - NO score
     clearExamineeState();
@@ -6181,7 +6379,13 @@
   var hasRestoredSession = false;
   (function() {
     var found = loadExamineeState();
-    if (!found || !found.state || !found.state.sessionCode || !found.state.sessionData) return;
+    if (!found || !found.state || !found.state.sessionCode || !found.state.sessionData) {
+      // Nobody to restore — a saved exam still in this tab is somebody else's
+      // (their state expired, e.g. a tab brought back the next day): it is
+      // sent as theirs, never left for the next registration to inherit.
+      settleActiveExam(null);
+      return;
+    }
     var saved = found.state;
     // r31.3 (22/09/2026, seen live): the examiner sends the link of TODAY's
     // session, the phone still holds this morning's saved state (a closed
@@ -6192,7 +6396,9 @@
     // clock is running, and a stale link in the address bar must not erase it.
     var linked = sessionCodeFromUrl();
     if (linked && linked !== String(saved.sessionCode || '').toUpperCase()) {
-      var live = loadActiveExam();
+      // Only the saved examinee's OWN exam holds the state back; somebody
+      // else's is sent as theirs right here (settleActiveExam).
+      var live = settleActiveExam(saved);
       // E3: an exam whose deadline passed while the page was away still holds
       // unsent answers (adoptRestoredState submits them), so it counts too —
       // any saved exam blob is an attempt that has not been submitted yet.
@@ -6205,7 +6411,9 @@
     // that is somebody else's identity, so it is adopted only after they say so.
     if (found.fromLocal && saved.examineeData && saved.examineeData.idNumber) {
       confirmRestoredExaminee(saved, function() { adoptRestoredState(saved); }, function() {
-        // "נבחן חדש": keep the session (not personal), drop the identity.
+        // "נבחן חדש": keep the session (not personal), drop the identity —
+        // and any saved exam in this tab is not the new examinee's either.
+        settleActiveExam(null);
         sessionCode = saved.sessionCode;
         sessionData = saved.sessionData;
         resetPollRoutes();
@@ -6236,8 +6444,11 @@
 
     document.getElementById('topbarSub').textContent = sessionData.site + ' | ' + (LICENSE_LABELS[sessionData.license] || sessionData.license);
 
-    // Check if there's an active exam to resume (refresh during exam)
-    var activeExam = loadActiveExam();
+    // Check if there's an active exam to resume (refresh during exam). Only
+    // THIS examinee's own (review of E3, 25/09/2026): a blob another examinee
+    // left in the tab used to be resumed or submitted under this registration;
+    // settleActiveExam sends it under its own identity instead.
+    var activeExam = settleActiveExam(saved);
     if (activeExam && activeExam.examDeadline && examineeData.idNumber) {
       var msLeft = activeExam.examDeadline - Date.now();
       var dqOnDevice = false;
@@ -6404,6 +6615,11 @@
     autoReadEnabled = activeExam.autoReadEnabled || false;
     if (activeExam.examTimeMinutes) examTimeMinutes = activeExam.examTimeMinutes;
     if (activeExam.currentDQEventId) currentDQEventId = activeExam.currentDQEventId;
+    // The owner stamp carries the language path too; without it a reload
+    // started the path afresh, and the blob's owner copy with it.
+    if (activeExam.owner && Array.isArray(activeExam.owner.languageHistory) && activeExam.owner.languageHistory.length) {
+      languageHistory = activeExam.owner.languageHistory.slice();
+    }
     timeRemaining = Math.max(0, Math.ceil((activeExam.examDeadline - Date.now()) / 1000));
     examInProgress = true;
     examSubmitted = false;
@@ -6423,9 +6639,14 @@
   // The texts come from the blob, as on any reload; they are needed only for
   // the questions left unanswered (an answered one carries its own texts), and
   // the submit never waits on a network fetch for them.
+  // The close marker is read here but removed only once the check has decided
+  // (review, 25/09/2026): removed at the start, a second reload during the
+  // check (up to 60 s) lost it, and an extension then resumed the exam without
+  // cancelFailOnClose. renderExamDone removes it on the other branch.
+  // The done screen gets no Worker watcher (noWorkerConfirm, see renderExamDone).
   function resumeExpiredExamAfterReload(activeExam) {
     var wasClosing = false;
-    try { wasClosing = !!sessionStorage.getItem('ext_exam_closing'); sessionStorage.removeItem('ext_exam_closing'); } catch(ex) {}
+    try { wasClosing = !!sessionStorage.getItem('ext_exam_closing'); } catch(ex) {}
     logEvent('expired_on_reload', Math.round((Date.now() - activeExam.examDeadline) / 1000) + 's');
     if (activeExam.records) { try { QuestionBank.importRecords(activeExam.records); } catch(ex) {} }
     if (activeExam.bank) examBank = activeExam.bank;
@@ -6437,11 +6658,12 @@
         '<p style="color:#64748b; font-size:15px;">התשובות שלך שמורות במכשיר. בודקים מול השרת ושולחים אותן — אל תסגור את הדף.</p>' +
       '</div>';
     onTimerExpired(function() {
+      try { sessionStorage.removeItem('ext_exam_closing'); } catch(ex) {}
       if (wasClosing) {
         apiPostNoWait({ action: 'cancelFailOnClose', sessionCode: sessionCode, idNumber: examineeData.idNumber });
       }
       loadExamTextsForResume(activeExam.bank, activeExam.records, resumeExamUI);
-    });
+    }, { noWorkerConfirm: true });
   }
 
   // Re-arm the exam screen after a reload or a DQ overturn: same listeners, same

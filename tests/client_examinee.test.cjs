@@ -277,7 +277,7 @@ function completePage({ local = memoryStore(), session = memoryStore(), reply, g
   const scripts = [...examinee.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)].map(m => m[1]).filter(code => code.trim());
   for (let i = 0; i < scripts.length; i++) {
     let code = scripts[i];
-    if (code.includes('function renderExamDone()')) {
+    if (code.includes('function renderExamDone(')) {
       const end = code.lastIndexOf('})();');
       assert.ok(end >= 0, 'closure end found');
       code = code.slice(0, end) + exposure + code.slice(end);
@@ -2521,8 +2521,13 @@ test('source: the re-arm and the device push are wired exactly where §13.4/§13
   // Every write this page makes is announced: four confirmed ones push at once
   // (registration, start, result and — since r34 — the disqualification), three
   // fire-and-forget ones push NUDGE_AFTER_BEACON_MS later. One declaration,
-  // seven call sites, and no bare millisecond anywhere.
-  assert.equal((src.match(/\bnudgeGatewayAfterWrite\b/g) || []).length, 8, 'declared once, reached from seven writes');
+  // seven call sites, and no bare millisecond anywhere. (Review 25/09/2026: an
+  // eighth — a previous examinee's DQ confirmed after "נבחן הבא" pushes THEIR
+  // row, with the payload's own identity, like a resent result.)
+  assert.equal((src.match(/\bnudgeGatewayAfterWrite\b/g) || []).length, 9, 'declared once, reached from eight writes');
+  assert.match(section(src, '  function postDQUntilConfirmed(', '\n  }\n'),
+    /if \(handedOff\) \{[\s\S]*nudgeGatewayAfterWrite\(payload\.sessionCode, payload\.idNumber, payload\.examineeToken\);/,
+    'the handed-off DQ push names its own examinee, never the one on screen');
   assert.equal((src.match(/setTimeout\(nudgeGatewayAfterWrite, NUDGE_AFTER_BEACON_MS\)/g) || []).length, 3,
     'markFinished, cancelDisqualify, reportWarning');
   assert.ok(!/nudgeGatewayAfterWrite,\s*\d/.test(src), 'the delay is the named constant, never a number');
@@ -3004,4 +3009,182 @@ test('E3: an exam the device had already disqualified before the reload stays a 
   await drain(); await second.timer.advance(1000); await drain();
   assert.equal(second.sent('submitResult').length, 0, 'the DQ is the outcome, not the answers');
   assert.match(second.el('examArea').innerHTML, /המבחן נפסל/);
+});
+
+// ---- 25/09/2026, review of 2b8c1fb: three defects in the fixes above ----
+// docs_private/research_2026-09-25/review_fix_2b8c1fb.md, findings 1-3 (and 4, 11).
+
+/** Ages every saved examinee state past its 8 hours: a tab brought back the next day. */
+function expireSavedState(local, session) {
+  for (const store of [session, local]) {
+    for (const key of [...store.entries.keys()]) {
+      if (key !== 'ext_examinee_state' && !key.startsWith('ext_examinee_state_')) continue;
+      const state = JSON.parse(store.getItem(key));
+      state.savedAt = -9 * 60 * 60 * 1000;
+      store.setItem(key, JSON.stringify(state));
+    }
+  }
+}
+
+test('review 1: an exam an earlier examinee left in the tab is sent as THEIRS — never under the next registration', async () => {
+  const { local, session, savedAnswer } = await examInProgressStores();
+  expireBlob(session);                 // killed mid-exam; the tab came back after the deadline...
+  expireSavedState(local, session);    // ...and after its saved state's 8 hours
+  // The next registration in that tab is the same soldier re-testing: a new token.
+  let resultsReachable = false;
+  const reply = r => {
+    if (r.action === 'registerExaminee') return { status: 'ok', examineeToken: 'tok-X' };
+    if (r.kind === 'approval') return { status: 'ok', approval: 'waiting', audioMode: 'off' };
+    if (r.action === 'submitResult' && !resultsReachable) return { __network: true };
+    return undefined;
+  };
+  const mid = completePage({ local, session, reply });
+  await drain(); await mid.timer.advance(1000); await drain();
+  const stored = [...local.entries.keys()].filter(k => k.startsWith('pendingResult_')).map(k => JSON.parse(local.getItem(k)));
+  assert.equal(stored.length, 1, 'the earlier exam is stored as an unsent result the moment the page finds it');
+  assert.equal(stored[0].examineeToken, 'tok-1', 'under its own token');
+  assert.equal(stored[0].sessionCode, 'ABC12345');
+  assert.equal(stored[0].idNumber, '123456789');
+  assert.equal(stored[0].answers.length, TOTAL);
+  assert.equal(stored[0].answers[0].selected, savedAnswer.chosenIndex, 'with the answer as it was given');
+  assert.equal(stored[0].answers[1].q, BANK_FILES.he[1].t, 'and the texts the blob kept for an unanswered one');
+  assert.equal(session.getItem('ext_exam_active'), null, 'the blob goes once the stored copy exists');
+
+  await register(mid);
+  assert.equal(mid.t.state().token, 'tok-X');
+  assert.equal(mid.t.state().screen, 'screenInstructions');
+
+  // A reload on the waiting screen: the path that submitted it as tok-X.
+  resultsReachable = true;
+  const third = completePage({ local, session, reply });
+  await drain(); await third.timer.advance(5000); await drain();
+  const all = [...mid.sent('submitResult'), ...third.sent('submitResult')];
+  assert.ok(all.length >= 2, 'sent from both pages until the server had it');
+  assert.ok(all.every(r => r.examineeToken === 'tok-1'), 'the next registration\'s token never carried the earlier answers');
+  assert.equal(third.t.state().screen, 'screenInstructions', 'the new examinee is still waiting for the examiner');
+  assert.equal(third.t.state().inProgress, false);
+  assert.equal(third.t.state().token, 'tok-X');
+  assert.equal(third.t.hasPending(), false, 'and the earlier result left the device only once the server confirmed it');
+});
+
+test('review 2: after a reload past the deadline, a row the close beacon made "completed" does not paint the result green', async () => {
+  const { local, session } = await examInProgressStores();
+  expireBlob(session);
+  let hang = true;
+  const second = completePage({ local, session, reply(r) {
+    if (r.action === 'submitResult' && hang) return { __hang: true };
+    // submitFailOnClose landed before the reload: the row is completed (0/30 "סגירת דפדפן")
+    if (r.kind === 'status') return { status: 'ok', examStatus: 'completed', extraMinutes: 0 };
+    return undefined;
+  } });
+  await drain(); await second.timer.advance(1000); await drain();
+  assert.equal(second.t.state().screen, 'screenDone');
+  assert.equal(second.sent('submitResult').length, 1);
+  await second.timer.advance(CONFIRM_FALLBACK_MS * 3);
+  assert.equal(statusPolls(second).length, 1, 'the extension check, and no Worker watcher behind it');
+  assert.match(second.el('submitStatusBanner').innerHTML, /שולח/, 'our POST is still in the air, and the screen says so');
+  assert.doesNotMatch(second.el('submitStatusBanner').innerHTML, /התקבלה/, 'the close-fail row is not our result');
+  assert.equal(second.t.hasPending(), true);
+
+  await second.timer.advance(200000);                // the POST keeps timing out
+  assert.ok(second.sent('submitResult').length >= 3);
+  assert.ok(second.el('submitFailBanner'), 'the red banner is up');
+  assert.match(second.el('submitFailBanner').innerHTML, /עדיין לא נשלחה/, '"not sent yet" — which is the truth');
+
+  hang = false;                                      // the server answers the POST itself
+  await second.timer.advance(130000);
+  assert.match(second.el('submitStatusBanner').innerHTML, /התקבלה/, 'only the server\'s own answer turns it green');
+  assert.ok(!second.el('submitFailBanner'));
+  assert.equal(second.t.hasPending(), false);
+});
+
+test('review 3: "נבחן הבא" on the DQ screen after a reload keeps sending the unconfirmed DQ, under its own id, until the server has it', async () => {
+  let approval = 'approved', token = 'tok-1', oldId = '', dqReachable = false;
+  const reply = r => {
+    if (r.action === 'disqualify' && (!oldId || r.dqEventId === oldId) && !dqReachable) return { __network: true };
+    if (r.action === 'registerExaminee') return { status: 'ok', examineeToken: token };
+    if (r.kind === 'approval') return { status: 'ok', approval: approval, audioMode: 'off' };
+    return undefined;
+  };
+  const local = memoryStore(), session = memoryStore();
+  const first = completePage({ local, session, reply });
+  await register(first);
+  await startExam(first);
+  approval = 'in_exam';                              // the DQ below never reaches Google
+  first.setVisibility('hidden');
+  await first.timer.advance(2100);
+  first.setVisibility('visible'); await drain();     // the DQ screen, waiting for the examiner
+  assert.equal(first.t.state().dq, true);
+  assert.ok(local.getItem('examSuspended_ABC12345_123456789'));
+  oldId = first.sent('disqualify')[0].dqEventId;
+  assert.ok(oldId);
+
+  // The reload: the DQ screen offers "נבחן הבא" at once, and sends the DQ again.
+  const second = completePage({ local, session, reply });
+  await drain(); await second.timer.advance(1000); await drain();
+  assert.match(second.el('examArea').innerHTML, /resetForNextExaminee\(\)/);
+  const oldSends = () => second.sent('disqualify').filter(r => r.dqEventId === oldId);
+  assert.equal(oldSends().length, 1, 'the same event, sent again');
+  second.ctx.resetForNextExaminee();                 // pressed at once
+  await drain();
+  const atReset = oldSends().length;
+  await second.timer.advance(30000);
+  assert.ok(oldSends().length - atReset >= 3, 'the retries go on after the hand-over: ' + (oldSends().length - atReset));
+
+  // The next examinee's own DQ is a new event, and it does not stop the old one.
+  approval = 'approved'; token = 'tok-2';
+  await register(second);
+  await startExam(second);
+  assert.equal(second.t.state().inProgress, true);
+  approval = 'in_exam';
+  second.setVisibility('hidden');
+  await second.timer.advance(2100);
+  second.setVisibility('visible'); await drain();
+  const own = second.sent('disqualify').filter(r => r.dqEventId !== oldId);
+  assert.ok(own.length >= 1);
+  assert.equal(new Set(own.map(r => r.dqEventId)).size, 1, 'the next examinee\'s DQ is its own event');
+  assert.ok(own.every(r => r.examineeToken === 'tok-2'));
+  const atSecondDQ = oldSends().length;
+  await second.timer.advance(30000);
+  assert.ok(oldSends().length > atSecondDQ, 'the previous examinee\'s DQ is still being sent after the next one\'s');
+
+  // The server takes it: the push names ITS row, and the retries stop.
+  const pushedBefore = invalidations(second).length;
+  dqReachable = true;
+  await second.timer.advance(25000);
+  const confirmed = oldSends().length;
+  assert.ok(invalidations(second).slice(pushedBefore).some(r => r.examineeToken === 'tok-1' && r.idNumber === '123456789'),
+    'the Worker is told about the previous examinee\'s row');
+  await second.timer.advance(15 * 60 * 1000);
+  assert.equal(oldSends().length, confirmed, 'and it stops once the server has confirmed it');
+  assert.ok(oldSends().every(r => r.idNumber === '123456789' && r.examineeToken === 'tok-1' && r.sessionCode === 'ABC12345'),
+    'every send carries its own examinee\'s identity, never the page\'s');
+});
+
+test('review 4: a second reload during the check after the deadline keeps the close marker, so an extension still cancels the close-fail', async () => {
+  const { local, session } = await examInProgressStores();
+  expireBlob(session);
+  const second = completePage({ local, session, reply: r => r.kind === 'status' ? { __hang: true } : undefined });
+  await drain(); await second.timer.advance(1000); await drain();
+  assert.ok(second.el('expiredOnReload'), 'the check is in the air');
+  assert.equal(session.getItem('ext_exam_closing'), '1', 'the marker waits for the decision');
+  const third = completePage({ local, session, reply: r => r.kind === 'status' ? { status: 'ok', examStatus: 'in_exam', extraMinutes: 10 } : undefined });
+  await drain(); await third.timer.advance(1000); await drain();
+  assert.equal(third.t.state().inProgress, true, 'the extension resumes the exam');
+  assert.equal(third.sent('cancelFailOnClose').length, 1, 'and the close-fail is cancelled');
+  assert.equal(session.getItem('ext_exam_closing'), null);
+});
+
+test('review 11: minutes that end before the reload do not announce "the examiner added time" over the done screen', async () => {
+  const { local, session } = await examInProgressStores();
+  expireBlob(session);
+  const blob = activeBlob(session);
+  blob.examStartTime = -60 * 60 * 1000;              // started an hour ago...
+  blob.examDeadline = -20 * 60 * 1000;               // ...its 40 minutes ended 20 minutes ago
+  session.setItem('ext_exam_active', JSON.stringify(blob));
+  const second = completePage({ local, session, reply: r => r.kind === 'status' ? { status: 'ok', examStatus: 'in_exam', extraMinutes: 10 } : undefined });
+  await drain(); await second.timer.advance(1000); await drain();
+  assert.equal(second.t.state().screen, 'screenDone', '+10 still ended 10 minutes ago: submitted');
+  const notice = second.el('extraTimeNotice');
+  assert.ok(!notice || notice.style.display === 'none', 'and no "⏱ הבוחן הוסיף" over it');
 });
