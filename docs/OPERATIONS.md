@@ -354,6 +354,7 @@ git push origin master
 
 **מה לא משתנה:**
 - המבחנים. פרויקט המבחנים לא קורא את המאפיין בכלל.
+- **מבחן השמע (`exam.html`, מ-r35.2):** הוא מקבל את השאלות מפרויקט הדו"חות דרך `startPractice` (עם `standaloneIdNumber`, `mode=exam`), אבל הוא מבחן ולא תרגול — הקריאה הזו לא נחסמת ולא קוראת את המאפיין (KNOWN_ISSUES #46).
 - דוחות הבחינות של פרויקט הדו"חות: `commanderDashboard`, `centerManagerReport`, `siteCombinedReport`, `examinerForecast`.
 - כשהמאפיין חסר, ריק או `false`, אין שום שינוי.
 

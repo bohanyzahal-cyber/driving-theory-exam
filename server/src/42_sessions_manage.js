@@ -83,7 +83,9 @@ function handleCreateSession(p) {
   // physical staffing on the ground.
   var responsibleExaminer = String(p.responsibleExaminer || '').trim();
 
-  sheet.appendRow([
+  // r35.2: every caller-sent cell as text (cellSafeRow). The site, classroom and
+  // examiner name are copied from here into every result row of the session.
+  sheet.appendRow(cellSafeRow([
     code,
     p.examinerId,
     examinerName,
@@ -99,7 +101,7 @@ function handleCreateSession(p) {
     '',
     responsibleExaminer,
     String(p.defaultPopulation || '').trim()   // O (idx 14) = default population for the session
-  ]);
+  ]));
 
   return jsonResponse({
     status: 'ok',

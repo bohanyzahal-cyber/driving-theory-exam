@@ -91,9 +91,10 @@ function handleUpdateSession(p) {
         return jsonResponse({ status: 'error', message: 'אין הרשאה לעדכן סשן זה' });
       }
       var row = i + 1;
-      if (p.license) sheet.getRange(row, 6).setValue(p.license);
-      if (p.language) sheet.getRange(row, 7).setValue(p.language);
-      if (p.audioMode) sheet.getRange(row, 8).setValue(p.audioMode);
+      // r35.2: written as text (cellSafe), like every other caller-sent cell.
+      if (p.license) sheet.getRange(row, 6).setValue(cellSafe(String(p.license)));
+      if (p.language) sheet.getRange(row, 7).setValue(cellSafe(String(p.language)));
+      if (p.audioMode) sheet.getRange(row, 8).setValue(cellSafe(String(p.audioMode)));
       return jsonResponse({ status: 'ok' });
     }
   }

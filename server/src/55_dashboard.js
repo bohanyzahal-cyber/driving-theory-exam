@@ -267,6 +267,9 @@ function handleExaminerDashboard(p) {
           dashAttemptCount(ciId, license2) + 1, 'ניתוק/טיימאאוט — הנבחן לא סיים את המבחן', false, false, '',
           pendData[ci][7] || '', false, pendData[ci][9] || 'off'
         ];
+        // r35.2 (review_r35_1_server m1): every text cell here was read back
+        // from 'ממתינים' / 'סשנים' without cellSafe's apostrophe → escape again.
+        failRow = cellSafeRow(failRow);
         resSheet.appendRow(failRow);
         // The row we just wrote is the only thing a re-read would have added, so
         // add it in memory: later iterations, the completed list and the

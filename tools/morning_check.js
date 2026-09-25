@@ -142,6 +142,6 @@ async function twoHop(name, base) {
     '\n  SLOW-FRONT = hop1 itself slow: open Executions - a run of 0.6-4 s there means Google queued/delivered it, not us.' +
     '\n  DOWN on the Worker = cloudflarestatus.com, then DEPLOY_2026-09-22.md §8 if it stays down.' +
     '\n  MOVED_SITES-INVALID/-ERROR = no new session opens (moved_sites_invalid): fix MOVED_SITES in the exam project (OPERATIONS §11).' +
-    '\n  PRACTICE_MOVED-INVALID/-ERROR = all practice refused (practice_moved_invalid): fix PRACTICE_MOVED in the reports project (OPERATIONS §11).'
+    '\n  PRACTICE_MOVED-INVALID/-ERROR = all practice refused (practice_moved_invalid): fix PRACTICE_MOVED in the reports project (OPERATIONS §12).'
     : '\nAll good: run the exams. Do not deploy anything today (OPERATIONS §10).');
 })();

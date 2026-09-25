@@ -141,19 +141,20 @@ function handleDisqualify(p) {
   }
   if (!license) license = examineeLicense;
   var attemptNum = countAttempts(String(p.idNumber), license) + 1;
-  // r35.1 (review_r35 L1, F-15): the request's idNumber and dqEventId go through
-  // cellSafe — a self-DQ holds only the examinee token, and normalizeId matching
+  // r35.1 (review_r35 L1, F-15): the request's idNumber and dqEventId are
+  // escaped — a self-DQ holds only the examinee token, and normalizeId matching
   // keeps only the digits, so '=…("<own id>")' passed auth and landed as a
-  // formula in 'תוצאות'. Name, phone and population are read back from
-  // 'ממתינים', where Sheets returns them WITHOUT the protecting apostrophe, so
-  // they are escaped again on the way into this row.
-  sheet.appendRow([
-    todayStr(), cellSafe(String(p.idNumber)), cellSafe(name), cellSafe(phone), license,
+  // formula in 'תוצאות'. r35.2 (review_r35_1_server m1): the WHOLE row goes
+  // through cellSafeRow — name, phone, licence, audio and population are read
+  // back from 'ממתינים' and site/classroom/examiner from 'סשנים', and Sheets
+  // returns them WITHOUT the protecting apostrophe.
+  sheet.appendRow(cellSafeRow([
+    todayStr(), String(p.idNumber), name, phone, license,
     '0/30', '0%', 'פסול', '', examinerName,
     site, classroom, language, String(p.sessionCode),
     attemptNum, '', false, true, '',
-    cellSafe(population), false, examineeAudio, '', '', cellSafe(dqEventId)
-  ]);
+    population, false, examineeAudio, '', '', dqEventId
+  ]));
   SpreadsheetApp.flush();
   return jsonResponse({ status: 'ok' });
 }
@@ -263,13 +264,14 @@ function handleForceComplete(p) {
     if (!license) license = sesRow[5] || '';
   }
   var attemptNum = countAttempts(String(p.idNumber), license) + 1;
-  resSheet.appendRow([
-    todayStr(), p.idNumber, name, phone, license,
+  // r35.2 (review_r35_1_server m1): read back from 'ממתינים' / 'סשנים' → cellSafeRow.
+  resSheet.appendRow(cellSafeRow([
+    todayStr(), String(p.idNumber), name, phone, license,
     '0/30', '0%', 'נכשל', '', examinerName,
     site, classroom, language, String(p.sessionCode),
     attemptNum, 'סיום ידני ע"י בוחן — ניתוק/תקלה', false, false, '',
     population, false, examineeAudio
-  ]);
+  ]));
   SpreadsheetApp.flush();
   return jsonResponse({ status: 'ok', message: 'נבחן סומן כנכשל (ניתוק)' });
 }
@@ -459,7 +461,9 @@ function handleSubmitManualResult(p) {
       return jsonResponse({ status: 'ok', duplicate: true, waLink: manExisting[mx][18] || '' });
     }
   }
-  sheet.appendRow([
+  // r35.2: the examiner's typed fields and the session values read back from
+  // 'סשנים' are written as text (cellSafeRow).
+  sheet.appendRow(cellSafeRow([
     todayStr(),
     idNumber,
     fullName,
@@ -489,7 +493,7 @@ function handleSubmitManualResult(p) {
     '',                                 // AA (26) סיבת תיקון
     '',                                 // AB (27) תאריך תיקון
     ''                                  // AC (28) מסלול שפות
-  ]);
+  ]));
   SpreadsheetApp.flush();
   return jsonResponse({ status: 'ok', waLink: waLink, attempt: attemptNum });
 }
@@ -535,8 +539,8 @@ function handleCorrectExamineeMeta(p) {
         phoneCell.setNumberFormat('@');
         phoneCell.setValue(newPhone);
       }
-      if (newSite) sheet.getRange(rowIdx, 11).setValue(newSite);   // K (idx 10) = אתר
-      if (newPop) sheet.getRange(rowIdx, 20).setValue(newPop);     // T (idx 19) = אוכלוסיה
+      if (newSite) sheet.getRange(rowIdx, 11).setValue(cellSafe(newSite));   // K (idx 10) = אתר (r35.2: as text)
+      if (newPop) sheet.getRange(rowIdx, 20).setValue(cellSafe(newPop));     // T (idx 19) = אוכלוסיה
       SpreadsheetApp.flush();
       return jsonResponse({ status: 'ok' });
     }
@@ -591,8 +595,9 @@ function handleCommanderCorrectResult(data) {
       if (normalizeId(examData[x][1]) === normalizeId(data.examinerId)) { commanderName = String(examData[x][0] || ''); break; }
     }
   } catch(e) {}
-  sheet.getRange(rowIdx, 26).setValue(commanderName + ' (' + normalizeId(data.examinerId) + ')');
-  sheet.getRange(rowIdx, 27).setValue(reason);
+  // r35.2: the name read back from 'בוחנים' and the typed reason, as text.
+  sheet.getRange(rowIdx, 26).setValue(cellSafe(commanderName + ' (' + normalizeId(data.examinerId) + ')'));
+  sheet.getRange(rowIdx, 27).setValue(cellSafe(reason));
   sheet.getRange(rowIdx, 28).setValue(todayStr());
   SpreadsheetApp.flush();
   return jsonResponse({ status: 'ok' });

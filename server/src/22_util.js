@@ -75,6 +75,16 @@ function cellSafe(value) {
   if (typeof value !== 'string') return value;
   return /^[=+\-@\t\r]/.test(value) ? "'" + value : value;
 }
+// r35.2 (review_r35_1_server M1/m1): the apostrophe protects ONE write. Sheets
+// returns the text WITHOUT it, so a row built from values read back from a
+// sheet (ממתינים, סשנים, כיתות, תוצאות תרגול, …) must be escaped again on every
+// write — this is the one call for a whole row. Numbers, booleans, dates and
+// ordinary text pass unchanged.
+function cellSafeRow(row) {
+  var out = [];
+  for (var i = 0; i < row.length; i++) out.push(cellSafe(row[i]));
+  return out;
+}
 
 // "מפקד קד״ץ" gets typed in many forms: with Hebrew gershayim ״, ASCII " or ',
 // no separator at all ("מפקד קדץ"), with extra spaces. Match all of them so a

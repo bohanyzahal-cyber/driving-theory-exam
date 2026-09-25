@@ -188,9 +188,16 @@ function rebuildAtRiskCacheInner() {
   var lastRow = sheet.getLastRow();
   if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).clearContent();
   var computedAtStr = Utilities.formatDate(new Date(res.computedAtMs), 'Asia/Jerusalem', 'yyyy-MM-dd HH:mm');
+  // r35.2 (review_r35_1_server M1): the names, codes and phones here were READ
+  // BACK from 'תוצאות תרגול' / 'כיתות', where Sheets returns them without
+  // cellSafe's apostrophe — so they are escaped again on this write, or a
+  // student name like '=IMPORTXML(…)' sent to submitPracticeResult (no login)
+  // becomes a live formula here the next night. Every cell of the row goes
+  // through it; numbers and booleans pass unchanged.
   var rows = res.students.map(function(s) {
     return [computedAtStr, s.name, s.license, s.classCode, s.teacherId, s.teacherName, s.className, s.site,
-      s.lastPct, s.sessions, s.trend, s.attempt, s.everTested, (s.prob == null ? '' : s.prob), s.tier, s.confidence, s.matchedByPhone, (s.phone || '')];
+      s.lastPct, s.sessions, s.trend, s.attempt, s.everTested, (s.prob == null ? '' : s.prob), s.tier, s.confidence, s.matchedByPhone, (s.phone || '')]
+      .map(function(cell) { return cellSafe(cell); });
   });
   if (rows.length) sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
   var props = PropertiesService.getScriptProperties();

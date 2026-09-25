@@ -831,8 +831,13 @@ function practiceMovedSetting() {
   if (keys.length !== 1 || keys[0] !== 'moved' || typeof parsed.moved !== 'boolean') return { moved: false, invalid: true };
   return { moved: parsed.moved, invalid: false };
 }
-function practiceMovedRefusal(action) {
+function isStandaloneAudioExamStart(action, p) {
+  return action === 'startPractice' && !!p && String(p.standaloneIdNumber || '').trim() !== '' &&
+    String(p.mode || '') === 'exam';
+}
+function practiceMovedRefusal(action, p) {
   if (PRACTICE_FLOW_ACTIONS.indexOf(action) === -1) return null;
+  if (isStandaloneAudioExamStart(action, p)) return null;
   var setting = practiceMovedSetting();
   if (setting.invalid) {
     return jsonResponse({ status: 'error', code: 'practice_moved_invalid',
@@ -907,6 +912,11 @@ function normalizeId(val) {
 function cellSafe(value) {
   if (typeof value !== 'string') return value;
   return /^[=+\-@\t\r]/.test(value) ? "'" + value : value;
+}
+function cellSafeRow(row) {
+  var out = [];
+  for (var i = 0; i < row.length; i++) out.push(cellSafe(row[i]));
+  return out;
 }
 
 function isKdtzRole(role) {
@@ -1114,7 +1124,7 @@ function handleBankGrant(p) {
 }
 var API_DEPLOYMENT = "exam";
 
-var THEORY_API_BUILD = '2026-09-27-r35.1';
+var THEORY_API_BUILD = '2026-09-27-r35.2';
 var API_STARTED_AT = 0;
 
 function apiActionList() {
@@ -1145,7 +1155,7 @@ function dispatchApiAction(method, action, p) {
     return jsonResponse({ status: 'error', code: 'wrong_deployment',
       message: 'הפעולה שייכת לשרת אחר — יש לרענן את הדף' });
   }
-  var movedErr = practiceMovedRefusal(action);
+  var movedErr = practiceMovedRefusal(action, p);
   if (movedErr) return movedErr;
   var spec = apiRegistry()[action];
   if (!spec) return jsonResponse({ status: 'error', message: 'Unknown action: ' + action });
@@ -1590,7 +1600,7 @@ function handleCreateSession(p) {
 
   var responsibleExaminer = String(p.responsibleExaminer || '').trim();
 
-  sheet.appendRow([
+  sheet.appendRow(cellSafeRow([
     code,
     p.examinerId,
     examinerName,
@@ -1606,7 +1616,7 @@ function handleCreateSession(p) {
     '',
     responsibleExaminer,
     String(p.defaultPopulation || '').trim()
-  ]);
+  ]));
 
   return jsonResponse({
     status: 'ok',
@@ -1690,9 +1700,9 @@ function handleUpdateSession(p) {
         return jsonResponse({ status: 'error', message: 'אין הרשאה לעדכן סשן זה' });
       }
       var row = i + 1;
-      if (p.license) sheet.getRange(row, 6).setValue(p.license);
-      if (p.language) sheet.getRange(row, 7).setValue(p.language);
-      if (p.audioMode) sheet.getRange(row, 8).setValue(p.audioMode);
+      if (p.license) sheet.getRange(row, 6).setValue(cellSafe(String(p.license)));
+      if (p.language) sheet.getRange(row, 7).setValue(cellSafe(String(p.language)));
+      if (p.audioMode) sheet.getRange(row, 8).setValue(cellSafe(String(p.audioMode)));
       return jsonResponse({ status: 'ok' });
     }
   }
@@ -2248,6 +2258,7 @@ function handleExaminerDashboard(p) {
           dashAttemptCount(ciId, license2) + 1, 'ניתוק/טיימאאוט — הנבחן לא סיים את המבחן', false, false, '',
           pendData[ci][7] || '', false, pendData[ci][9] || 'off'
         ];
+        failRow = cellSafeRow(failRow);
         resSheet.appendRow(failRow);
         resData.push(failRow);
         if (attemptHistory) attemptHistory.push([failRow[0], failRow[1], '', '', failRow[4], '', '', failRow[7]]);
@@ -2442,7 +2453,7 @@ function handleAddExamTime(p) {
   var sessionRow = sessionRowByCode(p.sessionCode);
   var examinerName = sessionRow ? (sessionRow[2] || '') : '';
 
-  extSheet.appendRow([new Date(), p.sessionCode, p.idNumber, name, minutes, reason, examinerName]);
+  extSheet.appendRow(cellSafeRow([new Date(), p.sessionCode, p.idNumber, name, minutes, reason, examinerName]));
   invalidateExtraMinutes(p.sessionCode);
 
   return jsonResponse({ status: 'ok', addedMinutes: minutes, totalExtraMinutes: sumExtraMinutes(p.sessionCode, p.idNumber) });
@@ -2646,13 +2657,13 @@ function handleDisqualify(p) {
   }
   if (!license) license = examineeLicense;
   var attemptNum = countAttempts(String(p.idNumber), license) + 1;
-  sheet.appendRow([
-    todayStr(), cellSafe(String(p.idNumber)), cellSafe(name), cellSafe(phone), license,
+  sheet.appendRow(cellSafeRow([
+    todayStr(), String(p.idNumber), name, phone, license,
     '0/30', '0%', 'פסול', '', examinerName,
     site, classroom, language, String(p.sessionCode),
     attemptNum, '', false, true, '',
-    cellSafe(population), false, examineeAudio, '', '', cellSafe(dqEventId)
-  ]);
+    population, false, examineeAudio, '', '', dqEventId
+  ]));
   SpreadsheetApp.flush();
   return jsonResponse({ status: 'ok' });
 }
@@ -2741,13 +2752,13 @@ function handleForceComplete(p) {
     if (!license) license = sesRow[5] || '';
   }
   var attemptNum = countAttempts(String(p.idNumber), license) + 1;
-  resSheet.appendRow([
-    todayStr(), p.idNumber, name, phone, license,
+  resSheet.appendRow(cellSafeRow([
+    todayStr(), String(p.idNumber), name, phone, license,
     '0/30', '0%', 'נכשל', '', examinerName,
     site, classroom, language, String(p.sessionCode),
     attemptNum, 'סיום ידני ע"י בוחן — ניתוק/תקלה', false, false, '',
     population, false, examineeAudio
-  ]);
+  ]));
   SpreadsheetApp.flush();
   return jsonResponse({ status: 'ok', message: 'נבחן סומן כנכשל (ניתוק)' });
 }
@@ -2892,7 +2903,7 @@ function handleSubmitManualResult(p) {
       return jsonResponse({ status: 'ok', duplicate: true, waLink: manExisting[mx][18] || '' });
     }
   }
-  sheet.appendRow([
+  sheet.appendRow(cellSafeRow([
     todayStr(),
     idNumber,
     fullName,
@@ -2922,7 +2933,7 @@ function handleSubmitManualResult(p) {
     '',
     '',
     ''
-  ]);
+  ]));
   SpreadsheetApp.flush();
   return jsonResponse({ status: 'ok', waLink: waLink, attempt: attemptNum });
 }
@@ -2958,8 +2969,8 @@ function handleCorrectExamineeMeta(p) {
         phoneCell.setNumberFormat('@');
         phoneCell.setValue(newPhone);
       }
-      if (newSite) sheet.getRange(rowIdx, 11).setValue(newSite);
-      if (newPop) sheet.getRange(rowIdx, 20).setValue(newPop);
+      if (newSite) sheet.getRange(rowIdx, 11).setValue(cellSafe(newSite));
+      if (newPop) sheet.getRange(rowIdx, 20).setValue(cellSafe(newPop));
       SpreadsheetApp.flush();
       return jsonResponse({ status: 'ok' });
     }
@@ -3007,8 +3018,8 @@ function handleCommanderCorrectResult(data) {
       if (normalizeId(examData[x][1]) === normalizeId(data.examinerId)) { commanderName = String(examData[x][0] || ''); break; }
     }
   } catch(e) {}
-  sheet.getRange(rowIdx, 26).setValue(commanderName + ' (' + normalizeId(data.examinerId) + ')');
-  sheet.getRange(rowIdx, 27).setValue(reason);
+  sheet.getRange(rowIdx, 26).setValue(cellSafe(commanderName + ' (' + normalizeId(data.examinerId) + ')'));
+  sheet.getRange(rowIdx, 27).setValue(cellSafe(reason));
   sheet.getRange(rowIdx, 28).setValue(todayStr());
   SpreadsheetApp.flush();
   return jsonResponse({ status: 'ok' });

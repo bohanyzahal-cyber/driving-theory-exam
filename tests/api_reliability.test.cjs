@@ -261,7 +261,7 @@ test('health&deep=1 times one cell of our own document and reports a failure ins
   const e = runtime();
   const ok = get(e, { action: 'health', deep: '1' });
   assert.equal(ok.status, 'ok');
-  assert.equal(ok.build, '2026-09-27-r35.1');
+  assert.equal(ok.build, '2026-09-27-r35.2');
   assert.equal(ok.deep, true);
   assert.equal(ok.indexIds, 1700);
   assert.ok(typeof ok.sheetMs === 'number' && ok.sheetMs >= 0);
@@ -279,7 +279,7 @@ test('health identifies build without Sheets, Drive or private parameters', () =
   e.ctx.getSheet = () => { throw new Error('health must not access Sheets'); };
   const result = get(e, { action: 'health', token: 'DO_NOT_LOG_ME' });
   assert.equal(result.status, 'ok');
-  assert.equal(result.build, '2026-09-27-r35.1');
+  assert.equal(result.build, '2026-09-27-r35.2');
   assert.equal(e.logs.length, 2);
   assert.ok(e.logs[0].includes('"phase":"start"'));
   assert.ok(e.logs[1].includes('"phase":"end"'));
@@ -1674,6 +1674,7 @@ test('r35.1 L3: MOVED_SITES that cannot be read is refused loudly (moved_sites_i
 test('r35.1 L1: a self-DQ writes the request\'s ID and event id — and the name read back from ממתינים — as text', () => {
   const row = liveRow('LIVE0001', idOf(1), 'in_exam', NOW - 20 * MIN, NOW - 10 * MIN);
   row[2] = '=HYPERLINK("https://x.invalid","x")'; row[3] = '+972500000001'; row[7] = '@pop';
+  row[8] = '-B'; row[9] = '=on';   // r35.2 (m1): licence and audio are read back too
   const e = r35Env({ 'ממתינים': [PENDING_HEADER, row] });
   // normalizeId keeps only the digits, so an ID wrapped in a formula passes the
   // examinee-token check of the examinee's own row.
@@ -1684,9 +1685,46 @@ test('r35.1 L1: a self-DQ writes the request\'s ID and event id — and the name
   assert.equal(dq[7], 'פסול');
   assert.deepEqual([dq[1], dq[2], dq[3], dq[19], dq[24]],
     ['\'=T("' + idOf(1) + '")', '\'=HYPERLINK("https://x.invalid","x")', '\'+972500000001', '\'@pop', '\'=1+1']);
+  assert.deepEqual([dq[4], dq[21]], ['\'-B', '\'=on'], 'r35.2: licence and audio read back from ממתינים');
   const plainDq = postJson(r35Env(), { action: 'disqualify', sessionCode: 'LIVE0001', idNumber: idOf(1),
     examineeToken: 'token-' + idOf(1), dqEventId: 'ev-plain' });
   assert.equal(plainDq.status, 'ok', 'an ordinary self-DQ is unchanged');
+});
+
+// r35.2 (review_r35_1_server m1): Sheets returns a cellSafe'd cell WITHOUT its
+// apostrophe, so every row the exam project builds from values it READ BACK
+// from 'ממתינים' is escaped again on the way into the next sheet.
+test('r35.2 m1: rows copied from ממתינים — timeout fail, סיים ידנית, time grant — are written as text', () => {
+  const FORMULA_NAME = '=HYPERLINK("https://x.invalid","x")';
+  const hostile = (id, status, registered, started) => {
+    const row = liveRow('LIVE0001', id, status, registered, started);
+    row[2] = FORMULA_NAME; row[3] = '+972500000009'; row[6] = '@he'; row[7] = '-pop'; row[9] = '=off';
+    return row;
+  };
+  const e = r35Env({ 'ממתינים': [PENDING_HEADER,
+    hostile(idOf(5), 'in_exam', NOW - 3 * HOUR, NOW - 2 * HOUR),   // stale: the board writes a timeout fail
+    hostile(idOf(6), 'in_exam', NOW - 20 * MIN, NOW - 10 * MIN)] });
+  const lastResultOf = id => e.rows('תוצאות').filter(r => String(r[1]) === id).pop();
+
+  assert.equal(get(e, Object.assign({ action: 'examinerDashboard', origin: 'examiner-app', sessionCode: 'LIVE0001' }, PLAIN_EXAMINER)).status, 'ok');
+  const timeout = lastResultOf(idOf(5));
+  assert.match(String(timeout[15]), /טיימאאוט/);
+  assert.deepEqual([timeout[2], timeout[3], timeout[12], timeout[19], timeout[21]],
+    ['\'' + FORMULA_NAME, '\'+972500000009', '\'@he', '\'-pop', '\'=off']);
+
+  assert.equal(get(e, Object.assign({ action: 'forceComplete', origin: 'examiner-app', sessionCode: 'LIVE0001', idNumber: idOf(6) },
+    PLAIN_EXAMINER)).status, 'ok');
+  const forced = lastResultOf(idOf(6));
+  assert.match(String(forced[15]), /סיום ידני/);
+  assert.deepEqual([forced[2], forced[3], forced[12], forced[19], forced[21]],
+    ['\'' + FORMULA_NAME, '\'+972500000009', '\'@he', '\'-pop', '\'=off']);
+
+  const grant = get(e, Object.assign({ action: 'addExamTime', origin: 'examiner-app', sessionCode: 'LIVE0001', idNumber: idOf(6),
+    minutes: '5', reason: '=1+1' }, PLAIN_EXAMINER));
+  assert.equal(grant.status, 'ok');
+  const audit = e.rows('הארכות זמן').at(-1);
+  assert.deepEqual([audit[3], audit[5]], ['\'' + FORMULA_NAME, '\'=1+1'], 'the name read back, and the examiner\'s free-text reason');
+  assert.equal(audit[4], 5, 'numbers stay numbers');
 });
 
 // r35.1 (MASTER_PLAN v2 §9.2 step P, §10.3; KNOWN_ISSUES #45): practice moves to
@@ -1758,4 +1796,34 @@ test('r35.1 PRACTICE_MOVED: every practice-flow action answers with the notice; 
   exam.properties.set('PRACTICE_MOVED', 'yes');
   assert.equal(get(exam, { action: 'startPractice', mode: 'exam', license: 'B' }).code, 'wrong_deployment');
   assert.equal(get(exam, { action: 'getSessionInfo', sessionCode: 'LIVE0001' }).status, 'ok');
+});
+
+// r35.2 (review_r35_1_server m2): exam.html is the standalone AUDIO EXAM (no
+// examiner; it scores locally and sends its result to its own Apps Script). Its
+// one call here is startPractice mode=exam with standaloneIdNumber (exam.html:685).
+// It is an exam, not practice: PRACTICE_MOVED — set, or even malformed — does
+// not stop it, and it does not read the property at all.
+test('r35.2 PRACTICE_MOVED: exam.html (the audio exam) keeps getting its questions', () => {
+  const env = props => createEnv({ serverFile: REPORTS_BUILD, now: NOW, sources: ['deployment/answer_key.gs'],
+    properties: Object.assign({}, GATEWAY_PROPS, props || {}), sheets: { 'ממתינים': [PENDING_HEADER] } });
+  const audioExam = (e, extra) => get(e, Object.assign({ action: 'startPractice', mode: 'exam', license: 'B', language: 'he',
+    standaloneIdNumber: '123456789' }, extra || {}));
+  for (const value of ['true', '{"moved":true}', 'yes']) {
+    const e = env({ PRACTICE_MOVED: value });
+    let reads = 0;
+    const real = e.ctx.PropertiesService.getScriptProperties;
+    e.ctx.PropertiesService.getScriptProperties = () => {
+      const props = real();
+      return Object.assign({}, props, { getProperty: k => { if (k === 'PRACTICE_MOVED') reads++; return props.getProperty(k); } });
+    };
+    const reply = audioExam(e);
+    assert.equal(reply.status, 'ok', value);
+    assert.equal(reply.questions.length, 30, value);
+    assert.ok(reply.bank && reply.bank.grant, 'with the grant for its texts');
+    assert.equal(reads, 0, 'the exemption does not even read the property');
+    // Everything else on the same switch is still refused.
+    assert.match(String(audioExam(e, { mode: 'category' }).code), /^practice_moved/, 'only the exam mode of exam.html');
+    assert.match(String(audioExam(e, { standaloneIdNumber: '' }).code), /^practice_moved/, 'student.html sends no standaloneIdNumber');
+    assert.match(String(get(e, { action: 'startPractice', mode: 'exam', license: 'B', studentId: 'S-1' }).code), /^practice_moved/);
+  }
 });

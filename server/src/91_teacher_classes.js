@@ -16,7 +16,11 @@ function handleTeacherCreateClass(p) {
       break;
     }
   }
-  sheet.appendRow([code, className, normalizeId(p.teacherId), teacherName, license, nowISO(), 'כן', teacherSite]);
+  // r35.2: the teacher's typed class name and licence, and the name/site read
+  // back from 'מורים', are written as text (cellSafe) — they are copied on into
+  // 'חיזוי סיכון' and the reports.
+  sheet.appendRow([code, cellSafe(String(className)), normalizeId(p.teacherId), cellSafe(teacherName), cellSafe(String(license)),
+    nowISO(), 'כן', cellSafe(teacherSite)]);
   return jsonResponse({ status: 'ok', classCode: code, className: className });
 }
 
@@ -63,15 +67,17 @@ function handleTeacherDeleteClass(p) {
   // orphaned rows to the real teacher and tag them "(כיתה שנמחקה)", so a genuine
   // deletion is distinguishable from a truly unrecognized/forged class code.
   try {
+    // r35.2: values read back from 'כיתות' (Sheets drops cellSafe's apostrophe
+    // on read) are escaped again on this write.
     var cRow = classData[classRowIdx];
     getSheet('כיתות שנמחקו').appendRow([
-      String(cRow[0] || '').trim(), // קוד כיתה
-      String(cRow[1] || ''),        // שם כיתה
-      normalizeId(cRow[2]),         // מורה ת.ז.
-      String(cRow[3] || ''),        // שם מורה
-      String(cRow[4] || ''),        // דרגה
-      String(cRow[7] || ''),        // אתר
-      nowISO()                      // תאריך מחיקה
+      cellSafe(String(cRow[0] || '').trim()), // קוד כיתה
+      cellSafe(String(cRow[1] || '')),        // שם כיתה
+      normalizeId(cRow[2]),                   // מורה ת.ז.
+      cellSafe(String(cRow[3] || '')),        // שם מורה
+      cellSafe(String(cRow[4] || '')),        // דרגה
+      cellSafe(String(cRow[7] || '')),        // אתר
+      nowISO()                                // תאריך מחיקה
     ]);
   } catch (archiveErr) { /* non-fatal: deletion proceeds even if archiving fails */ }
 

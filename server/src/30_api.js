@@ -6,7 +6,7 @@
 // @@API_DEPLOYMENT@@
 
 // Public build marker: identifies the deployed API without reading private data.
-var THEORY_API_BUILD = '2026-09-27-r35.1';
+var THEORY_API_BUILD = '2026-09-27-r35.2';
 // When the current request entered the script — health&deep=1 reports the whole
 // request against it, so a watchdog can separate our time from Google's.
 var API_STARTED_AT = 0;
@@ -56,8 +56,9 @@ function dispatchApiAction(method, action, p) {
       message: 'הפעולה שייכת לשרת אחר — יש לרענן את הדף' });
   }
   // r35.1: practice moved to the new system (20_auth.js PRACTICE_MOVED). Only
-  // the practice-flow actions read the property, and before any auth.
-  var movedErr = practiceMovedRefusal(action);
+  // the practice-flow actions read the property, and before any auth. r35.2:
+  // exam.html's startPractice (the audio exam) is exempt.
+  var movedErr = practiceMovedRefusal(action, p);
   if (movedErr) return movedErr;
   var spec = apiRegistry()[action];
   if (!spec) return jsonResponse({ status: 'error', message: 'Unknown action: ' + action });

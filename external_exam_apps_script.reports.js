@@ -319,7 +319,9 @@ function copySheetInChunks(src, target, name, deadline, lines) {
       return false;
     }
     var n = Math.min(MIGRATION_CHUNK_ROWS, rowsSrc - done);
-    var values = src.getRange(done + 1, 1, n, cols).getValues();
+    var values = src.getRange(done + 1, 1, n, cols).getValues().map(function(r) {
+      return r.map(function(cell) { return cellSafe(cell); });
+    });
     dst.getRange(done + 1, 1, n, cols).setValues(values);
     done += n;
   }
@@ -659,8 +661,8 @@ function archiveOneSheet(plan, deadline, preloadedRows) {
 }
 
 function padArchiveRow(row, width) {
-  var out = row.slice(0, width);
-  while (out.length < width) out.push('');
+  var out = [];
+  for (var i = 0; i < width; i++) out.push(i < row.length ? cellSafe(row[i]) : '');
   return out;
 }
 
@@ -1117,8 +1119,13 @@ function practiceMovedSetting() {
   if (keys.length !== 1 || keys[0] !== 'moved' || typeof parsed.moved !== 'boolean') return { moved: false, invalid: true };
   return { moved: parsed.moved, invalid: false };
 }
-function practiceMovedRefusal(action) {
+function isStandaloneAudioExamStart(action, p) {
+  return action === 'startPractice' && !!p && String(p.standaloneIdNumber || '').trim() !== '' &&
+    String(p.mode || '') === 'exam';
+}
+function practiceMovedRefusal(action, p) {
   if (PRACTICE_FLOW_ACTIONS.indexOf(action) === -1) return null;
+  if (isStandaloneAudioExamStart(action, p)) return null;
   var setting = practiceMovedSetting();
   if (setting.invalid) {
     return jsonResponse({ status: 'error', code: 'practice_moved_invalid',
@@ -1193,6 +1200,11 @@ function normalizeId(val) {
 function cellSafe(value) {
   if (typeof value !== 'string') return value;
   return /^[=+\-@\t\r]/.test(value) ? "'" + value : value;
+}
+function cellSafeRow(row) {
+  var out = [];
+  for (var i = 0; i < row.length; i++) out.push(cellSafe(row[i]));
+  return out;
 }
 
 function isKdtzRole(role) {
@@ -1400,7 +1412,7 @@ function handleBankGrant(p) {
 }
 var API_DEPLOYMENT = "reports";
 
-var THEORY_API_BUILD = '2026-09-27-r35.1';
+var THEORY_API_BUILD = '2026-09-27-r35.2';
 var API_STARTED_AT = 0;
 
 function apiActionList() {
@@ -1431,7 +1443,7 @@ function dispatchApiAction(method, action, p) {
     return jsonResponse({ status: 'error', code: 'wrong_deployment',
       message: 'הפעולה שייכת לשרת אחר — יש לרענן את הדף' });
   }
-  var movedErr = practiceMovedRefusal(action);
+  var movedErr = practiceMovedRefusal(action, p);
   if (movedErr) return movedErr;
   var spec = apiRegistry()[action];
   if (!spec) return jsonResponse({ status: 'error', message: 'Unknown action: ' + action });
@@ -3870,7 +3882,8 @@ function rebuildAtRiskCacheInner() {
   var computedAtStr = Utilities.formatDate(new Date(res.computedAtMs), 'Asia/Jerusalem', 'yyyy-MM-dd HH:mm');
   var rows = res.students.map(function(s) {
     return [computedAtStr, s.name, s.license, s.classCode, s.teacherId, s.teacherName, s.className, s.site,
-      s.lastPct, s.sessions, s.trend, s.attempt, s.everTested, (s.prob == null ? '' : s.prob), s.tier, s.confidence, s.matchedByPhone, (s.phone || '')];
+      s.lastPct, s.sessions, s.trend, s.attempt, s.everTested, (s.prob == null ? '' : s.prob), s.tier, s.confidence, s.matchedByPhone, (s.phone || '')]
+      .map(function(cell) { return cellSafe(cell); });
   });
   if (rows.length) sheet.getRange(2, 1, rows.length, rows[0].length).setValues(rows);
   var props = PropertiesService.getScriptProperties();
@@ -4285,7 +4298,8 @@ function handleTeacherCreateClass(p) {
       break;
     }
   }
-  sheet.appendRow([code, className, normalizeId(p.teacherId), teacherName, license, nowISO(), 'כן', teacherSite]);
+  sheet.appendRow([code, cellSafe(String(className)), normalizeId(p.teacherId), cellSafe(teacherName), cellSafe(String(license)),
+    nowISO(), 'כן', cellSafe(teacherSite)]);
   return jsonResponse({ status: 'ok', classCode: code, className: className });
 }
 
@@ -4327,12 +4341,12 @@ function handleTeacherDeleteClass(p) {
   try {
     var cRow = classData[classRowIdx];
     getSheet('כיתות שנמחקו').appendRow([
-      String(cRow[0] || '').trim(),
-      String(cRow[1] || ''),
+      cellSafe(String(cRow[0] || '').trim()),
+      cellSafe(String(cRow[1] || '')),
       normalizeId(cRow[2]),
-      String(cRow[3] || ''),
-      String(cRow[4] || ''),
-      String(cRow[7] || ''),
+      cellSafe(String(cRow[3] || '')),
+      cellSafe(String(cRow[4] || '')),
+      cellSafe(String(cRow[7] || '')),
       nowISO()
     ]);
   } catch (archiveErr) {  }

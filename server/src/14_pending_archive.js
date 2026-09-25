@@ -121,9 +121,15 @@ function archiveOneSheet(plan, deadline, preloadedRows) {
   return { moved: moved, stopped: false };
 }
 
+// r35.2 (review_r35_1_server M1): every cell goes through cellSafe on its way
+// into the archive. cellSafe's apostrophe protects only the FIRST write —
+// Sheets hands the text back without it, and setValues would turn a name like
+// '=IMPORTXML(…)' back into a live formula in *_ארכיון. getValues returns
+// computed values, never formulas, so nothing legitimate is escaped; numbers,
+// booleans and dates pass unchanged.
 function padArchiveRow(row, width) {
-  var out = row.slice(0, width);
-  while (out.length < width) out.push('');
+  var out = [];
+  for (var i = 0; i < width; i++) out.push(i < row.length ? cellSafe(row[i]) : '');
   return out;
 }
 

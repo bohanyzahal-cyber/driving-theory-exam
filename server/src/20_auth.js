@@ -517,9 +517,21 @@ function practiceMovedSetting() {
   if (keys.length !== 1 || keys[0] !== 'moved' || typeof parsed.moved !== 'boolean') return { moved: false, invalid: true };
   return { moved: parsed.moved, invalid: false };
 }
+// r35.2 (review_r35_1_server m2): exam.html — the standalone AUDIO EXAM (no
+// examiner; it scores locally and sends its result to its own Apps Script) —
+// takes its 30 questions from this project with startPractice, mode 'exam' and
+// standaloneIdNumber (exam.html's own field; student.html never sends it). It is
+// an exam, not practice, so PRACTICE_MOVED does not stop it: that one call is
+// exempt, and does not even read the property. Moving the audio exam is a
+// separate decision with its own switch.
+function isStandaloneAudioExamStart(action, p) {
+  return action === 'startPractice' && !!p && String(p.standaloneIdNumber || '').trim() !== '' &&
+    String(p.mode || '') === 'exam';
+}
 // null = the action runs; otherwise the refusal to answer with.
-function practiceMovedRefusal(action) {
+function practiceMovedRefusal(action, p) {
   if (PRACTICE_FLOW_ACTIONS.indexOf(action) === -1) return null;
+  if (isStandaloneAudioExamStart(action, p)) return null;
   var setting = practiceMovedSetting();
   if (setting.invalid) {
     return jsonResponse({ status: 'error', code: 'practice_moved_invalid',

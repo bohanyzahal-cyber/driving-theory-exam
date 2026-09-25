@@ -185,7 +185,9 @@ function handleAddExamTime(p) {
   var sessionRow = sessionRowByCode(p.sessionCode);
   var examinerName = sessionRow ? (sessionRow[2] || '') : '';
 
-  extSheet.appendRow([new Date(), p.sessionCode, p.idNumber, name, minutes, reason, examinerName]);
+  // r35.2 (review_r35_1_server m1): the name is read back from 'ממתינים' (no
+  // apostrophe on read), the reason may be the examiner's free text ("אחר").
+  extSheet.appendRow(cellSafeRow([new Date(), p.sessionCode, p.idNumber, name, minutes, reason, examinerName]));
   invalidateExtraMinutes(p.sessionCode);   // r23: the next status poll must see the grant
 
   return jsonResponse({ status: 'ok', addedMinutes: minutes, totalExtraMinutes: sumExtraMinutes(p.sessionCode, p.idNumber) });

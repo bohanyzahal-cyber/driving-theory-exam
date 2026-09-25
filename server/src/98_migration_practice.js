@@ -119,7 +119,11 @@ function copySheetInChunks(src, target, name, deadline, lines) {
       return false;
     }
     var n = Math.min(MIGRATION_CHUNK_ROWS, rowsSrc - done);
-    var values = src.getRange(done + 1, 1, n, cols).getValues();
+    // r35.2: read-back values lose cellSafe's apostrophe; escape them again on
+    // the copy so a stored '=…' name cannot become a formula in the target.
+    var values = src.getRange(done + 1, 1, n, cols).getValues().map(function(r) {
+      return r.map(function(cell) { return cellSafe(cell); });
+    });
     dst.getRange(done + 1, 1, n, cols).setValues(values);
     done += n;
   }
