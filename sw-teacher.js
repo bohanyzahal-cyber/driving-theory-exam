@@ -35,7 +35,20 @@ self.addEventListener('activate', function(e) {
         names.filter(function(n) { return n !== CACHE_NAME; })
              .map(function(n) { return caches.delete(n); })
       );
-    })
+    }).then(function() {
+      // 25/09/2026 (code review): whatever an older version of this worker cached
+      // from ANOTHER origin goes now - the session-gateway's /v1/session/watch
+      // answers (names, phones, ids) and the /v1/bank texts with the grant in the
+      // URL. The cache name only changes with teacher.html, so without this
+      // sweep a copy taken under the same name would stay. Same as sw-student.js.
+      return caches.open(CACHE_NAME).then(function(cache) {
+        return cache.keys().then(function(reqs) {
+          return Promise.all(reqs.filter(function(r) {
+            try { return new URL(r.url).origin !== self.location.origin; } catch (errUrl) { return true; }
+          }).map(function(r) { return cache.delete(r); }));
+        });
+      });
+    }).catch(function() {})
   );
   self.clients.claim();
 });
@@ -51,6 +64,14 @@ self.addEventListener('fetch', function(e) {
   if (req.method !== 'GET') return;
   var url = req.url;
   if (url.indexOf('script.google.com') !== -1) return;   // API — always network
+  // 25/09/2026 (code review): SAME-ORIGIN only - the app shell. This worker used
+  // to take every cross-origin GET too and cache each successful answer: the
+  // session-gateway's /v1/session/watch (the examinees' names, phones and ids)
+  // and /v1/bank (the grant in the URL). Every page of this site registers its
+  // worker at the same scope, so whichever registered last sees all of them.
+  // Cross-origin requests now go straight to the network, never to a cache -
+  // exactly as sw-student.js (r33) and sw-examinee.js leave them.
+  try { if (new URL(url).origin !== self.location.origin) return; } catch (errUrl) { return; }
 
   e.respondWith(
     fetch(req).then(function(response) {

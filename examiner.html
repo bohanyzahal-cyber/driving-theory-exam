@@ -521,7 +521,7 @@
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#6d28d9;" onclick="shareExaminerReport()">&#x1f4e4; שתף דו"ח בוחן</button>
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#0e4a6e;" onclick="generateSiteManagerReport()">&#x1f4ca; דו"ח מנהל אתר</button>
         <button class="wa-btn" style="padding:8px 16px; font-size:14px; background:#7c3aed;" onclick="shareSiteManagerReport()">&#x1f4e4; שתף דו"ח למנהל</button>
-        <button class="wa-btn" id="siteCombinedBtn" style="padding:8px 16px; font-size:14px; background:#0f766e; display:none;" onclick="generateSiteCombinedReport()" title="דו&quot;ח אחד שמרכז את כל הסשנים שנפתחו באתר היום">&#x1f4ca; דו"ח משותף לאתר</button>
+        <button class="wa-btn" id="siteCombinedBtn" style="padding:8px 16px; font-size:14px; background:#0f766e;" onclick="generateSiteCombinedReport()" title="דו&quot;ח אחד שמרכז את כל הסשנים שנפתחו באתר היום">&#x1f4ca; דו"ח משותף לאתר</button>
         <a href="find_image.html" target="_blank" class="wa-btn" style="padding:8px 16px; font-size:14px; background:#16a34a; text-decoration:none; display:inline-flex; align-items:center;" title="חיפוש תמונה לשאלה — להראות לנבחן שהתמונה אצלו לא עולה">&#x1f5bc;&#xfe0f; חפש תמונה</a>
       </div>
     </div>
@@ -824,7 +824,7 @@
     </div>
     <div style="display:flex; gap:8px; justify-content:flex-end;">
       <button style="background:#64748b;" onclick="closeCorrectResultModal()">ביטול</button>
-      <button onclick="submitCorrectResult()" style="background:#dc2626;">תקן תוצאה</button>
+      <button onclick="submitCorrectResult()" id="correctResultSubmitBtn" style="background:#dc2626;">תקן תוצאה</button>
     </div>
   </div>
 </div>
@@ -856,7 +856,7 @@
     </div>
     <div style="display:flex; gap:8px; justify-content:flex-end;">
       <button style="background:#64748b;" onclick="closeCorrectMetaModal()">ביטול</button>
-      <button onclick="submitCorrectMeta()" style="background:#2980b9;">שמור</button>
+      <button onclick="submitCorrectMeta()" id="correctMetaSubmitBtn" style="background:#2980b9;">שמור</button>
     </div>
   </div>
 </div>
@@ -2567,6 +2567,45 @@
       return at;
     });
   }
+  // H2/H3 (code review 25/09/2026): the same lesson for everything that acts on
+  // a row LATER than the click - a correction modal's submit, a step of the
+  // WhatsApp send queue. They used to keep the index, and the next paint put a
+  // different soldier there. They now keep the row's identity (resultTarget: the
+  // normalised id + the attempt - the key above - plus the name, the session and
+  // the values that were on screen) and re-find it in the CURRENT list. -1 when
+  // no row, or more than one, answers to the key: the caller refuses, never guesses.
+  function findResultByKey(key) {
+    var at = -1;
+    if (!key) return -1;
+    for (var i = 0; i < completedResults.length; i++) {
+      if (completedResults[i] && resultDetailsKey(completedResults[i]) === key) {
+        if (at >= 0) return -1;              // two rows for one key: act on neither
+        at = i;
+      }
+    }
+    return at;
+  }
+  function resultTarget(r, valuesOf) {
+    return { key: resultDetailsKey(r), session: sessionCode, name: String(r.name || ''),
+             values: valuesOf ? valuesOf(r) : '' };
+  }
+  // { row, idx } for the row `t` was taken from - or { error }: the Hebrew text
+  // to show (the caller adds what to do next), and nothing may be sent.
+  function resolveResultTarget(t, valuesOf) {
+    if (!t) return { error: 'אין שורה נבחרת.' };
+    var who = t.name || 'הנבחן';
+    if (t.session !== sessionCode) return { error: 'הלוח עבר בינתיים לבחינה אחרת.' };
+    var at = findResultByKey(t.key);
+    if (at < 0) {
+      return { error: 'התוצאה של ' + who + ' כבר לא נמצאת ברשימה העדכנית (ייתכן שנבחן שוב או שהתוצאה בוטלה).' };
+    }
+    var r = completedResults[at];
+    if (String(r.name || '') !== t.name) {
+      return { error: 'השורה של ' + who + ' שייכת עכשיו לנבחן אחר (' + String(r.name || '') + ').' };
+    }
+    if (valuesOf && valuesOf(r) !== t.values) return { error: 'הפרטים של ' + who + ' עודכנו בינתיים.' };
+    return { row: r, idx: at };
+  }
   // For whatever walks the WHOLE list (the send queue, the site-manager report).
   function ensureAllResultDetails() {
     return ensureResultDetails().then(function() {
@@ -3569,82 +3608,31 @@
     document.getElementById('statRate').textContent = total > 0 ? Math.round((passCount / total) * 100) + '%' : '0%';
     document.getElementById('statsBar').style.display = 'flex';
     document.getElementById('bulkActions').style.display = 'flex';
-    // Probe whether other sessions exist at this site/day, to decide whether to
-    // show the combined-report button. NOT cheap and NOT once — see the guard
-    // inside checkSiteCombinedAvailability for what this used to cost.
-    checkSiteCombinedAvailability();
   }
 
-  // Lightweight check that decides whether to show the combined-site button.
-  // Calls the server with the current session code; if the response holds
-  // multiple sessions, exposes the button with the count. Any error (token,
-  // not-authorized, missing session) keeps the button hidden.
+  // The combined-site report runs ONLY when the examiner clicks its button.
   //
-  // 16/09/2026 — this ran on EVERY dashboard render, i.e. on every
-  // examinerDashboard poll (a fixed 5s then, 2s while a result synced), from an examiner's
-  // first completed result to the end of the session, since 2026-06-01. Each
-  // run is the FULL siteCombinedReport (sessions + examiners + results reads;
-  // measured 18-81s under load). One examiner sent ~1,000 of them per exam
-  // morning; when a run outlived the 30s client deadline the server kept going
-  // and the next poll started another on top of it. On 16/09 nobody opened a
-  // combined report, yet 'אבחון' recorded two of them at 18s and 66s — that is
-  // how it was found. It is also why the 360s kills clustered at end-of-exam
-  // time: that is when the most examiners have results, so the most probes run.
-  // The button only matters once another session exists at the site, which
-  // changes rarely: ask at most every 10 minutes per session, never while a
-  // previous ask is still out, and never cache the payload for the click (the
-  // click fetches fresh — a 10-minute-old report would miss results).
-  var SITE_COMBINED_PROBE_MIN_MS = 10 * 60 * 1000;
-  var siteCombinedProbe = { session: '', at: 0, inFlight: false };
-  function checkSiteCombinedAvailability() {
-    var btn = document.getElementById('siteCombinedBtn');
-    if (!btn) return;
-    if (!sessionCode || !examinerData || !examinerData.id) { btn.style.display = 'none'; return; }
-    if (siteCombinedProbe.session !== sessionCode) {
-      siteCombinedProbe = { session: sessionCode, at: 0, inFlight: false };
-      btn.style.display = 'none';
-    }
-    if (siteCombinedProbe.inFlight) return;
-    if (siteCombinedProbe.at && Date.now() - siteCombinedProbe.at < SITE_COMBINED_PROBE_MIN_MS) return;
-    var probe = siteCombinedProbe;
-    probe.inFlight = true;
-    probe.at = Date.now();
-    // D22: this used to run on the 30 s default against a report measured at
-    // 18-81 s, so every probe that ran long left an abandoned Apps Script
-    // execution behind - one orphan per examiner every 10 minutes, at exactly
-    // the busiest moment of the morning.
-    apiGet({
-      action: 'siteCombinedReport',
-      examinerId: examinerData.id,
-      token: examinerToken,
-      sessionCode: sessionCode
-    }, HEAVY_REPORT_TIMEOUT_MS).then(function(data) {
-      probe.inFlight = false;
-      if (probe !== siteCombinedProbe) return;          // the session changed meanwhile
-      if (!data || data.status !== 'ok' || !Array.isArray(data.sessions) || data.sessions.length <= 1) {
-        btn.style.display = 'none';
-        return;
-      }
-      var others = data.sessions.length - 1;
-      btn.innerHTML = '📊 דו"ח משותף לאתר (' + data.sessions.length + ' סשנים, +' + others + ')';
-      btn.style.display = '';
-    }).catch(function() {
-      // A transient failure says nothing about the site — keep whatever the
-      // button last showed instead of hiding it for the next 10 minutes.
-      probe.inFlight = false;
-    });
-  }
+  // H4 (code review 25/09/2026): until now every render of this list also
+  // PROBED it (checkSiteCombinedAvailability), just to decide whether to show
+  // the button - the full siteCombinedReport, 18-81 s on the server, at most
+  // every 10 minutes per examiner with results (on every poll before c780e05,
+  // 16/09). That is an automatic heavy read of the spreadsheet that stalled on
+  // 24/09, fired by nobody, in the middle of the exam. The probe is gone; the
+  // button is always shown with the other reports, and a site with one session
+  // simply gets a report of that one session.
 
-  // Build and open the combined-site report in a new window. Uses the cached
-  // payload from checkSiteCombinedAvailability if available; otherwise
-  // re-fetches. The report is rendered as a standalone HTML page so the
-  // examiner can print, save as PDF, or share via the OS share sheet.
+  // Build and open the combined-site report in a new window. The report is
+  // rendered as a standalone HTML page so the examiner can print, save as PDF,
+  // or share via the OS share sheet.
   window.generateSiteCombinedReport = function() {
-    // Always fresh: the availability probe no longer caches a payload (it runs
-    // at most every 10 minutes, so a cached copy would miss recent results).
-    // The window is opened HERE, synchronously inside the click, so a popup
-    // blocker still treats it as user-initiated; the report is written into it
-    // when the data arrives. 90s because this report is measured at 18-81s.
+    if (!sessionCode || !examinerData || !examinerData.id) {
+      toastError('אין בחינה פתוחה או שאינך מחובר — לא ניתן להפיק דו"ח משותף.');
+      return;
+    }
+    // Always fresh, fetched on this click only. The window is opened HERE,
+    // synchronously inside the click, so a popup blocker still treats it as
+    // user-initiated; the report is written into it when the data arrives.
+    // 90s because this report is measured at 18-81s.
     var w = window.open('', '_blank');
     if (!w) {
       alert('לא הצלחתי לפתוח חלון. אפשר חלונות קופצים ונסה שוב.');
@@ -3657,7 +3645,7 @@
       examinerId: examinerData.id,
       token: examinerToken,
       sessionCode: sessionCode
-    }, 90000).then(function(data) {
+    }, HEAVY_REPORT_TIMEOUT_MS).then(function(data) {
       if (!data || data.status !== 'ok') {
         show('<p dir="rtl" style="font-family:sans-serif;padding:24px;color:#b91c1c;">' + escHtml(data && data.message ? data.message : 'שגיאה בטעינת דו"ח משותף') + '</p>');
         return;
@@ -4023,24 +4011,34 @@
 
   // ========== Edit examinee phone ==========
   // ========== Commander result correction ==========
-  // Stores the index of the row currently being edited so submitCorrectResult
-  // can read it back without trusting DOM state.
-  var correctResultEditingIdx = -1;
+  // H2 (code review 25/09/2026): both correction modals used to keep an INDEX
+  // into completedResults, which every paint replaces - a new result or a retake
+  // moved the rows and the correction went to whoever sat there by then. Each
+  // modal now keeps WHO it was opened for (resultTarget, with the values it
+  // showed) and its submit re-finds exactly that row (resolveResultTarget).
+  // Gone, another person, or changed meanwhile -> refused in the modal.
+  var correctResultTarget = null;
+  var correctResultInFlight = false;
+  var CORRECT_STALE_TAIL = ' לא נשלח דבר — סגור את החלון ופתח אותו מחדש מהשורה.';
+  function correctStatusOf(r) {
+    return r.disqualified === true || r.disqualified === 'TRUE' || r.passed === 'פסול'
+      ? 'פסול'
+      : (r.passed === 'עבר' ? 'עבר' : 'נכשל');
+  }
+  function correctResultValues(r) { return String(r.score || '') + '|' + correctStatusOf(r); }
 
   window.openCorrectResultModal = function(idx) {
     if (userRole !== 'מפקד') return;
     var r = completedResults[idx];
     if (!r) return;
-    correctResultEditingIdx = idx;
+    correctResultTarget = resultTarget(r, correctResultValues);
     // Pre-fill with the current values so the commander only changes what they need.
     var scoreParts = String(r.score || '').split('/');
     var curCorrect = parseInt(scoreParts[0]) || 0;
     var curTotal = parseInt(scoreParts[1]) || 30;
     document.getElementById('correctResultScore').value = curCorrect;
     document.getElementById('correctResultTotal').value = curTotal;
-    var curStatus = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === 'פסול'
-      ? 'פסול'
-      : (r.passed === 'עבר' ? 'עבר' : 'נכשל');
+    var curStatus = correctStatusOf(r);
     var radios = document.querySelectorAll('input[name="correctStatus"]');
     for (var ri = 0; ri < radios.length; ri++) radios[ri].checked = (radios[ri].value === curStatus);
     document.getElementById('correctResultReason').value = '';
@@ -4052,15 +4050,19 @@
 
   window.closeCorrectResultModal = function() {
     document.getElementById('correctResultModal').classList.remove('show');
-    correctResultEditingIdx = -1;
+    correctResultTarget = null;
   };
 
   // ===== Correct examinee site/population (examiner-level) =====
-  var correctMetaEditingIdx = -1;
+  var correctMetaTarget = null;
+  var correctMetaInFlight = false;
+  function correctMetaValues(r) {
+    return String(r.phone || '') + '|' + String(r.site || '') + '|' + String(r.population || '');
+  }
   window.openCorrectMetaModal = function(idx) {
     var r = completedResults[idx];
     if (!r) return;
-    correctMetaEditingIdx = idx;
+    correctMetaTarget = resultTarget(r, correctMetaValues);
     // Site dropdown: the session's sites (host + any guest) + the result's own site.
     var siteSel = document.getElementById('correctMetaSite');
     var sites = [];
@@ -4091,15 +4093,17 @@
 
   window.closeCorrectMetaModal = function() {
     document.getElementById('correctMetaModal').classList.remove('show');
-    correctMetaEditingIdx = -1;
+    correctMetaTarget = null;
   };
 
   window.submitCorrectMeta = function() {
     var errEl = document.getElementById('correctMetaError');
+    if (correctMetaInFlight) return;               // one click, one write
     errEl.style.display = 'none';
-    if (correctMetaEditingIdx < 0) { errEl.textContent = 'אין שורה נבחרת'; errEl.style.display = 'block'; return; }
-    var r = completedResults[correctMetaEditingIdx];
-    if (!r) { errEl.textContent = 'תוצאה לא נמצאה'; errEl.style.display = 'block'; return; }
+    var found = resolveResultTarget(correctMetaTarget, correctMetaValues);
+    if (found.error) { errEl.textContent = found.error + CORRECT_STALE_TAIL; errEl.style.display = 'block'; return; }
+    var r = found.row;
+    var target = correctMetaTarget;
 
     var newId = String(document.getElementById('correctMetaId').value || '').trim();
     var newPhone = String(document.getElementById('correctMetaPhone').value || '').trim();
@@ -4110,6 +4114,10 @@
     var idChanged = newId.replace(/^0+/, '') !== oldId.replace(/^0+/, '');
     if (idChanged && !confirm('לשנות ת.ז. מ-' + oldId + ' ל-' + newId + '?\nהפעולה מעדכנת את שורת התוצאה. תעודה שכבר הופקה לא תשתנה.')) { return; }
 
+    var btn = document.getElementById('correctMetaSubmitBtn');
+    correctMetaInFlight = true;
+    if (btn) btn.disabled = true;
+    function settle() { correctMetaInFlight = false; if (btn) btn.disabled = false; }
     apiPost({
       action: 'correctExamineeMeta',
       sessionCode: r.sessionCode || sessionCode,
@@ -4119,15 +4127,18 @@
       site: document.getElementById('correctMetaSite').value,
       population: document.getElementById('correctMetaPopulation').value
     }).then(function(data) {
-      if (data.status === 'ok') {
-        closeCorrectMetaModal();
+      settle();
+      if (data && data.status === 'ok') {
+        if (correctMetaTarget === target) closeCorrectMetaModal();
         nudgeGateway(null);    // r32 (§14.1): the corrected id/phone, into the snapshot
         if (typeof pollDashboard === 'function') pollDashboard();
-      } else {
-        errEl.textContent = data.message || 'שגיאה בתיקון';
+      } else if (correctMetaTarget === target) {
+        errEl.textContent = (data && data.message) || 'שגיאה בתיקון';
         errEl.style.display = 'block';
       }
     }).catch(function() {
+      settle();
+      if (correctMetaTarget !== target) return;
       errEl.textContent = 'שגיאת תקשורת';
       errEl.style.display = 'block';
     });
@@ -4135,10 +4146,12 @@
 
   window.submitCorrectResult = function() {
     var errEl = document.getElementById('correctResultError');
+    if (correctResultInFlight) return;             // one click, one correction
     errEl.style.display = 'none';
-    if (correctResultEditingIdx < 0) { errEl.textContent = 'אין שורה נבחרת'; errEl.style.display = 'block'; return; }
-    var r = completedResults[correctResultEditingIdx];
-    if (!r) { errEl.textContent = 'תוצאה לא נמצאה'; errEl.style.display = 'block'; return; }
+    var found = resolveResultTarget(correctResultTarget, correctResultValues);
+    if (found.error) { errEl.textContent = found.error + CORRECT_STALE_TAIL; errEl.style.display = 'block'; return; }
+    var r = found.row;
+    var target = correctResultTarget;
 
     var newScore = parseInt(document.getElementById('correctResultScore').value, 10);
     var newTotal = parseInt(document.getElementById('correctResultTotal').value, 10);
@@ -4151,6 +4164,10 @@
     var reason = document.getElementById('correctResultReason').value.trim();
     if (!reason) { errEl.textContent = 'יש להזין סיבת תיקון'; errEl.style.display = 'block'; return; }
 
+    var btn = document.getElementById('correctResultSubmitBtn');
+    correctResultInFlight = true;
+    if (btn) btn.disabled = true;
+    function settle() { correctResultInFlight = false; if (btn) btn.disabled = false; }
     apiPost({
       action: 'commanderCorrectResult',
       sessionCode: r.sessionCode || sessionCode,
@@ -4160,16 +4177,19 @@
       newStatus: newStatus,
       reason: reason
     }).then(function(data) {
-      if (data.status === 'ok') {
-        closeCorrectResultModal();
+      settle();
+      if (data && data.status === 'ok') {
+        if (correctResultTarget === target) closeCorrectResultModal();
         nudgeGateway(null);    // r32 (§14.1): the corrected row, into the snapshot
         // Force immediate refresh so the corrected row appears with new values
         if (typeof pollDashboard === 'function') pollDashboard();
-      } else {
-        errEl.textContent = data.message || 'שגיאה בתיקון';
+      } else if (correctResultTarget === target) {
+        errEl.textContent = (data && data.message) || 'שגיאה בתיקון';
         errEl.style.display = 'block';
       }
     }).catch(function(err) {
+      settle();
+      if (correctResultTarget !== target) return;
       errEl.textContent = 'שגיאת תקשורת: ' + err;
       errEl.style.display = 'block';
     });
@@ -5026,15 +5046,31 @@
   // Sequential workflow: open WA tab for each non-sent examinee, mark as sent,
   // advance. Uses the examiner's logged-in WhatsApp Web — free, but each
   // message still requires the examiner to click Send in the WA tab.
-  var bulkSendState = null; // { queue: [resultIdx,...], pos, sent, skipped }
+  //
+  // H3 (code review 25/09/2026): the queue used to hold INDEXES into
+  // completedResults, which every paint replaces - so a step could show one
+  // soldier and then send the text built for him to the phone of whoever sat at
+  // that index by then. The queue now holds identities (resultTarget), every
+  // step re-finds its row by key, the modal remembers whom it shows
+  // (state.shown), and a send goes out only when the row it re-finds is that
+  // same person with the phone and result that were on screen. Anything else
+  // stops the step and says so. "Sent" and the uploaded certificates are kept
+  // by key too, not on row objects the next paint throws away.
+  var bulkSendState = null; // { queue: [target,...], pos, sent, skipped, sentKeys, uploadedLinks, shown }
+  // Everything besides the name that the message and the certificate are built
+  // from. A change here means the text on screen is not what would be sent.
+  function bulkSendValues(r) {
+    return [String(r.phone || ''), String(r.score || ''), String(r.passed || ''), String(r.disqualified || ''),
+            String(r.corrected || ''), String(r.language || '')].join('|');
+  }
 
   window.sendToAllExaminees = function(ready) {
     if (!completedResults || completedResults.length === 0) {
       alert('אין תוצאות לשליחה'); return;
     }
     // r32 (§14.1): every certificate in the queue lists the wrong answers, so
-    // they are fetched ONCE before the queue is built - the indexes in it point
-    // into completedResults, which that read replaces.
+    // they are fetched ONCE before the queue is built - that read replaces
+    // completedResults.
     if (!ready && resultDetailsMissing()) {
       ensureAllResultDetails().then(function(ok) { if (ok) window.sendToAllExaminees(true); });
       return;
@@ -5048,7 +5084,7 @@
       if (already) { alreadySentCount++; continue; }
       var phoneDigits = String(r.phone || '').replace(/[^0-9]/g, '');
       if (!phoneDigits || phoneDigits.length < 9) { noPhoneCount++; continue; }
-      queue.push(i);
+      queue.push(resultTarget(r));
     }
     if (queue.length === 0) {
       alert('אין נבחנים לשליחה.\nכבר נשלחו: ' + alreadySentCount + '\nללא טלפון: ' + noPhoneCount);
@@ -5060,7 +5096,7 @@
     msg += '\n\nלהתחיל?';
     if (!confirm(msg)) return;
 
-    bulkSendState = { queue: queue, pos: 0, sent: 0, skipped: 0 };
+    bulkSendState = { queue: queue, pos: 0, sent: 0, skipped: 0, sentKeys: {}, uploadedLinks: {}, shown: null };
     document.getElementById('bulkSendModal').classList.add('show');
     bulkSendShowCurrent();
   };
@@ -5090,23 +5126,30 @@
       .replace('{link}', link);
   }
 
-  // Upload the examinee's certificate HTML to the Cloudflare Worker.
-  // Cached in bulkSendState.uploadedLinks so revisits don't re-upload.
-  // Returns a Promise that resolves to the public link.
-  function bulkSendUploadCertificate(resultIdx) {
+  // Upload the certificate of the row `target` names, re-found NOW - buildResultHtml
+  // reads completedResults by index, synchronously, right after. Cached by key +
+  // values (bulkSendLinkKey), so a revisit does not re-upload and a row that
+  // changed meanwhile never gets the old link. Resolves to the public link.
+  function bulkSendLinkKey(target, r) { return target.key + '#' + bulkSendValues(r); }
+  function bulkSendCachedLink(target, r) {
+    return (bulkSendState && bulkSendState.uploadedLinks[bulkSendLinkKey(target, r)]) || null;
+  }
+  function bulkSendUploadCertificate(target) {
     if (!bulkSendState) return Promise.reject(new Error('no active queue'));
-    if (!bulkSendState.uploadedLinks) bulkSendState.uploadedLinks = {};
-    var r = completedResults[resultIdx];
-    if (!r) return Promise.reject(new Error('result not found'));
-    var key = String(r.idNumber);
-    if (bulkSendState.uploadedLinks[key]) return Promise.resolve(bulkSendState.uploadedLinks[key]);
-    var html = buildResultHtml(resultIdx);
+    var links = bulkSendState.uploadedLinks;
+    var found = resolveResultTarget(target);
+    if (found.error) return Promise.reject(new Error(found.error));
+    var linkKey = bulkSendLinkKey(target, found.row);
+    if (links[linkKey]) return Promise.resolve(links[linkKey]);
+    // A certificate without its wrong-answer table is not sent (as in ensureResultDetailsAt).
+    if (typeof found.row.wrongDetails === 'undefined' && !found.row.fabricated) {
+      return Promise.reject(new Error(DETAILS_UNAVAILABLE_TEXT));
+    }
+    var html = buildResultHtml(found.idx);
     if (!html) return Promise.reject(new Error('failed to build HTML'));
     return uploadResultHtml(html).then(function(data) {
       if (data.status === 'ok' && data.link) {
-        if (bulkSendState && bulkSendState.uploadedLinks) {
-          bulkSendState.uploadedLinks[key] = data.link;
-        }
+        links[linkKey] = data.link;
         return data.link;
       }
       throw new Error(data.message || 'upload failed');
@@ -5125,8 +5168,21 @@
     document.getElementById('bulkSendProgress').style.width = progPct + '%';
 
     if (pos >= total) { bulkSendFinish(); return; }
-    var r = completedResults[state.queue[pos]];
-    if (!r) { state.pos++; bulkSendShowCurrent(); return; }
+    // Disable "back" at the start of the queue
+    var backBtn = document.getElementById('bulkSendBackBtn');
+    if (backBtn) { backBtn.disabled = (pos === 0); backBtn.style.opacity = pos === 0 ? '0.5' : '1'; }
+    var target = state.queue[pos];
+    var found = resolveResultTarget(target);
+    if (found.error) {
+      // Not a silent skip: this soldier gets no message, and the examiner sees it.
+      state.shown = null;
+      document.getElementById('bulkSendCurrentInfo').innerHTML =
+        '<div style="color:#b91c1c;font-weight:700;">⚠️ ' + escHtml(found.error) + '</div>' +
+        '<div style="margin-top:6px;font-size:13px;">לא תישלח הודעה לנבחן זה. לחץ «דלג» כדי להמשיך.</div>';
+      document.getElementById('bulkSendMessageEdit').value = '';
+      return;
+    }
+    var r = found.row;
     var isDQ = r.disqualified === true || r.disqualified === 'TRUE' || r.passed === 'פסול';
     var isPassed = !isDQ && (r.passed === 'עבר' || r.passed === true);
     var statusBadge = isDQ ? '<span class="badge-disqualified">פסול</span>'
@@ -5140,23 +5196,25 @@
       '</div>';
     document.getElementById('bulkSendCurrentInfo').innerHTML = info;
     // Populate editable message textarea — with link if cached, placeholder otherwise.
-    var cachedLink = (state.uploadedLinks && state.uploadedLinks[String(r.idNumber)]) || null;
-    document.getElementById('bulkSendMessageEdit').value = bulkSendBuildMessage(r, cachedLink);
-    // Disable "back" at the start of the queue
-    var backBtn = document.getElementById('bulkSendBackBtn');
-    if (backBtn) { backBtn.disabled = (pos === 0); backBtn.style.opacity = pos === 0 ? '0.5' : '1'; }
+    var cachedLink = bulkSendCachedLink(target, r);
+    var builtText = bulkSendBuildMessage(r, cachedLink);
+    document.getElementById('bulkSendMessageEdit').value = builtText;
+    // What is on screen now: whom, with which values, and the text as built -
+    // anything else in the box later is the examiner's own edit.
+    var shown = state.shown = { key: target.key, values: bulkSendValues(r), text: builtText };
     // Kick off certificate upload in the background so the link is ready by the
-    // time the user clicks "Next". Position guard prevents stale async updates
-    // from clobbering the textarea if the user has moved on.
+    // time the user clicks "Next". The shown guard keeps a stale answer from
+    // clobbering the textarea once the step moved on or was shown again.
     if (!cachedLink) {
-      var posAtRequest = pos;
-      bulkSendUploadCertificate(state.queue[pos]).then(function(link) {
-        if (!bulkSendState || bulkSendState.pos !== posAtRequest) return;
+      bulkSendUploadCertificate(target).then(function(link) {
+        if (!bulkSendState || bulkSendState.shown !== shown) return;
         var msgEl = document.getElementById('bulkSendMessageEdit');
-        // Only replace if textarea still shows the placeholder version (user hasn't edited).
-        if (msgEl && msgEl.value.indexOf('(מעלה תעודה...)') !== -1) {
-          msgEl.value = bulkSendBuildMessage(r, link);
-        }
+        // Only replace the text as built (the examiner has not edited it).
+        if (!msgEl || msgEl.value !== shown.text) return;
+        var again = resolveResultTarget(target);
+        if (again.error || bulkSendValues(again.row) !== shown.values) return;   // the send step says why
+        shown.text = bulkSendBuildMessage(again.row, link);
+        msgEl.value = shown.text;
       }).catch(function() { /* swallow — next-click path will retry and surface the error */ });
     }
   }
@@ -5165,30 +5223,42 @@
     if (!bulkSendState) return;
     var state = bulkSendState;
     if (state.pos >= state.queue.length) { bulkSendFinish(); return; }
-    var r = completedResults[state.queue[state.pos]];
-    if (!r) { state.pos++; bulkSendShowCurrent(); return; }
-    var resultIdx = state.queue[state.pos];
+    var target = state.queue[state.pos];
 
-    // Helper that actually opens WhatsApp + advances. Called once the link is ready.
-    function proceedWithLink(link) {
+    // The row this step would send, re-found by key - only if it is still the
+    // person on screen with the phone and result on screen. Otherwise null: the
+    // step is shown again from the CURRENT list and the examiner is told.
+    function recheck() {
+      var found = resolveResultTarget(target), why = '';
+      if (found.error) why = found.error;
+      else if (!state.shown || state.shown.key !== target.key) why = 'ההודעה שבחלון לא נבנתה עבור ' + (target.name || 'הנבחן הזה') + '.';
+      else if (bulkSendValues(found.row) !== state.shown.values) why = 'הפרטים של ' + (target.name || 'הנבחן') + ' (טלפון או תוצאה) השתנו מאז שהוצגו.';
+      if (!why) return found.row;
+      bulkSendShowCurrent();
+      alert(why + '\nלא נשלח דבר. בדוק את מה שמוצג עכשיו בחלון ולחץ שוב, או דלג.');
+      return null;
+    }
+
+    // Opens WhatsApp for `r` (just re-checked) + advances. Called once the link is ready.
+    function proceedWithLink(link, r) {
       var phone = formatPhone(r.phone);
-      // Read the (possibly edited) message from the textarea. If the textarea
-      // still contains the loading placeholder, replace with the resolved link.
+      if (!phone) { alert('אין מספר טלפון תקין ל-' + (r.name || 'נבחן זה') + ' — לא נשלח. אפשר לדלג.'); return; }
+      // The text as built is rebuilt from the row just re-found. Only the
+      // examiner's own edit is sent as typed - it was typed for this person
+      // (recheck) - with the link in place of the upload placeholder.
       var msgEl = document.getElementById('bulkSendMessageEdit');
-      var msg = (msgEl && msgEl.value) ? msgEl.value : bulkSendBuildMessage(r, link);
-      if (msg.indexOf('(מעלה תעודה...)') !== -1) {
-        msg = bulkSendBuildMessage(r, link);
-      }
-      if (phone) {
-        var waUrl = buildWaUrl(phone, msg);
-        window.open(waUrl, '_blank');
-      }
-      if (!r.sent) {
+      var boxText = msgEl ? msgEl.value : '';
+      var msg = (!boxText || boxText === state.shown.text)
+        ? bulkSendBuildMessage(r, link)
+        : boxText.replace('(מעלה תעודה...)', link);
+      window.open(buildWaUrl(phone, msg), '_blank');
+      if (!state.sentKeys[target.key]) {
         // r32 (§14.1): announce the write, or "נשלח" reaches the Worker's
         // snapshot only at its 20 s safety read and the next watch render paints
         // the flag back off in the meantime.
         apiGet({ action: 'markSent', sessionCode: r.sessionCode || sessionCode, idNumber: r.idNumber })
           .then(function(data) { if (data && data.status === 'ok') nudgeGateway(null); }, function() {});
+        state.sentKeys[target.key] = true;
         r.sent = true;
         state.sent++;
       }
@@ -5196,22 +5266,22 @@
       bulkSendShowCurrent();
     }
 
-    var cachedLink = (state.uploadedLinks && state.uploadedLinks[String(r.idNumber)]);
-    if (cachedLink) { proceedWithLink(cachedLink); return; }
+    var r = recheck();
+    if (!r) return;
+    var cachedLink = bulkSendCachedLink(target, r);
+    if (cachedLink) { proceedWithLink(cachedLink, r); return; }
 
     // Not cached — block the button and wait for upload.
     var nextBtn = document.getElementById('bulkSendNextBtn');
     var originalLabel = nextBtn ? nextBtn.textContent : '';
     if (nextBtn) { nextBtn.disabled = true; nextBtn.textContent = '⏳ מעלה תעודה...'; }
-    var posAtClick = state.pos;
-    bulkSendUploadCertificate(resultIdx).then(function(link) {
-      // If the user moved on (back/skip) while we were waiting, don't act stale.
-      if (!bulkSendState || bulkSendState.pos !== posAtClick) {
-        if (nextBtn) { nextBtn.disabled = false; nextBtn.textContent = originalLabel; }
-        return;
-      }
+    var posAtClick = state.pos, shownAtClick = state.shown;
+    bulkSendUploadCertificate(target).then(function(link) {
       if (nextBtn) { nextBtn.disabled = false; nextBtn.textContent = originalLabel; }
-      proceedWithLink(link);
+      // If the user moved on (back/skip) while we were waiting, don't act stale.
+      if (bulkSendState !== state || state.pos !== posAtClick || state.shown !== shownAtClick) return;
+      var again = recheck();             // the list may have been repainted during the upload
+      if (again) proceedWithLink(link, again);
     }).catch(function(err) {
       if (nextBtn) { nextBtn.disabled = false; nextBtn.textContent = originalLabel; }
       alert('שגיאה בהעלאת תעודה: ' + (err && err.message ? err.message : err) + '\nניתן לדלג או לנסות שוב.');
@@ -5222,8 +5292,8 @@
     if (!bulkSendState) return;
     // Only count as a new skip if this row hasn't already been marked sent —
     // re-visiting an already-sent row and clicking skip shouldn't inflate counters.
-    var r = completedResults[bulkSendState.queue[bulkSendState.pos]];
-    if (r && !r.sent) bulkSendState.skipped++;
+    var target = bulkSendState.queue[bulkSendState.pos];
+    if (target && !bulkSendState.sentKeys[target.key]) bulkSendState.skipped++;
     bulkSendState.pos++;
     bulkSendShowCurrent();
   };
@@ -6593,7 +6663,15 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
   // stuck before this exception existed (reported 2026-05-25).
   // reportSharedThisSession is set by the actual successful upload path in
   // showExaminerShareLinks; can't be self-reported.
+  //
+  // M1 (code review 25/09/2026): the answer used to be ignored - a refusal (not
+  // the owner, a token the server no longer knows, "סשן לא נמצא") still stopped
+  // the board, cleared the session and said "הסשן נסגר" while the session stayed
+  // open on the server. Only status:'ok' closes it here now; anything else is
+  // shown and the dashboard stays. One close at a time.
+  var closeSessionInFlight = false;
   window.confirmCloseSession = function() {
+    if (closeSessionInFlight) return;
     var hasResults = completedResults && completedResults.length > 0;
     if (hasResults && !reportSharedThisSession) {
       alert('לא ניתן לסגור את הסשן לפני שיתוף דו"ח הבוחן.\n\n' +
@@ -6604,12 +6682,21 @@ H.push('table{table-layout:fixed;width:100%}td,th{word-wrap:break-word;overflow-
       ? 'לסגור את הסשן? נבחנים חדשים לא יוכלו להיכנס.'
       : 'אין תוצאות בסשן זה.\n\nלסגור ללא שליחת דו"ח?';
     if (!confirm(confirmMsg)) return;
-    examinerDecision({ action: 'closeSession', sessionCode: sessionCode, examinerId: examinerData.id }).then(function() {
+    closeSessionInFlight = true;
+    examinerDecision({ action: 'closeSession', sessionCode: sessionCode, examinerId: examinerData.id }).then(function(data) {
+      closeSessionInFlight = false;
+      if (!data || data.status !== 'ok') {
+        toastError('הסשן לא נסגר: ' + ((data && data.message) || 'השרת לא אישר את הסגירה') + ' — הלוח נשאר פתוח.');
+        return;
+      }
       stopDashboardPolling();
       clearState();
       showToast('הסשן נסגר.');
       showScreen('screenSetup');
-    }).catch(function(error) { toastError(decisionErrorText(error)); });
+    }).catch(function(error) {
+      closeSessionInFlight = false;
+      toastError(decisionErrorText(error));
+    });
   };
 
   // ========== Countdown ==========

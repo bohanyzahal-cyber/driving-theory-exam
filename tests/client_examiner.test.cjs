@@ -8,7 +8,11 @@
 // What it gates (review ids from docs/reviews/2026-09-21/):
 //   D1  an unattended poll must never log an examiner out
 //   D17 the reset confirmation must warn about a result held on the device
-//   D22 the combined-report probe must carry the 90 s deadline
+//   H4  (was D22) the combined-site report runs only on the examiner's click,
+//       never from a render, and carries the 90 s deadline (review 25/09)
+//   H2/H3 a correction modal and the WhatsApp send queue re-find their row by
+//       id + attempt at the moment they act, never by index (review 25/09)
+//   M1  closing the session clears the board only on status:'ok' (review 25/09)
 //   D3/D4 the update check shows a banner AND reloads the page itself 60 s
 //         later - but only when no dialog is open, no decision is waiting for
 //         the server and nobody is typing the login form (21/09 message 20)
@@ -1478,33 +1482,272 @@ test('D17: the reset confirmation warns when the device is holding a result', ()
   assert.ok(holding.endsWith(plain), 'the original question is still asked');
 });
 
-// ---------------------------------------------------------------- D22
-test('D22: the combined-report probe carries the 90 s deadline, throttles, and never hides on a failure', async () => {
+// ---------------------------------------------------------------- H4 (was D22)
+// 25/09/2026 (code review): the combined-site report used to be PROBED from
+// every render of the results list, just to decide whether to show its button -
+// 18-81 s on the server, every 10 minutes per examiner with results, against the
+// spreadsheet that stalled on 24/09. D22 pinned that probe's 90 s deadline; the
+// probe is gone, and the deadline now belongs to the click, the only caller.
+test('H4: the combined-site report runs only on the click, with the 90 s deadline, and its button is always there', async () => {
+  const renderer = section(examiner, '  function updateCompletedList(completed) {', '  window.generateSiteCombinedReport = function() {');
+  const code = renderer.split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n');
+  assert.ok(!/siteCombinedReport|checkSiteCombinedAvailability/.test(code), 'painting the results asks the server nothing');
+  assert.equal(examiner.split("action: 'siteCombinedReport'").length - 1, 1, 'one call site: the click');
+  for (const dead of ['SITE_COMBINED_PROBE_MIN_MS', 'siteCombinedProbe', 'function checkSiteCombinedAvailability']) {
+    assert.ok(examiner.indexOf(dead) < 0, dead + ' is gone');
+  }
+  const btnTag = /<button[^>]*id="siteCombinedBtn"[^>]*>/.exec(examiner);
+  assert.ok(btnTag && !/display:\s*none/.test(btnTag[0]), 'the button no longer waits for a probe to show it');
+
   const ui = dom();
-  const btn = ui.element('siteCombinedBtn');
-  btn.style.display = 'none';
   const timeouts = [];
-  const { ctx, timer } = baseContext({
+  let written = '';
+  const win = { document: { open() {}, write(h) { written = h; }, close() {} } };
+  const { ctx } = baseContext({
     ...ui,
     sessionCode: 'S1', examinerData: { id: '9' }, examinerToken: 'T',
-    HEAVY_REPORT_TIMEOUT_MS: 90000,
-    apiGet(params, timeoutMs) { timeouts.push(timeoutMs); return ctx.nextAnswer(); },
-    nextAnswer: () => Promise.resolve({ status: 'ok', sessions: [{}, {}] })
+    HEAVY_REPORT_TIMEOUT_MS: 90000, toasts: [],
+    escHtml: s => String(s), buildSiteCombinedReportHtml: () => '<p>the report</p>',
+    alert() {}, open: () => win,
+    apiGet(params, timeoutMs) { timeouts.push([params.action, timeoutMs]); return Promise.resolve({ status: 'ok', sessions: [{}] }); }
   });
-  load(ctx, section(examiner, '  var SITE_COMBINED_PROBE_MIN_MS', '  // Build and open the combined-site report'));
-  ctx.checkSiteCombinedAvailability();
+  ctx.toastError = m => ctx.toasts.push(m);
+  load(ctx, section(examiner, '  window.generateSiteCombinedReport = function() {', '\r\n  };') + '\r\n  };');
+  ctx.window.generateSiteCombinedReport();
   await drain();
-  assert.deepEqual(timeouts, [90000], 'the 18-81 s report is not probed on the 30 s default');
-  assert.equal(btn.style.display, '', 'two sessions at the site: the button appears');
-  ctx.checkSiteCombinedAvailability();
+  assert.deepEqual(timeouts, [['siteCombinedReport', 90000]], 'the 18-81 s report is not asked on the 30 s default');
+  assert.equal(written, '<p>the report</p>', 'a site with one session still gets its report');
+
+  ctx.examinerData = null;
+  ctx.window.generateSiteCombinedReport();
   await drain();
-  assert.equal(timeouts.length, 1, 'throttled to one probe per 10 minutes');
-  await timer.advance(10 * 60 * 1000 + 1);
-  ctx.nextAnswer = () => Promise.reject(new Error('timeout'));
-  ctx.checkSiteCombinedAvailability();
+  assert.equal(timeouts.length, 1, 'no examiner: nothing is asked');
+  assert.equal(ctx.toasts.length, 1, '...and he is told why');
+});
+
+// ---------------------------------------------------------------- H2 / H3
+// 25/09/2026 (code review): a correction modal and the WhatsApp send queue kept
+// INDEXES into completedResults, which every paint replaces - a new result or a
+// retake moved the rows and the write went to another soldier. They now keep
+// the row's identity (normalised id + attempt, plus the name and the values on
+// screen) and re-find it at the moment they act; anything that no longer
+// matches is refused, never guessed.
+const keyHelpers = () =>
+  section(examiner, '  function normalizeDashId(val) {', '  // THE place the three lists reach the screen.') +
+  section(examiner, '  function findResultByKey(key) {', '  // For whatever walks the WHOLE list');
+const row = (id, name, extra = {}) => ({ idNumber: id, name, attempt: 1, score: '27/30', passed: 'עבר',
+                                         phone: '050-000000' + id.slice(-1), site: 'א', population: 'צבא', wrongDetails: '', ...extra });
+
+test('H2: findResultByKey re-finds a row by id + attempt, and refuses a missing or ambiguous key', () => {
+  const { ctx } = baseContext({ sessionCode: 'S1', completedResults: [] });
+  load(ctx, keyHelpers());
+  const a = row('000000001', 'אבי'), b = row('000000002', 'בני');
+  ctx.completedResults = [a, b];
+  const t = ctx.resultTarget(b);
+  assert.equal(t.key, '000000002:1');
+  ctx.completedResults = [row('000000003', 'גדי'), row('000000002', 'בני'), row('000000001', 'אבי')];
+  assert.equal(ctx.resolveResultTarget(t).idx, 1, 'the list moved: found where it is NOW');
+  ctx.completedResults = [row('000000001', 'אבי'), row('000000002', 'בני', { attempt: 2 })];
+  assert.match(ctx.resolveResultTarget(t).error, /כבר לא נמצאת/, 'a retake is another result, not this one');
+  ctx.completedResults = [row('000000002', 'בני'), row('2', 'בני')];
+  assert.match(ctx.resolveResultTarget(t).error, /כבר לא נמצאת/, 'two rows for one key: act on neither');
+  ctx.completedResults = [row('000000002', 'דנה')];
+  assert.match(ctx.resolveResultTarget(t).error, /נבחן אחר/, 'same key, another name: refused');
+  ctx.completedResults = [row('000000002', 'בני')];
+  ctx.sessionCode = 'S2';
+  assert.match(ctx.resolveResultTarget(t).error, /בחינה אחרת/, 'another session on the board: refused');
+});
+
+function correctionContext() {
+  const ui = dom();
+  for (const id of ['correctResultScore', 'correctResultTotal', 'correctResultReason', 'correctResultError',
+                    'correctResultExamineeInfo', 'correctResultModal', 'correctResultSubmitBtn']) ui.element(id);
+  const posts = [];
+  let answer = () => Promise.resolve({ status: 'ok' });
+  const setup = baseContext({
+    ...ui, sessionCode: 'S1', userRole: 'מפקד', completedResults: [],
+    confirm: () => true, nudgeGateway() {}, pollDashboard() {},
+    apiPost(p) { posts.push(p); return answer(p); }
+  });
+  setup.ctx.document.querySelector = () => ({ value: 'עבר' });
+  load(setup.ctx, keyHelpers());
+  load(setup.ctx, section(examiner, '  // ========== Commander result correction ==========', '  // ========== Manual result entry'));
+  // open() empties the reason, so it is typed after the modal is open
+  const open = idx => { setup.ctx.window.openCorrectResultModal(idx); ui.nodes.get('correctResultReason').value = 'ועדת ערעור'; };
+  return { ...setup, ...ui, posts, open, setAnswer(fn) { answer = fn; } };
+}
+
+test('H2: a correction goes to the row the modal was opened for, even after the list moved', async () => {
+  const h = correctionContext();
+  h.ctx.completedResults = [row('000000001', 'אבי'), row('000000002', 'בני', { score: '24/30', passed: 'נכשל' })];
+  h.open(1);
+  // a new result lands and the list is repainted: בני is no longer at index 1
+  h.ctx.completedResults = [row('000000001', 'אבי'), row('000000003', 'גדי'), row('000000002', 'בני', { score: '24/30', passed: 'נכשל' })];
+  h.ctx.window.submitCorrectResult();
   await drain();
-  assert.equal(timeouts.length, 2);
-  assert.equal(btn.style.display, '', 'a transient failure says nothing about the site');
+  assert.equal(h.posts.length, 1);
+  assert.equal(h.posts[0].idNumber, '000000002', 'בני, not גדי who sits at index 1 now');
+});
+
+test('H2: a retake or a changed row refuses the correction in the modal and sends nothing', async () => {
+  const h = correctionContext();
+  const err = h.nodes.get('correctResultError');
+  h.ctx.completedResults = [row('000000002', 'בני', { score: '24/30', passed: 'נכשל' })];
+  h.open(0);
+  h.ctx.completedResults = [row('000000002', 'בני', { attempt: 2, score: '29/30' })];
+  h.ctx.window.submitCorrectResult();
+  assert.equal(h.posts.length, 0);
+  assert.equal(err.style.display, 'block');
+  assert.match(err.textContent, /לא נשלח דבר/);
+
+  h.ctx.completedResults = [row('000000002', 'בני', { score: '24/30', passed: 'נכשל' })];
+  h.open(0);
+  h.ctx.completedResults = [row('000000002', 'בני', { score: '26/30', passed: 'עבר' })];   // corrected meanwhile
+  h.ctx.window.submitCorrectResult();
+  assert.equal(h.posts.length, 0, 'the values on screen are not the values in the sheet any more');
+  assert.match(err.textContent, /עודכנו בינתיים/);
+});
+
+test('H2: one click, one correction - the button is disabled while the write is out', async () => {
+  const h = correctionContext();
+  const pending = deferred();
+  h.setAnswer(() => pending.promise);
+  h.ctx.completedResults = [row('000000002', 'בני', { score: '24/30', passed: 'נכשל' })];
+  h.open(0);
+  h.ctx.window.submitCorrectResult();
+  h.ctx.window.submitCorrectResult();
+  assert.equal(h.posts.length, 1, 'the second click sent nothing');
+  assert.equal(h.nodes.get('correctResultSubmitBtn').disabled, true);
+  pending.resolve({ status: 'error', message: 'busy' });
+  await drain();
+  assert.equal(h.nodes.get('correctResultSubmitBtn').disabled, false, 'released when the answer lands');
+  assert.equal(h.nodes.get('correctResultError').textContent, 'busy');
+});
+
+function bulkContext(results) {
+  const ui = dom();
+  for (const id of ['bulkSendModal', 'bulkSendCounter', 'bulkSendSentCount', 'bulkSendSkippedCount', 'bulkSendProgress',
+                    'bulkSendCurrentInfo', 'bulkSendMessageEdit', 'bulkSendBackBtn', 'bulkSendNextBtn']) ui.element(id);
+  const opened = [], marked = [], alerts = [];
+  let uploads = 0;
+  const setup = baseContext({
+    ...ui, sessionCode: 'S1', completedResults: results,
+    resultDetailsMissing: () => false, ensureAllResultDetails: () => Promise.resolve(true),
+    DETAILS_UNAVAILABLE_TEXT: 'no details', confirm: () => true, alert: m => alerts.push(m),
+    getPdfString: () => '{name}|{result}|{link}', escHtml: s => String(s),
+    formatPhone: p => String(p || '').replace(/[^0-9]/g, ''),
+    buildWaUrl: (phone, msg) => phone + '#' + msg,
+    buildResultHtml: idx => 'cert:' + setup.ctx.completedResults[idx].name,
+    uploadResultHtml: html => Promise.resolve({ status: 'ok', link: 'L' + (++uploads) + ':' + html }),
+    apiGet(p) { marked.push(p.idNumber); return Promise.resolve({ status: 'ok' }); },
+    nudgeGateway() {}, pollDashboard() {}
+  });
+  setup.ctx.open = url => opened.push(url);
+  load(setup.ctx, keyHelpers());
+  load(setup.ctx, section(examiner, '  // ========== Bulk WhatsApp send queue ==========', '  // ========== Examiner Report'));
+  return { ...setup, ...ui, opened, marked, alerts };
+}
+
+test('H3: a repaint during the queue does not send A\'s result to B\'s phone', async () => {
+  const h = bulkContext([row('000000001', 'אבי'), row('000000002', 'בני')]);
+  h.ctx.window.sendToAllExaminees(true);
+  await drain();                                    // אבי is on screen, his certificate uploaded
+  assert.match(h.nodes.get('bulkSendMessageEdit').value, /^אבי\|/);
+  // the list is repainted in another order: index 0 is now בני
+  h.ctx.completedResults = [row('000000002', 'בני'), row('000000001', 'אבי')];
+  h.ctx.window.bulkSendNext();
+  await drain();
+  assert.equal(h.opened.length, 1);
+  assert.ok(h.opened[0].startsWith('0500000001#אבי|'), 'אבי\'s phone, אבי\'s text: ' + h.opened[0]);
+  assert.ok(h.opened[0].indexOf('cert:אבי') > 0, 'and אבי\'s certificate');
+  assert.deepEqual(h.marked, ['000000001'], '"sent" is marked on אבי');
+  assert.match(h.nodes.get('bulkSendMessageEdit').value, /^בני\|/, 'the next step shows בני');
+  h.ctx.window.bulkSendNext();
+  await drain();
+  assert.ok(h.opened[1].startsWith('0500000002#בני|'));
+  assert.deepEqual(h.alerts, ['הסתיים.\nנשלחו: 2\nדולגו: 0'], 'no refusal - only the end-of-queue summary');
+});
+
+test('H3: a phone that changed after it was shown, or a row that is gone, stops the step and says so', async () => {
+  const h = bulkContext([row('000000001', 'אבי'), row('000000002', 'בני')]);
+  h.ctx.window.sendToAllExaminees(true);
+  await drain();
+  h.ctx.completedResults = [row('000000001', 'אבי', { phone: '0529999999' }), row('000000002', 'בני')];
+  h.ctx.window.bulkSendNext();
+  await drain();
+  assert.equal(h.opened.length, 0, 'nothing sent to a phone the examiner did not see');
+  assert.equal(h.alerts.length, 1);
+  assert.match(h.alerts[0], /לא נשלח דבר/);
+  assert.match(h.nodes.get('bulkSendCurrentInfo').innerHTML, /0529999999/, 'the step is shown again with the current phone');
+  h.ctx.window.bulkSendNext();                      // now he has seen it
+  await drain();
+  assert.ok(h.opened[0].startsWith('0529999999#אבי|'));
+
+  // בני retook the exam: his queued result is not in the list any more
+  h.ctx.completedResults = [row('000000001', 'אבי'), row('000000002', 'בני', { attempt: 2 })];
+  h.ctx.window.bulkSendNext();
+  await drain();
+  assert.equal(h.opened.length, 1, 'nothing sent for a result that is gone');
+  assert.equal(h.alerts.length, 2);
+  h.ctx.window.bulkSendSkip();
+  assert.equal(h.ctx.bulkSendState, null, 'the queue ends after the skip');
+  assert.match(h.alerts[2], /דולגו: 1/);
+});
+
+test('H3: "sent" is kept by key - going back and skipping a sent row does not count it as skipped', async () => {
+  const h = bulkContext([row('000000001', 'אבי'), row('000000002', 'בני')]);
+  h.ctx.window.sendToAllExaminees(true);
+  await drain();
+  h.ctx.window.bulkSendNext();
+  await drain();
+  h.ctx.completedResults = [row('000000002', 'בני'), row('000000001', 'אבי')];   // the repaint drops r.sent
+  h.ctx.window.bulkSendBack();
+  h.ctx.window.bulkSendSkip();
+  assert.equal(h.ctx.bulkSendState.skipped, 0);
+  assert.equal(h.ctx.bulkSendState.sent, 1);
+});
+
+// ---------------------------------------------------------------- M1
+// 25/09/2026 (code review): closing the session ignored the answer - a refusal
+// still cleared the board and said "הסשן נסגר".
+function closeContext(answer) {
+  const ui = dom();
+  const log = [];
+  const setup = baseContext({
+    ...ui, sessionCode: 'S1', examinerData: { id: '9' }, completedResults: [], reportSharedThisSession: false,
+    confirm: () => true, alert() {},
+    examinerDecision(p) { log.push('decision:' + p.action); return answer(); },
+    stopDashboardPolling() { log.push('stop'); }, clearState() { log.push('clear'); },
+    showScreen(id) { log.push('screen:' + id); }, showToast(m) { log.push('toast:' + m); },
+    toastError(m) { log.push('error:' + m); }, decisionErrorText: () => 'unknown'
+  });
+  load(setup.ctx, section(examiner, '  var closeSessionInFlight = false;', '  // ========== Countdown =========='));
+  return { ...setup, log };
+}
+
+test('M1: only status ok closes the session; a refusal is shown and the board stays', async () => {
+  const refused = closeContext(() => Promise.resolve({ status: 'error', message: 'טוקן לא תקין', tokenExpired: true }));
+  refused.ctx.window.confirmCloseSession();
+  await drain();
+  assert.deepEqual(refused.log.slice(0, 1), ['decision:closeSession']);
+  assert.equal(refused.log.length, 2);
+  assert.match(refused.log[1], /^error:הסשן לא נסגר: טוקן לא תקין/);
+
+  const ok = closeContext(() => Promise.resolve({ status: 'ok' }));
+  ok.ctx.window.confirmCloseSession();
+  await drain();
+  assert.deepEqual(ok.log, ['decision:closeSession', 'stop', 'clear', 'toast:הסשן נסגר.', 'screen:screenSetup']);
+
+  const pending = deferred();
+  const twice = closeContext(() => pending.promise);
+  twice.ctx.window.confirmCloseSession();
+  twice.ctx.window.confirmCloseSession();
+  assert.deepEqual(twice.log, ['decision:closeSession'], 'a double click closes once');
+  pending.reject(Object.assign(new Error('t'), { name: 'TimeoutError' }));
+  await drain();
+  assert.deepEqual(twice.log, ['decision:closeSession', 'error:unknown'], 'an unknown outcome clears nothing');
+  twice.ctx.window.confirmCloseSession();
+  assert.equal(twice.log.filter(l => l === 'decision:closeSession').length, 2, 'and the button works again');
 });
 
 // ---------------------------------------------------------------- D3/D4
@@ -1823,8 +2066,9 @@ for (const sw of ['sw-examiner.js', 'sw-teacher.js']) {
   test(sw + ': parses, is GET-only, precaches the shared modules and keeps its build-written cache name', () => {
     const src = fs.readFileSync(path.join(app, sw), 'utf8');
     const listeners = [];
-    const self = { addEventListener: (t, cb) => listeners.push([t, cb]), skipWaiting() {}, clients: { claim() {} } };
-    vm.runInNewContext(src, { self, caches: { open: () => Promise.resolve({ addAll: () => Promise.resolve() }), keys: () => Promise.resolve([]), match: () => Promise.resolve(null), delete: () => Promise.resolve() }, fetch: () => Promise.resolve(), console: quiet });
+    const self = { addEventListener: (t, cb) => listeners.push([t, cb]), skipWaiting() {}, clients: { claim() {} },
+      location: { origin: 'https://example' } };
+    vm.runInNewContext(src, { self, caches: { open: () => Promise.resolve({ addAll: () => Promise.resolve() }), keys: () => Promise.resolve([]), match: () => Promise.resolve(null), delete: () => Promise.resolve() }, fetch: () => Promise.resolve(), console: quiet, URL });
     assert.deepEqual(listeners.map(l => l[0]), ['install', 'activate', 'fetch']);
 
     assert.match(src, /^var CACHE_NAME = '[a-z]+-[a-z0-9]+';$/m,
@@ -1844,10 +2088,46 @@ for (const sw of ['sw-examiner.js', 'sw-teacher.js']) {
     fetchHandler({ request: { method: 'GET', url: 'https://example/examiner.html?cb=1' }, respondWith: () => { responded = true; } });
     assert.equal(responded, true, 'same-origin GETs are served network-first');
     assert.match(src, /ignoreSearch: true/, 'a cache-busted shell must still match its cached copy offline');
+    // 25/09/2026 (code review): cross-origin answers carry personal data (the
+    // watch: names, phones, ids; the bank: a grant in the URL) and are never
+    // taken, so never cached. Same policy as sw-student.js.
+    for (const url of ['https://session-gateway.example.workers.dev/v1/session/watch?session=S1&grant=g.s',
+                       'https://session-gateway.example.workers.dev/v1/bank?grant=g.s',
+                       'https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js']) {
+      let taken = false;
+      fetchHandler({ request: { method: 'GET', url }, respondWith: () => { taken = true; } });
+      assert.equal(taken, false, 'cross-origin is left alone: ' + url);
+    }
 
     // The question bank is not served from this origin any more (it lives
     // behind the gateway), so nothing here may special-case it or precache it.
     assert.ok(!/bank\/manifest\.json/.test(src), 'no bank manifest in the shell');
     assert.ok(!/'\.\/bank\//.test(src), 'no bank file in the shell');
+  });
+
+  test(sw + ': activating purges the other caches AND every cross-origin entry already in its own', async () => {
+    const src = fs.readFileSync(path.join(app, sw), 'utf8');
+    const cacheName = /^var CACHE_NAME = '([^']+)';$/m.exec(src)[1];
+    const gateway = ['https://session-gateway.example.workers.dev/v1/session/watch?session=S1&grant=g.s',
+                     'https://session-gateway.example.workers.dev/v1/bank?grant=g.s'];
+    const listeners = [], deletedCaches = [], deletedEntries = [];
+    const own = {
+      keys: () => Promise.resolve([{ url: 'https://example/examiner.html' }, { url: 'https://example/shared/bank.js' }]
+        .concat(gateway.map(url => ({ url })))),
+      delete: r => { deletedEntries.push(r.url); return Promise.resolve(true); }
+    };
+    const caches = {
+      open: name => { assert.equal(name, cacheName); return Promise.resolve(own); },
+      keys: () => Promise.resolve([cacheName, 'examiner-00000000', 'teacher-11111111']),
+      delete: n => { deletedCaches.push(n); return Promise.resolve(true); }
+    };
+    const self = { addEventListener: (t, cb) => listeners.push([t, cb]), skipWaiting() {}, clients: { claim() {} },
+      location: { origin: 'https://example' } };
+    vm.runInNewContext(src, { self, caches, fetch: () => Promise.resolve(), console: quiet, URL });
+    let done = null;
+    listeners.find(l => l[0] === 'activate')[1]({ waitUntil: p => { done = p; } });
+    await done;
+    assert.deepEqual(deletedCaches, ['examiner-00000000', 'teacher-11111111'], 'older cache names go');
+    assert.deepEqual(deletedEntries, gateway, 'the watch/bank answers stored under the SAME name go too; the shell stays');
   });
 }
