@@ -3,7 +3,7 @@
 // clock, a small DOM and a synthetic network. Nothing is stubbed that the page
 // itself owns: the API calls, the bank reads, the exam start, the submit ladder
 // and the anti-cheat timers are the shipping code.
-const test = require('node:test');
+const nodeTest = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -13,6 +13,18 @@ const app = path.resolve(__dirname, '..');
 const examinee = fs.readFileSync(path.join(app, 'examinee.html'), 'utf8');
 const TRANSPORT = fs.readFileSync(path.join(app, 'shared', 'transport.js'), 'utf8');
 const BANK = fs.readFileSync(path.join(app, 'shared', 'bank.js'), 'utf8');
+
+// 26/09/2026 cut-over: the exams moved to https://teoria-digital-vitaly.com, and
+// examinee.html only sends people there now (CUTOVER_REDIRECT;
+// tests/cutover_redirect.test.cjs checks where to). Every test that runs the old
+// page is skipped while that is so. The service-worker test reads a file that
+// still ships, and always runs.
+const PAGE_RETIRED = examinee.includes('CUTOVER_REDIRECT');
+function test(name, ...rest) {
+  return PAGE_RETIRED
+    ? nodeTest(name, { skip: 'examinee.html is the cut-over redirect (26/09/2026)' }, rest[rest.length - 1])
+    : nodeTest(name, ...rest);
+}
 
 const TOTAL = 30;
 const plain = v => JSON.parse(JSON.stringify(v));   // VM arrays are not host arrays
@@ -2552,7 +2564,7 @@ test('source: the re-arm and the device push are wired exactly where §13.4/§13
   assert.ok(!/submitFailOnClose[\s\S]{0,1200}nudgeGatewayAfterWrite/.test(src));
 });
 
-test('source: the service worker precaches the shared layers and never the question texts', () => {
+nodeTest('source: the service worker precaches the shared layers and never the question texts', () => {
   // CRLF-tolerant: git's autocrlf hands this file out with CRLF on a fresh
   // checkout (22/09/2026, after the r32 merge), while the build tool writes LF.
   const sw = fs.readFileSync(path.join(app, 'sw-examinee.js'), 'utf8').replace(/\r/g, '');

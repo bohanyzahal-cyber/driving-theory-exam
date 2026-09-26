@@ -369,6 +369,12 @@ const PAGE_ROUTING = {
   'student.html': 'reports',
   'exam.html': 'reports'
 };
+// 26/09/2026 cut-over: examiner.html, examinee.html and find_image.html only
+// send people to the new system now (CUTOVER_REDIRECT) and send no action at
+// all, so they leave the scan while that is so.
+const RETIRED_PAGES = Object.keys(PAGE_ROUTING)
+  .filter(page => fs.readFileSync(path.join(ROOT, page), 'utf8').includes('CUTOVER_REDIRECT'));
+for (const page of RETIRED_PAGES) delete PAGE_ROUTING[page];
 
 function actionsOf(page) {
   const text = fs.readFileSync(path.join(ROOT, page), 'utf8');
@@ -404,7 +410,9 @@ test('every action a page sends is served by the URL that page routes to', () =>
   assert.deepEqual(wrong, []);
 });
 
-test('examiner.html is the page that needs both urls', () => {
+test('examiner.html is the page that needs both urls', {
+  skip: RETIRED_PAGES.includes('examiner.html') && 'examiner.html is the cut-over redirect (26/09/2026)'
+}, () => {
   const e = env(MONOLITH);
   const targets = e.ctx.ACTION_TARGETS;
   const sent = actionsOf('examiner.html');

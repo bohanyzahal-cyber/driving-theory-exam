@@ -32,7 +32,7 @@
 //   plus: the examiner bank grant and the gateway nudge after every decision
 //         (which carries the decision itself, so the examinee sees it in <=2 s),
 //         top-wrong rendering with and without a grant, and both SWs.
-const test = require('node:test');
+const nodeTest = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -41,6 +41,19 @@ const vm = require('node:vm');
 const app = path.resolve(__dirname, '..');
 const examiner = fs.readFileSync(path.join(app, 'examiner.html'), 'utf8');
 const transportSrc = fs.readFileSync(path.join(app, 'shared', 'transport.js'), 'utf8');
+
+// 26/09/2026 cut-over: the exams moved to https://teoria-digital-vitaly.com, and
+// examiner.html (with find_image.html) only sends people there now
+// (CUTOVER_REDIRECT; tests/cutover_redirect.test.cjs checks where to). Every test
+// that reads the old page is skipped while that is so. The service-worker tests
+// at the end read files that still ship, and always run.
+const PAGE_RETIRED = examiner.includes('CUTOVER_REDIRECT');
+function test(name, ...rest) {
+  return PAGE_RETIRED
+    ? nodeTest(name, { skip: 'examiner.html is the cut-over redirect (26/09/2026)' }, rest[rest.length - 1])
+    : nodeTest(name, ...rest);
+}
+
 const quiet = { log() {}, warn() {}, error() {} };
 
 function section(src, start, end) {
@@ -2063,7 +2076,7 @@ test('r33: a lastWarning that starts with 📡 is a blue gateway badge, escaped,
 
 // ---------------------------------------------------------------- service workers
 for (const sw of ['sw-examiner.js', 'sw-teacher.js']) {
-  test(sw + ': parses, is GET-only, precaches the shared modules and keeps its build-written cache name', () => {
+  nodeTest(sw + ': parses, is GET-only, precaches the shared modules and keeps its build-written cache name', () => {
     const src = fs.readFileSync(path.join(app, sw), 'utf8');
     const listeners = [];
     const self = { addEventListener: (t, cb) => listeners.push([t, cb]), skipWaiting() {}, clients: { claim() {} },
@@ -2105,7 +2118,7 @@ for (const sw of ['sw-examiner.js', 'sw-teacher.js']) {
     assert.ok(!/'\.\/bank\//.test(src), 'no bank file in the shell');
   });
 
-  test(sw + ': activating purges the other caches AND every cross-origin entry already in its own', async () => {
+  nodeTest(sw + ': activating purges the other caches AND every cross-origin entry already in its own', async () => {
     const src = fs.readFileSync(path.join(app, sw), 'utf8');
     const cacheName = /^var CACHE_NAME = '([^']+)';$/m.exec(src)[1];
     const gateway = ['https://session-gateway.example.workers.dev/v1/session/watch?session=S1&grant=g.s',
