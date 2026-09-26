@@ -10,7 +10,7 @@
 //                    session code (the new system does not know it)
 //   teacher.html, teacher/index.html -> https://teoria-digital-vitaly.com/teacher/
 //   student.html, student/index.html -> https://teoria-digital-vitaly.com/student/
-//   admin.html (the practice admin board) -> https://teoria-digital-vitaly.com/admin/
+//   admin.html (the practice admin board) -> https://teoria-digital-vitaly.com/admin/practice-stats/
 //   Nothing from an old URL is carried over.
 //
 // Each redirect page runs for real in a vm, in the three ways it can load: on
@@ -37,7 +37,7 @@ const EXAMINER = 'https://teoria-digital-vitaly.com/examiner/';
 const EXAM = 'https://teoria-digital-vitaly.com/exam/';
 const TEACHER = 'https://teoria-digital-vitaly.com/teacher/';
 const STUDENT = 'https://teoria-digital-vitaly.com/student/';
-const ADMIN = 'https://teoria-digital-vitaly.com/admin/';
+const ADMIN = 'https://teoria-digital-vitaly.com/admin/practice-stats/';
 const REDIRECTS = {
   'examiner.html': EXAMINER,
   'examiner/index.html': EXAMINER,
