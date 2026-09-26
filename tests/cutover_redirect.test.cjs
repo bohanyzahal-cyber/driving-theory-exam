@@ -1,5 +1,6 @@
-// The 26/09/2026 cut-over: the exams run on the new system, and every old EXAM
-// entry point of this site sends people there. Nothing else changes.
+// The 26/09/2026 cut-over: the exams and the practice run on the new system,
+// and every old entry point of this site sends people there. Only exam.html
+// (the standalone audio exam) stays.
 //
 //   examiner.html, examiner/index.html (the installed app), find_image.html,
 //   report.html   -> https://teoria-digital-vitaly.com/examiner/
@@ -7,12 +8,16 @@
 //   examinee.html (every old link and QR, ?code=...), examinee/index.html
 //                 -> https://teoria-digital-vitaly.com/exam/, without the old
 //                    session code (the new system does not know it)
+//   teacher.html, teacher/index.html -> https://teoria-digital-vitaly.com/teacher/
+//   student.html, student/index.html -> https://teoria-digital-vitaly.com/student/
+//   admin.html (the practice admin board) -> https://teoria-digital-vitaly.com/admin/
+//   Nothing from an old URL is carried over.
 //
 // Each redirect page runs for real in a vm, in the three ways it can load: on
 // its own, inside the old installed app's iframe (so it must move the TOP
 // window), and inside a frame that may not move its top (so it moves itself).
-// It must register no service worker and touch no storage: the practice pages
-// share this origin and its worker scope, and they stay here, unchanged.
+// It must register no service worker and touch no storage: what a device kept
+// from the old pages stays exactly as it was.
 //
 // version.json must describe the pages as they are: that is how a page that is
 // already open learns there is a new version (ExamTransport.createUpdateCheck)
@@ -30,13 +35,21 @@ const read = rel => fs.readFileSync(path.join(app, rel), 'utf8');
 
 const EXAMINER = 'https://teoria-digital-vitaly.com/examiner/';
 const EXAM = 'https://teoria-digital-vitaly.com/exam/';
+const TEACHER = 'https://teoria-digital-vitaly.com/teacher/';
+const STUDENT = 'https://teoria-digital-vitaly.com/student/';
+const ADMIN = 'https://teoria-digital-vitaly.com/admin/';
 const REDIRECTS = {
   'examiner.html': EXAMINER,
   'examiner/index.html': EXAMINER,
   'find_image.html': EXAMINER,
   'report.html': EXAMINER,
   'examinee.html': EXAM,
-  'examinee/index.html': EXAM
+  'examinee/index.html': EXAM,
+  'teacher.html': TEACHER,
+  'teacher/index.html': TEACHER,
+  'student.html': STUDENT,
+  'student/index.html': STUDENT,
+  'admin.html': ADMIN
 };
 const MOVED_LINE = 'המערכת עברה לכתובת חדשה';   // המערכת עברה לכתובת חדשה
 
@@ -106,17 +119,21 @@ test('an old examinee link or QR lands on the new exam page without its old sess
   }
 });
 
-test('practice stays on this site: its pages are not redirects', () => {
-  for (const rel of ['teacher.html', 'student.html', 'teacher/index.html', 'student/index.html', 'admin.html', 'exam.html']) {
-    assert.ok(!read(rel).includes('CUTOVER_REDIRECT'), rel + ' must keep working here');
+test('no redirect carries anything from the old URL', () => {
+  for (const [rel, target] of Object.entries(REDIRECTS)) {
+    assert.deepEqual(load(rel, { search: '?class=K7&name=x' }), [{ who: 'self', url: target }], rel);
+    assert.deepEqual(load(rel, { framed: true, search: '?q=abc&cb=1' }), [{ who: 'top', url: target }], rel);
   }
+});
+
+test('exam.html, the standalone audio exam, stays on this site', () => {
+  assert.ok(!read('exam.html').includes('CUTOVER_REDIRECT'), 'exam.html must keep working here');
 });
 
 // The build contract (tools/build_version.js): one hash per page, and the same
 // hash names that page's service-worker cache. An open page polls version.json
-// every 2 minutes and reloads only on a new hash for ITS page: the two exam
-// pages carry the redirect's hash, the practice pages keep theirs and are not
-// reloaded at all.
+// every 2 minutes and reloads only on a new hash for ITS page - so each of the
+// four pages reloads into its redirect once its own hash has changed.
 test('version.json describes the pages as they are, and names the service-worker caches', () => {
   const version = JSON.parse(read('version.json'));
   const WORKERS = { 'examinee.html': 'sw-examinee.js', 'examiner.html': 'sw-examiner.js',

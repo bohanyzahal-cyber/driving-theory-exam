@@ -18,7 +18,7 @@
 //         switch, a missing grant named instead of a blank practice, spaced
 //         repetition via mode=ids, the idle-only student reload, and the
 //         standalone exam.html flow.
-const test = require('node:test');
+const nodeTest = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -29,6 +29,21 @@ const teacher = fs.readFileSync(path.join(app, 'teacher.html'), 'utf8');
 const student = fs.readFileSync(path.join(app, 'student.html'), 'utf8');
 const examPage = fs.readFileSync(path.join(app, 'exam.html'), 'utf8');
 const transportSrc = fs.readFileSync(path.join(app, 'shared', 'transport.js'), 'utf8');
+
+// 26/09/2026 cut-over: the practice moved to https://teoria-digital-vitaly.com
+// as well, and teacher.html, student.html and admin.html only send people there
+// now (CUTOVER_REDIRECT; tests/cutover_redirect.test.cjs checks where to). Every
+// test that reads one of them is skipped while that is so. The exam.html tests
+// (the standalone audio exam stays on this site) and the service-worker test
+// read files that still ship, and always run.
+const PRACTICE_RETIRED = ['teacher.html', 'student.html', 'admin.html']
+  .some(page => fs.readFileSync(path.join(app, page), 'utf8').includes('CUTOVER_REDIRECT'));
+function test(name, ...rest) {
+  return PRACTICE_RETIRED
+    ? nodeTest(name, { skip: 'the practice pages are the cut-over redirect (26/09/2026)' }, rest[rest.length - 1])
+    : nodeTest(name, ...rest);
+}
+
 const quiet = { log() {}, warn() {}, error() {} };
 
 function section(src, start, end) {
@@ -736,7 +751,7 @@ test('the retired student code really is gone', () => {
 // ======================================================================
 // exam.html — the standalone practice exam (no examiner, Hebrew only)
 // ======================================================================
-test('exam.html standalone: startPractice with the id number, texts from the Hebrew bank', async () => {
+nodeTest('exam.html standalone: startPractice with the id number, texts from the Hebrew bank', async () => {
   const ui = dom();
   const examArea = ui.element('examArea');
   const bank = fakeBank();
@@ -778,7 +793,7 @@ test('exam.html standalone: startPractice with the id number, texts from the Heb
   assert.equal(built[1].ci ^ (built[1].id % 256), 1);
 });
 
-test('exam.html: the legacy client-side picker and the old action are gone', () => {
+nodeTest('exam.html: the legacy client-side picker and the old action are gone', () => {
   for (const dead of ['_legacyBuildExam_DEPRECATED', '_legacyGetFilteredQuestions_DEPRECATED',
                       "action=getExamQuestions", 'window.QUESTIONS']) {
     assert.ok(examPage.indexOf(dead) < 0, dead + ' must not appear in exam.html');
@@ -787,7 +802,7 @@ test('exam.html: the legacy client-side picker and the old action are gone', () 
   assert.match(examPage, /<script src="shared\/bank\.js"><\/script>/);
 });
 
-test('r31: exam.html keeps QUESTIONS_API_URL and routes through REPORTS_API_URL', () => {
+nodeTest('r31: exam.html keeps QUESTIONS_API_URL and routes through REPORTS_API_URL', () => {
   // The name QUESTIONS_API_URL stays: it is the line that says "this is the
   // OTHER Apps Script project, the one with the question DB", and the reports
   // url is derived from it so there is still exactly one url to edit per page.
@@ -796,7 +811,7 @@ test('r31: exam.html keeps QUESTIONS_API_URL and routes through REPORTS_API_URL'
   assert.match(examPage, /createApi\(\{ apiUrl: REPORTS_API_URL, origin: 'examinee-app' \}\)/);
 });
 
-test('exam.html: the standalone flow requires the grant and never loads a bank by language', () => {
+nodeTest('exam.html: the standalone flow requires the grant and never loads a bank by language', () => {
   assert.match(examPage, /if \(!resp\.bank \|\| !resp\.bank\.url \|\| !resp\.bank\.grant\) \{/,
     'no grant is a named failure, not an exam with blank questions');
   assert.match(examPage, /message: BANK_NOT_CONFIGURED_TEXT/);
@@ -807,7 +822,7 @@ test('exam.html: the standalone flow requires the grant and never loads a bank b
 // ======================================================================
 // service worker
 // ======================================================================
-test('sw-student.js: parses, is GET-only and precaches the shared modules', () => {
+nodeTest('sw-student.js: parses, is GET-only and precaches the shared modules', () => {
   const src = fs.readFileSync(path.join(app, 'sw-student.js'), 'utf8');
   const listeners = [];
   const self = { addEventListener: (t, cb) => listeners.push([t, cb]), skipWaiting() {}, clients: { claim() {} },
