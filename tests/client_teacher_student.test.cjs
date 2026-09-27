@@ -33,14 +33,21 @@ const transportSrc = fs.readFileSync(path.join(app, 'shared', 'transport.js'), '
 // 26/09/2026 cut-over: the practice moved to https://teoria-digital-vitaly.com
 // as well, and teacher.html, student.html and admin.html only send people there
 // now (CUTOVER_REDIRECT; tests/cutover_redirect.test.cjs checks where to). Every
-// test that reads one of them is skipped while that is so. The exam.html tests
-// (the standalone audio exam stays on this site) and the service-worker test
-// read files that still ship, and always run.
+// test that reads one of them is skipped while that is so. The service-worker
+// test reads a file that still ships, and always runs. On 27/09 the old system
+// closed and exam.html (the standalone audio exam) became the redirect too: its
+// tests are skipped the same way.
 const PRACTICE_RETIRED = ['teacher.html', 'student.html', 'admin.html']
   .some(page => fs.readFileSync(path.join(app, page), 'utf8').includes('CUTOVER_REDIRECT'));
 function test(name, ...rest) {
   return PRACTICE_RETIRED
     ? nodeTest(name, { skip: 'the practice pages are the cut-over redirect (26/09/2026)' }, rest[rest.length - 1])
+    : nodeTest(name, ...rest);
+}
+const AUDIO_EXAM_RETIRED = examPage.includes('CUTOVER_REDIRECT');
+function examTest(name, ...rest) {
+  return AUDIO_EXAM_RETIRED
+    ? nodeTest(name, { skip: 'exam.html is the redirect since the old system closed (27/09/2026)' }, rest[rest.length - 1])
     : nodeTest(name, ...rest);
 }
 
@@ -751,7 +758,7 @@ test('the retired student code really is gone', () => {
 // ======================================================================
 // exam.html — the standalone practice exam (no examiner, Hebrew only)
 // ======================================================================
-nodeTest('exam.html standalone: startPractice with the id number, texts from the Hebrew bank', async () => {
+examTest('exam.html standalone: startPractice with the id number, texts from the Hebrew bank', async () => {
   const ui = dom();
   const examArea = ui.element('examArea');
   const bank = fakeBank();
@@ -793,7 +800,7 @@ nodeTest('exam.html standalone: startPractice with the id number, texts from the
   assert.equal(built[1].ci ^ (built[1].id % 256), 1);
 });
 
-nodeTest('exam.html: the legacy client-side picker and the old action are gone', () => {
+examTest('exam.html: the legacy client-side picker and the old action are gone', () => {
   for (const dead of ['_legacyBuildExam_DEPRECATED', '_legacyGetFilteredQuestions_DEPRECATED',
                       "action=getExamQuestions", 'window.QUESTIONS']) {
     assert.ok(examPage.indexOf(dead) < 0, dead + ' must not appear in exam.html');
@@ -802,7 +809,7 @@ nodeTest('exam.html: the legacy client-side picker and the old action are gone',
   assert.match(examPage, /<script src="shared\/bank\.js"><\/script>/);
 });
 
-nodeTest('r31: exam.html keeps QUESTIONS_API_URL and routes through REPORTS_API_URL', () => {
+examTest('r31: exam.html keeps QUESTIONS_API_URL and routes through REPORTS_API_URL', () => {
   // The name QUESTIONS_API_URL stays: it is the line that says "this is the
   // OTHER Apps Script project, the one with the question DB", and the reports
   // url is derived from it so there is still exactly one url to edit per page.
@@ -811,7 +818,7 @@ nodeTest('r31: exam.html keeps QUESTIONS_API_URL and routes through REPORTS_API_
   assert.match(examPage, /createApi\(\{ apiUrl: REPORTS_API_URL, origin: 'examinee-app' \}\)/);
 });
 
-nodeTest('exam.html: the standalone flow requires the grant and never loads a bank by language', () => {
+examTest('exam.html: the standalone flow requires the grant and never loads a bank by language', () => {
   assert.match(examPage, /if \(!resp\.bank \|\| !resp\.bank\.url \|\| !resp\.bank\.grant\) \{/,
     'no grant is a named failure, not an exam with blank questions');
   assert.match(examPage, /message: BANK_NOT_CONFIGURED_TEXT/);

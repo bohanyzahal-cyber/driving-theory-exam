@@ -1,6 +1,6 @@
 // The 26/09/2026 cut-over: the exams and the practice run on the new system,
-// and every old entry point of this site sends people there. Only exam.html
-// (the standalone audio exam) stays.
+// and every old entry point of this site sends people there. On 27/09 the old
+// system closed, and exam.html (the standalone audio exam) followed.
 //
 //   examiner.html, examiner/index.html (the installed app), find_image.html,
 //   report.html   -> https://teoria-digital-vitaly.com/examiner/
@@ -11,6 +11,8 @@
 //   teacher.html, teacher/index.html -> https://teoria-digital-vitaly.com/teacher/
 //   student.html, student/index.html -> https://teoria-digital-vitaly.com/student/
 //   admin.html (the practice admin board) -> https://teoria-digital-vitaly.com/admin/practice-stats/
+//   exam.html (the standalone audio exam) -> https://teoria-digital-vitaly.com/student/
+//                 (the new practice's «מבחן תרגול», read aloud)
 //   Nothing from an old URL is carried over.
 //
 // Each redirect page runs for real in a vm, in the three ways it can load: on
@@ -49,7 +51,8 @@ const REDIRECTS = {
   'teacher/index.html': TEACHER,
   'student.html': STUDENT,
   'student/index.html': STUDENT,
-  'admin.html': ADMIN
+  'admin.html': ADMIN,
+  'exam.html': STUDENT
 };
 const MOVED_LINE = 'המערכת עברה לכתובת חדשה';   // המערכת עברה לכתובת חדשה
 
@@ -124,10 +127,6 @@ test('no redirect carries anything from the old URL', () => {
     assert.deepEqual(load(rel, { search: '?class=K7&name=x' }), [{ who: 'self', url: target }], rel);
     assert.deepEqual(load(rel, { framed: true, search: '?q=abc&cb=1' }), [{ who: 'top', url: target }], rel);
   }
-});
-
-test('exam.html, the standalone audio exam, stays on this site', () => {
-  assert.ok(!read('exam.html').includes('CUTOVER_REDIRECT'), 'exam.html must keep working here');
 });
 
 // The build contract (tools/build_version.js): one hash per page, and the same

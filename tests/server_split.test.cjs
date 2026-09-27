@@ -372,7 +372,8 @@ const PAGE_ROUTING = {
 // 26/09/2026 cut-over: examiner.html, examinee.html, find_image.html and then
 // teacher.html and student.html only send people to the new system now
 // (CUTOVER_REDIRECT) and send no action at all, so they leave the scan while
-// that is so. exam.html stays, and keeps the scan meaningful.
+// that is so. Since the old system closed (27/09) exam.html is the redirect too,
+// and no page is left to scan.
 const RETIRED_PAGES = Object.keys(PAGE_ROUTING)
   .filter(page => fs.readFileSync(path.join(ROOT, page), 'utf8').includes('CUTOVER_REDIRECT'));
 for (const page of RETIRED_PAGES) delete PAGE_ROUTING[page];
