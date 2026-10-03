@@ -24,6 +24,11 @@
 // version.json must describe the pages as they are: that is how a page that is
 // already open learns there is a new version (ExamTransport.createUpdateCheck)
 // and reloads - into the redirect.
+//
+// One page can still come up OLD: examinee.html on a device that last opened
+// it between 15/03 and 04/06/2026, when its worker answered from the cache
+// first. Only the worker that replaces that one can move the page it shows, so
+// sw-examinee.js does (03/10/2026).
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -127,6 +132,58 @@ test('no redirect carries anything from the old URL', () => {
     assert.deepEqual(load(rel, { search: '?class=K7&name=x' }), [{ who: 'self', url: target }], rel);
     assert.deepEqual(load(rel, { framed: true, search: '?q=abc&cb=1' }), [{ who: 'top', url: target }], rel);
   }
+});
+
+// The worker of 15/03-04/06/2026 answered examinee.html from its cache, with
+// no update check in the page: a device that last opened it then gets the old
+// page once more, while the current worker replaces that one behind it.
+function activateExamineeWorker(windows) {
+  const listeners = {};
+  const order = [];
+  const self = {
+    addEventListener: (type, cb) => { listeners[type] = cb; },
+    skipWaiting() {},
+    location: { origin: 'https://bohanyzahal-cyber.github.io' },
+    clients: {
+      claim() { order.push('claim'); return Promise.resolve(); },
+      // Recorded, not asserted here: the worker swallows whatever its activation throws.
+      matchAll(query) { order.push('matchAll ' + JSON.stringify(query)); return Promise.resolve(windows); }
+    }
+  };
+  const caches = { keys: () => Promise.resolve([]), delete: () => Promise.resolve(true),
+    open: () => Promise.resolve({ addAll: () => Promise.resolve() }) };
+  vm.runInNewContext(read('sw-examinee.js'), { self, caches, URL });
+  const waits = [];
+  listeners.activate({ waitUntil: p => waits.push(p) });
+  return Promise.all(waits).then(() => order);
+}
+
+test('the examinee worker moves an old examinee.html it finds open to the new exam page, and no other page', async () => {
+  const BASE = 'https://bohanyzahal-cyber.github.io/driving-theory-exam/';
+  const moved = [];
+  const page = rel => ({ url: BASE + rel, navigate(to) { moved.push([rel, to]); return Promise.resolve(null); } });
+  const order = await activateExamineeWorker([
+    page('examinee.html'),
+    page('examinee.html?code=AB12CD34'),
+    page('student.html'), page('teacher.html'), page('examiner.html'), page('signs.html'),
+    page('examinee/'), page('docs/examinee.html.txt')
+  ]);
+  assert.deepEqual(moved, [['examinee.html', EXAM], ['examinee.html?code=AB12CD34', EXAM]]);
+  assert.deepEqual(order, ['claim', 'matchAll {"type":"window"}'], 'a worker may navigate only the pages it controls');
+  assert.ok(read('sw-examinee.js').includes("var CUTOVER_REDIRECT = '" + EXAM + "';"), 'the same address examinee.html sends to');
+});
+
+test('the examinee worker still activates where a page cannot be moved', async () => {
+  const BASE = 'https://bohanyzahal-cyber.github.io/driving-theory-exam/';
+  // A browser with no WindowClient.navigate, a navigation the browser refuses, and a URL that does not parse.
+  let asked = 0;
+  const order = await activateExamineeWorker([
+    { url: BASE + 'examinee.html' },
+    { url: BASE + 'examinee.html', navigate: () => { asked++; return Promise.reject(new TypeError('refused')); } },
+    { url: 'not a url', navigate: () => { asked += 100; return Promise.resolve(null); } }
+  ]);
+  assert.equal(asked, 1, 'only the page that can be asked is asked');
+  assert.equal(order.length, 2);
 });
 
 // The build contract (tools/build_version.js): one hash per page, and the same

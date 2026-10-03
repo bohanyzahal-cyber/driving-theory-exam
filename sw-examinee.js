@@ -5,6 +5,8 @@
 // some devices". Mirrors sw-examiner.js (already network-first).
 var CACHE = 'examinee-ad920083';
 var IMG_CACHE = 'exam-images-v1';   // question images, warmed by the page at exam start, served offline
+// 26/09/2026 cut-over: where examinee.html itself now sends every visitor.
+var CUTOVER_REDIRECT = 'https://teoria-digital-vitaly.com/exam/';
 
 self.addEventListener('install', function(e) {
   // The shared layers are part of the shell: without transport.js or bank.js the
@@ -22,7 +24,23 @@ self.addEventListener('activate', function(e) {
   e.waitUntil(caches.keys().then(function(ks) {
     return Promise.all(ks.filter(function(k) { return k !== CACHE && k !== IMG_CACHE; }).map(function(k) { return caches.delete(k); }));
   }));
-  self.clients.claim();
+  // 03/10/2026: the worker of 15/03-04/06/2026 was cache-first, so a device that
+  // last opened examinee.html in those weeks is shown its OLD copy once more,
+  // while this worker replaces that one behind it — and nothing moves that open
+  // page (it has no update check, and the old system no longer answers it).
+  // Once this worker controls the page, send it where examinee.html itself now
+  // sends everyone. Only that page: every other page of this scope always came
+  // from the network.
+  e.waitUntil(Promise.resolve(self.clients.claim()).then(function() {
+    return self.clients.matchAll({ type: 'window' });
+  }).then(function(list) {
+    return Promise.all(list.map(function(c) {
+      var stale = false;
+      try { stale = /\/examinee\.html$/.test(new URL(c.url).pathname); } catch (errUrl) { stale = false; }
+      if (!stale || typeof c.navigate !== 'function') return null;
+      return c.navigate(CUTOVER_REDIRECT).catch(function() { return null; });
+    }));
+  }).catch(function() {}));
 });
 
 self.addEventListener('fetch', function(e) {
